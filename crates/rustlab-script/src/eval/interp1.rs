@@ -1,9 +1,8 @@
 //! `interp1(x, y, xi, method)`.
 //!
 //! `x` is strictly monotonic. Outside `[min(x), max(x)]` the result is NaN
-//! unless the call passes `"extrap"`. `spline` is the not-a-knot cubic:
-//! a sampled cubic is reproduced, two points are a straight line, and three
-//! points are the quadratic through them.
+//! unless the call passes `"extrap"` or a numeric fill. `spline` is the
+//! not-a-knot cubic. `pchip` is Fritsch–Carlson. `makima` is modified Akima.
 
 use ndarray::Array2;
 use rustlab_core::C64;
@@ -19,16 +18,25 @@ enum Method {
     Previous,
     Next,
     Spline,
+    Pchip,
+    Makima,
+}
+
+#[derive(Clone, Copy)]
+enum Outside {
+    Nan,
+    Extrap,
+    Fill(f64),
 }
 
 pub(crate) fn builtin_interp1(args: Vec<Value>) -> Result<Value, ScriptError> {
     if args.len() < 3 || args.len() > 5 {
         return Err(ScriptError::type_err(format!(
-            "interp1: expected (x, y, xi), (x, y, xi, method), or (x, y, xi, method, \"extrap\"), got {} arguments",
+            "interp1: expected (x, y, xi [, method [, \"extrap\" or fill]]), got {} arguments",
             args.len()
         )));
     }
-    let (method, extrap) = method_and_extrap(&args[3..])?;
+    let (method, outside) = method_and_outside(&args[3..])?;
     let mut x = real_samples(&args[0], "interp1 x")?;
     if x.len() < 2 {
         return Err(ScriptError::type_err(
@@ -49,6 +57,8 @@ pub(crate) fn builtin_interp1(args: Vec<Value>) -> Result<Value, ScriptError> {
     let xi = query_values(&args[2])?;
     let ms = match method {
         Method::Spline => Some(spline_seconds(&x, &y)?),
+        Method::Pchip => Some(hermite_slopes(&x, &y, pchip_slopes)?),
+        Method::Makima => Some(hermite_slopes(&x, &y, makima_slopes)?),
         _ => None,
     };
     let mut cols = Vec::with_capacity(y.ncols());
@@ -57,34 +67,47 @@ pub(crate) fn builtin_interp1(args: Vec<Value>) -> Result<Value, ScriptError> {
         let m = ms.as_ref().map(|all| all[c].as_slice());
         let mut out = Vec::with_capacity(xi.len());
         for &q in &xi {
-            out.push(eval_one(&x, &col, q, method, extrap, m));
+            out.push(eval_one(&x, &col, q, method, outside, m));
         }
         cols.push(out);
     }
     pack_queries(&args[2], &cols)
 }
 
-fn method_and_extrap(rest: &[Value]) -> Result<(Method, bool), ScriptError> {
+fn method_and_outside(rest: &[Value]) -> Result<(Method, Outside), ScriptError> {
     match rest {
-        [] => Ok((Method::Linear, false)),
+        [] => Ok((Method::Linear, Outside::Nan)),
         [a] => {
             if is_extrap(a) {
-                Ok((Method::Linear, true))
+                Ok((Method::Linear, Outside::Extrap))
+            } else if let Some(fill) = real_fill(a) {
+                Ok((Method::Linear, Outside::Fill(fill)))
             } else {
-                Ok((parse_method(a)?, false))
+                Ok((parse_method(a)?, Outside::Nan))
             }
         }
         [a, b] => {
-            if !is_extrap(b) {
-                return Err(ScriptError::type_err(
-                    "interp1: the fifth argument must be \"extrap\"".to_string(),
-                ));
+            if is_extrap(b) {
+                Ok((parse_method(a)?, Outside::Extrap))
+            } else if let Some(fill) = real_fill(b) {
+                Ok((parse_method(a)?, Outside::Fill(fill)))
+            } else {
+                Err(ScriptError::type_err(
+                    "interp1: the fifth argument must be \"extrap\" or a number".to_string(),
+                ))
             }
-            Ok((parse_method(a)?, true))
         }
         _ => Err(ScriptError::type_err(
             "interp1: too many arguments".to_string(),
         )),
+    }
+}
+
+fn real_fill(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar(x) if x.is_finite() => Some(*x),
+        Value::Complex(z) if z.im == 0.0 && z.re.is_finite() => Some(z.re),
+        _ => None,
     }
 }
 
@@ -95,7 +118,7 @@ fn is_extrap(v: &Value) -> bool {
 fn parse_method(v: &Value) -> Result<Method, ScriptError> {
     let Value::Str(s) = v else {
         return Err(ScriptError::type_err(
-            "interp1: method must be \"linear\", \"nearest\", \"previous\", \"next\", or \"spline\""
+            "interp1: method must be \"linear\", \"nearest\", \"previous\", \"next\", \"spline\", \"pchip\", or \"makima\""
                 .to_string(),
         ));
     };
@@ -105,6 +128,8 @@ fn parse_method(v: &Value) -> Result<Method, ScriptError> {
         "previous" => Ok(Method::Previous),
         "next" => Ok(Method::Next),
         "spline" => Ok(Method::Spline),
+        "pchip" => Ok(Method::Pchip),
+        "makima" => Ok(Method::Makima),
         other => Err(ScriptError::type_err(format!(
             "interp1: unknown method \"{other}\""
         ))),
@@ -112,7 +137,8 @@ fn parse_method(v: &Value) -> Result<Method, ScriptError> {
 }
 
 fn strictly_increasing(x: &[f64]) -> bool {
-    x.windows(2).all(|w| w[1] > w[0] && w[0].is_finite() && w[1].is_finite())
+    x.windows(2)
+        .all(|w| w[1] > w[0] && w[0].is_finite() && w[1].is_finite())
 }
 
 fn reverse_rows(y: &Array2<C64>) -> Array2<C64> {
@@ -171,16 +197,28 @@ fn eval_one(
     y: &[C64],
     xi: f64,
     method: Method,
-    extrap: bool,
+    outside: Outside,
     seconds: Option<&[C64]>,
 ) -> C64 {
-    if !xi.is_finite() {
-        return C64::new(f64::NAN, f64::NAN);
+    // A NaN query is missing, not a point outside the interval: a fill value
+    // does not replace it. Real data stays real (imaginary part 0). Inf falls
+    // through and is outside [min(x), max(x)].
+    if xi.is_nan() {
+        let im = if y.iter().any(|z| z.im != 0.0) {
+            f64::NAN
+        } else {
+            0.0
+        };
+        return C64::new(f64::NAN, im);
     }
     let n = x.len();
     let inside = bracket(x, xi);
-    if inside.is_none() && !extrap {
-        return C64::new(f64::NAN, 0.0);
+    if inside.is_none() {
+        match outside {
+            Outside::Nan => return C64::new(f64::NAN, 0.0),
+            Outside::Fill(v) => return C64::new(v, 0.0),
+            Outside::Extrap => {}
+        }
     }
     match method {
         Method::Nearest => {
@@ -189,7 +227,11 @@ fn eval_one(
                     let d0 = xi - x[i];
                     let d1 = x[i + 1] - xi;
                     // A tie goes to the sample with the larger x.
-                    if d0 < d1 { i } else { i + 1 }
+                    if d0 < d1 {
+                        i
+                    } else {
+                        i + 1
+                    }
                 }
                 None if xi < x[0] => 0,
                 None => n - 1,
@@ -223,7 +265,13 @@ fn eval_one(
             let h = x[i + 1] - x[i];
             let b = (xi - x[i]) / h;
             let a = 1.0 - b;
-            let mut s = y[i] * a + y[i + 1] * b;
+            // `y0*(1-b) + y1*b` is `0*Inf` when an endpoint is 0 and the
+            // query is infinite. The slope form stays on the line.
+            let mut s = if method == Method::Linear && !b.is_finite() {
+                linear_at_infinity(y[i], y[i + 1], b)
+            } else {
+                y[i] * a + y[i + 1] * b
+            };
             if method == Method::Spline {
                 let m = seconds.expect("spline seconds");
                 let a3 = a * a * a - a;
@@ -233,7 +281,145 @@ fn eval_one(
             }
             s
         }
+        Method::Pchip | Method::Makima => {
+            let i = match inside {
+                Some(i) => i,
+                None if xi < x[0] => 0,
+                None => n - 2,
+            };
+            let d = seconds.expect("hermite slopes");
+            hermite(x, y, d, xi, i)
+        }
     }
+}
+
+/// Value of the line through `(y0, y1)` at an infinite fraction `b`.
+/// A zero slope stays at `y0`. A real slope follows `sign(slope*b)*Inf`.
+fn linear_at_infinity(y0: C64, y1: C64, b: f64) -> C64 {
+    let dy = y1 - y0;
+    if dy.re == 0.0 && dy.im == 0.0 {
+        return y0;
+    }
+    let sgn = if b.is_sign_positive() { 1.0 } else { -1.0 };
+    C64::new(signed_inf(dy.re, sgn), signed_inf(dy.im, sgn))
+}
+
+fn signed_inf(component: f64, sgn: f64) -> f64 {
+    if component == 0.0 {
+        0.0
+    } else {
+        component.signum() * sgn * f64::INFINITY
+    }
+}
+
+fn hermite(x: &[f64], y: &[C64], d: &[C64], xi: f64, i: usize) -> C64 {
+    let h = x[i + 1] - x[i];
+    let t = (xi - x[i]) / h;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    y[i] * h00 + d[i] * (h * h10) + y[i + 1] * h01 + d[i + 1] * (h * h11)
+}
+
+fn hermite_slopes(
+    x: &[f64],
+    y: &Array2<C64>,
+    slopes: fn(&[f64], &[f64]) -> Vec<f64>,
+) -> Result<Vec<Vec<C64>>, ScriptError> {
+    let mut out = Vec::with_capacity(y.ncols());
+    for c in 0..y.ncols() {
+        let re: Vec<f64> = (0..y.nrows()).map(|i| y[[i, c]].re).collect();
+        let im: Vec<f64> = (0..y.nrows()).map(|i| y[[i, c]].im).collect();
+        let sr = slopes(x, &re);
+        let si = if im.iter().all(|v| *v == 0.0) {
+            vec![0.0; sr.len()]
+        } else {
+            slopes(x, &im)
+        };
+        out.push(
+            sr.into_iter()
+                .zip(si)
+                .map(|(r, i)| C64::new(r, i))
+                .collect(),
+        );
+    }
+    Ok(out)
+}
+
+/// Fritsch–Carlson slopes. An interior slope is 0 when the adjacent
+/// secants change sign. End slopes use the three-point formula, clamped.
+fn pchip_slopes(x: &[f64], y: &[f64]) -> Vec<f64> {
+    let n = x.len();
+    let h: Vec<f64> = (0..n - 1).map(|i| x[i + 1] - x[i]).collect();
+    let delta: Vec<f64> = (0..n - 1).map(|i| (y[i + 1] - y[i]) / h[i]).collect();
+    if n == 2 {
+        return vec![delta[0], delta[0]];
+    }
+    let mut d = vec![0.0; n];
+    for k in 1..n - 1 {
+        let d0 = delta[k - 1];
+        let d1 = delta[k];
+        if d0 == 0.0 || d1 == 0.0 || d0.signum() != d1.signum() {
+            d[k] = 0.0;
+        } else {
+            let w1 = 2.0 * h[k] + h[k - 1];
+            let w2 = h[k] + 2.0 * h[k - 1];
+            d[k] = (w1 + w2) / (w1 / d0 + w2 / d1);
+        }
+    }
+    d[0] = fritsch_end(h[0], h[1], delta[0], delta[1]);
+    d[n - 1] = fritsch_end(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]);
+    d
+}
+
+fn fritsch_end(h0: f64, h1: f64, delta0: f64, delta1: f64) -> f64 {
+    let d = ((2.0 * h0 + h1) * delta0 - h0 * delta1) / (h0 + h1);
+    if d == 0.0 || delta0 == 0.0 || d.signum() != delta0.signum() {
+        0.0
+    } else if delta0.signum() != delta1.signum() && d.abs() > 3.0 * delta0.abs() {
+        3.0 * delta0
+    } else {
+        d
+    }
+}
+
+/// Modified Akima slopes. Weights use both the difference and the sum of
+/// neighboring secants, so a flat run next to a jump does not follow
+/// ordinary Akima.
+fn makima_slopes(x: &[f64], y: &[f64]) -> Vec<f64> {
+    let n = x.len();
+    let h: Vec<f64> = (0..n - 1).map(|i| x[i + 1] - x[i]).collect();
+    let delta: Vec<f64> = (0..n - 1).map(|i| (y[i + 1] - y[i]) / h[i]).collect();
+    if n == 2 {
+        return vec![delta[0], delta[0]];
+    }
+    let l = delta.len();
+    let mut ext = vec![0.0; l + 4];
+    for i in 0..l {
+        ext[i + 2] = delta[i];
+    }
+    ext[1] = 2.0 * delta[0] - delta[1];
+    ext[0] = 2.0 * ext[1] - delta[0];
+    ext[l + 2] = 2.0 * delta[l - 1] - delta[l - 2];
+    ext[l + 3] = 2.0 * ext[l + 2] - delta[l - 1];
+    let mut d = vec![0.0; n];
+    for i in 0..n {
+        let dm2 = ext[i];
+        let dm1 = ext[i + 1];
+        let di = ext[i + 2];
+        let dp = ext[i + 3];
+        let w1 = (dp - di).abs() + 0.5 * (dp + di).abs();
+        let w2 = (dm1 - dm2).abs() + 0.5 * (dm1 + dm2).abs();
+        d[i] = if w1 + w2 == 0.0 {
+            0.0
+        } else {
+            (w1 * dm1 + w2 * di) / (w1 + w2)
+        };
+    }
+    d
 }
 
 /// Second derivatives at the knots, one vector per column. Real and
@@ -369,9 +555,10 @@ fn pack_queries(xi_value: &Value, cols: &[Vec<C64>]) -> Result<Value, ScriptErro
     // Several columns of y: one row per query, one column per series.
     let nxi = cols[0].len();
     if real {
-        Ok(Value::real_matrix(Array2::from_shape_fn((nxi, p), |(i, j)| {
-            cols[j][i].re
-        })))
+        Ok(Value::real_matrix(Array2::from_shape_fn(
+            (nxi, p),
+            |(i, j)| cols[j][i].re,
+        )))
     } else {
         Ok(Value::Matrix(
             Array2::from_shape_fn((nxi, p), |(i, j)| cols[j][i]).into(),

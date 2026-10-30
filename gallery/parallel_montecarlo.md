@@ -41,8 +41,8 @@ fraction landing inside the unit disk is an estimate of $\pi/4$.
 ```rustlab
 function p = pi_trial(k)
   N = 200000;
-  X = rand(N);
-  Y = rand(N);
+  X = rand(1, N);
+  Y = rand(1, N);
   d2 = (X - 0.5).^2 + (Y - 0.5).^2;
   inside = sum(d2 < 0.25);
   p = 4 * inside / N;
@@ -83,7 +83,7 @@ varies; everything else is held constant.
 ```rustlab
 function price = bs_call(S0)
   K = 100; r = 0.05; sigma = 0.2; T = 1.0; N = 100000;
-  Z = randn(N);
+  Z = randn(1, N);
   ST = S0 * exp((r - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z);
   payoff = max(ST - K, 0);
   price = exp(-r * T) * mean(payoff);

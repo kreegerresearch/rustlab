@@ -453,6 +453,7 @@ fn feed_binop(h: &mut blake3::Hasher, op: BinOp) {
         BinOp::And => 14,
         BinOp::Or => 15,
         BinOp::LeftDiv => 16,
+        BinOp::ElemLeftDiv => 17,
     };
     h.update(&[tag]);
 }

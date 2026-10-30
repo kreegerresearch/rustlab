@@ -34,10 +34,10 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `[A, B]` / `[A; B]` | Horizontal / vertical concatenation |
 | `[X, Y] = f(...)` | Destructuring assignment |
 | `1:5`, `0:0.5:2`, `10:-1:1` | Range: `start:stop` or `start:step:stop` |
-| `.*`, `./`, `.^` | Element-wise multiply, divide, power |
+| `.*`, `./`, `.\`, `.^` | Element-wise multiply, divide, swapped divide (`A .\ B` is `B ./ A`), power |
 | `*` | Matrix multiply |
-| `\` | Left division `A\b`. Square nonsingular `A` uses LU; rectangular and singular `A` use QR least squares. A vector is a row, so a column right-hand side is `b'`. A scalar left side divides element-wise |
-| `/` | Right division `B/A` when both sides are matrices or a row (`X*A = B`). A scalar on either side stays element-wise. Two vectors are still an error; use `./` |
+| `\` | Left division `A\b`. A vector on the right is a column and one solution is `n×1`. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot (`Inf`). Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. Square sparse `A` uses `spsolve` |
+| `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
 | `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero); rhs only evaluated if lhs is not decisive |
@@ -120,18 +120,18 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | Function | Description |
 |---|---|
 | `linspace(a, b, n)` | n evenly-spaced points from a to b |
-| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | Zero vector or matrix; accepts `size()` output |
-| `ones(n)` / `ones(m, n)` / `ones([m, n])` | Ones vector or matrix; accepts `size()` output |
+| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | n×n zero matrix, or m×n. A row is `zeros(1, n)`. Accepts `size()` output |
+| `ones(n)` / `ones(m, n)` / `ones([m, n])` | Same shapes as `zeros`, filled with ones |
 | `eye(n)` | n×n identity matrix |
-| `rand()` / `rand(n)` / `rand(m, n)` | Single scalar / n-vector / m×n matrix uniform on [0, 1). Zero-arg form added in 0.3.4. |
-| `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). Zero-arg form added in 0.3.4. |
-| `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Random integers |
+| `rand()` / `rand(n)` / `rand(m, n)` | Scalar, n×n, or m×n uniform on [0, 1). A row is `rand(1, n)`. |
+| `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). A row is `randn(1, n)`. |
+| `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Scalar, n×n, or m×n integers. A row is `randi(imax, 1, n)` |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
-| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is `5`); or extract diagonal `k` (`k` an integer) |
+| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
@@ -205,13 +205,13 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` / `[m, i] = max(v)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-argument form is elementwise over scalars/vectors/matrices with `+`-style broadcast (per element, NaN loses to non-NaN). **Multi-return** `[m, i]` returns the 1-based first-occurrence index alongside the value (vector / matrix / 3-arg axis forms only — not the two-argument elementwise form). Comparison key: real value for purely-real input, magnitude `|z|` for complex (diverges from MATLAB on equal magnitudes — first-occurrence wins). NaN skipped; all-NaN input errors. |
 | `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so the index from `[m, i] = max(v)` always equals `argmax(v)`. (There is no `~` output placeholder — bind to a dummy variable.) |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
-| `median(v)` / `median(M)` / `median(M, dim)` | Median by real part; same axis rules. |
-| `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. Complex data uses `√(Σ\|x−mean\|²/(n−1))`. Empty or length 1 is 0. |
-| `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. No population (divide-by-n) flag. |
+| `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; same axis rules. Complex input is an error. Empty is NaN. |
+| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; `std(M, 0, 2)` is per row. |
+| `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same `w` and the same shapes. |
 | `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
-| `median(v)` | Median (real parts; average of two middles for even length) |
-| `std(v)` | Standard deviation (N-1 denominator). `var(v)` is its square |
-| `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
+| `median(v)` | Median of real values (average of the two middle elements when the length is even). Complex input is an error. Empty is NaN |
+| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN |
+| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
 | `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times. Vectors keep orientation; matrices default to dim 1 |
@@ -230,27 +230,27 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
 | `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
-| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (same as `norm(A, 2)`). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
+| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (largest singular value, same as `norm(A, 2)`). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Empty is 0. `NaN` in, `NaN` out; `Inf` in, `Inf` out unless a `NaN` is present. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
 | `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
-| `trace(M)` | Trace |
+| `trace(M)` | Sum of the main diagonal. The matrix must be square |
 | `rank(M)` | Numerical rank: count of singular values above `max(m,n)·eps·σ_max` |
 | `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition (`dense_eig`). 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). Hermitian or real symmetric: real eigenvalues, ascending, orthonormal V. |
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
-| `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
+| `linsolve(A, b)` | Square solve, same path as `A\b`. A vector is a column; a dense solution is `n×1` |
 | `mldivide(A, b)` / `A\b` | Same solve as `\`. Warns when A is singular or ill-conditioned and still returns a basic solution |
-| `mrdivide(B, A)` / `B/A` | Right division, `X*A = B` |
-| `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)` | Householder QR. Economy form with `0` or `"econ"`. One output is `R` |
+| `mrdivide(B, A)` / `B/A` | Right division, `X*A = B`, via `(A' \ B')'` |
+| `qr(A)` / `[Q, R] = qr(A)` / `[Q, R, p] = qr(A)` / `qr(A, 0)` | Householder QR. One or two outputs are unpivoted. Three outputs column-pivot: `p` is 1-based and `A(:, p) = Q*R`. `"matrix"` returns `P` with `A*P = Q*R`. `0` / `"econ"` is economy |
 | `null(A)` | Orthonormal nullspace from the SVD (`n×k`; `n×0` when A has full rank) |
 | `orth(A)` | Orthonormal column space from the SVD |
 | `[L, U, P] = lu(A)` | Dense LU, `P*A = L*U`. `[L, U] = lu(A)` absorbs `P` into `L`. Sparse `lu` still returns a factor handle |
 | `roots(p)` | Roots of polynomial with coefficients p |
-| `polyfit(x, y, n)` | Degree-n least-squares polynomial, descending powers, via QR |
-| `polyval(p, x)` | Horner evaluation; result has the shape of `x` |
-| `interp1(x, y, xi [, method [, "extrap"]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot). NaN outside the range unless `"extrap"` |
+| `polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)` | Degree-n least-squares polynomial, descending powers, via QR. `S` has `R`, `df`, `normr`. `mu` centers `x` and changes `p` |
+| `polyval(p, x)` / `polyval(p, x, S, mu)` | Horner evaluation; result has the shape of `x`. With `mu`, `x` is centered first |
+| `interp1(x, y, xi [, method [, "extrap" or fill]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot), `pchip`, `makima`. NaN outside the range unless `"extrap"` or a numeric fill. A NaN query stays NaN. Inf is outside the range |
 
 ---
 
@@ -262,6 +262,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
+| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff`. `[r, lags]` returns the lag axis |
+| `xcov(...)` | `xcorr` after each signal's mean is removed |
 | `factor(n)` | Prime factorization |
 
 ---
@@ -514,15 +516,15 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | Function | Description |
 |---|---|
 | `sparse(I, J, V, m, n)` | Build m×n sparse matrix from 1-based index/value vectors |
-| `sparse(A)` | Convert dense matrix/vector to sparse (drops near-zeros) |
+| `sparse(A)` | Convert dense matrix/vector to sparse (drops exact zeros only) |
 | `sparsevec(I, V, n)` | Build sparse vector of length n from 1-based indices |
 | `speye(n)` | n×n sparse identity matrix |
 | `spzeros(m, n)` | m×n all-zero sparse matrix |
 | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals (D=0 main, >0 super, <0 sub) |
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
-| `chol(A [, ordering])` | Sparse Cholesky factor handle for SPD `A`; pair with `solve(F, b)` to back-solve many RHS without re-factoring. Real-only `A` auto-routes to the f64 path. Errors on indefinite `A`. |
-| `lu(A [, ordering])` | Sparse LU factor handle (partial pivoting). Same factor-once-solve-many pattern as `chol`, but works on indefinite, non-Hermitian, and complex matrices. |
+| `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
+| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1-based permutation with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |

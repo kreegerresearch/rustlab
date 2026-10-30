@@ -14,8 +14,11 @@ pub type RVector = Array1<f64>;
 /// Real matrix
 pub type RMatrix = Array2<f64>;
 
-/// Near-zero threshold: entries with norm below this are dropped from sparse structures.
-const SPARSE_ZERO_TOL: f64 = 1e-15;
+/// A stored sparse entry stays unless both parts are exact zeros (`+0` or `-0`).
+/// A tiny finite value, NaN, and Inf are not structural zeros.
+fn sparse_keep(v: &C64) -> bool {
+    v.re != 0.0 || v.im != 0.0
+}
 
 /// Sparse vector in COO format.  Entries are sorted by index (0-based internally).
 #[derive(Debug, Clone, PartialEq)]
@@ -26,7 +29,7 @@ pub struct SparseVec {
 
 impl SparseVec {
     /// Construct a sparse vector, deduplicating indices (summing duplicates),
-    /// dropping near-zeros, and sorting by index.
+    /// dropping exact zeros, and sorting by index.
     pub fn new(len: usize, raw: Vec<(usize, C64)>) -> Self {
         use std::collections::HashMap;
         let mut map: HashMap<usize, C64> = HashMap::new();
@@ -35,7 +38,7 @@ impl SparseVec {
         }
         let mut entries: Vec<(usize, C64)> = map
             .into_iter()
-            .filter(|(_, v)| v.norm() >= SPARSE_ZERO_TOL)
+            .filter(|(_, v)| sparse_keep(v))
             .collect();
         entries.sort_by_key(|(i, _)| *i);
         Self { len, entries }
@@ -54,11 +57,11 @@ impl SparseVec {
             .unwrap_or(Complex::new(0.0, 0.0))
     }
 
-    /// Set a 0-based entry.  Setting to ~0 removes it.
+    /// Set a 0-based entry.  Setting an exact zero removes it.
     pub fn set(&mut self, idx: usize, val: C64) {
         // Remove existing
         self.entries.retain(|(i, _)| *i != idx);
-        if val.norm() >= SPARSE_ZERO_TOL {
+        if sparse_keep(&val) {
             self.entries.push((idx, val));
             self.entries.sort_by_key(|(i, _)| *i);
         }
@@ -73,12 +76,12 @@ impl SparseVec {
         v
     }
 
-    /// Create from a dense CVector, dropping near-zeros.
+    /// Create from a dense CVector, dropping exact zeros.
     pub fn from_dense(v: &CVector) -> Self {
         let entries: Vec<(usize, C64)> = v
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.norm() >= SPARSE_ZERO_TOL)
+            .filter(|(_, c)| sparse_keep(c))
             .map(|(i, &c)| (i, c))
             .collect();
         Self {
@@ -93,7 +96,7 @@ impl SparseVec {
             .entries
             .iter()
             .map(|&(i, v)| (i, v * c))
-            .filter(|(_, v)| v.norm() >= SPARSE_ZERO_TOL)
+            .filter(|(_, v)| sparse_keep(v))
             .collect();
         Self {
             len: self.len,
@@ -210,7 +213,7 @@ pub struct SparseMat {
 
 impl SparseMat {
     /// Construct a sparse matrix, deduplicating (row,col) pairs (summing duplicates),
-    /// dropping near-zeros, and sorting row-major.
+    /// dropping exact zeros, and sorting row-major.
     pub fn new(rows: usize, cols: usize, raw: Vec<(usize, usize, C64)>) -> Self {
         use std::collections::HashMap;
         let mut map: HashMap<(usize, usize), C64> = HashMap::new();
@@ -219,7 +222,7 @@ impl SparseMat {
         }
         let mut entries: Vec<(usize, usize, C64)> = map
             .into_iter()
-            .filter(|(_, v)| v.norm() >= SPARSE_ZERO_TOL)
+            .filter(|(_, v)| sparse_keep(v))
             .map(|((r, c), v)| (r, c, v))
             .collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -246,7 +249,7 @@ impl SparseMat {
     /// vs O(nnz log nnz). Consecutive duplicate `(row, col)` entries
     /// are summed (handles periodic-BC corner cases at minimum grid
     /// sizes where the wrap column coincides with an interior column).
-    /// Near-zero entries are dropped.
+    /// Exact zeros are dropped. A tiny finite value, NaN, and Inf stay.
     ///
     /// **Caller's contract:** `entries` is sorted ascending by
     /// `(row, col)` lexicographically. Violating the contract produces
@@ -270,7 +273,7 @@ impl SparseMat {
             };
         }
         // Single pass: merge consecutive duplicates by summing values,
-        // drop near-zeros. Walks the input sequentially — no allocation
+        // drop exact zeros. Walks the input sequentially — no allocation
         // beyond the output buffer.
         let mut out: Vec<(usize, usize, C64)> = Vec::with_capacity(entries.len());
         let mut iter = entries.into_iter();
@@ -279,7 +282,7 @@ impl SparseMat {
             if r == cur_r && c == cur_c {
                 cur_v += v;
             } else {
-                if cur_v.norm() >= SPARSE_ZERO_TOL {
+                if sparse_keep(&cur_v) {
                     out.push((cur_r, cur_c, cur_v));
                 }
                 cur_r = r;
@@ -287,7 +290,7 @@ impl SparseMat {
                 cur_v = v;
             }
         }
-        if cur_v.norm() >= SPARSE_ZERO_TOL {
+        if sparse_keep(&cur_v) {
             out.push((cur_r, cur_c, cur_v));
         }
         Self {
@@ -311,10 +314,10 @@ impl SparseMat {
             .unwrap_or(Complex::new(0.0, 0.0))
     }
 
-    /// Set a 0-based entry.  Setting to ~0 removes it.
+    /// Set a 0-based entry.  Setting an exact zero removes it.
     pub fn set(&mut self, row: usize, col: usize, val: C64) {
         self.entries.retain(|(r, c, _)| !(*r == row && *c == col));
-        if val.norm() >= SPARSE_ZERO_TOL {
+        if sparse_keep(&val) {
             self.entries.push((row, col, val));
             self.entries
                 .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -330,13 +333,13 @@ impl SparseMat {
         m
     }
 
-    /// Create from a dense CMatrix, dropping near-zeros.
+    /// Create from a dense CMatrix, dropping exact zeros.
     pub fn from_dense(m: &CMatrix) -> Self {
         let mut entries = Vec::new();
         for r in 0..m.nrows() {
             for c in 0..m.ncols() {
                 let v = m[[r, c]];
-                if v.norm() >= SPARSE_ZERO_TOL {
+                if sparse_keep(&v) {
                     entries.push((r, c, v));
                 }
             }
@@ -356,7 +359,7 @@ impl SparseMat {
             .entries
             .iter()
             .map(|&(r, col, v)| (r, col, v * c))
-            .filter(|(_, _, v)| v.norm() >= SPARSE_ZERO_TOL)
+            .filter(|(_, _, v)| sparse_keep(v))
             .collect();
         Self {
             rows: self.rows,

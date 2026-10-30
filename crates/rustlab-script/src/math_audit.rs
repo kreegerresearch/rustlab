@@ -3,84 +3,10 @@
 //! Each case is a closed form, a small integer identity, or a MATLAB/Octave
 //! convention called out in the assertion. Reference vectors are literals.
 
+use crate::eval::shared::{conversion_counts, real_storage, Shared};
 use crate::eval::value::Value;
-use crate::{lexer, parser, Evaluator};
+use crate::testutil::{assert_c, assert_re, eval, eval_err, mat, num, re, vec_c};
 use num_complex::Complex64;
-
-fn eval(src: &str) -> Evaluator {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        ev.exec_stmt(stmt).unwrap();
-    }
-    ev
-}
-
-fn eval_err(src: &str) -> String {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        if let Err(e) = ev.exec_stmt(stmt) {
-            return e.to_string();
-        }
-    }
-    panic!("expected an error from: {src}");
-}
-
-fn num(ev: &Evaluator, name: &str) -> Complex64 {
-    match ev.get(name).unwrap() {
-        Value::Scalar(x) => Complex64::new(*x, 0.0),
-        Value::Complex(c) => *c,
-        Value::Vector(v) if v.len() == 1 => v[0],
-        Value::Matrix(m) if m.nrows() == 1 && m.ncols() == 1 => m[[0, 0]],
-        other => panic!("{name}: expected a scalar, got {other:?}"),
-    }
-}
-
-fn re(ev: &Evaluator, name: &str) -> f64 {
-    let z = num(ev, name);
-    assert!(z.im.abs() < 1e-9, "{name} imag {}", z.im);
-    z.re
-}
-
-fn vec_c(ev: &Evaluator, name: &str) -> Vec<Complex64> {
-    match ev.get(name).unwrap() {
-        Value::Vector(v) => v.iter().copied().collect(),
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => m.iter().copied().collect(),
-        other => panic!("{name}: expected a vector, got {other:?}"),
-    }
-}
-
-fn mat(ev: &Evaluator, name: &str) -> Vec<Vec<Complex64>> {
-    match ev.get(name).unwrap() {
-        Value::Matrix(m) => (0..m.nrows())
-            .map(|r| (0..m.ncols()).map(|c| m[[r, c]]).collect())
-            .collect(),
-        other => panic!("{name}: expected a matrix, got {other:?}"),
-    }
-}
-
-fn assert_c(got: Complex64, want: Complex64, tol: f64) {
-    let d = (got - want).norm();
-    assert!(d <= tol, "got {got}, want {want}, |diff| {d:e}");
-}
-
-fn assert_re(ev: &Evaluator, name: &str, want: f64, tol: f64) {
-    let g = re(ev, name);
-    assert!((g - want).abs() <= tol, "{name} = {g}, want {want}");
-}
 
 // ── inv, det, linsolve ──────────────────────────────────────────────────────
 
@@ -202,7 +128,16 @@ fn linsolve_known_system_and_complex() {
         Complex64::new(1.0, 1.0),
         1e-12,
     );
-    assert!(eval_err("x = linsolve([1, 2; 2, 4], [1; 2])").contains("singular"));
+    // A singular square system warns and returns the LU result, the same
+    // value `\` returns. It is not a hard error.
+    let ev = eval("A = [1, 2; 2, 4]; b = [1; 2]; x = linsolve(A, b); y = A \\ b;");
+    let x = vec_c(&ev, "x");
+    let y = vec_c(&ev, "y");
+    for (a, b) in x.iter().zip(y.iter()) {
+        let same = (a.re.is_nan() && b.re.is_nan() && a.im == 0.0 && b.im == 0.0)
+            || (*a - *b).norm() < 1e-8;
+        assert!(same, "linsolve {a} vs \\ {b}");
+    }
     assert!(eval_err("x = linsolve([1, 2, 3; 4, 5, 6], [1; 2])").contains("square"));
 }
 
@@ -221,12 +156,36 @@ fn sparse_chol_and_lu_solve_a_scaled_system() {
         assert_c(v[0], Complex64::new(2.0 / 3.0, 0.0), 1e-10);
         assert_c(v[1], Complex64::new(1.0 / 3.0, 0.0), 1e-10);
     }
-    // 1e-14 * I is above the sparse drop tolerance (1e-15) and used to be
-    // rejected by Cholesky's absolute pivot floor of 1e-12.
+    // 1e-14 * I used to be rejected by Cholesky's absolute pivot floor of 1e-12.
+    // The pivot test is relative to the largest entry, so this still factors.
     let z = vec_c(&ev, "z");
     assert_c(z[0], Complex64::new(1.0, 0.0), 1e-8);
     assert_c(z[1], Complex64::new(0.0, 0.0), 1e-8);
     assert!(eval_err("A = sparse([1, 2], [1, 2], [1, -1], 2, 2)\nF = chol(A)").contains("chol"));
+}
+
+#[test]
+fn sparse_keeps_a_tiny_entry_and_drops_an_exact_zero() {
+    let ev = eval(
+        "S = 1e-16 * speye(4)\n\
+         k = nnz(S)\n\
+         v = S(1, 1)\n\
+         Z = speye(3) - speye(3)\n\
+         kz = nnz(Z)\n\
+         C = sparse([1, 1], [1, 1], [1, -1], 2, 2)\n\
+         kc = nnz(C)\n\
+         N = sparse([1], [1], [NaN], 2, 2)\n\
+         kn = nnz(N)\n\
+         x = solve(chol(1e-16 * speye(2)), [1e-16; 0])",
+    );
+    assert_re(&ev, "k", 4.0, 0.0);
+    assert_re(&ev, "v", 1e-16, 1e-30);
+    assert_re(&ev, "kz", 0.0, 0.0);
+    assert_re(&ev, "kc", 0.0, 0.0);
+    assert_re(&ev, "kn", 1.0, 0.0);
+    let x = vec_c(&ev, "x");
+    assert_c(x[0], Complex64::new(1.0, 0.0), 1e-8);
+    assert_c(x[1], Complex64::new(0.0, 0.0), 1e-8);
 }
 
 // ── svd, rank, pinv, norm, cond ─────────────────────────────────────────────
@@ -506,8 +465,10 @@ fn kron_diag_trace_known_values() {
         Complex64::new(0.0, 3.0),
         1e-12,
     );
-    // Rectangular trace is the main diagonal (MATLAB errors; recorded as a divergence).
-    assert_re(&eval("t = trace([1, 2, 3; 4, 5, 6])"), "t", 6.0, 1e-15);
+    assert!(
+        eval_err("t = trace([1, 2, 3; 4, 5, 6])").contains("square"),
+        "a non-square trace is an error"
+    );
 }
 
 // ── roots, fft, conv, filter, freqz, stats, sort ────────────────────────────
@@ -704,13 +665,306 @@ fn sort_order_and_indices() {
     assert_c(idx[2], Complex64::new(1.0, 0.0), 0.0);
     let d = vec_c(&ev, "d");
     assert_c(d[0], Complex64::new(3.0, 0.0), 0.0);
-    // Complex values sort by real part, not by magnitude (a recorded divergence).
+    // Complex values sort by magnitude, then phase. |0.5| < |-1| < |1+5j|.
     let z = vec_c(&eval("z = sort([1+5j, -1, 0.5])"), "z");
-    assert!((z[0].re - -1.0).abs() < 1e-15);
-    assert!((z[1].re - 0.5).abs() < 1e-15);
+    assert!((z[0].re - 0.5).abs() < 1e-15);
+    assert!((z[1].re - -1.0).abs() < 1e-15);
     assert!((z[2].re - 1.0).abs() < 1e-15 && (z[2].im - 5.0).abs() < 1e-15);
     let infs = vec_c(&eval("z = sort([Inf, 1, -Inf])"), "z");
     assert!(infs[0].re.is_infinite() && infs[0].re.is_sign_negative());
     assert!((infs[1].re - 1.0).abs() < 1e-15);
     assert!(infs[2].re.is_infinite() && infs[2].re.is_sign_positive());
+}
+
+#[test]
+fn xcorr_hand_sum_lags_scale_and_column() {
+    // Positive lag m is sum_n x[n+m] conj(y[n]). Lags -3..3, zero lag at
+    // index 4. y = [1+j, 2], so the products use conj(y).
+    let r = vec_c(
+        &eval("r = xcorr([1, 2, 3, 4], [1+j, 2])"),
+        "r",
+    );
+    let want = [
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (5.0, -1.0),
+        (8.0, -2.0),
+        (11.0, -3.0),
+        (4.0, -4.0),
+    ];
+    assert_eq!(r.len(), 7);
+    for (g, (re, im)) in r.iter().zip(want) {
+        assert_c(*g, Complex64::new(re, im), 1e-9);
+    }
+    let ev = eval("[r, lags] = xcorr([1, 2, 3, 4])\nb = xcorr([1, 2, 3, 4], \"biased\")\nc = xcorr([1, 2, 3, 4], \"coeff\")");
+    let lags = vec_c(&ev, "lags");
+    for (k, lag) in lags.iter().enumerate() {
+        assert_c(*lag, Complex64::new(k as f64 - 3.0, 0.0), 0.0);
+    }
+    let auto = vec_c(&ev, "r");
+    assert_c(auto[3], Complex64::new(30.0, 0.0), 1e-12);
+    let biased = vec_c(&ev, "b");
+    assert_c(biased[3], Complex64::new(30.0 / 4.0, 0.0), 1e-12);
+    let coeff = vec_c(&ev, "c");
+    assert_c(coeff[3], Complex64::new(1.0, 0.0), 1e-12);
+
+    let ev = eval("x = [1; 2; 3; 4];\n[r, lags] = xcorr(x);\nsr = size(r);\nsl = size(lags);");
+    let sr = vec_c(&ev, "sr");
+    let sl = vec_c(&ev, "sl");
+    assert_c(sr[0], Complex64::new(7.0, 0.0), 0.0);
+    assert_c(sr[1], Complex64::new(1.0, 0.0), 0.0);
+    assert_c(sl[0], Complex64::new(7.0, 0.0), 0.0);
+    assert_c(sl[1], Complex64::new(1.0, 0.0), 0.0);
+    let col = vec_c(&ev, "r");
+    assert_c(col[3], Complex64::new(30.0, 0.0), 1e-12);
+
+    let z = vec_c(&eval("z = xcov([5, 5, 5, 5])"), "z");
+    assert!(z.iter().all(|c| c.norm() < 1e-12));
+    assert!(eval_err("r = xcorr([1, 2], \"nope\")").contains("scale"));
+    assert!(eval_err("[a, b, c] = xcorr([1, 2])").contains("at most"));
+
+    // Columns of [1, 3; 2, 4] are [1, 2] and [3, 4].
+    // Column (i-1)*2+j is the correlation of column i with column j.
+    let m = mat(&eval("M = xcorr([1, 3; 2, 4])"), "M");
+    assert_eq!(m.len(), 3);
+    assert_eq!(m[0].len(), 4);
+    let expect = [
+        [2.0, 4.0, 6.0, 12.0],
+        [5.0, 11.0, 11.0, 25.0],
+        [2.0, 6.0, 4.0, 12.0],
+    ];
+    for (row, exp) in m.iter().zip(expect) {
+        for (g, w) in row.iter().zip(exp) {
+            assert_c(*g, Complex64::new(w, 0.0), 1e-12);
+        }
+    }
+}
+
+#[test]
+fn xcorr_of_a_real_vector_does_not_widen() {
+    let (w0, p0) = conversion_counts();
+    // `ones(1, n)` is a real-stored row. A range literal is a complex buffer
+    // of real values, so it is not the case this gate is about. `ones(n)` is
+    // n×n, which would correlate every column pair.
+    let ev = eval("x = ones(1, 256);\nr = xcorr(x);\nc = ones(8, 1);\nd = xcorr(c);");
+    let (w1, p1) = conversion_counts();
+    assert_eq!(w1.calls, w0.calls, "widen calls");
+    assert_eq!(p1.calls, p0.calls, "promote calls");
+    if real_storage() {
+        match ev.get("r").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 1, "a row stays a row");
+                assert!(Shared::is_real(m), "result left real storage");
+            }
+            other => panic!("expected a row, got {other:?}"),
+        }
+        match ev.get("d").unwrap() {
+            Value::Matrix(m) => assert!(Shared::is_real(m), "column result left real storage"),
+            other => panic!("expected a column, got {other:?}"),
+        }
+    }
+}
+
+/// Reference values for the 0.3.25 changes to `std` / `var` / `median` /
+/// `sort` / `diag` / `trace`. Numbers are closed forms or a published
+/// weighted column (variance 20.16).
+#[test]
+fn phase1_reference_values() {
+    // Sample standard deviation of 1, 2, 3 is 1. Population divides by n.
+    assert_re(&eval("s = std([1, 2, 3])"), "s", 1.0, 1e-15);
+    assert_re(&eval("v = var([1, 2, 3])"), "v", 1.0, 1e-15);
+    assert_re(&eval("s = std([1, 2, 3], 0)"), "s", 1.0, 1e-15);
+    assert_re(
+        &eval("s = std([1, 2, 3], 1)"),
+        "s",
+        (2.0_f64 / 3.0).sqrt(),
+        1e-12,
+    );
+    assert_re(&eval("v = var([1, 2, 3], 1)"), "v", 2.0 / 3.0, 1e-12);
+    // var is std squared, for both normalizations.
+    assert_re(
+        &eval("d = var([1, 2, 3, 4]) - std([1, 2, 3, 4])^2"),
+        "d",
+        0.0,
+        1e-12,
+    );
+    assert_re(
+        &eval("d = var([1, 2, 3, 4], 1) - std([1, 2, 3, 4], 1)^2"),
+        "d",
+        0.0,
+        1e-12,
+    );
+    assert!(re(&eval("s = std([])"), "s").is_nan());
+    assert!(re(&eval("v = var([])"), "v").is_nan());
+    assert!(re(&eval("s = std([1, NaN, 3])"), "s").is_nan());
+    assert_eq!(re(&eval("s = std([5])"), "s"), 0.0);
+    assert_eq!(re(&eval("s = std([5, 5, 5], 1)"), "s"), 0.0);
+    // A scalar weight other than 0 or 1 is an error. So is a negative weight,
+    // a weight of the wrong length, and the old `std(M, dim)` call.
+    assert!(eval_err("s = std([1, 2, 3], 2)").contains("weight"));
+    assert!(eval_err("s = std([1, 2], [-1, 1])").contains("nonnegative"));
+    assert!(eval_err("s = std([1, 2, 3], [1, 1])").contains("length"));
+    assert!(eval_err("s = std([1, 2; 3, 4], 2)").contains("weight"));
+    // Published column: x = [1, 3, -9], w = [1, 1, 0.5], variance 20.16.
+    assert_re(&eval("v = var([1; 3; -9], [1; 1; 0.5])"), "v", 20.16, 1e-12);
+    assert_re(
+        &eval("s = std([1; 3; -9], [1; 1; 0.5])"),
+        "s",
+        20.16_f64.sqrt(),
+        1e-12,
+    );
+    // The same weights on a matrix apply down each column.
+    let cols = mat(&eval("S = std([1, 5; 3, 7; -9, 2], [1; 1; 0.5])"), "S");
+    assert_eq!(cols.len(), 1);
+    assert_eq!(cols[0].len(), 2);
+    assert!((cols[0][0].re - 20.16_f64.sqrt()).abs() < 1e-12);
+    // Complex data: Σ|x − mean|² / (n − 1). mean(1+j, 3+3j) = 2+2j,
+    // each deviation has squared magnitude 2, n − 1 = 1, so std = 2.
+    assert_re(&eval("s = std([1+j, 3+3j])"), "s", 2.0, 1e-12);
+    assert_re(&eval("v = var([1+j, 3+3j])"), "v", 4.0, 1e-12);
+    // Equal weights divide by the sum of the weights, not by n − 1.
+    assert_re(
+        &eval("s = std([1+j, 3+3j], [1, 1])"),
+        "s",
+        2.0_f64.sqrt(),
+        1e-12,
+    );
+    // A zero total weight is NaN. One weighted observation is 0.
+    assert!(re(&eval("s = std([1, 2], [0, 0])"), "s").is_nan());
+    assert_eq!(re(&eval("s = std([5], [2])"), "s"), 0.0);
+    // Row standard deviations: [1, 2, 3] has sample std 1.
+    let rows = mat(&eval("S = std([1, 2, 3; 4, 5, 6], 0, 2)"), "S");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].len(), 1);
+    assert!((rows[0][0].re - 1.0).abs() < 1e-12);
+    assert!((rows[1][0].re - 1.0).abs() < 1e-12);
+    // Dim 1 of a row is one observation per column: all zeros.
+    let z = vec_c(&eval("s = std([1, 2, 3], 0, 1)"), "s");
+    assert_eq!(z.len(), 3);
+    assert!(z.iter().all(|c| c.re == 0.0 && c.im == 0.0));
+
+    assert!(eval_err("m = median(1+1j)").contains("complex"));
+    assert!(eval_err("m = median([1, 2+j])").contains("complex"));
+    assert!(re(&eval("m = median([])"), "m").is_nan());
+    assert_re(&eval("m = median([4, 1, 3, 2])"), "m", 2.5, 0.0);
+    assert_re(&eval("m = median([3, 1, 2])"), "m", 2.0, 0.0);
+    assert!(re(&eval("m = median([1, NaN, 2])"), "m").is_nan());
+
+    // NaNs sort above +Inf. Ties keep the original index.
+    let ev = eval("[s, i] = sort([2, NaN, 2, -1])");
+    let s = vec_c(&ev, "s");
+    assert_eq!(s[0].re, -1.0);
+    assert_eq!(s[1].re, 2.0);
+    assert_eq!(s[2].re, 2.0);
+    assert!(s[3].re.is_nan());
+    let i = vec_c(&ev, "i");
+    assert_eq!(i[1].re, 1.0);
+    assert_eq!(i[2].re, 3.0);
+    let desc = vec_c(&eval("s = sort([1, NaN, 3], \"descend\")"), "s");
+    assert!(desc[0].re.is_nan());
+    assert_eq!(desc[1].re, 3.0);
+    assert_eq!(desc[2].re, 1.0);
+    // Equal magnitude, then phase: 1−j before 1+j.
+    let z = vec_c(&eval("z = sort([1+j, -2, 1-j])"), "z");
+    assert!((z[0].re - 1.0).abs() < 1e-15 && z[0].im < 0.0);
+    assert!((z[1].re - 1.0).abs() < 1e-15 && z[1].im > 0.0);
+    assert!((z[2].re - -2.0).abs() < 1e-15);
+    // A matrix sorts down each column. Indices are 1-based in that column.
+    let m = mat(&eval("S = sort([3, 1; 1, 2; 2, 0])"), "S");
+    assert_eq!((m[0][0].re, m[1][0].re, m[2][0].re), (1.0, 2.0, 3.0));
+    assert_eq!((m[0][1].re, m[1][1].re, m[2][1].re), (0.0, 1.0, 2.0));
+    let ix = mat(&eval("[S, I] = sort([3, 1; 1, 2; 2, 0])\nX = I"), "X");
+    assert_eq!(ix[0][0].re, 2.0);
+    assert_eq!(ix[2][0].re, 1.0);
+    assert_eq!(ix[0][1].re, 3.0);
+    // A vector is a row, so dim 1 does not reorder it.
+    let ev = eval("[s, i] = sort([3, 1, 2], 1)");
+    assert_eq!(vec_c(&ev, "s")[0].re, 3.0);
+    assert!(vec_c(&ev, "i").iter().all(|c| c.re == 1.0));
+    let rows = mat(&eval("S = sort([3, 1, 2; 0, 4, 1], 2)"), "S");
+    assert_eq!(rows[0][0].re, 1.0);
+    assert_eq!(rows[0][2].re, 3.0);
+    assert_eq!(rows[1][0].re, 0.0);
+
+    // Length-1 diag is a 1×1 matrix, not a scalar. Longer diags are unchanged.
+    match eval("D = diag(5)").get("D").unwrap() {
+        Value::Matrix(m) => {
+            assert_eq!((m.nrows(), m.ncols()), (1, 1));
+            assert_eq!(m[[0, 0]].re, 5.0);
+        }
+        other => panic!("diag(5) should be a 1×1 matrix, got {other:?}"),
+    }
+    match eval("D = diag([5])").get("D").unwrap() {
+        Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (1, 1)),
+        other => panic!("diag([5]) should be a 1×1 matrix, got {other:?}"),
+    }
+    let d = mat(&eval("D = diag([1, 2])"), "D");
+    assert_eq!(d.len(), 2);
+    assert_eq!(d[0][0].re, 1.0);
+    assert_eq!(d[1][1].re, 2.0);
+    assert_eq!(d[0][1].re, 0.0);
+    // A 1×1 still adds like a scalar. kron of two scalars stays a scalar.
+    assert_re(&eval("y = diag(5) + 1"), "y", 6.0, 0.0);
+    match eval("k = kron(2, 3)").get("k").unwrap() {
+        Value::Scalar(x) => assert_eq!(*x, 6.0),
+        other => panic!("kron of two scalars should stay a scalar, got {other:?}"),
+    }
+
+    assert_re(&eval("t = trace(eye(3))"), "t", 3.0, 0.0);
+    assert_re(&eval("t = trace([1, 2; 3, 4])"), "t", 5.0, 0.0);
+    assert!(eval_err("t = trace([1, 2, 3; 4, 5, 6])").contains("square"));
+    assert!(eval_err("t = trace(zeros(1, 4))").contains("square"));
+}
+
+/// Release timing of the matrix 2-norm against a full SVD on one 256×256
+/// matrix. Not part of `cargo test`.
+///
+/// ```text
+/// cargo test -p rustlab-script --release --lib bench_matrix_2norm -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_matrix_2norm_against_full_svd() {
+    use std::time::Instant;
+
+    let n = 256;
+    let mut state = 0x9e37_79b9_u64;
+    let mut a = ndarray::Array2::<rustlab_core::C64>::zeros((n, n));
+    for z in a.iter_mut() {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        z.re = ((state >> 33) as f64) / ((1u64 << 31) as f64) - 1.0;
+    }
+    let real = ndarray::Array2::from_shape_fn((n, n), |(i, j)| a[[i, j]].re);
+
+    fn time_ms(reps: usize, mut f: impl FnMut()) -> f64 {
+        f();
+        let start = Instant::now();
+        for _ in 0..reps {
+            f();
+        }
+        start.elapsed().as_secs_f64() * 1e3 / reps as f64
+    }
+
+    let svd_ms = time_ms(3, || {
+        let (_, sv, _) = crate::eval::builtins::svd_full(&a).unwrap();
+        std::hint::black_box(sv[0]);
+    });
+    let spec_ms = time_ms(3, || {
+        std::hint::black_box(rustlab_core::spectral_norm::largest_singular_value(&real));
+    });
+    let fro_ms = time_ms(3, || {
+        let mut s = 0.0;
+        for x in real.iter() {
+            s += x * x;
+        }
+        std::hint::black_box(s.sqrt());
+    });
+    let (_, sv, _) = crate::eval::builtins::svd_full(&a).unwrap();
+    let spec = rustlab_core::spectral_norm::largest_singular_value(&real);
+    eprintln!(
+        "256×256  svd_full {svd_ms:.3} ms  largest singular value {spec_ms:.3} ms  frobenius {fro_ms:.3} ms"
+    );
+    eprintln!("svd {}  spectral {}", sv[0], spec);
+    assert!((sv[0] - spec).abs() <= 1e-6 * sv[0].abs().max(1.0));
 }

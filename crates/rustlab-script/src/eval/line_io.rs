@@ -336,6 +336,7 @@ fn pure_expr(ev: &Evaluator, expr: &Expr) -> Result<(), String> {
                 | BinOp::Pow
                 | BinOp::ElemMul
                 | BinOp::ElemDiv
+                | BinOp::ElemLeftDiv
                 | BinOp::ElemPow
                 | BinOp::Eq
                 | BinOp::Ne
