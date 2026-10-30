@@ -126,6 +126,10 @@ fn in_place<'a>(op: BinOp, mut l: Operand<'a>, mut r: Operand<'a>) -> Result<Val
         _ => None,
     };
     if let Some((s, scalar_left)) = arr_scalar {
+        // `scalar / array` is right-division, not a scale.
+        if scalar_left && op == BinOp::Div {
+            return Err((l, r));
+        }
         let arr = if scalar_left { &mut r } else { &mut l };
         let Some(d) = owned_real(arr) else { return Err((l, r)) };
         match op {
@@ -262,6 +266,9 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
                 R::Vec(d) | R::Mat(d, _, _) => d,
                 R::Scalar(_) => unreachable!("one side is an array"),
             };
+            if scalar_left && op == Div {
+                return None;
+            }
             match op {
                 Add | Sub | Mul | ElemMul | Div | ElemDiv => {}
                 Pow | ElemPow if pow_is_real(data, s, scalar_left) => {}
@@ -277,6 +284,16 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
                 return None;
             }
             let out = with_rop!(op, f => zip(x, y, f));
+            Some(Value::real_vector(Array1::from_vec(out)))
+        }
+        // A real n×1 column and a same-length vector are element-wise.
+        // Broadcasting them as n×1 against 1×n would build an n×n matrix.
+        (R::Mat(d, r, 1), R::Vec(v)) if r == v.len() && is_column_elem(op) => {
+            let out = with_rop!(op, f => zip(d, v, f));
+            Some(Value::real_vector(Array1::from_vec(out)))
+        }
+        (R::Vec(v), R::Mat(d, r, 1)) if r == v.len() && is_column_elem(op) => {
+            let out = with_rop!(op, f => zip(v, d, f));
             Some(Value::real_vector(Array1::from_vec(out)))
         }
         _ => {
@@ -318,6 +335,10 @@ fn pow_re(x: f64, y: f64) -> f64 {
     } else {
         Value::pow_c64(C64::new(x, 0.0), C64::new(y, 0.0)).re
     }
+}
+
+fn is_column_elem(op: BinOp) -> bool {
+    matches!(op, BinOp::Add | BinOp::Sub | BinOp::ElemMul | BinOp::ElemDiv | BinOp::ElemPow | BinOp::Pow)
 }
 
 /// Broadcast extent of one dimension (equal, or one side 1).

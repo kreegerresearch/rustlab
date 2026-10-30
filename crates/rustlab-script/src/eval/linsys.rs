@@ -1,19 +1,37 @@
 //! `A\b`, `B/A`, and the dense factorizations behind `qr` and `lu`.
 //!
-//! A square nonsingular system uses LU with partial pivoting. A rectangular
-//! system, and a square system whose pivot is numerically zero, uses
-//! column-pivoted Householder QR. A singular or ill-conditioned matrix
-//! prints a warning and still returns a basic solution (free variables are 0).
+//! A square system uses LU with partial pivoting, including a zero pivot
+//! (`Inf` when the residual is nonzero). A rectangular system uses
+//! column-pivoted Householder QR and a basic solution (free variables are 0).
+//! A vector on the right is a column. An explicit one-row matrix stays a row.
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use ndarray::Array2;
-use rustlab_core::factor::{lu, qr};
+use rustlab_core::factor::{chol, lu, qr};
 use rustlab_core::C64;
 
+use super::shared::Shared;
 use super::value::Value;
 use crate::ast::BinOp;
 use crate::error::ScriptError;
 
 const ILL_RCOND: f64 = 1e-12;
+/// Rectangular sparse `\` densifies only up to this many entries.
+const RECT_SPARSE_CELLS: u64 = 2_000_000;
+
+#[cfg(test)]
+thread_local! {
+    static SINGULAR_WARNS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// How many singular warnings the current thread has printed since the
+/// last take. Tests use this; the text still goes to stderr.
+#[cfg(test)]
+pub(crate) fn take_singular_warns() -> u32 {
+    SINGULAR_WARNS.with(|c| c.replace(0))
+}
 
 pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
     if let Some(s) = scalar_like(&a) {
@@ -30,20 +48,33 @@ pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
         };
         return Value::binop(BinOp::Div, b, denom);
     }
+    if let Value::SparseMatrix(sm) = &a {
+        if sm.rows == sm.cols {
+            return super::builtins::sparse_square_mldivide(sm, &b);
+        }
+        let cells = (sm.rows as u64).saturating_mul(sm.cols as u64);
+        if cells > RECT_SPARSE_CELLS {
+            return Err(format!(
+                "mldivide: rectangular sparse A is {}×{} ({} entries); the dense limit is {RECT_SPARSE_CELLS} entries",
+                sm.rows, sm.cols, cells
+            ));
+        }
+    }
     let a_real = value_is_real(&a);
     let b_real = value_is_real(&b);
+    let b_cols = rhs_columns(&b)?;
     let a = value_to_matrix(a, "mldivide")?;
-    let b = value_to_matrix(b, "mldivide")?;
-    solve_ab(&a, &b, a_real && b_real)
+    solve_ab(&a, &b_cols, a_real && b_real)
 }
 
-/// `B/A`, the solution of `X * A = B`. Scalar `/` stays element-wise and
-/// does not come through here.
+/// `B/A`, the solution of `X * A = B`. A scalar denominator stays
+/// element-wise and does not come through here. A scalar numerator does.
+/// The reduction is `(A' \ B')'`: conjugate transpose, not `.'`.
 pub(crate) fn mrdivide(b: Value, a: Value) -> Result<Value, String> {
-    let bt = b.non_conj_transpose()?;
-    let at = a.non_conj_transpose()?;
+    let bt = b.transpose()?;
+    let at = a.transpose()?;
     let x = mldivide(at, bt)?;
-    x.non_conj_transpose()
+    x.transpose()
 }
 
 fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, String> {
@@ -51,7 +82,7 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
     let (mb, _) = b.dim();
     if m != mb {
         return Err(format!(
-            "mldivide: A is {m}×{n} but b has {mb} rows\n  hint: a vector is a row; pass a column as b'"
+            "mldivide: A is {m}×{n} but b has {mb} rows\n  hint: a vector is a column; an explicit row has one row"
         ));
     }
     if !entries_finite(a) || !entries_finite(b) {
@@ -61,14 +92,27 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
         return Ok(pack(&Array2::zeros((n, b.ncols())), real));
     }
     if m == n {
-        let f = lu::lu(a);
-        if !f.singular {
-            if f.rcond < ILL_RCOND {
-                warn_rcond(f.rcond);
+        if let Some(upper) = triangle_kind(a) {
+            let (x, singular) = triangular_solve(a, b, upper);
+            if singular {
+                warn_singular();
             }
-            return Ok(pack(&lu::solve(&f, b), real));
+            return Ok(pack(&x, real));
         }
-        warn_singular();
+        if is_hermitian(a) {
+            if let Ok(f) = chol::upper(a) {
+                if f.p == 0 {
+                    return Ok(pack(&chol::solve_upper(&f.factor, b), real));
+                }
+            }
+        }
+        let f = lu::lu(a);
+        if f.singular {
+            warn_singular();
+        } else if f.rcond < ILL_RCOND {
+            warn_rcond(f.rcond);
+        }
+        return Ok(pack(&lu::solve(&f, b), real));
     }
     let f = qr::qr(a, true);
     let (x, rank, rcond) = qr::least_squares(&f, b);
@@ -85,7 +129,98 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
 }
 
 fn warn_singular() {
+    #[cfg(test)]
+    SINGULAR_WARNS.with(|c| c.set(c.get().saturating_add(1)));
     eprintln!("warning: matrix is singular to working precision");
+}
+
+/// `Some(true)` when every entry below the diagonal is zero (upper,
+/// including diagonal). `Some(false)` when every entry above the diagonal
+/// is zero. A matrix that is both is reported as upper.
+fn triangle_kind(a: &Array2<C64>) -> Option<bool> {
+    let n = a.nrows();
+    let mut upper = true;
+    let mut lower = true;
+    for i in 0..n {
+        for j in 0..n {
+            if a[[i, j]].norm() == 0.0 {
+                continue;
+            }
+            if i > j {
+                upper = false;
+            }
+            if i < j {
+                lower = false;
+            }
+            if !upper && !lower {
+                return None;
+            }
+        }
+    }
+    if upper {
+        Some(true)
+    } else if lower {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn is_hermitian(a: &Array2<C64>) -> bool {
+    let n = a.nrows();
+    for i in 0..n {
+        if a[[i, i]].im != 0.0 {
+            return false;
+        }
+        for j in (i + 1)..n {
+            let z = a[[i, j]];
+            let w = a[[j, i]];
+            if z.re != w.re || z.im != -w.im {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Forward substitution when `upper` is false, back substitution when it
+/// is true. A zero diagonal sets that unknown to `Inf` or `NaN` and reports
+/// that a pivot vanished. A structural zero does not multiply `Inf` into `NaN`.
+fn triangular_solve(a: &Array2<C64>, b: &Array2<C64>, upper: bool) -> (Array2<C64>, bool) {
+    let n = a.nrows();
+    let p = b.ncols();
+    let mut x = Array2::<C64>::zeros((n, p));
+    let mut singular = false;
+    let idxs: Vec<usize> = if upper { (0..n).rev().collect() } else { (0..n).collect() };
+    for col in 0..p {
+        for &i in &idxs {
+            let mut s = b[[i, col]];
+            let js: Vec<usize> = if upper { ((i + 1)..n).collect() } else { (0..i).collect() };
+            for j in js {
+                let u = a[[i, j]];
+                if u.norm() == 0.0 {
+                    continue;
+                }
+                s -= u * x[[j, col]];
+            }
+            let diag = a[[i, i]];
+            if diag.norm() == 0.0 || !diag.re.is_finite() || !diag.im.is_finite() {
+                singular = true;
+                x[[i, col]] = if s.im == 0.0 {
+                    if s.re == 0.0 {
+                        C64::new(f64::NAN, 0.0)
+                    } else {
+                        C64::new(s.re.signum() * f64::INFINITY, 0.0)
+                    }
+                } else {
+                    s / diag
+                };
+            } else {
+                x[[i, col]] = s / diag;
+            }
+        }
+    }
+    (x, singular)
 }
 
 fn warn_rcond(rcond: f64) {
@@ -111,12 +246,34 @@ fn value_is_real(v: &Value) -> bool {
     match v {
         Value::Scalar(_) | Value::Bool(_) => true,
         Value::Complex(z) => z.im == 0.0,
-        Value::Vector(a) => a.iter().all(|z| z.im == 0.0),
-        Value::Matrix(m) => m.iter().all(|z| z.im == 0.0),
-        Value::SparseVector(sv) => sv.to_dense().iter().all(|z| z.im == 0.0),
-        Value::SparseMatrix(sm) => sm.to_dense().iter().all(|z| z.im == 0.0),
+        Value::Vector(a) => Shared::is_real(a) || a.iter().all(|z| z.im == 0.0),
+        Value::Matrix(m) => Shared::is_real(m) || m.iter().all(|z| z.im == 0.0),
+        Value::SparseVector(sv) => sv.entries.iter().all(|(_, z)| z.im == 0.0),
+        Value::SparseMatrix(sm) => sm.entries.iter().all(|(_, _, z)| z.im == 0.0),
         _ => false,
     }
+}
+
+/// Right-hand side of `\`. A vector is an `n×1` column read from its
+/// storage. A real vector is copied once into that column and is not widened.
+/// An explicit matrix keeps its shape, so a `1×n` row stays one row.
+fn rhs_columns(b: &Value) -> Result<Array2<C64>, String> {
+    match b {
+        Value::Vector(v) => Ok(vector_as_column(v)),
+        other => value_to_matrix(other.clone(), "mldivide"),
+    }
+}
+
+fn vector_as_column(v: &Shared<ndarray::Array1<C64>>) -> Array2<C64> {
+    if let Some(re) = Shared::real_slice(v) {
+        let mut col = Array2::zeros((re.len(), 1));
+        for (i, &x) in re.iter().enumerate() {
+            col[[i, 0]] = C64::new(x, 0.0);
+        }
+        return col;
+    }
+    let n = Shared::len(v);
+    Array2::from_shape_fn((n, 1), |(i, _)| v[i])
 }
 
 fn value_to_matrix(v: Value, name: &str) -> Result<Array2<C64>, String> {
@@ -174,14 +331,28 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
             args.len()
         )));
     }
-    let economy = if args.len() == 2 { economy_flag(&args[1])? } else { false };
+    if nargout > 3 {
+        return Err(ScriptError::type_err(
+            "qr: returns at most [Q, R, p]".to_string(),
+        ));
+    }
+    let opt = if args.len() == 2 { Some(qr_option(&args[1])?) } else { None };
+    // "vector" and "matrix" only choose the third output. One and two
+    // outputs stay the unpivoted factor; those flags would be ignored.
+    if nargout < 3 && matches!(opt, Some(QrOption::Vector | QrOption::Matrix)) {
+        return Err(ScriptError::type_err(
+            "qr: \"vector\" and \"matrix\" select the third output; use [Q, R, p] = qr(A) or qr(A, \"matrix\")".to_string(),
+        ));
+    }
+    let economy = matches!(opt, Some(QrOption::Economy));
     let a = as_matrix(&args[0], "qr")?;
     if !entries_finite(&a) {
         return Err(ScriptError::type_err("qr: entries must be finite".to_string()));
     }
     let real = value_is_real(&args[0]);
-    let f = qr::qr(&a, false);
-    // One output is R. `qr(A)` is the full factor; `qr(A, 0)` is economy.
+    // Pivot only when the caller asks for the permutation. Two outputs
+    // stay `qr(a, false)`, the same unpivoted factor as before.
+    let f = qr::qr(&a, nargout == 3);
     let (q, r) = qr::explicit(&f, economy);
     if nargout <= 1 {
         return Ok(pack(&r, real));
@@ -189,37 +360,84 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
     if nargout == 2 {
         return Ok(Value::Tuple(vec![pack(&q, real), pack(&r, real)]));
     }
-    Err(ScriptError::type_err(
-        "qr: returns at most [Q, R]".to_string(),
-    ))
+    let third = if matches!(opt, Some(QrOption::Matrix)) {
+        column_permutation_matrix(&f.piv)
+    } else {
+        permutation_vector(&f.piv)
+    };
+    Ok(Value::Tuple(vec![pack(&q, real), pack(&r, real), third]))
 }
 
-fn economy_flag(v: &Value) -> Result<bool, ScriptError> {
+enum QrOption {
+    Economy,
+    Vector,
+    Matrix,
+}
+
+fn qr_option(v: &Value) -> Result<QrOption, ScriptError> {
     match v {
-        Value::Scalar(x) if *x == 0.0 => Ok(true),
-        Value::Str(s) => {
-            let s = s.to_ascii_lowercase();
-            if s == "econ" || s == "economy" || s == "0" {
-                Ok(true)
-            } else {
-                Err(ScriptError::type_err(format!(
-                    "qr: second argument must be 0 or \"econ\", got \"{s}\""
-                )))
-            }
-        }
+        Value::Scalar(x) if *x == 0.0 => Ok(QrOption::Economy),
+        Value::Str(s) => match s.to_ascii_lowercase().as_str() {
+            "econ" | "economy" | "0" => Ok(QrOption::Economy),
+            "vector" => Ok(QrOption::Vector),
+            "matrix" => Ok(QrOption::Matrix),
+            other => Err(ScriptError::type_err(format!(
+                "qr: second argument must be 0, \"econ\", \"vector\", or \"matrix\", got \"{other}\""
+            ))),
+        },
         other => Err(ScriptError::type_err(format!(
-            "qr: second argument must be 0 or \"econ\", got {}",
+            "qr: second argument must be 0, \"econ\", \"vector\", or \"matrix\", got {}",
             other.type_name()
         ))),
     }
 }
 
+/// 1-based column order. `p(j)` is the original column now at position `j`,
+/// so `A(:, p) = Q R`. A length-1 result stays a vector, not a scalar.
+fn permutation_vector(piv: &[usize]) -> Value {
+    Value::real_vector(ndarray::Array1::from_iter(piv.iter().map(|&j| (j + 1) as f64)))
+}
+
+/// `A * P = Q R`. Column `j` of `P` has a one in row `piv[j]`.
+fn column_permutation_matrix(piv: &[usize]) -> Value {
+    let n = piv.len();
+    let mut p = ndarray::Array2::<f64>::zeros((n, n));
+    for (j, &src) in piv.iter().enumerate() {
+        p[[src, j]] = 1.0;
+    }
+    Value::real_matrix(p)
+}
+
 /// Dense `[L, U] = lu(A)` or `[L, U, P] = lu(A)`. `P*A = L*U`.
 /// Two outputs absorb the permutation into `L`, so `L*U = A`.
 pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, ScriptError> {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(format!(
+            "lu: expected 1 or 2 arguments, got {}",
+            args.len()
+        )));
+    }
+    let vector_perm = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) if s.eq_ignore_ascii_case("vector") => true,
+            Value::Str(s) => {
+                return Err(ScriptError::type_err(format!(
+                    "lu: dense second argument must be \"vector\", got \"{s}\". Ordering is only for a sparse factor"
+                )));
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "lu: dense second argument must be \"vector\", got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        false
+    };
+    if vector_perm && nargout != 3 {
         return Err(ScriptError::type_err(
-            "lu: a dense matrix takes one argument; ordering is only for a sparse factor".to_string(),
+            "lu: \"vector\" selects the third output; use [L, U, p] = lu(A, \"vector\")".to_string(),
         ));
     }
     if nargout <= 1 {
@@ -248,8 +466,68 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
     if nargout == 2 {
         return Ok(Value::Tuple(vec![l, u]));
     }
-    let p = pack(&lu::permutation_matrix(&f.perm), true);
+    let p = if vector_perm {
+        one_based_perm(&f.perm)
+    } else {
+        pack(&lu::permutation_matrix(&f.perm), true)
+    };
     Ok(Value::Tuple(vec![l, u, p]))
+}
+
+fn one_based_perm(perm: &[usize]) -> Value {
+    Value::real_vector(ndarray::Array1::from_iter(perm.iter().map(|&i| (i + 1) as f64)))
+}
+
+/// Dense `R = chol(A)`, `[R, p] = chol(A)`, and `"lower"`.
+pub(crate) fn builtin_chol_dense(args: &[Value], nargout: usize) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(format!(
+            "chol: expected 1 or 2 arguments, got {}",
+            args.len()
+        )));
+    }
+    if nargout > 2 {
+        return Err(ScriptError::type_err(
+            "chol: returns at most [R, p]".to_string(),
+        ));
+    }
+    let lower = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) if s.eq_ignore_ascii_case("lower") => true,
+            Value::Str(s) if s.eq_ignore_ascii_case("upper") => false,
+            Value::Str(s) => {
+                return Err(ScriptError::type_err(format!(
+                    "chol: dense second argument must be \"lower\" or \"upper\", got \"{s}\""
+                )));
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "chol: dense second argument must be \"lower\" or \"upper\", got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        false
+    };
+    let a = as_matrix(&args[0], "chol")?;
+    if !entries_finite(&a) {
+        return Err(ScriptError::type_err("chol: entries must be finite".to_string()));
+    }
+    let real = value_is_real(&args[0]);
+    let f = if lower { chol::lower(&a) } else { chol::upper(&a) };
+    let f = f.map_err(ScriptError::type_err)?;
+    if nargout <= 1 && f.p != 0 {
+        return Err(ScriptError::type_err(format!(
+            "chol: matrix is not positive definite (failed at pivot {})",
+            f.p
+        )));
+    }
+    let factor = pack(&f.factor, real && f.factor.iter().all(|z| z.im == 0.0));
+    if nargout <= 1 {
+        return Ok(factor);
+    }
+    Ok(Value::Tuple(vec![factor, Value::Scalar(f.p as f64)]))
 }
 
 /// `L2[perm[i], :] = L[i, :]`, so `L2 * U = A`.
@@ -265,18 +543,37 @@ fn permuted_l(f: &lu::Lu) -> Array2<C64> {
     l2
 }
 
-pub(crate) fn builtin_polyfit(args: Vec<Value>) -> Result<Value, ScriptError> {
+pub(crate) fn builtin_polyfit(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     if args.len() != 3 {
         return Err(ScriptError::type_err(format!(
             "polyfit: expected (x, y, n), got {} arguments",
             args.len()
         )));
     }
+    if nargout > 3 {
+        return Err(ScriptError::type_err(
+            "polyfit: returns at most [p, S, mu]".to_string(),
+        ));
+    }
     let n = args[2].to_usize().map_err(ScriptError::type_err)?;
-    let x = real_samples(&args[0], "polyfit x")?;
-    let y = series_matrix(x.len(), &args[1], "polyfit")?;
-    let m = x.len();
+    let x_raw = real_samples(&args[0], "polyfit x")?;
+    let y = series_matrix(x_raw.len(), &args[1], "polyfit")?;
+    let m = x_raw.len();
     let cols = n + 1;
+    if (m as u64).saturating_mul(cols as u64) > 100_000_000 {
+        return Err(ScriptError::type_err(format!(
+            "polyfit: Vandermonde would have {} entries; the limit is 100000000",
+            (m as u64).saturating_mul(cols as u64)
+        )));
+    }
+    // Centering only when mu is requested. One- and two-output fits use x as given.
+    let (x, mu) = if nargout >= 3 {
+        let (mean, std) = mean_std(&x_raw)?;
+        let scaled: Vec<f64> = x_raw.iter().map(|t| (t - mean) / std).collect();
+        (scaled, Some((mean, std)))
+    } else {
+        (x_raw, None)
+    };
     let mut v = Array2::zeros((m, cols));
     for i in 0..m {
         for j in 0..cols {
@@ -301,25 +598,151 @@ pub(crate) fn builtin_polyfit(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     // One row of coefficients per column of y. A single series is a row vector.
     let rows = coeff.ncols();
-    let cols = coeff.nrows();
-    let flipped = Array2::from_shape_fn((rows, cols), |(i, j)| coeff[[j, i]]);
+    let flipped = Array2::from_shape_fn((rows, coeff.nrows()), |(i, j)| coeff[[j, i]]);
     let packed = pack(&flipped, real);
-    if y.ncols() == 1 {
-        Ok(as_row(packed))
-    } else {
-        Ok(packed)
+    let p = if y.ncols() == 1 { as_row(packed) } else { packed };
+    if nargout <= 1 {
+        return Ok(p);
     }
+    let s = fit_struct(&v, &y, &coeff, &f, m, cols);
+    if nargout == 2 {
+        return Ok(Value::Tuple(vec![p, s]));
+    }
+    let (mean, std) = mu.expect("three outputs center x");
+    let mu_v = Value::real_vector(ndarray::Array1::from_vec(vec![mean, std]));
+    Ok(Value::Tuple(vec![p, s, mu_v]))
+}
+
+fn mean_std(x: &[f64]) -> Result<(f64, f64), ScriptError> {
+    if x.len() < 2 {
+        return Err(ScriptError::type_err(
+            "polyfit: centering needs at least two x values".to_string(),
+        ));
+    }
+    let mean = x.iter().sum::<f64>() / x.len() as f64;
+    let mut acc = 0.0;
+    for t in x {
+        let d = t - mean;
+        acc += d * d;
+    }
+    let std = (acc / (x.len() - 1) as f64).sqrt();
+    if !(std > 0.0) || !std.is_finite() {
+        return Err(ScriptError::type_err(
+            "polyfit: x has zero standard deviation".to_string(),
+        ));
+    }
+    Ok((mean, std))
+}
+
+/// `S.R` is the triangular factor of this fit's QR. `S.df` is
+/// `length(x) - (degree + 1)`. `S.normr` is the residual norm of each column.
+fn fit_struct(
+    v: &Array2<C64>,
+    y: &Array2<C64>,
+    coeff: &Array2<C64>,
+    f: &qr::Qr,
+    m: usize,
+    ncoeff: usize,
+) -> Value {
+    let r = qr::r_factor(f);
+    let real_r = r.iter().all(|z| z.im == 0.0);
+    let mut norms = Vec::with_capacity(y.ncols());
+    for s in 0..y.ncols() {
+        let mut ss = 0.0;
+        for i in 0..y.nrows() {
+            let mut pred = C64::new(0.0, 0.0);
+            for j in 0..v.ncols() {
+                pred += v[[i, j]] * coeff[[j, s]];
+            }
+            ss += (y[[i, s]] - pred).norm_sqr();
+        }
+        norms.push(ss.sqrt());
+    }
+    let normr = if norms.len() == 1 {
+        Value::Scalar(norms[0])
+    } else {
+        Value::real_vector(ndarray::Array1::from_vec(norms))
+    };
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("R".to_string(), pack(&r, real_r));
+    fields.insert("df".to_string(), Value::Scalar(m as f64 - ncoeff as f64));
+    fields.insert("normr".to_string(), normr);
+    Value::Struct(fields)
 }
 
 pub(crate) fn builtin_polyval(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.len() == 4 {
+        if !matches!(&args[2], Value::Struct(_)) {
+            return Err(ScriptError::type_err(
+                "polyval: the third argument must be the struct from polyfit".to_string(),
+            ));
+        }
+        let (mean, std) = mu_pair(&args[3])?;
+        let coeffs = coeff_row(&args[0])?;
+        let scaled = scale_by_mu(&args[1], mean, std)?;
+        return horner(&coeffs, &scaled);
+    }
     if args.len() != 2 {
         return Err(ScriptError::type_err(format!(
-            "polyval: expected (p, x), got {} arguments",
+            "polyval: expected (p, x) or (p, x, S, mu), got {} arguments",
             args.len()
         )));
     }
     let coeffs = coeff_row(&args[0])?;
     horner(&coeffs, &args[1])
+}
+
+fn mu_pair(v: &Value) -> Result<(f64, f64), ScriptError> {
+    let xs: Vec<f64> = match v {
+        Value::Vector(a) if a.len() == 2 => a.iter().map(|z| z.re).collect(),
+        Value::Matrix(m) if m.len() == 2 => m.iter().map(|z| z.re).collect(),
+        _ => {
+            return Err(ScriptError::type_err(
+                "polyval: mu must be [mean, std]".to_string(),
+            ))
+        }
+    };
+    if !xs[0].is_finite() || !(xs[1] > 0.0) || !xs[1].is_finite() {
+        return Err(ScriptError::type_err(
+            "polyval: mu must be a finite mean and a positive standard deviation".to_string(),
+        ));
+    }
+    Ok((xs[0], xs[1]))
+}
+
+fn scale_by_mu(x: &Value, mean: f64, std: f64) -> Result<Value, ScriptError> {
+    let scale = |z: C64| -> Result<C64, ScriptError> {
+        if z.im.abs() > 1e-12 {
+            return Err(ScriptError::type_err(
+                "polyval: x must be real when mu is given".to_string(),
+            ));
+        }
+        Ok(C64::new((z.re - mean) / std, 0.0))
+    };
+    match x {
+        Value::Scalar(s) => Ok(Value::Scalar(scale(C64::new(*s, 0.0))?.re)),
+        Value::Complex(z) => Ok(Value::Scalar(scale(*z)?.re)),
+        Value::Vector(v) => {
+            let mut out = Vec::with_capacity(v.len());
+            for z in v.iter() {
+                out.push(scale(*z)?.re);
+            }
+            Ok(Value::real_vector(ndarray::Array1::from_vec(out)))
+        }
+        Value::Matrix(m) => {
+            let mut data = Vec::with_capacity(m.len());
+            for z in m.iter() {
+                data.push(scale(*z)?.re);
+            }
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec(m.dim(), data).expect("same shape"),
+            ))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "polyval: x must be numeric, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn as_row(v: Value) -> Value {

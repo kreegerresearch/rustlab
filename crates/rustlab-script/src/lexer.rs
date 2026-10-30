@@ -22,6 +22,7 @@ pub enum Token {
     Caret,
     DotStar,       // .*
     DotSlash,      // ./
+    DotBackslash,  // .\  element-wise left division
     DotCaret,      // .^
     Colon,         // :
     Apostrophe,    // ' (conjugate transpose)
@@ -454,6 +455,13 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
             '.' if pos + 1 < chars.len() && chars[pos + 1] == '/' => {
                 tokens.push(Spanned {
                     token: Token::DotSlash,
+                    line,
+                });
+                pos += 2;
+            }
+            '.' if pos + 1 < chars.len() && chars[pos + 1] == '\\' => {
+                tokens.push(Spanned {
+                    token: Token::DotBackslash,
                     line,
                 });
                 pos += 2;
