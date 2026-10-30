@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.30
+
+### Added
+- **Dense `chol`.** `R = chol(A)` is the upper factor, `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot. A sparse `chol` still returns a factor handle.
+- **`[L, U, p] = lu(A, "vector")`.** `p` is 1-based and `A(p, :) = L * U`. `[L, U, P] = lu(A)` is still the permutation matrix. Two outputs still absorb the permutation.
+
+### Breaking / behavior changes
+- **A square Hermitian positive-definite `\` uses Cholesky, and a triangular `\` uses a triangular solve.** The value can move in the last digits versus the LU result. A Hermitian matrix that is not positive definite still uses LU. Rectangular `\` is unchanged.
+
 ## 0.3.29
 
 ### Breaking / behavior changes

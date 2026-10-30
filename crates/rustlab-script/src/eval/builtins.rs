@@ -430,7 +430,7 @@ impl BuiltinRegistry {
         r.register("nonzeros", builtin_nonzeros);
         r.register_nargout("find", builtin_find_nargout);
         r.register("spsolve", builtin_spsolve);
-        r.register("chol", builtin_chol);
+        r.register_nargout("chol", builtin_chol);
         r.register_nargout("lu", builtin_lu);
         r.register("solve", builtin_solve);
         r.register("spdiags", builtin_spdiags);
@@ -15004,13 +15004,21 @@ fn try_sparse_lu(
 /// `ordering` argument is `"auto"` (default; consult the matrix's hint),
 /// `"identity"` (natural ordering — best for grid Laplacians), or
 /// `"amd"` (approximate minimum degree).
-fn builtin_chol(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("chol", &args, 1, 2)?;
+    if matches!(args.first(), Some(Value::Matrix(_))) {
+        return super::linsys::builtin_chol_dense(&args, nargout);
+    }
+    if nargout > 1 {
+        return Err(ScriptError::type_err(
+            "chol: a sparse matrix returns a factor handle. Use chol(full(A)) for the dense factor".to_string(),
+        ));
+    }
     let sm = match &args[0] {
         Value::SparseMatrix(sm) => sm,
         other => {
             return Err(ScriptError::type_err(format!(
-                "chol: A must be a sparse matrix, got {}",
+                "chol: A must be a matrix, got {}",
                 other.type_name()
             )))
         }

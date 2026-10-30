@@ -36,7 +36,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `1:5`, `0:0.5:2`, `10:-1:1` | Range: `start:stop` or `start:step:stop` |
 | `.*`, `./`, `.\`, `.^` | Element-wise multiply, divide, swapped divide (`A .\ B` is `B ./ A`), power |
 | `*` | Matrix multiply |
-| `\` | Left division `A\b`. A vector on the right is a column and one solution is `n×1`. Square `A` uses LU, including a zero pivot (`Inf`). Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. Square sparse `A` uses `spsolve` |
+| `\` | Left division `A\b`. A vector on the right is a column and one solution is `n×1`. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot (`Inf`). Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. Square sparse `A` uses `spsolve` |
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
@@ -521,8 +521,8 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals (D=0 main, >0 super, <0 sub) |
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
-| `chol(A [, ordering])` | Sparse Cholesky factor handle for SPD `A`; pair with `solve(F, b)` to back-solve many RHS without re-factoring. Real-only `A` auto-routes to the f64 path. Errors on indefinite `A`. |
-| `lu(A [, ordering])` | Sparse LU factor handle (partial pivoting). Same factor-once-solve-many pattern as `chol`, but works on indefinite, non-Hermitian, and complex matrices. |
+| `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. `[R, p]` reports a failed pivot instead of erroring |
+| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1-based permutation with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |

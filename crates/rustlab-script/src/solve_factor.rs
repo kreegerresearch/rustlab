@@ -547,6 +547,85 @@ fn qr_complex_reconstructs() {
 }
 
 #[test]
+fn chol_reconstructs_a_real_spd_matrix() {
+    let ev = eval(
+        "A = [4, 2; 2, 3];
+         R = chol(A);
+         D = R' * R - A;
+         L = chol(A, \"lower\");
+         E = L * L' - A;",
+    );
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    for row in mat_re(&ev, "E") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    assert!(mat_re(&ev, "R")[1][0].abs() < 1e-12, "R is upper");
+    assert!(mat_re(&ev, "L")[0][1].abs() < 1e-12, "L is lower");
+}
+
+#[test]
+fn chol_two_outputs_report_a_failed_pivot() {
+    let ev = eval("A = [-1, 0; 0, 2]; [R, p] = chol(A);");
+    close(re(&ev, "p"), 1.0);
+    let err = eval_err("A = [-1, 0; 0, 2]; R = chol(A);");
+    assert!(err.contains("positive") || err.contains("pivot"), "{err}");
+}
+
+#[test]
+fn chol_complex_hermitian_reconstructs() {
+    let ev = eval(
+        "A = [4, 1-j; 1+j, 3];
+         R = chol(A);
+         D = R' * R - A;",
+    );
+    let d = match ev.get("D").unwrap() {
+        Value::Matrix(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    for z in d.iter() {
+        assert!(z.norm() < 1e-8, "{z}");
+    }
+}
+
+#[test]
+fn lu_vector_matches_the_permutation_matrix() {
+    let ev = eval(
+        "A = [1, 2; 3, 4];
+         [L, U, P] = lu(A);
+         [Lv, Uv, p] = lu(A, \"vector\");
+         D = A(p, :) - Lv * Uv;
+         E = P * A - L * U;",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![2.0, 1.0]);
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    for row in mat_re(&ev, "E") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    let err = eval_err("A = [1, 2; 3, 4]; [L, U] = lu(A, \"vector\");");
+    assert!(err.contains("third"), "{err}");
+}
+
+#[test]
+fn triangular_backslash_is_exact() {
+    let ev = eval("A = [2, 1; 0, 4]; x = A \\ [4, 8];");
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 2.0);
+}
+
 fn lu_permutation_identity() {
     let ev = eval(
         "A = [1, 2; 3, 4];
