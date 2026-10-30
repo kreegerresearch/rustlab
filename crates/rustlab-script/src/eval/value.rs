@@ -1824,6 +1824,11 @@ impl Value {
             }));
         }
 
+        // `A .\ B` is element-wise `B ./ A`. The operands are moved, not cloned.
+        if op == ElemLeftDiv {
+            return Self::binop(ElemDiv, rhs, lhs);
+        }
+
         // `A\b`. Scalar `A` is element-wise; everything else is a linear solve.
         if op == LeftDiv {
             let lhs = Self::widen_int(lhs);
@@ -2100,6 +2105,10 @@ impl Value {
 
             // ── Scalar/Complex broadcast onto Vector ──────────────────────────
             (Value::Scalar(_), Value::Vector(_)) | (Value::Complex(_), Value::Vector(_)) => {
+                // `scalar / v` solves `X * v = scalar`, not an element-wise scale.
+                if op == Div {
+                    return super::linsys::mrdivide(lhs, rhs);
+                }
                 let scalar = Self::promote_to_complex(lhs)?;
                 let vec = match rhs {
                     Value::Vector(v) => v,
@@ -2255,6 +2264,9 @@ impl Value {
 
             // ── Scalar/Complex broadcast onto Matrix ──────────────────────────
             (Value::Scalar(_), Value::Matrix(_)) | (Value::Complex(_), Value::Matrix(_)) => {
+                if op == Div {
+                    return super::linsys::mrdivide(lhs, rhs);
+                }
                 let scalar = Self::promote_to_complex(lhs)?;
                 let mat = match rhs {
                     Value::Matrix(m) => m,
