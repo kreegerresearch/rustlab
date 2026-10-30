@@ -952,6 +952,21 @@ Linear convolution. Output length = `len(x) + len(h) − 1`.
 y = convolve(signal, h)
 ```
 
+### `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` / `xcov(...)`
+Cross-correlation, with the zero lag in the middle. `xcov` subtracts the mean of each signal and then calls the same sums, so a constant input is all zeros.
+
+Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`.
+
+`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0).
+
+A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`.
+```
+r = xcorr([1, 2, 3, 4])          # [4, 11, 20, 30, 20, 11, 4]
+[r, lags] = xcorr([1, 2, 3, 4])  # lags = -3:3, zero lag at r(4)
+c = xcorr([1; 2; 3; 4])          # 7×1 column
+z = xcov([5, 5, 5, 5])           # zeros
+```
+
 ### `upfirdn(x, h, p, q)`
 Upsample by `p`, apply FIR filter `h`, then downsample by `q` — all in one pass using
 a polyphase decomposition. The filter is split into `p` subfilters so each output sample

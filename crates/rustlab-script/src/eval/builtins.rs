@@ -80,6 +80,8 @@ impl BuiltinRegistry {
         r.register_nargout("butterworth_lowpass", builtin_butterworth_lowpass);
         r.register_nargout("butterworth_highpass", builtin_butterworth_highpass);
         r.register("convolve", builtin_convolve);
+        r.register_nargout("xcorr", super::xcorr::builtin_xcorr);
+        r.register_nargout("xcov", super::xcorr::builtin_xcov);
         r.register("filtfilt", builtin_filtfilt);
         r.register("filter", builtin_filter);
         r.register("upfirdn", builtin_upfirdn);

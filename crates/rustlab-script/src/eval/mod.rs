@@ -1,4 +1,5 @@
 pub mod builtins;
+mod xcorr;
 pub(crate) mod elementwise;
 pub(crate) mod interp1;
 pub(crate) mod linsys;

@@ -262,6 +262,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
+| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff`. `[r, lags]` returns the lag axis |
+| `xcov(...)` | `xcorr` after each signal's mean is removed |
 | `factor(n)` | Prime factorization |
 
 ---
