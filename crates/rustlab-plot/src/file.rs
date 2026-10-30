@@ -255,11 +255,11 @@ pub fn render_figure_state_to_rgb_buffer(
 /// Honours `value_min` / `value_max` on the `HeatmapData` as the colour-
 /// mapping endpoints when both are `Some`; falls back to auto-scaling
 /// otherwise. Out-of-range cells saturate to the colormap extremes.
-pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> {
+pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Result<Vec<u8>, PlotError> {
     let nrows = hm.z.len();
     let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
     if nrows == 0 || ncols == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let (min_v, max_v) = match (hm.value_min, hm.value_max) {
         (Some(a), Some(b)) if a < b => (a, b),
@@ -291,7 +291,10 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
     let raw_range = max_v - min_v;
     let degenerate = raw_range == 0.0;
     let range = if degenerate { 1.0 } else { raw_range };
-    let mut rgba = vec![0u8; nrows * ncols * 4];
+    let n_bytes = rustlab_core::checked_elems(&[nrows, ncols, 4], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large("plot", &[nrows, ncols, 4]))
+    })?;
+    let mut rgba = vec![0u8; n_bytes];
     for r in 0..nrows {
         // Lower (default): flip vertically so source row 0 ends up at
         // the BOTTOM pixel row of the texture (which becomes plot-y = 0
@@ -331,7 +334,7 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
             rgba[off + 3] = 255;
         }
     }
-    rgba
+    Ok(rgba)
 }
 
 /// Render a single subplot panel into an RGBA pixel buffer (row-major, 4 bytes
@@ -345,7 +348,13 @@ pub fn render_panel_to_rgba(
     height: u32,
 ) -> Result<Vec<u8>, PlotError> {
     let palette = ThemePalette::from(theme);
-    let mut rgb = vec![0u8; (width * height * 3) as usize];
+    let rgb_len = rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 3],
+        ))
+    })?;
+    let mut rgb = vec![0u8; rgb_len];
     {
         let root =
             BitMapBackend::with_buffer(&mut rgb, (width, height)).into_drawing_area();
@@ -365,7 +374,13 @@ pub fn render_panel_to_rgba(
         }
         root.present().map_err(err)?;
     }
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    let rgba_len = rustlab_core::checked_elems(&[width as usize, height as usize, 4], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 4],
+        ))
+    })?;
+    let mut rgba = Vec::with_capacity(rgba_len);
     for px in rgb.chunks_exact(3) {
         rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
     }
@@ -2010,7 +2025,7 @@ mod tests {
             value_max: None,
             origin: HeatmapOrigin::Upper, // no flip: source row r → pixel row r
         };
-        let rgba = render_heatmap_cells_to_rgba(&hm);
+        let rgba = render_heatmap_cells_to_rgba(&hm).unwrap();
         let alpha = |row: usize, col: usize| rgba[(row * 2 + col) * 4 + 3];
         assert_eq!(alpha(0, 1), 0, "NaN cell must be transparent");
         assert_eq!(alpha(1, 1), 255, "Inf cell must be opaque (saturated)");
@@ -2084,8 +2099,8 @@ mod tests {
             value_max: Some(1.0),
             origin,
         };
-        let lower = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Lower));
-        let upper = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Upper));
+        let lower = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Lower)).unwrap();
+        let upper = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Upper)).unwrap();
         let ncols = 2;
 
         // Lower: source row 0 (value 0) at the bottom = pixel row 1.

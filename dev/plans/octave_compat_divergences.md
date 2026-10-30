@@ -103,22 +103,22 @@ Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(
 **Still open in this divergence cluster:**
 - Multi-output `[m, i] = min(M)` / `[m, i] = max(M)` for combined value + index. Nargout plumbing is already in place (see §8 PR-3); this is a small follow-on. Same for `[m, i] = min(v)` on a vector.
 
-### 5. `zeros(n)` is a row vector, not a square matrix
+### 5. `zeros(n)` was a row vector (shipped as n×n in 0.3.26)
 
-Shipped in 0.3.26 without the deprecation cycle below. A single size is n×n for `zeros`, `ones`, `rand`, `randn`, and `randi(imax, n)`. In-tree length-n calls were rewritten to `zeros(1, n)` / `randn(1, n)` / `randi(imax, 1, n)` in the same change. `zeros(1, n)` remains a matrix, not a vector.
+Shipped in 0.3.26 without the deprecation cycle below. A single size is n×n for `zeros`, `ones`, `rand`, `randn`, and `randi(imax, n)`. In-tree length-n calls were rewritten to `zeros(1, n)` / `randn(1, n)` / `randi(imax, 1, n)` in the same change. `zeros(1, n)` remains a matrix, not a vector. The notes under this heading describe the pre-0.3.26 behavior; they are not the current language.
 
-Historical note:
+Historical note (before 0.3.26):
 
 ```
 rustlab> size(zeros(3))
-[1 3]               % rustlab returns 1×3 row vector
+[1 3]               % pre-0.3.26: a 1×3 row. Now [3 3].
 ```
 
 **Octave/matlab:** `zeros(3)` → `3×3` matrix. `zeros(3, 1)` for a column, `zeros(1, 3)` for a row.
 
-#### Why this is deferred
+#### Why this was deferred (historical; do not implement)
 
-This is a hard breaking change. A user script that today says `randn(1000)` allocates 1,000 cells; after the fix it would allocate 1,000,000. Every example, notebook, gallery, test, and external user script that calls `zeros(N)` / `ones(N)` / `rand(N)` / `randn(N)` with a single integer arg expecting a row vector would silently change behavior — and in the random-matrix case, blow up memory. **Pickup needs a deprecation cycle, not an opportunistic flip.**
+This was a hard breaking change. A user script that said `randn(1000)` allocated 1,000 cells; after the 0.3.26 fix it allocates 1,000,000. Every example, notebook, gallery, test, and external user script that called `zeros(N)` / `ones(N)` / `rand(N)` / `randn(N)` with a single integer arg expecting a row vector changed shape in 0.3.26 — and a single size is the square matrix. The deprecation cycle below was not used.
 
 #### Pickup roadmap
 

@@ -120,7 +120,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | Function | Description |
 |---|---|
 | `linspace(a, b, n)` | n evenly-spaced points from a to b |
-| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | n×n zero matrix, or m×n. A row is `zeros(1, n)`. Accepts `size()` output |
+| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | n×n zero matrix, or m×n. A row is `zeros(1, n)`. Accepts `size()` output. A non-integral size, or an array past `2^48−1` elements or 16 GiB, is an error |
 | `ones(n)` / `ones(m, n)` / `ones([m, n])` | Same shapes as `zeros`, filled with ones |
 | `eye(n)` | n×n identity matrix |
 | `rand()` / `rand(n)` / `rand(m, n)` | Scalar, n×n, or m×n uniform on [0, 1). A row is `rand(1, n)`. |
