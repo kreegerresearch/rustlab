@@ -1100,28 +1100,97 @@ mod evaluator_tests {
 
     #[test]
     fn builtin_zeros() {
-        let ev = eval_str("v = zeros(5)");
-        match ev.get("v").unwrap() {
-            Value::Vector(v) => {
-                assert_eq!(v.len(), 5);
-                assert!(v.iter().all(|c| c.norm() < 1e-12));
+        // A single size is n×n. An explicit row stays a 1×n matrix, not a vector.
+        let ev = eval_str("S = zeros(3)\nR = zeros(1, 5)\nC = zeros(4, 1)");
+        match ev.get("S").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (3, 3));
+                assert!(m.iter().all(|c| c.re == 0.0 && c.im == 0.0));
             }
-            _ => panic!(),
+            other => panic!("zeros(3) should be a 3×3 matrix, got {other:?}"),
+        }
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 5));
+                assert!(m.iter().all(|c| c.norm() < 1e-12));
+            }
+            other => panic!("zeros(1, 5) should stay a 1×5 matrix, got {other:?}"),
+        }
+        match ev.get("C").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (4, 1)),
+            other => panic!("zeros(4, 1) should be 4×1, got {other:?}"),
         }
     }
 
     #[test]
     fn builtin_ones() {
-        let ev = eval_str("v = ones(4)");
-        match ev.get("v").unwrap() {
-            Value::Vector(v) => {
-                assert_eq!(v.len(), 4);
-                assert!(v
-                    .iter()
-                    .all(|c| (c.re - 1.0).abs() < 1e-12 && c.im.abs() < 1e-12));
+        let ev = eval_str("S = ones(2)\nR = ones(1, 4)");
+        match ev.get("S").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 2));
+                assert!(m.iter().all(|c| (c.re - 1.0).abs() < 1e-12 && c.im == 0.0));
             }
-            _ => panic!(),
+            other => panic!("ones(2) should be 2×2, got {other:?}"),
         }
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 4));
+                assert!(m.iter().all(|c| (c.re - 1.0).abs() < 1e-12 && c.im.abs() < 1e-12));
+            }
+            other => panic!("ones(1, 4) should stay a 1×4 matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_arg_constructors_are_square_and_rows_stay_matrices() {
+        let ev = eval_str(
+            "z = zeros(3, \"int32\")\n\
+             e = eye(3)\n\
+             seed(1); a = randn(1, 4);\n\
+             seed(1); b = rand(1, 4);\n\
+             seed(1); s = randi(6, 2);\n\
+             seed(1); r = randi(6, 1, 4);\n\
+             u = rand();\n\
+             k = randi(6);",
+        );
+        match ev.get("z").unwrap() {
+            Value::IntArray { rows, cols, .. } => assert_eq!((*rows, *cols), (3, 3)),
+            other => panic!("zeros(3, \"int32\") should be 3×3, got {other:?}"),
+        }
+        match ev.get("e").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (3, 3)),
+            other => panic!("eye(3) should stay 3×3, got {other:?}"),
+        }
+        match ev.get("a").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (1, 4)),
+            other => panic!("randn(1, 4) should stay a matrix, got {other:?}"),
+        }
+        match ev.get("b").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (1, 4)),
+            other => panic!("rand(1, 4) should stay a matrix, got {other:?}"),
+        }
+        match ev.get("s").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+            other => panic!("randi(6, 2) should be 2×2, got {other:?}"),
+        }
+        match ev.get("r").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (1, 4)),
+            other => panic!("randi(6, 1, 4) should be 1×4, got {other:?}"),
+        }
+        assert!(matches!(ev.get("u").unwrap(), Value::Scalar(_)));
+        assert!(matches!(ev.get("k").unwrap(), Value::Scalar(_)));
+        // A row of four samples is the same stream a length-4 vector used to draw.
+        let again = eval_str("seed(1); a = randn(1, 4);");
+        let x = match ev.get("a").unwrap() {
+            Value::Matrix(m) => m.iter().map(|c| c.re).collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+        let y = match again.get("a").unwrap() {
+            Value::Matrix(m) => m.iter().map(|c| c.re).collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+        assert_eq!(x, y);
+        assert!(x.iter().any(|v| v.abs() > 1e-6));
     }
 
     #[test]
@@ -1140,7 +1209,7 @@ mod evaluator_tests {
 
     #[test]
     fn builtin_len() {
-        let ev = eval_str("v = ones(7)\nn = len(v)");
+        let ev = eval_str("v = ones(1, 7)\nn = len(v)");
         assert!(close(get_scalar(&ev, "n"), 7.0));
     }
 
@@ -2924,12 +2993,13 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
-    fn sort_descend_complex_uses_real_part() {
-        // Complex sort orders by real part (matches the existing 1-arg behavior).
+    fn sort_descend_complex_uses_magnitude() {
+        // |3+i| > |1-2i| > |2|, so descending magnitude starts at 3+i.
         let ev = eval_str("v = sort([3+1*j, 1-2*j, 2+0*j], \"descend\")");
         let vals = get_complex_vector(&ev, "v");
-        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
-        assert_eq!(reals, vec![3.0, 2.0, 1.0]);
+        let mags: Vec<f64> = vals.iter().map(|c| c.norm()).collect();
+        assert!(mags[0] > mags[1] && mags[1] > mags[2], "{mags:?} {vals:?}");
+        assert!((vals[0].re - 3.0).abs() < 1e-12 && (vals[0].im - 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -6910,7 +6980,7 @@ mod profiling_tests {
             (1, (4 + 12) * 8, 3 * 8)
         );
         assert_eq!(
-            bytes("M = rand(3, 1); v = rand(4); C = M * v;", "[matmul]"),
+            bytes("M = rand(3, 1); v = rand(1, 4); C = M * v;", "[matmul]"),
             (1, (3 + 4) * 8, 12 * 8)
         );
         // Real × complex: the real operand stays 8 bytes per element.
@@ -7032,7 +7102,7 @@ mod profiling_tests {
         // fft(v) where v is length 16: `ones` is real-stored, 8 bytes per
         // element in; the spectrum is complex, 16 bytes per element out.
         crate::eval::shared::set_real_storage(Some(true));
-        let (_, report) = run_profiled("fft(ones(16));", Some(vec!["fft"]));
+        let (_, report) = run_profiled("fft(ones(1, 16));", Some(vec!["fft"]));
         crate::eval::shared::set_real_storage(None);
         let s = find(&report, "fft").expect("fft tracked");
         assert_eq!(s.input_bytes, 16 * 8, "16-element real vector = 128 bytes");
@@ -8278,52 +8348,52 @@ mod index_assign_tests {
     #[test]
     fn vector_strided_lhs_writes_per_position() {
         // v(1:2:6) = [10, 20, 30] — Bug 5 from rustlab_llm.
-        let ev = run("v = zeros(6);\nv(1:2:6) = [10, 20, 30];");
+        let ev = run("v = zeros(1, 6);\nv(1:2:6) = [10, 20, 30];");
         match ev.get("v").unwrap() {
-            Value::Vector(v) => {
-                assert_eq!(v.len(), 6);
-                assert!(close(v[0].re, 10.0));
-                assert!(close(v[1].re, 0.0));
-                assert!(close(v[2].re, 20.0));
-                assert!(close(v[3].re, 0.0));
-                assert!(close(v[4].re, 30.0));
-                assert!(close(v[5].re, 0.0));
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 6));
+                assert!(close(m[[0, 0]].re, 10.0));
+                assert!(close(m[[0, 1]].re, 0.0));
+                assert!(close(m[[0, 2]].re, 20.0));
+                assert!(close(m[[0, 3]].re, 0.0));
+                assert!(close(m[[0, 4]].re, 30.0));
+                assert!(close(m[[0, 5]].re, 0.0));
             }
-            _ => panic!(),
+            other => panic!("expected a 1×6 matrix, got {other:?}"),
         }
     }
 
     #[test]
     fn vector_explicit_index_list_lhs() {
-        let ev = run("w = zeros(5);\nw([1, 3, 5]) = [100, 300, 500];");
+        let ev = run("w = zeros(1, 5);\nw([1, 3, 5]) = [100, 300, 500];");
         match ev.get("w").unwrap() {
-            Value::Vector(v) => {
-                assert!(close(v[0].re, 100.0));
-                assert!(close(v[1].re, 0.0));
-                assert!(close(v[2].re, 300.0));
-                assert!(close(v[4].re, 500.0));
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 5));
+                assert!(close(m[[0, 0]].re, 100.0));
+                assert!(close(m[[0, 1]].re, 0.0));
+                assert!(close(m[[0, 2]].re, 300.0));
+                assert!(close(m[[0, 4]].re, 500.0));
             }
-            _ => panic!(),
+            other => panic!("expected a 1×5 matrix, got {other:?}"),
         }
     }
 
     #[test]
     fn vector_colon_lhs_scalar_broadcast() {
-        let ev = run("u = zeros(4);\nu(:) = 9;");
+        let ev = run("u = zeros(1, 4);\nu(:) = 9;");
         match ev.get("u").unwrap() {
-            Value::Vector(v) => {
-                for x in v.iter() {
-                    assert!(close(x.re, 9.0));
-                }
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 4));
+                assert!(m.iter().all(|x| close(x.re, 9.0)));
             }
-            _ => panic!(),
+            other => panic!("expected a 1×4 matrix, got {other:?}"),
         }
     }
 
     #[test]
     fn vector_strided_lhs_length_mismatch_errors() {
         // 3 positions on the LHS, 2 elements on the RHS.
-        assert!(try_run("v = zeros(6);\nv(1:2:6) = [10, 20];").is_err());
+        assert!(try_run("v = zeros(1, 6);\nv(1:2:6) = [10, 20];").is_err());
     }
 }
 
@@ -9206,7 +9276,7 @@ mod optional_arg_tests {
     fn rand_zero_args_returns_scalar_in_unit_interval() {
         // matlab: rand() with no args returns a single scalar in [0, 1).
         // Required so generic helpers can call rand() without the
-        // `rand(1)(1)` boxing hack.
+        // `rand(1, 1)(1)` boxing hack.
         let ev = try_run("seed(7)\nx = rand()").expect("rand() should succeed");
         let x = match ev.get("x").unwrap() {
             crate::Value::Scalar(v) => *v,
@@ -9290,7 +9360,7 @@ mod optional_arg_tests {
     // ── Verify that optional args DO work (positive cases) ──────────────
     #[test]
     fn zeros_one_arg() {
-        try_run("zeros(3);").unwrap();
+        try_run("zeros(1, 3);").unwrap();
     }
     #[test]
     fn zeros_two_args() {
@@ -9298,7 +9368,7 @@ mod optional_arg_tests {
     }
     #[test]
     fn ones_one_arg() {
-        try_run("ones(3);").unwrap();
+        try_run("ones(1, 3);").unwrap();
     }
     #[test]
     fn ones_two_args() {
@@ -12411,7 +12481,7 @@ mod pin_dirichlet_tests {
     fn mask_pins_row_to_identity() {
         let ev = run(
             "A = laplacian_2d(3, 3);
-             b = zeros(9);
+             b = zeros(1, 9);
              mask = zeros(3, 3);
              mask(2, 2) = 1;
              [A2, b2] = pin_dirichlet(A, b, mask, 5.0);
@@ -12440,7 +12510,7 @@ mod pin_dirichlet_tests {
         let ev = run(
             "n = 5;
              A = laplacian_1d(n);
-             b = zeros(n);
+             b = zeros(1, n);
              [A2, b2] = pin_dirichlet(A, b, [1, 5], [1.0, 9.0]);
              v = spsolve(A2, b2);
              v1 = v(1); v3 = v(3); v5 = v(5);",
@@ -12456,7 +12526,7 @@ mod pin_dirichlet_tests {
     fn index_list_matches_mask() {
         let ev = run(
             "A = laplacian_2d(3, 3);
-             b = zeros(9);
+             b = zeros(1, 9);
              mask = zeros(3, 3);
              mask(1, 1) = 1;
              mask(3, 3) = 1;
@@ -12475,7 +12545,7 @@ mod pin_dirichlet_tests {
     fn vector_values_align_with_mask_order() {
         let ev = run(
             "A = speye(4);
-             b = zeros(4);
+             b = zeros(1, 4);
              mask = [1, 0; 0, 1];   % column-major nonzeros: k=1 then k=4
              [A2, b2] = pin_dirichlet(A, b, mask, [7.0, 8.0]);
              p1 = b2(1); p4 = b2(4);",
@@ -12489,7 +12559,7 @@ mod pin_dirichlet_tests {
     fn tensor3_mask_on_laplacian_3d() {
         let ev = run(
             "A = laplacian_3d(2, 2, 2);
-             b = zeros(8);
+             b = zeros(1, 8);
              mask = zeros3(2, 2, 2);
              mask(2, 1, 2) = 1;
              [A2, b2] = pin_dirichlet(A, b, mask, 3.5);
@@ -12507,7 +12577,7 @@ mod pin_dirichlet_tests {
     fn dense_matrix_path() {
         let ev = run(
             "A = [2, 1; 1, 2];
-             b = zeros(2);
+             b = zeros(1, 2);
              [A2, b2] = pin_dirichlet(A, b, [1], 4.0);
              a11 = A2(1, 1); a12 = A2(1, 2); a21 = A2(2, 1);
              r = b2(1);",
@@ -12522,24 +12592,24 @@ mod pin_dirichlet_tests {
     fn error_matrix() {
         // Single output is refused — dropping the modified b is a
         // wrong-physics footgun.
-        let msg = run_err("A = speye(2); C = pin_dirichlet(A, zeros(2), [1], 1.0);");
+        let msg = run_err("A = speye(2); C = pin_dirichlet(A, zeros(1, 2), [1], 1.0);");
         assert!(msg.contains("[A, b]"), "got: {msg}");
         // Values length mismatch.
         let msg = run_err(
-            "A = speye(3); [X, y] = pin_dirichlet(A, zeros(3), [1, 2], [1.0, 2.0, 3.0]);",
+            "A = speye(3); [X, y] = pin_dirichlet(A, zeros(1, 3), [1, 2], [1.0, 2.0, 3.0]);",
         );
         assert!(msg.contains("values") || msg.contains("pinned cells"), "got: {msg}");
         // Mask element-count mismatch.
         let msg =
-            run_err("A = speye(4); [X, y] = pin_dirichlet(A, zeros(4), zeros(3, 3), 1.0);");
+            run_err("A = speye(4); [X, y] = pin_dirichlet(A, zeros(1, 4), zeros(3, 3), 1.0);");
         assert!(msg.contains("elements"), "got: {msg}");
         // Non-square A.
         let msg = run_err(
-            "A = sparse([1, 2], [1, 3], [1.0, 1.0], 2, 3); [X, y] = pin_dirichlet(A, zeros(2), [1], 1.0);",
+            "A = sparse([1, 2], [1, 3], [1.0, 1.0], 2, 3); [X, y] = pin_dirichlet(A, zeros(1, 2), [1], 1.0);",
         );
         assert!(msg.contains("square"), "got: {msg}");
         // Out-of-range index.
-        let msg = run_err("A = speye(2); [X, y] = pin_dirichlet(A, zeros(2), [5], 1.0);");
+        let msg = run_err("A = speye(2); [X, y] = pin_dirichlet(A, zeros(1, 2), [5], 1.0);");
         assert!(msg.contains("out of range"), "got: {msg}");
     }
 }
@@ -13798,7 +13868,10 @@ mod seed_tests {
     fn vec_of(ev: &Evaluator, name: &str) -> Vec<f64> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.iter().map(|c| c.re).collect(),
-            other => panic!("{name} is {other:?}, expected Vector"),
+            Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+                m.iter().map(|c| c.re).collect()
+            }
+            other => panic!("{name} is {other:?}, expected a vector or a 1-D matrix"),
         }
     }
 
@@ -13814,8 +13887,8 @@ mod seed_tests {
     #[test]
     fn seed_makes_randn_deterministic() {
         // Two evaluators, both seeded the same way: identical output.
-        let a = run("seed(42); v = randn(8);");
-        let b = run("seed(42); v = randn(8);");
+        let a = run("seed(42); v = randn(1, 8);");
+        let b = run("seed(42); v = randn(1, 8);");
         assert_eq!(vec_of(&a, "v"), vec_of(&b, "v"));
     }
 
@@ -13830,9 +13903,9 @@ mod seed_tests {
     fn seed_covers_all_random_builtins_in_a_single_run() {
         // A mix of rand/randn/randi after one seed call must be reproducible.
         let src = "seed(123);
-            a = rand(4);
-            b = randn(4);
-            c = randi(100, 4);";
+            a = rand(1, 4);
+            b = randn(1, 4);
+            c = randi(100, 1, 4);";
         let a = run(src);
         let b = run(src);
         assert_eq!(vec_of(&a, "a"), vec_of(&b, "a"));
@@ -13842,8 +13915,8 @@ mod seed_tests {
 
     #[test]
     fn different_seeds_produce_different_output() {
-        let a = run("seed(1); v = randn(8);");
-        let b = run("seed(2); v = randn(8);");
+        let a = run("seed(1); v = randn(1, 8);");
+        let b = run("seed(2); v = randn(1, 8);");
         assert_ne!(
             vec_of(&a, "v"),
             vec_of(&b, "v"),
@@ -13856,7 +13929,7 @@ mod seed_tests {
         // After `seed(0)` two streams match; after a `seed()` call between
         // the second `randn` and the first, the two streams should diverge
         // because the entropy reseed wipes the deterministic state.
-        let src = "seed(0); a = randn(8); seed(); b = randn(8);";
+        let src = "seed(0); a = randn(1, 8); seed(); b = randn(1, 8);";
         let ev = run(src);
         let va = vec_of(&ev, "a");
         let vb = vec_of(&ev, "b");
@@ -14168,11 +14241,11 @@ mod parmap_phase3_correctness {
     fn parmap_deterministic_with_master_seed() {
         let ev_a = eval_str(
             "seed(42);\n\
-             a = parmap(@(k) randn(1)(1), 1:20);",
+             a = parmap(@(k) randn(1, 1)(1), 1:20);",
         );
         let ev_b = eval_str(
             "seed(42);\n\
-             b = parmap(@(k) randn(1)(1), 1:20);",
+             b = parmap(@(k) randn(1, 1)(1), 1:20);",
         );
         let a = get_vec(&ev_a, "a");
         let b = get_vec(&ev_b, "b");
@@ -14188,12 +14261,12 @@ mod parmap_phase3_correctness {
     fn parmap_master_seed_unchanged_after() {
         let ev = eval_str(
             "seed(99);\n\
-             _ = parmap(@(k) randn(1)(1), 1:10);\n\
-             x = randn(1)(1);",
+             _ = parmap(@(k) randn(1, 1)(1), 1:10);\n\
+             x = randn(1, 1)(1);",
         );
         let ev_ref = eval_str(
             "seed(99);\n\
-             x = randn(1)(1);",
+             x = randn(1, 1)(1);",
         );
         let x = match ev.get("x").unwrap() {
             Value::Scalar(v) => *v,
@@ -14217,7 +14290,7 @@ mod parmap_phase3_correctness {
     fn parmap_per_task_rng_is_independent() {
         let ev = eval_str(
             "seed(7);\n\
-             y = parmap(@(k) randn(1)(1), 1:50);",
+             y = parmap(@(k) randn(1, 1)(1), 1:50);",
         );
         let y = get_vec(&ev, "y");
         let mut sorted = y.clone();
@@ -14895,7 +14968,7 @@ mod transposed_matmul {
                  p7 = A.' * D.'; q7 = Ant * Dnt;
                  p8 = (2 * A)' * B; T = (2 * A)'; q8 = T * B;
                  p9 = A(1:20, :)' * B(1:20, 1:5); T = A(1:20, :)'; q9 = T * B(1:20, 1:5);
-                 v = randn(37); p10 = v' * v; vt = v'; q10 = vt * v;
+                 v = randn(1, 37); p10 = v' * v; vt = v'; q10 = vt * v;
                  p11 = B' * v'; q11 = B' * vt;"
             );
             let ev = eval(&src);
@@ -17524,7 +17597,7 @@ mod builtin_coverage_tests {
         // frequency axes built from length(x) were wrong. Now
         // length(fft(x)) == length(x) always.
         let ev = run(
-            "X = fft(ones(5));
+            "X = fft(ones(1, 5));
              n = length(X);
              dc = real(X(1));",
         );
@@ -17566,7 +17639,7 @@ mod builtin_coverage_tests {
     fn fftfreq_axis_matches_fft_length() {
         // The always-correct axis idiom: fftfreq(length(X), fs).
         let ev = run(
-            "X = fft(ones(6));
+            "X = fft(ones(1, 6));
              f = fftfreq(length(X), 600);
              n = length(f);",
         );
@@ -17593,10 +17666,10 @@ mod builtin_coverage_tests {
 
     #[test]
     fn spectrum_shape_and_dc_bin() {
-        // fft(ones(8)) = [8, 0, ..., 0]; spectrum() centers DC, so the DC
+        // fft(ones(1, 8)) = [8, 0, ..., 0]; spectrum() centers DC, so the DC
         // bin lands at column n/2 + 1 with frequency 0.
         let ev = run(
-            "x = ones(8);
+            "x = ones(1, 8);
              X = fft(x);
              H = spectrum(X, 800);",
         );
@@ -17633,7 +17706,7 @@ mod builtin_coverage_tests {
         let ev = run(
             "b = [0.25, 0.5, 0.25];
              a = [1];
-             x = zeros(15);
+             x = zeros(1, 15);
              x(8) = 1;
              y = filtfilt(b, a, x);",
         );
@@ -18184,7 +18257,7 @@ mod eval_edge_semantics_tests {
             "M = [1, 2, 3; 4, 5, 6];
              s = sum(M, 2);
              m = mean(M, 2);
-             d = std(M, 2);",
+             d = std(M, 0, 2);",
         );
         let s = get_matrix(&ev, "s");
         assert_eq!(s.dim(), (2, 1));
@@ -18254,10 +18327,10 @@ mod eval_edge_semantics_tests {
 
     #[test]
     fn sum_and_std_of_empty_vector() {
-        // sum of nothing is the additive identity; std of nothing is 0.
+        // sum of nothing is the additive identity; std of nothing is NaN.
         let ev = run("s = sum([]);\nd = std([]);");
         assert!(close(get_scalar(&ev, "s"), 0.0));
-        assert!(close(get_scalar(&ev, "d"), 0.0));
+        assert!(get_scalar(&ev, "d").is_nan());
     }
 
     #[test]

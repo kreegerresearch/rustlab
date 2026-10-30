@@ -13,7 +13,7 @@ print("  result: ", acc)
 
 # ── Vector build via indexed assign (1 000 elements) ─────────────────────────
 print("indexed assign build n=1000")
-v = zeros(1000);
+v = zeros(1, 1000);
 for i = 1:1000
     v(i) = i * 2.0;
 end
@@ -21,14 +21,14 @@ print("  v(1000): ", v(1000))
 
 # ── Deeply nested expression chain ───────────────────────────────────────────
 print("deep expression chain n=500")
-x = randn(500);
+x = randn(1, 500);
 y = abs(sqrt(abs(exp(abs(x)))));
 print("  out: ", len(y))
 
 # ── Many small function calls ─────────────────────────────────────────────────
 print("1000 calls to len()")
 total = 0.0;
-v2 = randn(64);
+v2 = randn(1, 64);
 for i = 1:1000
     total = total + len(v2);
 end

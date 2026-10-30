@@ -67,13 +67,14 @@ pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
     solve_ab(&a, &b_cols, a_real && b_real)
 }
 
-/// `B/A`, the solution of `X * A = B`. Scalar `/` stays element-wise and
-/// does not come through here.
+/// `B/A`, the solution of `X * A = B`. A scalar denominator stays
+/// element-wise and does not come through here. A scalar numerator does.
+/// The reduction is `(A' \ B')'`: conjugate transpose, not `.'`.
 pub(crate) fn mrdivide(b: Value, a: Value) -> Result<Value, String> {
-    let bt = b.non_conj_transpose()?;
-    let at = a.non_conj_transpose()?;
+    let bt = b.transpose()?;
+    let at = a.transpose()?;
     let x = mldivide(at, bt)?;
-    x.non_conj_transpose()
+    x.transpose()
 }
 
 fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, String> {
@@ -227,14 +228,28 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
             args.len()
         )));
     }
-    let economy = if args.len() == 2 { economy_flag(&args[1])? } else { false };
+    if nargout > 3 {
+        return Err(ScriptError::type_err(
+            "qr: returns at most [Q, R, p]".to_string(),
+        ));
+    }
+    let opt = if args.len() == 2 { Some(qr_option(&args[1])?) } else { None };
+    // "vector" and "matrix" only choose the third output. One and two
+    // outputs stay the unpivoted factor; those flags would be ignored.
+    if nargout < 3 && matches!(opt, Some(QrOption::Vector | QrOption::Matrix)) {
+        return Err(ScriptError::type_err(
+            "qr: \"vector\" and \"matrix\" select the third output; use [Q, R, p] = qr(A) or qr(A, \"matrix\")".to_string(),
+        ));
+    }
+    let economy = matches!(opt, Some(QrOption::Economy));
     let a = as_matrix(&args[0], "qr")?;
     if !entries_finite(&a) {
         return Err(ScriptError::type_err("qr: entries must be finite".to_string()));
     }
     let real = value_is_real(&args[0]);
-    let f = qr::qr(&a, false);
-    // One output is R. `qr(A)` is the full factor; `qr(A, 0)` is economy.
+    // Pivot only when the caller asks for the permutation. Two outputs
+    // stay `qr(a, false)`, the same unpivoted factor as before.
+    let f = qr::qr(&a, nargout == 3);
     let (q, r) = qr::explicit(&f, economy);
     if nargout <= 1 {
         return Ok(pack(&r, real));
@@ -242,29 +257,52 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
     if nargout == 2 {
         return Ok(Value::Tuple(vec![pack(&q, real), pack(&r, real)]));
     }
-    Err(ScriptError::type_err(
-        "qr: returns at most [Q, R]".to_string(),
-    ))
+    let third = if matches!(opt, Some(QrOption::Matrix)) {
+        column_permutation_matrix(&f.piv)
+    } else {
+        permutation_vector(&f.piv)
+    };
+    Ok(Value::Tuple(vec![pack(&q, real), pack(&r, real), third]))
 }
 
-fn economy_flag(v: &Value) -> Result<bool, ScriptError> {
+enum QrOption {
+    Economy,
+    Vector,
+    Matrix,
+}
+
+fn qr_option(v: &Value) -> Result<QrOption, ScriptError> {
     match v {
-        Value::Scalar(x) if *x == 0.0 => Ok(true),
-        Value::Str(s) => {
-            let s = s.to_ascii_lowercase();
-            if s == "econ" || s == "economy" || s == "0" {
-                Ok(true)
-            } else {
-                Err(ScriptError::type_err(format!(
-                    "qr: second argument must be 0 or \"econ\", got \"{s}\""
-                )))
-            }
-        }
+        Value::Scalar(x) if *x == 0.0 => Ok(QrOption::Economy),
+        Value::Str(s) => match s.to_ascii_lowercase().as_str() {
+            "econ" | "economy" | "0" => Ok(QrOption::Economy),
+            "vector" => Ok(QrOption::Vector),
+            "matrix" => Ok(QrOption::Matrix),
+            other => Err(ScriptError::type_err(format!(
+                "qr: second argument must be 0, \"econ\", \"vector\", or \"matrix\", got \"{other}\""
+            ))),
+        },
         other => Err(ScriptError::type_err(format!(
-            "qr: second argument must be 0 or \"econ\", got {}",
+            "qr: second argument must be 0, \"econ\", \"vector\", or \"matrix\", got {}",
             other.type_name()
         ))),
     }
+}
+
+/// 1-based column order. `p(j)` is the original column now at position `j`,
+/// so `A(:, p) = Q R`. A length-1 result stays a vector, not a scalar.
+fn permutation_vector(piv: &[usize]) -> Value {
+    Value::real_vector(ndarray::Array1::from_iter(piv.iter().map(|&j| (j + 1) as f64)))
+}
+
+/// `A * P = Q R`. Column `j` of `P` has a one in row `piv[j]`.
+fn column_permutation_matrix(piv: &[usize]) -> Value {
+    let n = piv.len();
+    let mut p = ndarray::Array2::<f64>::zeros((n, n));
+    for (j, &src) in piv.iter().enumerate() {
+        p[[src, j]] = 1.0;
+    }
+    Value::real_matrix(p)
 }
 
 /// Dense `[L, U] = lu(A)` or `[L, U, P] = lu(A)`. `P*A = L*U`.

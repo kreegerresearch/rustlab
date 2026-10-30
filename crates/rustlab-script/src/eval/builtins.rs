@@ -1498,7 +1498,8 @@ fn builtin_curl3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// Unpack size arguments for array constructors like zeros, ones, rand, randn.
 /// Accepts: f(n), f(m,n), or f([m,n]) (vector from size()).
-/// Returns (Some(m), n) for matrix or (None, n) for vector.
+/// `None` for the first element means a single size: the caller builds n×n.
+/// Two sizes, or a 2-element vector, are an m×n matrix.
 fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize), ScriptError> {
     if args.len() == 2 {
         let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
@@ -1532,12 +1533,20 @@ fn peel_int_class(args: &[Value]) -> (Vec<Value>, Option<IntClass>) {
     (args.to_vec(), None)
 }
 
+/// One size is n×n. An explicit second size is m×n.
+fn square_if_one(m: Option<usize>, n: usize) -> (usize, usize) {
+    match m {
+        Some(rows) => (rows, n),
+        None => (n, n),
+    }
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("zeros", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "zeros")?;
+    let (r, c) = square_if_one(m, n);
     if let Some(cls) = cls {
-        let (r, c) = (m.unwrap_or(1), n);
         return Ok(Value::int_array(
             vec![0i128; r * c],
             r,
@@ -1546,19 +1555,15 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
             OverflowMode::Saturate,
         ));
     }
-    if let Some(m) = m {
-        Ok(Value::real_matrix(Array2::zeros((m, n))))
-    } else {
-        Ok(Value::real_vector(Array1::zeros(n)))
-    }
+    Ok(Value::real_matrix(Array2::zeros((r, c))))
 }
 
 fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("ones", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "ones")?;
+    let (r, c) = square_if_one(m, n);
     if let Some(cls) = cls {
-        let (r, c) = (m.unwrap_or(1), n);
         return Ok(Value::int_array(
             vec![1i128; r * c],
             r,
@@ -1567,11 +1572,7 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
             OverflowMode::Saturate,
         ));
     }
-    if let Some(m) = m {
-        Ok(Value::real_matrix(Array2::from_elem((m, n), 1.0)))
-    } else {
-        Ok(Value::real_vector(Array1::from_elem(n, 1.0)))
-    }
+    Ok(Value::real_matrix(Array2::from_elem((r, c), 1.0)))
 }
 
 fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -1603,13 +1604,10 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "rand")?;
+    let (r, c) = square_if_one(m, n);
     crate::eval::rng::with_rng(|rng| {
-        if let Some(m) = m {
-            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
-            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-        } else {
-            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
-        }
+        let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
+        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
     })
 }
 
@@ -1622,13 +1620,10 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "randn")?;
+    let (r, c) = square_if_one(m, n);
     crate::eval::rng::with_rng(|rng| {
-        if let Some(m) = m {
-            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
-            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-        } else {
-            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
-        }
+        let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
+        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
     })
 }
 
@@ -1702,9 +1697,9 @@ fn builtin_randn3(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(ScriptError::type_err(
-            "randi: expected randi(imax) or randi(imax, n) or randi([lo,hi], n)".to_string(),
+            "randi: expected randi(imax), randi(imax, n), randi(imax, m, n), randi([lo, hi], n), or randi([lo, hi], m, n)".to_string(),
         ));
     }
     // First arg: scalar imax → range [1, imax], or 2-element vector [lo, hi]
@@ -1721,15 +1716,27 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
             "randi: lo ({lo}) must be <= hi ({hi})"
         )));
     }
-    crate::eval::rng::with_rng(|rng| {
-        if args.len() == 1 {
-            // Return a single scalar integer
-            Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64))
-        } else {
+    let shape = match args.len() {
+        1 => None,
+        2 => {
             let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            let v: CVector =
-                Array1::from_iter((0..n).map(|_| Complex::new(rng.gen_range(lo..=hi) as f64, 0.0)));
-            Ok(Value::Vector(v.into()))
+            Some((n, n))
+        }
+        _ => {
+            let rows = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            let cols = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            Some((rows, cols))
+        }
+    };
+    crate::eval::rng::with_rng(|rng| match shape {
+        None => Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64)),
+        Some((rows, cols)) => {
+            let data: Vec<f64> = (0..rows * cols)
+                .map(|_| rng.gen_range(lo..=hi) as f64)
+                .collect();
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec((rows, cols), data).expect("randi shape"),
+            ))
         }
     })
 }
@@ -2362,7 +2369,7 @@ fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// A NaN real part makes the result NaN (MATLAB `'includenan'`). `Inf`
 /// sorts as a value. Comparing with `partial_cmp().unwrap()` panics on NaN.
 fn median_of_real_slice(vals: &[C64]) -> f64 {
-    if vals.iter().any(|c| c.re.is_nan()) {
+    if vals.is_empty() || vals.iter().any(|c| c.re.is_nan() || c.im.is_nan()) {
         return f64::NAN;
     }
     let mut reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
@@ -2375,34 +2382,54 @@ fn median_of_real_slice(vals: &[C64]) -> f64 {
     }
 }
 
-/// Sample standard deviation of a slice of complex values (real part-aware,
-/// dividing by `n - 1`). Returns 0 for length-1 slices.
-fn std_of_slice(vals: &[C64]) -> f64 {
-    if vals.len() <= 1 {
-        return 0.0;
+fn input_has_nonzero_imag(v: &Value) -> bool {
+    match v {
+        Value::Complex(c) => c.im != 0.0 && !c.im.is_nan(),
+        Value::Vector(a) => a.iter().any(|z| z.im != 0.0 && !z.im.is_nan()),
+        Value::Matrix(m) => m.iter().any(|z| z.im != 0.0 && !z.im.is_nan()),
+        _ => false,
     }
-    let n = vals.len() as f64;
-    let mean: C64 = vals.iter().copied().sum::<C64>() / n;
-    let variance: f64 =
-        vals.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / (n - 1.0);
-    variance.sqrt()
+}
+
+fn empty_axis_nans(nrows: usize, ncols: usize, dim: usize) -> Value {
+    if nrows == 0 && ncols == 0 {
+        return Value::Scalar(f64::NAN);
+    }
+    if dim == 1 {
+        if ncols == 0 {
+            Value::real_matrix(Array2::zeros((1, 0)))
+        } else {
+            Value::real_matrix(Array2::from_elem((1, ncols), f64::NAN))
+        }
+    } else if nrows == 0 {
+        Value::real_matrix(Array2::zeros((0, 1)))
+    } else {
+        Value::real_matrix(Array2::from_elem((nrows, 1), f64::NAN))
+    }
 }
 
 /// median(v) — middle value of a vector / 1-D-shaped matrix → scalar.
 /// median(M) — column medians → row matrix `1×ncols`.
 /// median(M, 1) / median(M, 2) — explicit axis.
 fn builtin_median(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("median", &args, 1, 2)?;
+    if input_has_nonzero_imag(&args[0]) {
+        return Err(ScriptError::type_err(
+            "median: not defined for complex input".to_string(),
+        ));
+    }
+    let dim_arg = parse_reduction_dim("median", &args)?;
+    match &args[0] {
+        Value::Vector(v) if v.is_empty() => return Ok(Value::Scalar(f64::NAN)),
+        Value::Matrix(m) if m.nrows() == 0 || m.ncols() == 0 => {
+            return Ok(empty_axis_nans(m.nrows(), m.ncols(), dim_arg.unwrap_or(1)));
+        }
+        _ => {}
+    }
     dispatch_matrix_reduction(
         "median",
         &args,
-        |elems| {
-            if elems.is_empty() {
-                return Err(ScriptError::type_err(
-                    "median: argument must be a non-empty vector, matrix, or scalar".to_string(),
-                ));
-            }
-            Ok(Value::Scalar(median_of_real_slice(elems)))
-        },
+        |elems| Ok(Value::Scalar(median_of_real_slice(elems))),
         |m, dim| {
             matrix_axis_collect_then(m, dim, |slice| {
                 Complex::new(median_of_real_slice(slice), 0.0)
@@ -2411,38 +2438,274 @@ fn builtin_median(args: Vec<Value>) -> Result<Value, ScriptError> {
     )
 }
 
-/// std(v) — sample standard deviation of a vector / 1-D-shaped matrix → scalar.
-/// std(M) — column std → row matrix `1×ncols`.
-/// std(M, 1) / std(M, 2) — explicit axis.
 fn builtin_std(args: Vec<Value>) -> Result<Value, ScriptError> {
-    dispatch_matrix_reduction(
-        "std",
-        &args,
-        // std_of_slice handles empty (returns 0.0) and length-1 cases.
-        |elems| Ok(Value::Scalar(std_of_slice(elems))),
-        |m, dim| {
-            matrix_axis_collect_then(m, dim, |slice| Complex::new(std_of_slice(slice), 0.0))
-        },
-    )
+    std_or_var("std", &args, false)
 }
 
-/// `var` is the square of [`std_of_slice`]: sample variance, divide by `n-1`,
-/// and for complex data `Σ|x − mean|² / (n − 1)`. Same shapes as `std`.
 fn builtin_var(args: Vec<Value>) -> Result<Value, ScriptError> {
-    dispatch_matrix_reduction(
-        "var",
-        &args,
-        |elems| {
-            let s = std_of_slice(elems);
-            Ok(Value::Scalar(s * s))
-        },
-        |m, dim| {
-            matrix_axis_collect_then(m, dim, |slice| {
-                let s = std_of_slice(slice);
-                Complex::new(s * s, 0.0)
+    std_or_var("var", &args, true)
+}
+
+/// `std` / `var`. `w` is 0 (divide by n−1), 1 (divide by n), or a weight
+/// vector (divide by the sum of the weights). `dim` is the third argument.
+fn std_or_var(name: &str, args: &[Value], as_var: bool) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(ScriptError::type_err(format!(
+            "{name}: expected 1 to 3 arguments, got {}",
+            args.len()
+        )));
+    }
+    let weight = if args.len() >= 2 {
+        super::order_stats::parse_weight(name, &args[1])?
+    } else {
+        super::order_stats::Weight::Sample
+    };
+    let dim_arg = if args.len() == 3 {
+        Some(reduction_dim_value(name, &args[2])?)
+    } else {
+        None
+    };
+    let dev = |slice: &[C64]| -> Result<f64, ScriptError> {
+        let var = super::order_stats::variance(name, slice, &weight)?;
+        Ok(if as_var { var } else { var.sqrt() })
+    };
+    match &args[0] {
+        Value::Scalar(_) | Value::Int { .. } | Value::Complex(_) => {
+            let z = match &args[0] {
+                Value::Complex(c) => *c,
+                Value::Int { data, .. } => C64::new(*data as f64, 0.0),
+                Value::Scalar(s) => C64::new(*s, 0.0),
+                _ => unreachable!(),
+            };
+            if let super::order_stats::Weight::Vector(w) = &weight {
+                if w.len() != 1 {
+                    return Err(ScriptError::type_err(format!(
+                        "{name}: weight vector has length {} but the axis has length 1",
+                        w.len()
+                    )));
+                }
+            }
+            Ok(Value::Scalar(dev(&[z])?))
+        }
+        Value::Vector(v) => {
+            // A vector is a row. Dim 1 is one observation per column.
+            if dim_arg == Some(1) {
+                return singleton_axis_result(name, &weight, Shared::len(v));
+            }
+            if let Some(re) = Shared::real_slice(v) {
+                let var = super::order_stats::variance_f64(name, re, &weight)?;
+                return Ok(Value::Scalar(if as_var { var } else { var.sqrt() }));
+            }
+            let elems: Vec<C64> = v.iter().copied().collect();
+            Ok(Value::Scalar(dev(&elems)?))
+        }
+        Value::Matrix(m) => {
+            if let Some(re) = Shared::real_slice(m) {
+                let shape = Shared::shape(m);
+                matrix_std_real(name, re, shape[0], shape[1], dim_arg, &weight, as_var)
+            } else {
+                matrix_std(name, m, dim_arg, &weight, as_var)
+            }
+        }
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let m = Value::int_array_to_cmatrix(data, *rows, *cols);
+            matrix_std(name, &m, dim_arg, &weight, as_var)
+        }
+        other => Err(ScriptError::type_err(format!(
+            "{name}: unsupported type {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn reduction_dim_value(name: &str, v: &Value) -> Result<usize, ScriptError> {
+    let d = v
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("{name}: dim: {e}")))? as i64;
+    if d != 1 && d != 2 {
+        return Err(ScriptError::type_err(format!(
+            "{name}: dim must be 1 or 2, got {d}"
+        )));
+    }
+    Ok(d as usize)
+}
+
+/// One observation along the reduced axis of a vector (a row). Unweighted
+/// that is 0. A weight vector must have length 1; a zero total weight is NaN.
+fn singleton_axis_result(
+    name: &str,
+    weight: &super::order_stats::Weight,
+    n_out: usize,
+) -> Result<Value, ScriptError> {
+    let nan = match weight {
+        super::order_stats::Weight::Vector(w) => {
+            if w.len() != 1 {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: weight vector has length {} but the axis has length 1",
+                    w.len()
+                )));
+            }
+            if w.iter().any(|wi| !wi.is_finite() || *wi < 0.0) {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: weights must be finite and nonnegative"
+                )));
+            }
+            w[0] == 0.0
+        }
+        _ => false,
+    };
+    Ok(if nan {
+        Value::real_vector(ndarray::Array1::from_elem(n_out, f64::NAN))
+    } else {
+        Value::real_vector(ndarray::Array1::zeros(n_out))
+    })
+}
+
+fn singleton_matrix(
+    name: &str,
+    weight: &super::order_stats::Weight,
+    shape: (usize, usize),
+) -> Result<Value, ScriptError> {
+    let nan = match weight {
+        super::order_stats::Weight::Vector(w) => {
+            if w.len() != 1 {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: weight vector has length {} but the axis has length 1",
+                    w.len()
+                )));
+            }
+            if w.iter().any(|wi| !wi.is_finite() || *wi < 0.0) {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: weights must be finite and nonnegative"
+                )));
+            }
+            w[0] == 0.0
+        }
+        _ => false,
+    };
+    Ok(if nan {
+        Value::real_matrix(Array2::from_elem(shape, f64::NAN))
+    } else {
+        Value::real_matrix(Array2::zeros(shape))
+    })
+}
+
+fn matrix_std_real(
+    name: &str,
+    re: &[f64],
+    nrows: usize,
+    ncols: usize,
+    dim_arg: Option<usize>,
+    weight: &super::order_stats::Weight,
+    as_var: bool,
+) -> Result<Value, ScriptError> {
+    let dev = |slice: &[f64]| -> Result<f64, ScriptError> {
+        let var = super::order_stats::variance_f64(name, slice, weight)?;
+        Ok(if as_var { var } else { var.sqrt() })
+    };
+    if nrows == 0 && ncols == 0 {
+        return Ok(Value::Scalar(f64::NAN));
+    }
+    if nrows == 1 && ncols == 1 {
+        return Ok(Value::Scalar(dev(&[re[0]])?));
+    }
+    let one_d = nrows <= 1 || ncols <= 1;
+    let dim = dim_arg.unwrap_or(if nrows == 1 && ncols != 1 { 2 } else { 1 });
+    if one_d
+        && !reduction_along_singleton(nrows.max(1), ncols.max(1), dim)
+        && nrows > 0
+        && ncols > 0
+    {
+        return Ok(Value::Scalar(dev(re)?));
+    }
+    if nrows == 0 || ncols == 0 {
+        return Ok(empty_axis_nans(nrows, ncols, dim));
+    }
+    if reduction_along_singleton(nrows, ncols, dim) {
+        let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
+        return singleton_matrix(name, weight, shape);
+    }
+    let mut tmp = Vec::new();
+    let data: Result<Vec<f64>, ScriptError> = if dim == 1 {
+        tmp.resize(nrows, 0.0);
+        (0..ncols)
+            .map(|j| {
+                for i in 0..nrows {
+                    tmp[i] = re[i * ncols + j];
+                }
+                dev(&tmp)
             })
-        },
-    )
+            .collect()
+    } else {
+        (0..nrows)
+            .map(|i| dev(&re[i * ncols..(i + 1) * ncols]))
+            .collect()
+    };
+    let data = data?;
+    let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
+    Ok(Value::real_matrix(
+        Array2::from_shape_vec(shape, data).expect("std shape"),
+    ))
+}
+
+fn matrix_std(
+    name: &str,
+    m: &CMatrix,
+    dim_arg: Option<usize>,
+    weight: &super::order_stats::Weight,
+    as_var: bool,
+) -> Result<Value, ScriptError> {
+    let (nrows, ncols) = (m.nrows(), m.ncols());
+    let dev = |slice: &[C64]| -> Result<f64, ScriptError> {
+        let var = super::order_stats::variance(name, slice, weight)?;
+        Ok(if as_var { var } else { var.sqrt() })
+    };
+    if nrows == 0 && ncols == 0 {
+        return Ok(Value::Scalar(f64::NAN));
+    }
+    if nrows == 1 && ncols == 1 {
+        return Ok(Value::Scalar(dev(&[m[[0, 0]]])?));
+    }
+    let one_d = nrows <= 1 || ncols <= 1;
+    let dim = dim_arg.unwrap_or(if nrows == 1 && ncols != 1 { 2 } else { 1 });
+    // A 1×n row or n×1 column reduces to a scalar along its long axis.
+    if one_d
+        && !reduction_along_singleton(nrows.max(1), ncols.max(1), dim)
+        && nrows > 0
+        && ncols > 0
+    {
+        let elems: Vec<C64> = m.iter().copied().collect();
+        return Ok(Value::Scalar(dev(&elems)?));
+    }
+    if nrows == 0 || ncols == 0 {
+        return Ok(empty_axis_nans(nrows, ncols, dim));
+    }
+    if reduction_along_singleton(nrows, ncols, dim) {
+        let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
+        return singleton_matrix(name, weight, shape);
+    }
+    let data: Result<Vec<f64>, ScriptError> = if dim == 1 {
+        (0..ncols)
+            .map(|j| {
+                let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+                dev(&col)
+            })
+            .collect()
+    } else {
+        (0..nrows)
+            .map(|i| {
+                let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
+                dev(&row)
+            })
+            .collect()
+    };
+    let data = data?;
+    let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
+    Ok(Value::real_matrix(
+        Array2::from_shape_vec(shape, data).expect("std shape"),
+    ))
 }
 
 /// Parse the optional `dim` argument (1 or 2) used by matrix-axis reducers.
@@ -2899,177 +3162,179 @@ fn builtin_argextremum(
     }
 }
 
-/// sort(v) — sort a vector ascending by real part; preserves imaginary components.
-/// Nargout-aware dispatch for `sort`:
-///   nargout == 1: returns the sorted output, same shape as input.
-///   nargout >= 2: returns `[sorted, idx]` where `idx` is the 1-based
-///                 permutation that produces `sorted` from the input —
-///                 `sorted(k) == input(idx(k))` for vectors/1-D matrices.
+/// sort(A) / sort(A, dim) / sort(A, dim, "descend").
+/// One output is the sorted array. Two outputs are `[sorted, idx]`, with
+/// `idx` the 1-based index along the sorted axis.
+/// Real values sort numerically. Any nonzero imaginary part sorts that
+/// slice by magnitude, then phase. NaNs are higher than every number.
+/// Ties keep input order. A matrix sorts along dim 1 (each column) unless
+/// a dim is given. A vector is a row, so the default axis is its length.
 fn builtin_sort_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     if nargout < 2 {
         return builtin_sort(args);
     }
-    check_args_range("sort", &args, 1, 2)?;
-    let descending = if args.len() == 2 {
-        match &args[1] {
-            Value::Str(s) => match s.as_str() {
-                "ascend" => false,
-                "descend" => true,
-                other => {
-                    return Err(ScriptError::type_err(format!(
-                        "sort: direction must be \"ascend\" or \"descend\", got \"{}\"",
-                        other
-                    )))
-                }
-            },
-            other => {
-                return Err(ScriptError::type_err(format!(
-                    "sort: 2nd argument must be a direction string, got {}",
-                    other.type_name()
-                )))
-            }
-        }
-    } else {
-        false
-    };
-
-    /// Sort a flat slice of complex values by real part, returning the sorted
-    /// values plus the 1-based permutation indices.
-    fn sort_with_indices(elements: &[C64], descending: bool) -> (Vec<C64>, Vec<f64>) {
-        let mut paired: Vec<(usize, C64)> = elements.iter().copied().enumerate().collect();
-        paired.sort_by(|(_, a), (_, b)| {
-            let ord = a
-                .re
-                .partial_cmp(&b.re)
-                .unwrap_or(std::cmp::Ordering::Equal);
-            if descending {
-                ord.reverse()
-            } else {
-                ord
-            }
-        });
-        let sorted: Vec<C64> = paired.iter().map(|(_, v)| *v).collect();
-        let indices: Vec<f64> = paired.iter().map(|(i, _)| (*i + 1) as f64).collect();
-        (sorted, indices)
-    }
-
-    let (sorted, indices, original): (Value, Value, &Value) = match &args[0] {
-        Value::Vector(v) => {
-            let elements: Vec<C64> = v.iter().copied().collect();
-            let (sorted, idx) = sort_with_indices(&elements, descending);
-            (
-                Value::Vector(Array1::from_vec(sorted).into()),
-                Value::Vector(Array1::from_iter(
-                    idx.into_iter().map(|f| Complex::new(f, 0.0)),
-                ).into()),
-                &args[0],
-            )
-        }
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            let elements: Vec<C64> = m.iter().copied().collect();
-            let (sorted, idx) = sort_with_indices(&elements, descending);
-            let s_mat = Array2::from_shape_fn((nrows, ncols), |(i, j)| sorted[i * ncols + j]);
-            let i_mat = Array2::from_shape_fn((nrows, ncols), |(i, j)| {
-                Complex::new(idx[i * ncols + j], 0.0)
-            });
-            (Value::Matrix(s_mat.into()), Value::Matrix(i_mat.into()), &args[0])
-        }
-        Value::Scalar(_) => {
-            return Ok(Value::Tuple(vec![args[0].clone(), Value::Scalar(1.0)]));
-        }
-        _ => {
-            return Err(ScriptError::type_err(
-                "sort: argument must be a vector, scalar, or 1-D-shaped matrix"
-                    .to_string(),
-            ))
-        }
-    };
-    let _ = original;
-    Ok(Value::Tuple(vec![sorted, indices]))
+    let (sorted, idx) = sort_value(&args, true)?;
+    Ok(Value::Tuple(vec![sorted, idx]))
 }
 
 fn builtin_sort(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("sort", &args, 1, 2)?;
+    Ok(sort_value(&args, false)?.0)
+}
 
-    // Optional 2nd argument: "ascend" (default) or "descend" — matches the
-    // octave/matlab string-flag form. The numeric-dim form `sort(M, dim)` is
-    // not yet supported (matrix-axis reductions are a separate plan item).
-    let descending = if args.len() == 2 {
-        match &args[1] {
-            Value::Str(s) => match s.as_str() {
-                "ascend" => false,
-                "descend" => true,
-                other => {
-                    return Err(ScriptError::type_err(format!(
-                        "sort: direction must be \"ascend\" or \"descend\", got \"{}\"",
-                        other
-                    )))
-                }
-            },
-            other => {
-                return Err(ScriptError::type_err(format!(
-                    "sort: 2nd argument must be a direction string \"ascend\" or \"descend\", got {}",
-                    other.type_name()
-                )))
-            }
-        }
-    } else {
-        false
-    };
-
-    let cmp_real = |a: &f64, b: &f64| {
-        let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
-        if descending { ord.reverse() } else { ord }
-    };
-    let cmp_cx = |a: &C64, b: &C64| {
-        let ord = a.re.partial_cmp(&b.re).unwrap_or(std::cmp::Ordering::Equal);
-        if descending { ord.reverse() } else { ord }
-    };
-
+fn sort_value(args: &[Value], want_index: bool) -> Result<(Value, Value), ScriptError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(ScriptError::type_err(format!(
+            "sort: expected 1 to 3 arguments, got {}",
+            args.len()
+        )));
+    }
+    let (descending, dim_arg) = parse_sort_flags(&args[1..])?;
     match &args[0] {
+        Value::Scalar(_) | Value::Int { .. } | Value::Complex(_) => {
+            Ok((args[0].clone(), Value::Scalar(1.0)))
+        }
         Value::Vector(v) => {
-            if is_real_vector(v) {
-                let mut reals: Vec<f64> = v.iter().map(|c| c.re).collect();
-                reals.sort_unstable_by(cmp_real);
-                Ok(Value::Vector(Array1::from_iter(
-                    reals.into_iter().map(|r| Complex::new(r, 0.0)),
-                ).into()))
-            } else {
-                let mut sorted: Vec<C64> = v.iter().copied().collect();
-                sorted.sort_by(cmp_cx);
-                Ok(Value::Vector(Array1::from_vec(sorted).into()))
+            // A vector is a 1×n row. Dim 1 is one observation per column.
+            if dim_arg == Some(1) {
+                let ones = vec![1.0; Shared::len(v)];
+                return Ok((args[0].clone(), real_index_vec(&ones)));
             }
-        }
-        // Octave/matlab compat: a 1-D-shaped matrix (column vector or single
-        // row) is treated as a vector by sort. The output keeps the same
-        // shape so downstream code that depends on column-vs-row continues
-        // to work.
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            let mut elements: Vec<C64> = m.iter().copied().collect();
-            let any_nonzero_im = elements.iter().any(|c| c.im.abs() > 1e-12);
-            if !any_nonzero_im {
-                let mut reals: Vec<f64> = elements.iter().map(|c| c.re).collect();
-                reals.sort_unstable_by(cmp_real);
-                elements = reals.into_iter().map(|r| Complex::new(r, 0.0)).collect();
-            } else {
-                elements.sort_by(cmp_cx);
+            // Real storage stays real: do not widen just to compare.
+            // One output sorts the values in place (stable). Two outputs
+            // also record the source index.
+            if let Some(re) = Shared::real_slice(v) {
+                if !want_index {
+                    return Ok((
+                        Value::real_vector(ndarray::Array1::from_vec(
+                            super::order_stats::sort_real_values(re, descending),
+                        )),
+                        Value::Scalar(0.0),
+                    ));
+                }
+                let (sorted, src) = super::order_stats::sort_real(re, descending);
+                return Ok((
+                    Value::real_vector(ndarray::Array1::from_vec(sorted)),
+                    index_vec(&src),
+                ));
             }
-            let result = Array2::from_shape_fn((nrows, ncols), |(i, j)| {
-                elements[i * ncols + j]
-            });
-            Ok(Value::Matrix(result.into()))
+            let elems: Vec<C64> = v.iter().copied().collect();
+            let (sorted, src) = super::order_stats::sort_indexed(&elems, descending);
+            Ok((pack_sorted_vec(&sorted), index_vec(&src)))
         }
-        Value::Scalar(_) => Ok(args[0].clone()),
+        Value::Matrix(m) => sort_matrix(m, dim_arg, descending),
+        other => Err(ScriptError::type_err(format!(
+            "sort: argument must be a vector, scalar, or matrix, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_sort_flags(rest: &[Value]) -> Result<(bool, Option<usize>), ScriptError> {
+    let dir = |v: &Value| -> Result<bool, ScriptError> {
+        match v {
+            Value::Str(s) if s == "ascend" => Ok(false),
+            Value::Str(s) if s == "descend" => Ok(true),
+            Value::Str(s) => Err(ScriptError::type_err(format!(
+                "sort: direction must be \"ascend\" or \"descend\", got \"{s}\""
+            ))),
+            other => Err(ScriptError::type_err(format!(
+                "sort: direction must be a string, got {}",
+                other.type_name()
+            ))),
+        }
+    };
+    match rest {
+        [] => Ok((false, None)),
+        [a] => match a {
+            Value::Str(_) => Ok((dir(a)?, None)),
+            _ => Ok((false, Some(reduction_dim_value("sort", a)?))),
+        },
+        [a, b] => Ok((dir(b)?, Some(reduction_dim_value("sort", a)?))),
         _ => Err(ScriptError::type_err(
-            "sort: argument must be a vector, scalar, or 1-D-shaped matrix \
-             (column vector or single row)"
-                .to_string(),
+            "sort: expected at most a dimension and a direction".to_string(),
         )),
     }
+}
+
+fn sort_matrix(
+    m: &CMatrix,
+    dim_arg: Option<usize>,
+    descending: bool,
+) -> Result<(Value, Value), ScriptError> {
+    let (nrows, ncols) = (m.nrows(), m.ncols());
+    let dim = dim_arg.unwrap_or(if nrows == 1 && ncols != 1 { 2 } else { 1 });
+    if dim != 1 && dim != 2 {
+        return Err(ScriptError::type_err(format!(
+            "sort: dim must be 1 or 2, got {dim}"
+        )));
+    }
+    if dim == 1 {
+        let mut data = Vec::with_capacity(nrows * ncols);
+        let mut ids = Vec::with_capacity(nrows * ncols);
+        // Column-major fill would be wrong: Array2::from_shape_vec is row-major.
+        let mut cols_s: Vec<Vec<C64>> = Vec::with_capacity(ncols);
+        let mut cols_i: Vec<Vec<f64>> = Vec::with_capacity(ncols);
+        for j in 0..ncols {
+            let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+            let (sorted, src) = super::order_stats::sort_indexed(&col, descending);
+            cols_i.push(src.iter().map(|k| (*k + 1) as f64).collect());
+            cols_s.push(sorted);
+        }
+        for i in 0..nrows {
+            for j in 0..ncols {
+                data.push(cols_s[j][i]);
+                ids.push(cols_i[j][i]);
+            }
+        }
+        return Ok((
+            pack_sorted_matrix(nrows, ncols, &data),
+            Value::real_matrix(Array2::from_shape_vec((nrows, ncols), ids).unwrap()),
+        ));
+    }
+    let mut data = Vec::with_capacity(nrows * ncols);
+    let mut ids = Vec::with_capacity(nrows * ncols);
+    for i in 0..nrows {
+        let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
+        let (sorted, src) = super::order_stats::sort_indexed(&row, descending);
+        data.extend(sorted);
+        ids.extend(src.iter().map(|k| (*k + 1) as f64));
+    }
+    Ok((
+        pack_sorted_matrix(nrows, ncols, &data),
+        Value::real_matrix(Array2::from_shape_vec((nrows, ncols), ids).unwrap()),
+    ))
+}
+
+fn pack_sorted_vec(sorted: &[C64]) -> Value {
+    if sorted.iter().all(|z| z.im == 0.0) {
+        Value::real_vector(ndarray::Array1::from_iter(sorted.iter().map(|z| z.re)))
+    } else {
+        Value::Vector(ndarray::Array1::from_iter(sorted.iter().copied()).into())
+    }
+}
+
+fn pack_sorted_matrix(nrows: usize, ncols: usize, data: &[C64]) -> Value {
+    if data.iter().all(|z| z.im == 0.0) {
+        Value::real_matrix(
+            Array2::from_shape_vec((nrows, ncols), data.iter().map(|z| z.re).collect()).unwrap(),
+        )
+    } else {
+        Value::Matrix(
+            Array2::from_shape_vec((nrows, ncols), data.to_vec())
+                .unwrap()
+                .into(),
+        )
+    }
+}
+
+fn index_vec(src: &[usize]) -> Value {
+    Value::real_vector(ndarray::Array1::from_iter(
+        src.iter().map(|k| (*k + 1) as f64),
+    ))
+}
+
+fn real_index_vec(v: &[f64]) -> Value {
+    Value::real_vector(ndarray::Array1::from_vec(v.to_vec()))
 }
 
 /// trapz(v) — trapezoidal integration with unit spacing.
@@ -4976,8 +5241,11 @@ fn to_real_vec(v: &Value, name: &str) -> Result<Vec<f64>, ScriptError> {
     match v {
         Value::Scalar(n) => Ok(vec![*n]),
         Value::Vector(v) => Ok(v.iter().map(|c| c.re).collect()),
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(m.iter().map(|c| c.re).collect())
+        }
         other => Err(ScriptError::type_err(format!(
-            "{name}: expected real scalar or vector, got {}",
+            "{name}: expected real scalar, vector, or 1-D matrix, got {}",
             other.type_name()
         ))),
     }
@@ -7413,8 +7681,8 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
         } if *rows == 1 || *cols == 1 => {
             Ok(ndarray::Array1::from_iter(data.iter().map(|&v| v as f64)))
         }
-        Value::Matrix(m) if m.ncols() == 1 => {
-            Ok(ndarray::Array1::from_iter(m.column(0).iter().map(|c| c.re)))
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(ndarray::Array1::from_iter(m.iter().map(|c| c.re)))
         }
         other => Err(ScriptError::type_err(format!(
             "cannot plot value of type {other}"
@@ -8209,7 +8477,9 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
             let c = to_cmatrix_arg(&args[0], "diag", "v")?;
             Array1::from_elem(1, c[[0, 0]])
         }
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => Array1::from_iter(m.iter().copied()),
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Array1::from_iter(m.iter().copied())
+        }
         Value::Matrix(m) => {
             // Extract diagonal
             let nrows = m.nrows() as i64;
@@ -8237,7 +8507,12 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     if v.len() == 1 && k == 0 {
-        return Ok(exact_scalar_value(v[0]));
+        let z = v[0];
+        return Ok(if z.im == 0.0 {
+            Value::real_matrix(Array2::from_elem((1, 1), z.re))
+        } else {
+            Value::Matrix(Array2::from_elem((1, 1), z).into())
+        });
     }
     // Create diagonal matrix
     let n = v.len();
@@ -8259,7 +8534,14 @@ fn builtin_trace(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("trace", &args, 1)?;
     match &args[0] {
         Value::Matrix(m) => {
-            let n = m.nrows().min(m.ncols());
+            if m.nrows() != m.ncols() {
+                return Err(ScriptError::type_err(format!(
+                    "trace: matrix must be square (got {}×{})",
+                    m.nrows(),
+                    m.ncols()
+                )));
+            }
+            let n = m.nrows();
             let t: C64 = (0..n).map(|i| m[[i, i]]).sum();
             if t.im.abs() < 1e-12 {
                 Ok(Value::Scalar(t.re))
