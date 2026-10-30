@@ -305,6 +305,12 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
                     // Matrix ∘ matrix `^` is elementwise in the complex path
                     // too; vector ∘ vector `^` was excluded above.
                     let (rows, cols) = (bdim(xr, yr)?, bdim(xc, yc)?);
+                    // Once per call, before the broadcast result buffer.
+                    // A refusal falls through; the complex path reports it
+                    // and does not allocate either.
+                    if rustlab_core::checked_elems(&[rows, cols], rustlab_core::ELEM_F64).is_err() {
+                        return None;
+                    }
                     let out = with_rop!(op, f => broadcast((x, xr, xc), (y, yr, yc), rows, cols, f));
                     Some(Value::real_matrix(Array2::from_shape_vec((rows, cols), out).ok()?))
                 }
@@ -501,10 +507,11 @@ fn product(a: R, b: R) -> Option<Value> {
     }
     match (a, b) {
         (R::Mat(x, xr, xc), R::Mat(y, yr, yc)) if xc == yr => {
-            Some(Value::real_matrix(rustlab_core::matmul::matmul_real(&view(x, xr, xc)?, &view(y, yr, yc)?)))
+            let p = rustlab_core::matmul::matmul_real(&view(x, xr, xc)?, &view(y, yr, yc)?).ok()?;
+            Some(Value::real_matrix(p))
         }
         (R::Vec(x), R::Mat(y, yr, yc)) if x.len() == yr => {
-            let p = rustlab_core::matmul::matmul_real(&view(x, 1, x.len())?, &view(y, yr, yc)?);
+            let p = rustlab_core::matmul::matmul_real(&view(x, 1, x.len())?, &view(y, yr, yc)?).ok()?;
             if yc == 1 {
                 return Some(Value::Scalar(p[[0, 0]]));
             }
@@ -513,6 +520,9 @@ fn product(a: R, b: R) -> Option<Value> {
         (R::Mat(x, xr, 1), R::Vec(y)) => {
             // Outer product: `m[[r, 0]] * v[c]` per element, as the complex
             // path computes it.
+            if rustlab_core::checked_elems(&[xr, y.len()], rustlab_core::ELEM_F64).is_err() {
+                return None;
+            }
             let mut out = Vec::with_capacity(xr * y.len());
             for &p in &x[..xr] {
                 out.extend(y.iter().map(|&q| p * q));

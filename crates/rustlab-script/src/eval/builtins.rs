@@ -80,6 +80,8 @@ impl BuiltinRegistry {
         r.register_nargout("butterworth_lowpass", builtin_butterworth_lowpass);
         r.register_nargout("butterworth_highpass", builtin_butterworth_highpass);
         r.register("convolve", builtin_convolve);
+        r.register_nargout("xcorr", super::xcorr::builtin_xcorr);
+        r.register_nargout("xcov", super::xcorr::builtin_xcov);
         r.register("filtfilt", builtin_filtfilt);
         r.register("filter", builtin_filter);
         r.register("upfirdn", builtin_upfirdn);
@@ -718,7 +720,8 @@ fn builtin_upfirdn(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_window(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("window", &args, 2)?;
     let win = parse_window(&args[0])?;
-    let n = arg_usize(&args[1])?;
+    let n = count_arg(&args[1])?;
+    require_elems("window", &[n], rustlab_core::ELEM_C64)?;
     let w = win.generate(n);
     // Convert RVector to CVector
     let cv: CVector = Array1::from_iter(w.iter().map(|&x| Complex::new(x, 0.0)));
@@ -1202,6 +1205,7 @@ fn builtin_meshgrid(args: Vec<Value>) -> Result<Value, ScriptError> {
         .map_err(|e| ScriptError::type_err(format!("meshgrid: y: {}", e)))?;
 
     let (m, n) = (xv.len(), yv.len()); // m cols, n rows
+    require_elems("meshgrid", &[n, m], rustlab_core::ELEM_C64)?;
 
     let x_mat = Array2::from_shape_fn((n, m), |(_, j)| xv[j]);
     let y_mat = Array2::from_shape_fn((n, m), |(i, _)| yv[i]);
@@ -1520,20 +1524,39 @@ fn builtin_curl3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── Array construction ────────────────────────────────────────────────────
 
+fn too_large(name: &str, dims: &[usize]) -> ScriptError {
+    ScriptError::type_err(rustlab_core::variable_too_large(name, dims))
+}
+
+fn require_elems(name: &str, dims: &[usize], elem_size: usize) -> Result<usize, ScriptError> {
+    rustlab_core::checked_elems(dims, elem_size).map_err(|_| too_large(name, dims))
+}
+
+fn count_arg(v: &Value) -> Result<usize, ScriptError> {
+    v.to_usize().map_err(ScriptError::type_err)
+}
+
+/// One component of a size vector. No rounding: a non-integer is an error,
+/// and so is a non-zero imaginary part or a value that does not fit in `u64`.
+fn count_c64(z: rustlab_core::C64) -> Result<usize, ScriptError> {
+    if z.im.abs() >= 1e-10 {
+        return Err(ScriptError::type_err(format!(
+            "expected non-negative integer, got {z}"
+        )));
+    }
+    Value::count_from_f64(z.re).map_err(ScriptError::type_err)
+}
+
 /// Unpack size arguments for array constructors like zeros, ones, rand, randn.
 /// Accepts: f(n), f(m,n), or f([m,n]) (vector from size()).
 /// `None` for the first element means a single size: the caller builds n×n.
 /// Two sizes, or a 2-element vector, are an m×n matrix.
 fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize), ScriptError> {
     if args.len() == 2 {
-        let m = arg_usize(&args[0])?;
-        let n = arg_usize(&args[1])?;
-        Ok((Some(m), n))
+        Ok((Some(count_arg(&args[0])?), count_arg(&args[1])?))
     } else if let Value::Vector(v) = &args[0] {
         if v.len() == 2 {
-            let m = v[0].re.round() as usize;
-            let n = v[1].re.round() as usize;
-            Ok((Some(m), n))
+            Ok((Some(count_c64(v[0])?), count_c64(v[1])?))
         } else {
             Err(ScriptError::type_err(format!(
                 "{name}: expected scalar or 2-element vector, got {}-element vector",
@@ -1541,8 +1564,7 @@ fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize)
             )))
         }
     } else {
-        let n = arg_usize(&args[0])?;
-        Ok((None, n))
+        Ok((None, count_arg(&args[0])?))
     }
 }
 
@@ -1565,11 +1587,24 @@ fn square_if_one(m: Option<usize>, n: usize) -> (usize, usize) {
     }
 }
 
+/// Square a single size, then refuse a product that cannot be allocated.
+fn shape_2d(
+    name: &str,
+    m: Option<usize>,
+    n: usize,
+    elem: usize,
+) -> Result<(usize, usize), ScriptError> {
+    let (r, c) = square_if_one(m, n);
+    require_elems(name, &[r, c], elem)?;
+    Ok((r, c))
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("zeros", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "zeros")?;
-    let (r, c) = square_if_one(m, n);
+    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let (r, c) = shape_2d("zeros", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
             vec![0i128; r * c],
@@ -1586,7 +1621,8 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("ones", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "ones")?;
-    let (r, c) = square_if_one(m, n);
+    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let (r, c) = shape_2d("ones", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
             vec![1i128; r * c],
@@ -1603,7 +1639,8 @@ fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("linspace", &args, 3)?;
     let start = arg_f64(&args[0])?;
     let stop = arg_f64(&args[1])?;
-    let n = arg_usize(&args[2])?;
+    let n = count_arg(&args[2])?;
+    require_elems("linspace", &[n], rustlab_core::ELEM_C64)?;
     if n == 0 {
         return Ok(Value::Vector(Array1::zeros(0).into()));
     }
@@ -1628,7 +1665,7 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "rand")?;
-    let (r, c) = square_if_one(m, n);
+    let (r, c) = shape_2d("rand", m, n, rustlab_core::ELEM_F64)?;
     crate::eval::rng::with_rng(|rng| {
         let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
         Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
@@ -1644,7 +1681,7 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "randn")?;
-    let (r, c) = square_if_one(m, n);
+    let (r, c) = shape_2d("randn", m, n, rustlab_core::ELEM_F64)?;
     crate::eval::rng::with_rng(|rng| {
         let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
         Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
@@ -1653,31 +1690,31 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// Unpack (m, n, p) from either 3 scalar args or one 3-element vector.
 fn unpack_tensor3_shape(args: &[Value], name: &str) -> Result<(usize, usize, usize), ScriptError> {
-    match args.len() {
-        3 => {
-            let m = arg_usize(&args[0])?;
-            let n = arg_usize(&args[1])?;
-            let p = arg_usize(&args[2])?;
-            Ok((m, n, p))
-        }
+    let (m, n, p) = match args.len() {
+        3 => (count_arg(&args[0])?, count_arg(&args[1])?, count_arg(&args[2])?),
         1 => {
             if let Value::Vector(v) = &args[0] {
                 if v.len() == 3 {
-                    return Ok((
-                        v[0].re.round() as usize,
-                        v[1].re.round() as usize,
-                        v[2].re.round() as usize,
-                    ));
+                    (count_c64(v[0])?, count_c64(v[1])?, count_c64(v[2])?)
+                } else {
+                    return Err(ScriptError::type_err(format!(
+                        "{name}: expected (m, n, p) or a 3-element vector"
+                    )));
                 }
+            } else {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: expected (m, n, p) or a 3-element vector"
+                )));
             }
-            Err(ScriptError::type_err(format!(
-                "{name}: expected (m, n, p) or a 3-element vector"
+        }
+        n => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected 1 or 3 arguments, got {n}"
             )))
         }
-        n => Err(ScriptError::type_err(format!(
-            "{name}: expected 1 or 3 arguments, got {n}"
-        ))),
-    }
+    };
+    require_elems(name, &[m, n, p], rustlab_core::ELEM_C64)?;
+    Ok((m, n, p))
 }
 
 fn builtin_zeros3(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -1743,13 +1780,13 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
     let shape = match args.len() {
         1 => None,
         2 => {
-            let n = arg_usize(&args[1])?;
-            Some((n, n))
+            let n = count_arg(&args[1])?;
+            Some(shape_2d("randi", None, n, rustlab_core::ELEM_F64)?)
         }
         _ => {
-            let rows = arg_usize(&args[1])?;
-            let cols = arg_usize(&args[2])?;
-            Some((rows, cols))
+            let rows = count_arg(&args[1])?;
+            let cols = count_arg(&args[2])?;
+            Some(shape_2d("randi", Some(rows), cols, rustlab_core::ELEM_F64)?)
         }
     };
     crate::eval::rng::with_rng(|rng| match shape {
@@ -8031,6 +8068,22 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
     let fortran =
         header.contains("'fortran_order': True") || header.contains("'fortran_order':True");
     let shape = parse_npy_shape(header)?;
+    // Refuse the shape before the payload is turned into an array. Integer
+    // dtypes are stored as i128, so the in-memory width is 16 even when the
+    // file element is one byte.
+    let stored = if is_c16 {
+        Some(rustlab_core::ELEM_C64)
+    } else if is_f8 {
+        Some(rustlab_core::ELEM_F64)
+    } else if npy_descr(header).and_then(npy_int_dtype).is_some() {
+        Some(rustlab_core::ELEM_I128)
+    } else {
+        None
+    };
+    if let Some(elem) = stored {
+        rustlab_core::checked_elems(&shape, elem)
+            .map_err(|_| rustlab_core::variable_too_large("load", &shape))?;
+    }
     let data = &bytes[hend..];
 
     let rd = |b: &[u8]| -> f64 {
@@ -8441,7 +8494,8 @@ fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// eye(n) — n×n identity matrix
 fn builtin_eye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("eye", &args, 1)?;
-    let n = arg_usize(&args[0])?;
+    let n = count_arg(&args[0])?;
+    require_elems("eye", &[n, n], rustlab_core::ELEM_C64)?;
     let mut m: CMatrix = Array2::zeros((n, n));
     for i in 0..n {
         m[[i, i]] = Complex::new(1.0, 0.0);
@@ -8536,7 +8590,10 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     // Create diagonal matrix
     let n = v.len();
-    let size = n + k.unsigned_abs() as usize;
+    let size = n.checked_add(k.unsigned_abs() as usize).ok_or_else(|| {
+        too_large("diag", &[n, k.unsigned_abs() as usize])
+    })?;
+    require_elems("diag", &[size, size], rustlab_core::ELEM_C64)?;
     let mut m: CMatrix = Array2::zeros((size, size));
     for (i, &val) in v.iter().enumerate() {
         let (r, c) = if k >= 0 {
@@ -8580,18 +8637,25 @@ fn builtin_trace(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// reshape(A, m, n) — reshape A (vector or matrix) into an m×n matrix (column-major order)
 fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
-    let m = arg_usize(&args[1])?;
-    let n = arg_usize(&args[2])?;
+    let m = count_arg(&args[1])?;
+    let n = count_arg(&args[2])?;
     let p = if args.len() == 4 {
-        Some(arg_usize(&args[3])?)
+        Some(count_arg(&args[3])?)
     } else {
         None
     };
+    // Checked product before any `m * n` compare. A wrapping product used to
+    // compare equal to a short source and then allocate the huge shape.
     if p.is_none() {
         if let Some(v) = reshape_2d(&args[0], m, n)? {
             return Ok(v);
         }
     }
+    let dims: Vec<usize> = match p {
+        Some(pv) => vec![m, n, pv],
+        None => vec![m, n],
+    };
+    let total_checked = require_elems("reshape", &dims, rustlab_core::ELEM_C64)?;
     // Flatten source in column-major order (Octave convention).
     let flat: Vec<C64> = match &args[0] {
         Value::Vector(v) => v.iter().copied().collect(),
@@ -8620,10 +8684,7 @@ fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     };
-    let total = match p {
-        Some(pv) => m * n * pv,
-        None => m * n,
-    };
+    let total = total_checked;
     if flat.len() != total {
         return Err(ScriptError::type_err(format!(
             "reshape: cannot reshape {} elements into {}{}{} (= {} elements)",
@@ -8680,10 +8741,10 @@ fn reshape_2d_real(src: &Value, m: usize, n: usize) -> Result<Option<Value>, Scr
         _ => return Ok(None),
     };
     let len = data.len();
-    if len != m * n {
+    let prod = require_elems("reshape", &[m, n], rustlab_core::ELEM_F64)?;
+    if len != prod {
         return Err(ScriptError::type_err(format!(
-            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
-            m * n
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {prod} elements)"
         )));
     }
     let in_order = nr == 1 || nc == 1;
@@ -8717,10 +8778,10 @@ fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptEr
     };
     // Not row-major: the general walk handles it.
     let Some(data) = data else { return Ok(None) };
-    if len != m * n {
+    let prod = require_elems("reshape", &[m, n], rustlab_core::ELEM_C64)?;
+    if len != prod {
         return Err(ScriptError::type_err(format!(
-            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
-            m * n
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {prod} elements)"
         )));
     }
     // Source in column-major order: shared (a vector), as stored (one row
@@ -8750,8 +8811,8 @@ fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptEr
 /// repmat(A, m, n) — tile matrix A m times vertically, n times horizontally
 fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("repmat", &args, 3)?;
-    let reps_r = arg_usize(&args[1])?;
-    let reps_c = arg_usize(&args[2])?;
+    let reps_r = count_arg(&args[1])?;
+    let reps_c = count_arg(&args[2])?;
     // Normalise to a matrix block
     let block: CMatrix = match &args[0] {
         Value::Matrix(m) => (**m).clone(),
@@ -8772,6 +8833,7 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let br = block.nrows();
     let bc = block.ncols();
+    require_elems("repmat", &[br, reps_r, bc, reps_c], rustlab_core::ELEM_C64)?;
     let out_r = br * reps_r;
     let out_c = bc * reps_c;
     let mut out: CMatrix = Array2::zeros((out_r, out_c));
@@ -8857,8 +8919,11 @@ fn builtin_cat(args: Vec<Value>) -> Result<Value, ScriptError> {
                         n
                     )));
                 }
-                total_pages += vp;
+                total_pages = total_pages.checked_add(vp).ok_or_else(|| {
+                    too_large("cat", &[m, n, total_pages.saturating_add(vp)])
+                })?;
             }
+            require_elems("cat", &[m, n, total_pages], rustlab_core::ELEM_C64)?;
             let mut out = Array3::<C64>::zeros((m, n, total_pages));
             let mut k0 = 0usize;
             for v in rest.into_iter() {
@@ -9125,6 +9190,7 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     }
     if let (Some(a), Some(b)) = (real_1d(&args[0]), real_1d(&args[1])) {
+        require_elems("outer", &[a.len(), b.len()], rustlab_core::ELEM_F64)?;
         let mut out = Vec::with_capacity(a.len() * b.len());
         for &x in a {
             out.extend(b.iter().map(|&y| x * y));
@@ -9140,6 +9206,7 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
     // Real inputs give a real result (no `0·Inf` NaN in the imaginary
     // part), as for `.*` and `*`.
     let real = a.iter().chain(b.iter()).all(|c| c.im.abs() < f64::EPSILON);
+    require_elems("outer", &[a.len(), b.len()], rustlab_core::ELEM_C64)?;
     let m = Array2::from_shape_fn((a.len(), b.len()), |(i, j)| {
         let z = a[i] * b[j];
         if real { C64::new(z.re, 0.0) } else { z }
@@ -9156,6 +9223,7 @@ fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
     let b = to_cmatrix_arg_row(&args[1], "kron", "B")?;
     let (ma, na) = (a.nrows(), a.ncols());
     let (mb, nb) = (b.nrows(), b.ncols());
+    require_elems("kron", &[ma, mb, na, nb], rustlab_core::ELEM_C64)?;
     let result = Array2::from_shape_fn((ma * mb, na * nb), |(r, c)| {
         a[[r / mb, c / nb]] * b[[r % mb, c % nb]]
     });
@@ -9318,7 +9386,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                             sm.rows, sm.cols
                         )));
                     }
-                    let dense = sm.to_dense();
+                    let dense = sm.to_dense().map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
                     let (_, sv, _) = svd_full(&dense)?;
                     Ok(Value::Scalar(sv.first().copied().unwrap_or(0.0)))
                 }
@@ -14516,8 +14584,14 @@ fn builtin_issparse(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_full(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("full", &args, 1)?;
     match args.into_iter().next().unwrap() {
-        Value::SparseVector(sv) => Ok(Value::Vector(sv.to_dense().into())),
-        Value::SparseMatrix(sm) => Ok(Value::Matrix(sm.to_dense().into())),
+        Value::SparseVector(sv) => {
+            let v = sv.to_dense().map_err(|_| too_large("full", &[sv.len]))?;
+            Ok(Value::Vector(v.into()))
+        }
+        Value::SparseMatrix(sm) => {
+            let m = sm.to_dense().map_err(|_| too_large("full", &[sm.rows, sm.cols]))?;
+            Ok(Value::Matrix(m.into()))
+        }
         other => Ok(other), // identity for dense
     }
 }
@@ -15021,7 +15095,9 @@ fn try_sparse_lu(
 /// `"amd"` (approximate minimum degree).
 fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("chol", &args, 1, 2)?;
-    if matches!(args.first(), Some(Value::Matrix(_))) {
+    // A scalar and a vector are matrices here, the same as `lu` and `\`.
+    // `chol(4)` is the 1×1 factor. Only a sparse matrix returns a handle.
+    if !matches!(args.first(), Some(Value::SparseMatrix(_))) {
         return super::linsys::builtin_chol_dense(&args, nargout);
     }
     if nargout > 1 {
@@ -15826,16 +15902,16 @@ fn builtin_k2ij(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `sprand(m, n, density)` — random sparse matrix with approximately density*m*n non-zeros.
 fn builtin_sprand(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("sprand", &args, 3)?;
-    let m = arg_usize(&args[0])?;
-    let n = arg_usize(&args[1])?;
+    let m = count_arg(&args[0])?;
+    let n = count_arg(&args[1])?;
     let density = arg_f64(&args[2])?;
     if density < 0.0 || density > 1.0 {
         return Err(ScriptError::runtime(
             "sprand: density must be in [0, 1]".to_string(),
         ));
     }
+    let total = require_elems("sprand", &[m, n], rustlab_core::ELEM_C64)?;
     let val_dist = Uniform::new(0.0_f64, 1.0);
-    let total = m * n;
     let target_nnz = (density * total as f64).round() as usize;
     let entries: Vec<(usize, usize, C64)> = crate::eval::rng::with_rng(|rng| {
         let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(target_nnz);

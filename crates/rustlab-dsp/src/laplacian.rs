@@ -161,7 +161,9 @@ pub fn laplacian_2d_bc(
     check_pos("laplacian_2d", "dy", dy)?;
     let inv_dx2 = 1.0 / (dx * dx);
     let inv_dy2 = 1.0 / (dy * dy);
-    let n = nx * ny;
+    let n = rustlab_core::checked_elems(&[nx, ny], rustlab_core::ELEM_F64).map_err(|_| {
+        DspError::InvalidParameter(rustlab_core::variable_too_large("laplacian_2d", &[nx, ny]))
+    })?;
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
     let mut buf: [(usize, C64); 5] = [(0, c(0.0)); 5];
 
