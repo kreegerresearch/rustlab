@@ -87,7 +87,8 @@ pub fn overlap_add(x: &CVector, h: &CVector, block_size: usize) -> Result<CVecto
         .ok_or_else(|| {
             CoreError::InvalidParameter(variable_too_large("overlap_add", &[block_size, nh]))
         })?;
-    let fft_size = next_power_of_two(need);
+    let fft_size = next_power_of_two(need)
+        .map_err(|_| CoreError::InvalidParameter(variable_too_large("overlap_add", &[need])))?;
     len_ok("overlap_add", fft_size)?;
 
     // Pad h to fft_size and compute its FFT
@@ -144,13 +145,18 @@ pub fn overlap_add(x: &CVector, h: &CVector, block_size: usize) -> Result<CVecto
     Ok(Array1::from_vec(output))
 }
 
-pub(crate) fn next_power_of_two(n: usize) -> usize {
-    if n == 0 {
-        return 1;
-    }
-    let mut p = 1;
-    while p < n {
-        p <<= 1;
-    }
-    p
+/// Next power of two, at least 1, that is a legal complex-array length.
+///
+/// The old loop (`p <<= 1` while `p < n`) overflowed or spun forever once
+/// `n` was past `2^63`. A length that fits in `usize` but not in the
+/// element cap is the same class of error as `xcorr`'s capacity overflow.
+pub(crate) fn next_power_of_two(n: usize) -> Result<usize, CoreError> {
+    let p = if n <= 1 {
+        1
+    } else {
+        n.checked_next_power_of_two()
+            .ok_or_else(|| CoreError::InvalidParameter(variable_too_large("fft", &[n])))?
+    };
+    len_ok("fft", p)?;
+    Ok(p)
 }

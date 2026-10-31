@@ -250,7 +250,7 @@ fn butterworth_cutoff_is_minus_three_db() {
 fn filtfilt_of_a_constant_through_a_lowpass_stays_put() {
     let f = butterworth_lowpass(2, 1000.0, 8000.0).unwrap();
     let x = vec![1.0; 64];
-    let y = f.filtfilt(&x);
+    let y = f.filtfilt(&x).unwrap();
     assert_eq!(y.len(), 64);
     for (i, &v) in y.iter().enumerate() {
         assert!((v - 1.0).abs() < 1e-8, "sample {i} = {v}");

@@ -88,8 +88,22 @@ pub fn cwt_morlet(
     // Zero-pad symmetrically by 4σ at the maximum scale. The Morlet's
     // Gaussian envelope has σ = scale (in samples), so 4σ catches > 99.99%
     // of the wavelet's time-domain energy.
-    let pad = (4.0 * max_scale).ceil() as usize;
-    let n_padded = next_power_of_two(n + 2 * pad);
+    let pad_f = (4.0 * max_scale).ceil();
+    if !pad_f.is_finite() || pad_f < 0.0 || pad_f >= usize::MAX as f64 {
+        return Err(DspError::InvalidParameter(
+            "cwt_morlet: scale is too large to pad".into(),
+        ));
+    }
+    let pad = pad_f as usize;
+    let padded = n
+        .checked_add(pad.checked_mul(2).ok_or_else(|| {
+            DspError::InvalidParameter("cwt_morlet: scale is too large to pad".into())
+        })?)
+        .ok_or_else(|| {
+            DspError::InvalidParameter("cwt_morlet: scale is too large to pad".into())
+        })?;
+    let n_padded =
+        next_power_of_two(padded).map_err(|e| DspError::InvalidParameter(e.to_string()))?;
     let pad_left = pad;
 
     let mut x_padded = vec![Complex::new(0.0, 0.0); n_padded];
@@ -120,8 +134,7 @@ pub fn cwt_morlet(
         }
     }
 
-    let freqs: RVector =
-        Array1::from_iter(scales.iter().map(|&s| OMEGA0 * fs / (2.0 * PI * s)));
+    let freqs: RVector = Array1::from_iter(scales.iter().map(|&s| OMEGA0 * fs / (2.0 * PI * s)));
     let t: RVector = Array1::from_iter((0..n).map(|k| k as f64 / fs));
     Ok((w, freqs, t))
 }
@@ -142,11 +155,7 @@ pub struct CwtState {
 /// Construct a streaming-CWT state with a fixed sliding-window length.
 /// On each `cwt_stream` call the latest `n_samples` are CWT'd; older
 /// samples are dropped.
-pub fn cwt_stream_init(
-    fs: f64,
-    n_samples: usize,
-    scales: &RVector,
-) -> Result<CwtState, DspError> {
+pub fn cwt_stream_init(fs: f64, n_samples: usize, scales: &RVector) -> Result<CwtState, DspError> {
     if n_samples == 0 {
         return Err(DspError::InvalidParameter(
             "cwt_stream_init: n_samples must be > 0".into(),
@@ -173,7 +182,9 @@ pub fn cwt_stream_init(
         fs,
         scales: scales.clone(),
         n_samples,
-        history: Vec::with_capacity(n_samples * 2),
+        history: Vec::with_capacity(n_samples.checked_mul(2).ok_or_else(|| {
+            DspError::InvalidParameter("cwt_stream_init: n_samples is too large".into())
+        })?),
     })
 }
 

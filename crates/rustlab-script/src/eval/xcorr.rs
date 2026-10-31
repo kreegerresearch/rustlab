@@ -7,6 +7,7 @@ use crate::error::ScriptError;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use rustlab_core::{CMatrix, CVector, C64};
+use rustlab_dsp::xcorr::lag_count;
 use rustlab_dsp::{xcorr_c64, xcorr_f64, XcorrMethod, XcorrScale};
 
 pub(crate) fn builtin_xcorr(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
@@ -115,7 +116,7 @@ fn correlate(
         }
         // No samples: the correlation has no lags. `[]` is an empty row.
         // A 0×N matrix is 0×N² (one empty pair per column pair).
-        return empty_autocorr(&x, nargout);
+        return empty_autocorr(name, &x, nargout);
     }
     if let Some(y) = &y {
         if x.multi || y.multi {
@@ -132,6 +133,21 @@ fn correlate(
         None => x.columns[0].len(),
     };
     let maxlag = maxlag_arg.unwrap_or(n - 1);
+    // `2*maxlag+1` is what used to overflow `Vec` capacity. Reject it
+    // before any correlation, including the lag axis collected below.
+    let n_lags = lag_count(name, maxlag, rustlab_core::ELEM_F64).map_err(|e| {
+        ScriptError::type_err(match e {
+            rustlab_core::CoreError::InvalidParameter(msg) => {
+                // The math layer says "xcorr"; this call might be xcov.
+                if name == "xcorr" {
+                    msg
+                } else {
+                    msg.replacen("xcorr", name, 1)
+                }
+            }
+            other => other.to_string(),
+        })
+    })?;
     let orient = x.orient_tag();
     let y_real = match &y {
         Some(y) => y.columns.iter().all(Samples::is_real),
@@ -146,24 +162,24 @@ fn correlate(
             a = demean_samples(a);
             b = demean_samples(b);
         }
-        one_pair(a, b, maxlag, scale)
+        one_pair(name, a, b, maxlag, scale)?
     } else if x.multi {
         let mut cols = x.columns;
         if demean {
             cols = cols.into_iter().map(demean_samples).collect();
         }
-        column_pairs(&cols, maxlag, scale, real)
+        column_pairs(name, &cols, maxlag, n_lags, scale, real)?
     } else {
         let mut a = x.columns.into_iter().next().unwrap();
         if demean {
             a = demean_samples(a);
         }
         let b = clone_samples(&a);
-        one_pair(a, b, maxlag, scale)
+        one_pair(name, a, b, maxlag, scale)?
     };
 
-    let lags = (-(maxlag as i64)..=(maxlag as i64))
-        .map(|m| m as f64)
+    let lags = (0..n_lags)
+        .map(|k| k as f64 - maxlag as f64)
         .collect::<Vec<_>>();
     let r = pack(r, orient);
     if nargout == 2 {
@@ -183,11 +199,11 @@ impl Signal {
 /// Autocorrelation of an input with no samples. The result has no lags.
 /// A vector stays an empty row. A 0×N matrix is 0×N². An M×0 matrix is
 /// (2M−1)×0, the column-pair width with no columns.
-fn empty_autocorr(sig: &Signal, nargout: usize) -> Result<Value, ScriptError> {
+fn empty_autocorr(name: &str, sig: &Signal, nargout: usize) -> Result<Value, ScriptError> {
     let r = match sig.orient {
         Orient::Vector => Value::real_vector(Array1::zeros(0)),
         _ => {
-            let (h, w) = empty_matrix_hw(sig.rows, sig.cols);
+            let (h, w) = empty_matrix_hw(name, sig.rows, sig.cols)?;
             Value::real_matrix(Array2::zeros((h, w)))
         }
     };
@@ -206,33 +222,93 @@ fn empty_autocorr(sig: &Signal, nargout: usize) -> Result<Value, ScriptError> {
     }
 }
 
-fn empty_matrix_hw(rows: usize, cols: usize) -> (usize, usize) {
+fn empty_matrix_hw(name: &str, rows: usize, cols: usize) -> Result<(usize, usize), ScriptError> {
     if rows == 0 && cols == 0 {
-        return (0, 0);
+        return Ok((0, 0));
     }
     if cols == 0 {
-        return (rows * 2 - 1, 0);
+        let h = rows
+            .checked_mul(2)
+            .and_then(|h| h.checked_sub(1))
+            .ok_or_else(|| {
+                ScriptError::type_err(rustlab_core::variable_too_large(name, &[rows]))
+            })?;
+        return Ok((h, 0));
     }
-    let width = if cols == 1 { 1 } else { cols * cols };
-    (0, width)
+    let width = if cols == 1 {
+        1
+    } else {
+        cols.checked_mul(cols).ok_or_else(|| {
+            ScriptError::type_err(rustlab_core::variable_too_large(name, &[cols, cols]))
+        })?
+    };
+    // Height is 0, so the element count is 0, but the width still has to
+    // be a legal dimension (a 0×N² matrix of a very wide input).
+    if width > rustlab_core::MAX_ELEMENTS as usize {
+        return Err(ScriptError::type_err(rustlab_core::variable_too_large(
+            name,
+            &[0, width],
+        )));
+    }
+    Ok((0, width))
 }
 
-fn one_pair(x: Samples, y: Samples, maxlag: usize, scale: XcorrScale) -> Pair {
+fn one_pair(
+    name: &str,
+    x: Samples,
+    y: Samples,
+    maxlag: usize,
+    scale: XcorrScale,
+) -> Result<Pair, ScriptError> {
     match (x, y) {
-        (Samples::Real(x), Samples::Real(y)) => {
-            Pair::Real(xcorr_f64(&x, &y, maxlag, scale, XcorrMethod::Auto))
-        }
+        (Samples::Real(x), Samples::Real(y)) => Ok(Pair::Real(
+            xcorr_f64(&x, &y, maxlag, scale, XcorrMethod::Auto).map_err(|e| corr_err(name, e))?,
+        )),
         (x, y) => {
             let x = to_c64(x);
             let y = to_c64(y);
-            Pair::Complex(xcorr_c64(&x, &y, maxlag, scale, XcorrMethod::Auto))
+            Ok(Pair::Complex(
+                xcorr_c64(&x, &y, maxlag, scale, XcorrMethod::Auto)
+                    .map_err(|e| corr_err(name, e))?,
+            ))
         }
     }
 }
 
-fn column_pairs(cols: &[Samples], maxlag: usize, scale: XcorrScale, real: bool) -> Pair {
+fn corr_err(name: &str, err: rustlab_core::CoreError) -> ScriptError {
+    let msg = match err {
+        rustlab_core::CoreError::InvalidParameter(msg) => {
+            if name == "xcorr" {
+                msg
+            } else {
+                msg.replacen("xcorr", name, 1)
+            }
+        }
+        other => other.to_string(),
+    };
+    ScriptError::type_err(msg)
+}
+
+fn column_pairs(
+    name: &str,
+    cols: &[Samples],
+    maxlag: usize,
+    rows: usize,
+    scale: XcorrScale,
+    real: bool,
+) -> Result<Pair, ScriptError> {
     let n = cols.len();
-    let rows = 2 * maxlag + 1;
+    let width = n
+        .checked_mul(n)
+        .ok_or_else(|| ScriptError::type_err(rustlab_core::variable_too_large(name, &[n, n])))?;
+    let elem = if real {
+        rustlab_core::ELEM_F64
+    } else {
+        rustlab_core::ELEM_C64
+    };
+    rustlab_core::checked_elems(&[rows, width], elem).map_err(|_| {
+        ScriptError::type_err(rustlab_core::variable_too_large(name, &[rows, width]))
+    })?;
     if real {
         let cols: Vec<&[f64]> = cols
             .iter()
@@ -244,35 +320,37 @@ fn column_pairs(cols: &[Samples], maxlag: usize, scale: XcorrScale, real: bool) 
         let mut data = vec![0.0; rows * n * n];
         for i in 0..n {
             for j in 0..n {
-                let col = xcorr_f64(cols[i], cols[j], maxlag, scale, XcorrMethod::Auto);
+                let col = xcorr_f64(cols[i], cols[j], maxlag, scale, XcorrMethod::Auto)
+                    .map_err(|e| corr_err(name, e))?;
                 let out_c = i * n + j;
                 for (r, v) in col.into_iter().enumerate() {
                     data[r * n * n + out_c] = v;
                 }
             }
         }
-        Pair::MatrixReal {
+        Ok(Pair::MatrixReal {
             data,
             rows,
             cols: n * n,
-        }
+        })
     } else {
         let cols: Vec<Vec<C64>> = cols.iter().cloned().map(to_c64).collect();
         let mut data = vec![Complex::new(0.0, 0.0); rows * n * n];
         for i in 0..n {
             for j in 0..n {
-                let col = xcorr_c64(&cols[i], &cols[j], maxlag, scale, XcorrMethod::Auto);
+                let col = xcorr_c64(&cols[i], &cols[j], maxlag, scale, XcorrMethod::Auto)
+                    .map_err(|e| corr_err(name, e))?;
                 let out_c = i * n + j;
                 for (r, v) in col.into_iter().enumerate() {
                     data[r * n * n + out_c] = v;
                 }
             }
         }
-        Pair::MatrixComplex {
+        Ok(Pair::MatrixComplex {
             data,
             rows,
-            cols: n * n,
-        }
+            cols: width,
+        })
     }
 }
 
@@ -530,5 +608,33 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
             rows,
             cols,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{column_pairs, empty_matrix_hw, Samples};
+    use rustlab_dsp::XcorrScale;
+
+    #[test]
+    fn wide_empty_pair_width_is_an_error() {
+        // 2^40 columns, no stored samples. The pair matrix would be
+        // 0 × 2^80, which does not fit in `usize`.
+        let err = empty_matrix_hw("xcorr", 0, 1usize << 40).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("maximum possible variable size"), "{msg}");
+        assert!(msg.contains("xcorr"), "{msg}");
+    }
+
+    #[test]
+    fn column_pair_product_over_the_cap_is_an_error() {
+        let cols = vec![Samples::Real(vec![1.0]); 4];
+        match column_pairs("xcorr", &cols, 0, usize::MAX / 2, XcorrScale::None, true) {
+            Err(err) => assert!(
+                err.to_string().contains("maximum possible variable size"),
+                "{err}"
+            ),
+            Ok(_) => panic!("column-pair product over the cap should error"),
+        }
     }
 }
