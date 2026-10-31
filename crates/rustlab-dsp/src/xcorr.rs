@@ -8,7 +8,7 @@
 
 use crate::fft::dft_any_len;
 use num_complex::Complex;
-use rustlab_core::C64;
+use rustlab_core::{checked_elems, variable_too_large, CoreError, C64, ELEM_C64, ELEM_F64};
 
 /// How the raw sums are scaled. `N` is the longer input length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +32,19 @@ pub enum XcorrMethod {
     Fft,
 }
 
+/// Number of lags from `-maxlag` to `+maxlag`, or an error when that
+/// length cannot be stored. `2 * maxlag + 1` is the expression that
+/// overflowed `Vec::with_capacity` (`capacity overflow`).
+pub fn lag_count(name: &str, maxlag: usize, elem: usize) -> Result<usize, CoreError> {
+    let n = maxlag
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| CoreError::InvalidParameter(variable_too_large(name, &[maxlag])))?;
+    checked_elems(&[n], elem)
+        .map_err(|_| CoreError::InvalidParameter(variable_too_large(name, &[n])))?;
+    Ok(n)
+}
+
 /// Cross-correlation of two complex sequences.
 pub fn xcorr_c64(
     x: &[C64],
@@ -39,10 +52,11 @@ pub fn xcorr_c64(
     maxlag: usize,
     scale: XcorrScale,
     method: XcorrMethod,
-) -> Vec<C64> {
-    let mut raw = raw_c64(x, y, maxlag, method);
+) -> Result<Vec<C64>, CoreError> {
+    let nout = lag_count("xcorr", maxlag, ELEM_C64)?;
+    let mut raw = raw_c64(x, y, maxlag, nout, method)?;
     scale_c64(&mut raw, x, y, maxlag, scale);
-    raw
+    Ok(raw)
 }
 
 /// Cross-correlation of two real sequences. `conj` is a no-op, and the
@@ -54,10 +68,11 @@ pub fn xcorr_f64(
     maxlag: usize,
     scale: XcorrScale,
     method: XcorrMethod,
-) -> Vec<f64> {
-    let mut raw = raw_f64(x, y, maxlag, method);
+) -> Result<Vec<f64>, CoreError> {
+    let nout = lag_count("xcorr", maxlag, ELEM_F64)?;
+    let mut raw = raw_f64(x, y, maxlag, nout, method)?;
     scale_f64(&mut raw, x, y, maxlag, scale);
-    raw
+    Ok(raw)
 }
 
 fn use_fft(n: usize, maxlag: usize, method: XcorrMethod) -> bool {
@@ -68,34 +83,47 @@ fn use_fft(n: usize, maxlag: usize, method: XcorrMethod) -> bool {
     }
 }
 
-fn raw_c64(x: &[C64], y: &[C64], maxlag: usize, method: XcorrMethod) -> Vec<C64> {
+fn raw_c64(
+    x: &[C64],
+    y: &[C64],
+    maxlag: usize,
+    nout: usize,
+    method: XcorrMethod,
+) -> Result<Vec<C64>, CoreError> {
     let n = x.len().max(y.len());
     if use_fft(n, maxlag, method) {
-        fft_c64(x, y, maxlag)
+        fft_c64(x, y, maxlag, nout)
     } else {
-        direct_c64(x, y, maxlag)
+        Ok(direct_c64(x, y, maxlag, nout))
     }
 }
 
-fn raw_f64(x: &[f64], y: &[f64], maxlag: usize, method: XcorrMethod) -> Vec<f64> {
+fn raw_f64(
+    x: &[f64],
+    y: &[f64],
+    maxlag: usize,
+    nout: usize,
+    method: XcorrMethod,
+) -> Result<Vec<f64>, CoreError> {
     let n = x.len().max(y.len());
     if use_fft(n, maxlag, method) {
         let xc: Vec<C64> = x.iter().map(|&v| Complex::new(v, 0.0)).collect();
         let yc: Vec<C64> = y.iter().map(|&v| Complex::new(v, 0.0)).collect();
-        fft_c64(&xc, &yc, maxlag)
+        Ok(fft_c64(&xc, &yc, maxlag, nout)?
             .into_iter()
             .map(|c| c.re)
-            .collect()
+            .collect())
     } else {
-        direct_f64(x, y, maxlag)
+        Ok(direct_f64(x, y, maxlag, nout))
     }
 }
 
-fn direct_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
+fn direct_c64(x: &[C64], y: &[C64], maxlag: usize, nout: usize) -> Vec<C64> {
     let nx = x.len() as isize;
     let ny = y.len() as isize;
-    let mut out = Vec::with_capacity(2 * maxlag + 1);
-    for m in -(maxlag as isize)..=(maxlag as isize) {
+    let mut out = Vec::with_capacity(nout);
+    for k in 0..nout {
+        let m = k as isize - maxlag as isize;
         let n0 = 0.max(-m);
         let n1 = ny.min(nx - m);
         let mut s = Complex::new(0.0, 0.0);
@@ -109,11 +137,12 @@ fn direct_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
     out
 }
 
-fn direct_f64(x: &[f64], y: &[f64], maxlag: usize) -> Vec<f64> {
+fn direct_f64(x: &[f64], y: &[f64], maxlag: usize, nout: usize) -> Vec<f64> {
     let nx = x.len() as isize;
     let ny = y.len() as isize;
-    let mut out = Vec::with_capacity(2 * maxlag + 1);
-    for m in -(maxlag as isize)..=(maxlag as isize) {
+    let mut out = Vec::with_capacity(nout);
+    for k in 0..nout {
+        let m = k as isize - maxlag as isize;
         let n0 = 0.max(-m);
         let n1 = ny.min(nx - m);
         let mut s = 0.0;
@@ -131,14 +160,14 @@ fn direct_f64(x: &[f64], y: &[f64], maxlag: usize) -> Vec<f64> {
 ///
 /// The FFT length is at least `2*maxlag+1` and at least `nx+ny-1`, rounded
 /// up to a power of two, so a requested lag does not wrap into another.
-fn fft_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
+fn fft_c64(x: &[C64], y: &[C64], maxlag: usize, nout: usize) -> Result<Vec<C64>, CoreError> {
     let linear = x.len().saturating_add(y.len()).saturating_sub(1).max(1);
-    let wanted = maxlag.saturating_mul(2).saturating_add(1).max(linear);
+    let wanted = nout.max(linear);
     let Some(len) = wanted.checked_next_power_of_two() else {
-        return direct_c64(x, y, maxlag);
+        return Ok(direct_c64(x, y, maxlag, nout));
     };
-    if rustlab_core::checked_elems(&[len], rustlab_core::ELEM_C64).is_err() {
-        return direct_c64(x, y, maxlag);
+    if checked_elems(&[len], ELEM_C64).is_err() {
+        return Ok(direct_c64(x, y, maxlag, nout));
     }
     let mut xbuf = vec![Complex::new(0.0, 0.0); len];
     let mut ybuf = vec![Complex::new(0.0, 0.0); len];
@@ -146,14 +175,15 @@ fn fft_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
     ybuf[..y.len()].copy_from_slice(y);
     // The length is a power of two bounded by the inputs already in hand.
     // A refusal here is a size error, not a wrong correlation.
-    dft_any_len(&mut xbuf, false).expect("xcorr fft length");
-    dft_any_len(&mut ybuf, false).expect("xcorr fft length");
+    dft_any_len(&mut xbuf, false)?;
+    dft_any_len(&mut ybuf, false)?;
     for i in 0..len {
         xbuf[i] *= ybuf[i].conj();
     }
-    dft_any_len(&mut xbuf, true).expect("xcorr fft length");
-    let mut out = Vec::with_capacity(2 * maxlag + 1);
-    for m in -(maxlag as isize)..=(maxlag as isize) {
+    dft_any_len(&mut xbuf, true)?;
+    let mut out = Vec::with_capacity(nout);
+    for k in 0..nout {
+        let m = k as isize - maxlag as isize;
         let idx = if m >= 0 {
             m as usize
         } else {
@@ -161,7 +191,7 @@ fn fft_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
         };
         out.push(xbuf[idx]);
     }
-    out
+    Ok(out)
 }
 
 fn scale_c64(raw: &mut [C64], x: &[C64], y: &[C64], maxlag: usize, scale: XcorrScale) {
@@ -267,7 +297,7 @@ mod tests {
             c(4.0, -4.0),
         ];
         for method in [XcorrMethod::Direct, XcorrMethod::Fft] {
-            let got = xcorr_c64(&x, &y, 3, XcorrScale::None, method);
+            let got = xcorr_c64(&x, &y, 3, XcorrScale::None, method).unwrap();
             assert_eq!(got.len(), 7, "{method:?}");
             for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
                 assert!(
@@ -281,13 +311,13 @@ mod tests {
     #[test]
     fn real_autocorrelation_is_even_and_coeff_is_one_at_zero() {
         let x = [1.0, 2.0, 3.0, 4.0];
-        let got = xcorr_f64(&x, &x, 3, XcorrScale::None, XcorrMethod::Direct);
+        let got = xcorr_f64(&x, &x, 3, XcorrScale::None, XcorrMethod::Direct).unwrap();
         assert_eq!(got, vec![4.0, 11.0, 20.0, 30.0, 20.0, 11.0, 4.0]);
-        let coeff = xcorr_f64(&x, &x, 3, XcorrScale::Coeff, XcorrMethod::Direct);
+        let coeff = xcorr_f64(&x, &x, 3, XcorrScale::Coeff, XcorrMethod::Direct).unwrap();
         assert!((coeff[3] - 1.0).abs() < 1e-12);
-        let biased = xcorr_f64(&x, &x, 3, XcorrScale::Biased, XcorrMethod::Direct);
+        let biased = xcorr_f64(&x, &x, 3, XcorrScale::Biased, XcorrMethod::Direct).unwrap();
         assert!((biased[3] - 30.0 / 4.0).abs() < 1e-12);
-        let unbiased = xcorr_f64(&x, &x, 3, XcorrScale::Unbiased, XcorrMethod::Fft);
+        let unbiased = xcorr_f64(&x, &x, 3, XcorrScale::Unbiased, XcorrMethod::Fft).unwrap();
         assert!((unbiased[0] - 4.0).abs() < 1e-9);
         assert!((unbiased[3] - 30.0 / 4.0).abs() < 1e-9);
     }
@@ -298,20 +328,20 @@ mod tests {
         let x = [1.0, 2.0, 3.0];
         let y = [4.0, 5.0];
         let want = [0.0, 5.0, 14.0, 23.0, 12.0];
-        let direct = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Direct);
+        let direct = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Direct).unwrap();
         assert_eq!(direct, want);
-        let fft = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Fft);
+        let fft = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Fft).unwrap();
         for (i, (g, w)) in fft.iter().zip(want).enumerate() {
             assert!((g - w).abs() < 1e-9, "fft lag index {i}: {g} vs {w}");
         }
         // maxlag 4 pads past N−1 = 2. |m| = N makes the unbiased divisor 0.
-        let wide = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Fft);
-        let direct = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Direct);
+        let wide = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Fft).unwrap();
+        let direct = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Direct).unwrap();
         assert_eq!(direct, vec![0.0, 0.0, 3.0, 8.0, 14.0, 8.0, 3.0, 0.0, 0.0]);
         for (i, (a, b)) in wide.iter().zip(direct.iter()).enumerate() {
             assert!((a - b).abs() < 1e-9, "lag index {i}: {a} vs {b}");
         }
-        let u = xcorr_f64(&x, &x, 3, XcorrScale::Unbiased, XcorrMethod::Fft);
+        let u = xcorr_f64(&x, &x, 3, XcorrScale::Unbiased, XcorrMethod::Fft).unwrap();
         assert!(u[0].is_nan() && u[6].is_nan());
         assert!((u[1] - 3.0).abs() < 1e-9);
     }
@@ -320,8 +350,8 @@ mod tests {
     fn fft_matches_direct_at_length_256_including_unbiased_ends() {
         let x: Vec<f64> = (0..256).map(|k| ((k * 17) % 11) as f64 - 5.0).collect();
         let y: Vec<f64> = (0..256).map(|k| ((k * 3) % 7) as f64 - 2.0).collect();
-        let direct = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Direct);
-        let fft = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Fft);
+        let direct = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Direct).unwrap();
+        let fft = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Fft).unwrap();
         assert_eq!(direct.len(), 511);
         let scale = direct
             .iter()
@@ -332,8 +362,37 @@ mod tests {
             assert!((a - b).abs() / scale < 1e-9, "lag index {i}: {a} vs {b}");
         }
         // Auto on this length is the FFT path. It must match too.
-        let auto = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Auto);
+        let auto = xcorr_f64(&x, &y, 255, XcorrScale::Unbiased, XcorrMethod::Auto).unwrap();
         assert!((auto[0] - direct[0]).abs() / scale < 1e-9);
         assert!((auto[510] - direct[510]).abs() / scale < 1e-9);
+    }
+
+    #[test]
+    fn huge_maxlag_is_an_error_not_a_panic() {
+        // `2 * maxlag + 1` used to overflow into `Vec::with_capacity`,
+        // which panics with "capacity overflow" (release) or an
+        // arithmetic overflow (debug). Both shapes must be a Result.
+        let too_big = usize::MAX / 2 + 8;
+        let err = xcorr_f64(
+            &[1.0, 2.0, 3.0],
+            &[1.0],
+            too_big,
+            XcorrScale::None,
+            XcorrMethod::Direct,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("xcorr"), "{msg}");
+        assert!(xcorr_c64(
+            &[Complex::new(1.0, 0.0)],
+            &[Complex::new(1.0, -1.0)],
+            too_big,
+            XcorrScale::Coeff,
+            XcorrMethod::Fft,
+        )
+        .is_err());
+        // A lag count that fits in `usize` but not in the element cap.
+        let wide = (1usize << 47) + 3;
+        assert!(xcorr_f64(&[1.0], &[1.0], wide, XcorrScale::None, XcorrMethod::Auto).is_err());
     }
 }

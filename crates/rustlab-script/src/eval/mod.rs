@@ -185,9 +185,9 @@ impl Evaluator {
 
     /// Install a cooperative cancellation flag (builder form). While the
     /// flag reads `true`, execution returns [`ScriptError::Cancelled`] at
-    /// the next statement or loop-iteration boundary. Long-running
-    /// *builtins* are not interruptible (they're bounded); this targets
-    /// runaway script-level loops. Default-off: a fresh `Evaluator` has
+    /// the next statement or loop-iteration boundary. A long matrix
+    /// 2-norm also polls Ctrl+C itself and returns [`ScriptError::Interrupted`].
+    /// Default-off: a fresh `Evaluator` has
     /// no flag and never cancels.
     pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
         self.cancel = Some(flag);

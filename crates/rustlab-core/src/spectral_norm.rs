@@ -3,9 +3,11 @@
 //! The value is `sqrt(λ_max)` of the smaller Gram matrix, `AᴴA` when
 //! `A` has at least as many rows as columns and `AAᴴ` otherwise. Lanczos
 //! applies that product without forming it and without singular vectors.
-//! A full Hermitian Jacobi of the Gram is the fallback when the Krylov
-//! residual is still large. Entries are scaled by the largest magnitude
-//! so a matrix of `1e200` does not overflow the product.
+//! The iteration count is capped. A Hermitian Jacobi of the Gram is the
+//! fallback only while the smaller side is tiny; on a 512×512 matrix that
+//! Jacobi ran for minutes after 64 Lanczos steps missed a 1e-14 residual.
+//! Entries are scaled by the largest magnitude so a matrix of `1e200` does
+//! not overflow the product. [`NormCancelled`] is how a caller stops early.
 
 use ndarray::Array2;
 
@@ -14,37 +16,81 @@ use crate::types::C64;
 
 /// Stop when the Ritz residual is this fraction of the Rayleigh quotient.
 const RESIDUAL_TOL: f64 = 1e-14;
-/// Lanczos steps. Past this, the Gram is diagonalized directly.
-const MAX_STEPS: usize = 64;
+/// Hard cap on Lanczos steps. Past this the Ritz value is the answer,
+/// unless the smaller side is small enough for an exact Gram Jacobi.
+const MAX_STEPS: usize = 256;
+/// Gram Jacobi is O(p³) per sweep. Above this side length it is not a fallback.
+const JACOBI_MAX_DIM: usize = 96;
+/// Two passes over the entries per Lanczos step. The step count stays
+/// under this budget so a multi-gigabyte matrix cannot run for minutes.
+const ENTRY_BUDGET: usize = 800_000_000;
+
+/// The caller asked to stop (Ctrl+C, or a test hook) before the 2-norm finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NormCancelled;
+
+fn step_limit(space: usize, entries: usize) -> usize {
+    let by_budget = (ENTRY_BUDGET / entries.max(1)).max(32);
+    by_budget.min(MAX_STEPS).min(space.max(1))
+}
+
+fn halted(stop: &mut dyn FnMut() -> bool) -> Result<(), NormCancelled> {
+    if stop() {
+        Err(NormCancelled)
+    } else {
+        Ok(())
+    }
+}
 
 /// Largest singular value of a real matrix. Empty is 0. A `NaN` entry
 /// returns `NaN`. An `Inf` entry returns `Inf` when no entry is `NaN`.
 pub fn largest_singular_value(a: &Array2<f64>) -> f64 {
+    largest_singular_value_cancellable(a, &mut || false).expect("stop callback never fires")
+}
+
+/// [`largest_singular_value`], returning [`NormCancelled`] when `stop` is true.
+/// `stop` is polled between Lanczos steps and while the matrix is scanned.
+pub fn largest_singular_value_cancellable(
+    a: &Array2<f64>,
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<f64, NormCancelled> {
     let (m, n) = a.dim();
     if let Some(slice) = a.as_slice() {
-        largest_singular_value_slice(slice, m, n)
+        largest_singular_value_slice(slice, m, n, stop)
     } else {
         let buf: Vec<f64> = a.iter().copied().collect();
-        largest_singular_value_slice(&buf, m, n)
+        largest_singular_value_slice(&buf, m, n, stop)
     }
 }
 
 /// Largest singular value of a complex matrix. A matrix whose imaginary
 /// part is all `+0` uses the real routine, so the bits match real storage.
 pub fn largest_singular_value_complex(a: &Array2<C64>) -> f64 {
+    largest_singular_value_complex_cancellable(a, &mut || false).expect("stop callback never fires")
+}
+
+/// [`largest_singular_value_complex`], returning [`NormCancelled`] when `stop` is true.
+pub fn largest_singular_value_complex_cancellable(
+    a: &Array2<C64>,
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<f64, NormCancelled> {
     if a.iter().all(|z| z.im == 0.0) {
         let buf: Vec<f64> = a.iter().map(|z| z.re).collect();
-        return largest_singular_value_slice(&buf, a.nrows(), a.ncols());
+        return largest_singular_value_slice(&buf, a.nrows(), a.ncols(), stop);
     }
+    halted(stop)?;
     let (m, n) = a.dim();
     if m == 0 || n == 0 {
-        return 0.0;
+        return Ok(0.0);
     }
     let buf: Vec<C64> = a.iter().copied().collect();
     let mut any_nan = false;
     let mut any_inf = false;
     let mut scale = 0.0_f64;
-    for z in &buf {
+    for (i, z) in buf.iter().enumerate() {
+        if i % 8192 == 0 {
+            halted(stop)?;
+        }
         if z.re.is_nan() || z.im.is_nan() {
             any_nan = true;
         } else if z.re.is_infinite() || z.im.is_infinite() {
@@ -54,18 +100,18 @@ pub fn largest_singular_value_complex(a: &Array2<C64>) -> f64 {
         }
     }
     if any_nan {
-        return f64::NAN;
+        return Ok(f64::NAN);
     }
     if any_inf {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
     if scale == 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
     let left = m < n;
     let dim = if left { m } else { n };
     if dim == 1 {
-        return scale * frobenius_scaled_complex(&buf, scale);
+        return Ok(scale * frobenius_scaled_complex(&buf, scale));
     }
     let (start, lower) = axis_start_complex(&buf, m, n, left, scale);
     let theta_lower = (lower / scale) * (lower / scale);
@@ -75,7 +121,8 @@ pub fn largest_singular_value_complex(a: &Array2<C64>) -> f64 {
     let mut scratch = vec![C64::new(0.0, 0.0); scratch_len];
     let mut embedded = vec![0.0; 2 * dim];
     embedded[..dim].copy_from_slice(&start);
-    let (theta, converged) = lanczos_largest(embedded, |v, out| {
+    let steps = step_limit(embedded.len(), m.saturating_mul(n));
+    let (theta, converged) = lanczos_largest(embedded, steps, stop, |v, out| {
         for i in 0..dim {
             z[i] = C64::new(v[i], v[dim + i]);
         }
@@ -84,24 +131,36 @@ pub fn largest_singular_value_complex(a: &Array2<C64>) -> f64 {
             out[i] = hz[i].re;
             out[dim + i] = hz[i].im;
         }
-    });
+    })?;
     let theta = if lanczos_ok(theta, theta_lower, converged) {
         theta
-    } else {
+    } else if dim <= JACOBI_MAX_DIM {
+        halted(stop)?;
         gram_largest_complex(&buf, m, n, left, scale)
+    } else {
+        theta.max(theta_lower)
     };
-    scale * theta.max(0.0).sqrt()
+    Ok((scale * theta.max(0.0).sqrt()).max(lower))
 }
 
-fn largest_singular_value_slice(data: &[f64], m: usize, n: usize) -> f64 {
+fn largest_singular_value_slice(
+    data: &[f64],
+    m: usize,
+    n: usize,
+    stop: &mut dyn FnMut() -> bool,
+) -> Result<f64, NormCancelled> {
     if m == 0 || n == 0 {
-        return 0.0;
+        return Ok(0.0);
     }
     debug_assert_eq!(data.len(), m * n);
+    halted(stop)?;
     let mut any_nan = false;
     let mut any_inf = false;
     let mut scale = 0.0_f64;
-    for &x in data {
+    for (i, &x) in data.iter().enumerate() {
+        if i % 8192 == 0 {
+            halted(stop)?;
+        }
         if x.is_nan() {
             any_nan = true;
         } else if x.is_infinite() {
@@ -111,13 +170,13 @@ fn largest_singular_value_slice(data: &[f64], m: usize, n: usize) -> f64 {
         }
     }
     if any_nan {
-        return f64::NAN;
+        return Ok(f64::NAN);
     }
     if any_inf {
-        return f64::INFINITY;
+        return Ok(f64::INFINITY);
     }
     if scale == 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
     let left = m < n;
     let dim = if left { m } else { n };
@@ -127,21 +186,27 @@ fn largest_singular_value_slice(data: &[f64], m: usize, n: usize) -> f64 {
             let y = x / scale;
             sum_sq += y * y;
         }
-        return scale * sum_sq.sqrt();
+        return Ok(scale * sum_sq.sqrt());
     }
     let (start, lower) = axis_start(data, m, n, left, scale);
     let theta_lower = (lower / scale) * (lower / scale);
     let scratch_len = if left { n } else { m };
     let mut scratch = vec![0.0; scratch_len];
-    let (theta, converged) = lanczos_largest(start, |v, out| {
+    let steps = step_limit(dim, m.saturating_mul(n));
+    let (theta, converged) = lanczos_largest(start, steps, stop, |v, out| {
         apply_gram(data, m, n, left, scale, v, &mut scratch, out);
-    });
+    })?;
     let theta = if lanczos_ok(theta, theta_lower, converged) {
         theta
-    } else {
+    } else if dim <= JACOBI_MAX_DIM {
+        halted(stop)?;
         gram_largest(data, m, n, left, scale)
+    } else {
+        theta.max(theta_lower)
     };
-    scale * theta.max(0.0).sqrt()
+    // `lower` is already in the original scaling. `theta` is an eigenvalue
+    // of the scaled Gram, so the singular value is `scale * sqrt(theta)`.
+    Ok((scale * theta.max(0.0).sqrt()).max(lower))
 }
 
 fn lanczos_ok(theta: f64, theta_lower: f64, converged: bool) -> bool {
@@ -322,19 +387,25 @@ fn apply_gram_complex(
 }
 
 /// Largest eigenvalue of a symmetric operator, and whether the residual
-/// test passed. `start` is a unit vector.
-fn lanczos_largest(mut v: Vec<f64>, mut apply: impl FnMut(&[f64], &mut [f64])) -> (f64, bool) {
+/// test passed. `start` is a unit vector. `steps` is the hard iteration cap.
+fn lanczos_largest(
+    mut v: Vec<f64>,
+    steps: usize,
+    stop: &mut dyn FnMut() -> bool,
+    mut apply: impl FnMut(&[f64], &mut [f64]),
+) -> Result<(f64, bool), NormCancelled> {
     let n = v.len();
     if n == 0 {
-        return (0.0, true);
+        return Ok((0.0, true));
     }
-    let steps = n.min(MAX_STEPS);
+    let steps = steps.min(n).max(1);
     let mut basis: Vec<Vec<f64>> = Vec::with_capacity(steps);
     let mut alpha: Vec<f64> = Vec::with_capacity(steps);
     let mut beta: Vec<f64> = Vec::with_capacity(steps);
     let mut w = vec![0.0; n];
     let mut theta = 0.0;
     for step in 0..steps {
+        halted(stop)?;
         apply(&v, &mut w);
         let a = dot(&v, &w);
         alpha.push(a);
@@ -357,14 +428,14 @@ fn lanczos_largest(mut v: Vec<f64>, mut apply: impl FnMut(&[f64], &mut [f64])) -
         let rho = bnorm * y_last;
         let scale = th.abs().max(1e-30);
         if !bnorm.is_finite() || !th.is_finite() {
-            return (theta, false);
+            return Ok((theta, false));
         }
         if bnorm <= RESIDUAL_TOL * (1.0 + scale.sqrt()) || rho <= RESIDUAL_TOL * scale {
-            return (th.max(0.0), true);
+            return Ok((th.max(0.0), true));
         }
         // A full basis is the whole space. The Ritz value is an eigenvalue.
         if step + 1 == n {
-            return (th.max(0.0), true);
+            return Ok((th.max(0.0), true));
         }
         if step + 1 == steps {
             break;
@@ -377,7 +448,7 @@ fn lanczos_largest(mut v: Vec<f64>, mut apply: impl FnMut(&[f64], &mut [f64])) -
         v = std::mem::take(&mut w);
         w = vec![0.0; n];
     }
-    (theta.max(0.0), false)
+    Ok((theta.max(0.0), false))
 }
 
 /// Largest Ritz pair of the Lanczos tridiagonal. Returns `(θ, |y_last|)`.
@@ -820,11 +891,536 @@ mod tests {
         for _ in 0..(m * n) {
             data.push(next());
         }
-        let got = largest_singular_value_slice(&data, m, n);
+        let got = largest_singular_value_slice(&data, m, n, &mut || false).unwrap();
         let want_theta = gram_largest(&data, m, n, false, 1.0);
         // `gram_largest` divides by the scale it is given. Pass the same
         // scale the public path would, by comparing σ² against an
         // unscaled Gram built at scale 1. The matrix entries are O(1).
         close(got, want_theta.sqrt());
+    }
+
+    #[test]
+    fn diagonal_400_is_the_largest_entry_and_finishes() {
+        let n = 400usize;
+        let mut data = vec![0.0; n * n];
+        for i in 0..n {
+            data[i * n + i] = (i + 1) as f64;
+        }
+        let a = Array2::from_shape_vec((n, n), data).unwrap();
+        let t = std::time::Instant::now();
+        let s = largest_singular_value(&a);
+        assert!(t.elapsed().as_secs() < 2, "{:?}", t.elapsed());
+        close(s, n as f64);
+    }
+
+    #[test]
+    fn random_512_stays_between_column_and_frobenius_and_finishes() {
+        // A 512×512 random matrix used to miss the 1e-14 Lanczos test after
+        // 64 steps and then run a Gram Jacobi for minutes. The value has to
+        // come back, and it has to sit between the two norms that bound σ_max.
+        let mut state = 0xC0FFEE_u64;
+        let n = 512usize;
+        let mut data = Vec::with_capacity(n * n);
+        for _ in 0..(n * n) {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            data.push((state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0);
+        }
+        let mut fro = 0.0_f64;
+        let mut col_max = 0.0_f64;
+        for j in 0..n {
+            let mut col = 0.0;
+            for i in 0..n {
+                let x = data[i * n + j];
+                fro += x * x;
+                col += x * x;
+            }
+            col_max = col_max.max(col.sqrt());
+        }
+        let a = Array2::from_shape_vec((n, n), data).unwrap();
+        let t = std::time::Instant::now();
+        let s = largest_singular_value(&a);
+        let elapsed = t.elapsed();
+        assert!(
+            elapsed.as_secs() < 5,
+            "512×512 2-norm took {elapsed:?}; the Gram Jacobi fallback used to take minutes"
+        );
+        assert!(s.is_finite(), "{s}");
+        assert!(s + 1e-8 >= col_max, "σ {s} below column norm {col_max}");
+        assert!(s <= fro.sqrt() * (1.0 + 1e-8), "σ {s} above Frobenius");
+    }
+
+    /// Reference 2-norm: largest eigenvalue of the smaller Gram, via the
+    /// Hermitian eigensolver (the same value a full SVD reports as σ_max).
+    fn reference_sigma(data: &[f64], m: usize, n: usize) -> f64 {
+        let left = m < n;
+        let p = if left { m } else { n };
+        let mut g = Array2::<C64>::zeros((p, p));
+        if left {
+            for i in 0..m {
+                for j in 0..=i {
+                    let mut sum = 0.0;
+                    for k in 0..n {
+                        sum += data[i * n + k] * data[j * n + k];
+                    }
+                    let z = C64::new(sum, 0.0);
+                    g[[i, j]] = z;
+                    g[[j, i]] = z;
+                }
+            }
+        } else {
+            for i in 0..n {
+                for j in 0..=i {
+                    let mut sum = 0.0;
+                    for r in 0..m {
+                        sum += data[r * n + i] * data[r * n + j];
+                    }
+                    let z = C64::new(sum, 0.0);
+                    g[[i, j]] = z;
+                    g[[j, i]] = z;
+                }
+            }
+        }
+        let (vals, _) = crate::dense_eig::eig(&g, false).unwrap();
+        let lam = vals.iter().map(|z| z.re).fold(f64::NEG_INFINITY, f64::max);
+        lam.max(0.0).sqrt()
+    }
+
+    fn reference_sigma_complex(data: &[C64], m: usize, n: usize) -> f64 {
+        let left = m <= n;
+        let p = if left { m } else { n };
+        let mut g = Array2::<C64>::zeros((p, p));
+        if left {
+            for i in 0..m {
+                for j in 0..=i {
+                    let mut sum = C64::new(0.0, 0.0);
+                    for k in 0..n {
+                        sum += data[i * n + k] * data[j * n + k].conj();
+                    }
+                    g[[i, j]] = sum;
+                    g[[j, i]] = sum.conj();
+                }
+            }
+        } else {
+            for i in 0..n {
+                for j in 0..=i {
+                    let mut sum = C64::new(0.0, 0.0);
+                    for r in 0..m {
+                        sum += data[r * n + i].conj() * data[r * n + j];
+                    }
+                    g[[i, j]] = sum;
+                    g[[j, i]] = sum.conj();
+                }
+            }
+        }
+        let (vals, _) = crate::dense_eig::eig(&g, false).unwrap();
+        let lam = vals.iter().map(|z| z.re).fold(f64::NEG_INFINITY, f64::max);
+        lam.max(0.0).sqrt()
+    }
+
+    fn xorshift(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    }
+
+    fn rel_err(got: f64, want: f64) -> f64 {
+        if want == 0.0 {
+            got.abs()
+        } else {
+            (got - want).abs() / want.abs()
+        }
+    }
+
+    fn report(name: &str, got: f64, want: f64, elapsed: std::time::Duration) -> f64 {
+        let rel = rel_err(got, want);
+        eprintln!("{name}: got {got:.12e}  svd {want:.12e}  rel {rel:.3e}  {elapsed:?}");
+        rel
+    }
+
+    /// Accuracy against the Hermitian eig of the Gram (the SVD's σ_max).
+    /// Not part of `cargo test`.
+    ///
+    /// ```text
+    /// cargo test -p rustlab-core --release --lib accuracy_against_svd -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn accuracy_against_svd() {
+        let mut worst = 0.0_f64;
+        let mut state = 0xC0FFEE_u64;
+        for n in [97usize, 128, 256, 512] {
+            let mut data = Vec::with_capacity(n * n);
+            for _ in 0..(n * n) {
+                data.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            let elapsed = t.elapsed();
+            let want = reference_sigma(&data, n, n);
+            worst = worst.max(report(&format!("random {n}"), got, want, elapsed));
+        }
+
+        // Hilbert: huge condition number, σ_max still well separated.
+        for n in [64usize, 128] {
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    data[i * n + j] = 1.0 / (i + j + 1) as f64;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("hilbert {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Badly scaled diagonal, then a Householder similarity so it is dense.
+        // Singular values are the absolute diagonal entries.
+        {
+            let n = 128usize;
+            let mut u = vec![0.0; n];
+            for x in &mut u {
+                *x = xorshift(&mut state);
+            }
+            let unorm = u.iter().map(|x| x * x).sum::<f64>().sqrt();
+            for x in &mut u {
+                *x /= unorm;
+            }
+            let mut s = vec![0.0; n];
+            s[0] = 1e8;
+            s[1] = 1.0;
+            s[2] = 1e-8;
+            for i in 3..n {
+                s[i] = 0.1;
+            }
+            // A = (I - 2uuᵀ) diag(s) (I - 2uuᵀ). Eigenvalues are s.
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    // (H D H)_ij = δ_ij s_j - 2 u_i u_j s_j - 2 u_i u_j s_i
+                    //   + 4 u_i u_j (u·(s⊙u))
+                    let mut dot_su = 0.0;
+                    for k in 0..n {
+                        dot_su += u[k] * s[k] * u[k];
+                    }
+                    let hij = if i == j { s[j] } else { 0.0 }
+                        - 2.0 * u[i] * u[j] * s[j]
+                        - 2.0 * u[i] * u[j] * s[i]
+                        + 4.0 * u[i] * u[j] * dot_su;
+                    data[i * n + j] = hij;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                "scaled-householder 128",
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Top two singular values nearly equal. A = U diag(s) Vᵀ with
+        // U, V from modified Gram-Schmidt of Gaussian matrices.
+        for (gap, n) in [(1e-4, 96usize), (1e-6, 128usize), (1e-3, 256usize)] {
+            let mut cols_u = vec![vec![0.0; n]; n];
+            let mut cols_v = vec![vec![0.0; n]; n];
+            for set in [&mut cols_u, &mut cols_v] {
+                for col in set.iter_mut() {
+                    for x in col.iter_mut() {
+                        *x = xorshift(&mut state);
+                    }
+                }
+                for i in 0..n {
+                    for j in 0..i {
+                        let dot: f64 = cols_u_dot(&set[j], &set[i]);
+                        for k in 0..n {
+                            set[i][k] -= dot * set[j][k];
+                        }
+                    }
+                    let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if nrm > 0.0 {
+                        for x in &mut set[i] {
+                            *x /= nrm;
+                        }
+                    }
+                }
+            }
+            fn cols_u_dot(a: &[f64], b: &[f64]) -> f64 {
+                a.iter().zip(b).map(|(x, y)| x * y).sum()
+            }
+            let mut s = vec![0.5; n];
+            s[0] = 1.0;
+            s[1] = 1.0 - gap;
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for k in 0..n {
+                        acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                    }
+                    data[i * n + j] = acc;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("cluster gap {gap} n {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Rank deficient: random 128×128 with the last 40 columns zero.
+        {
+            let (m, n) = (128usize, 128usize);
+            let mut data = vec![0.0; m * n];
+            for i in 0..m {
+                for j in 0..(n - 40) {
+                    data[i * n + j] = xorshift(&mut state);
+                }
+            }
+            let a = Array2::from_shape_vec((m, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                "rank-deficient 128",
+                got,
+                reference_sigma(&data, m, n),
+                t.elapsed(),
+            ));
+        }
+
+        for (m, n, label) in [
+            (300usize, 40usize, "tall"),
+            (40, 300, "wide"),
+            (200, 80, "tall2"),
+            (80, 200, "wide2"),
+        ] {
+            let mut data = Vec::with_capacity(m * n);
+            for _ in 0..(m * n) {
+                data.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((m, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("{label} {m}x{n}"),
+                got,
+                reference_sigma(&data, m, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Tighter than the cases above, and a spectrum with no isolated gap
+        // (singular values 1, 1+Δ, …). Both sit past the Jacobi cutoff.
+        for (gap, n) in [(1e-8, 160usize)] {
+            let mut cols_u = vec![vec![0.0; n]; n];
+            let mut cols_v = vec![vec![0.0; n]; n];
+            for set in [&mut cols_u, &mut cols_v] {
+                for col in set.iter_mut() {
+                    for x in col.iter_mut() {
+                        *x = xorshift(&mut state);
+                    }
+                }
+                for i in 0..n {
+                    for j in 0..i {
+                        let dot: f64 = set[j].iter().zip(set[i].iter()).map(|(a, b)| a * b).sum();
+                        for k in 0..n {
+                            set[i][k] -= dot * set[j][k];
+                        }
+                    }
+                    let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if nrm > 0.0 {
+                        for x in &mut set[i] {
+                            *x /= nrm;
+                        }
+                    }
+                }
+            }
+            let mut s = vec![0.5; n];
+            s[0] = 1.0;
+            s[1] = 1.0 - gap;
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for k in 0..n {
+                        acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                    }
+                    data[i * n + j] = acc;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("tight-gap {gap} n {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Complex random.
+        for n in [64usize, 96] {
+            let mut data = Vec::with_capacity(n * n);
+            for _ in 0..(n * n) {
+                data.push(C64::new(xorshift(&mut state), xorshift(&mut state)));
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value_complex(&a);
+            worst = worst.max(report(
+                &format!("complex {n}"),
+                got,
+                reference_sigma_complex(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        eprintln!("worst relative error {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "worst rel {worst:.3e} (MATLAB-sized 2-norm agreement)"
+        );
+    }
+
+    /// The sizes just past the Jacobi cutoff, a tight gap, Hilbert,
+    /// rank deficiency, a short rectangle, and a complex matrix. σ_max
+    /// must match the Hermitian eig of the Gram to 1e-10.
+    #[test]
+    fn hard_cases_match_svd_to_1e_10() {
+        let mut worst = 0.0_f64;
+        let mut state = 0xA11CE_u64;
+        let n = 97usize;
+        let mut data = Vec::with_capacity(n * n);
+        for _ in 0..(n * n) {
+            data.push(xorshift(&mut state));
+        }
+        let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+        let got = largest_singular_value(&a);
+        worst = worst.max(rel_err(got, reference_sigma(&data, n, n)));
+
+        // σ₁ = 1, σ₂ = 1−10⁻⁶, the rest 0.5. Past the Jacobi cutoff.
+        let gap = 1e-6;
+        let mut cols_u = vec![vec![0.0; n]; n];
+        let mut cols_v = vec![vec![0.0; n]; n];
+        for set in [&mut cols_u, &mut cols_v] {
+            for col in set.iter_mut() {
+                for x in col.iter_mut() {
+                    *x = xorshift(&mut state);
+                }
+            }
+            for i in 0..n {
+                for j in 0..i {
+                    let dot: f64 = set[j].iter().zip(set[i].iter()).map(|(p, q)| p * q).sum();
+                    for k in 0..n {
+                        set[i][k] -= dot * set[j][k];
+                    }
+                }
+                let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-30);
+                for x in &mut set[i] {
+                    *x /= nrm;
+                }
+            }
+        }
+        let mut s = vec![0.5; n];
+        s[0] = 1.0;
+        s[1] = 1.0 - gap;
+        let mut clustered = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0;
+                for k in 0..n {
+                    acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                }
+                clustered[i * n + j] = acc;
+            }
+        }
+        let a = Array2::from_shape_vec((n, n), clustered.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&clustered, n, n),
+        ));
+
+        let h = 32usize;
+        let mut hilbert = vec![0.0; h * h];
+        for i in 0..h {
+            for j in 0..h {
+                hilbert[i * h + j] = 1.0 / (i + j + 1) as f64;
+            }
+        }
+        let a = Array2::from_shape_vec((h, h), hilbert.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&hilbert, h, h),
+        ));
+
+        let (m, nc) = (48usize, 48usize);
+        let mut rank = vec![0.0; m * nc];
+        for i in 0..m {
+            for j in 0..(nc - 12) {
+                rank[i * nc + j] = xorshift(&mut state);
+            }
+        }
+        let a = Array2::from_shape_vec((m, nc), rank.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&rank, m, nc),
+        ));
+
+        for (rm, rn) in [(40usize, 12usize), (12, 40)] {
+            let mut rect = Vec::with_capacity(rm * rn);
+            for _ in 0..(rm * rn) {
+                rect.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((rm, rn), rect.clone()).unwrap();
+            worst = worst.max(rel_err(
+                largest_singular_value(&a),
+                reference_sigma(&rect, rm, rn),
+            ));
+        }
+
+        let cn = 32usize;
+        let mut cdata = Vec::with_capacity(cn * cn);
+        for _ in 0..(cn * cn) {
+            cdata.push(C64::new(xorshift(&mut state), xorshift(&mut state)));
+        }
+        let a = Array2::from_shape_vec((cn, cn), cdata.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value_complex(&a),
+            reference_sigma_complex(&cdata, cn, cn),
+        ));
+
+        assert!(worst < 1e-10, "2-norm drifted from the SVD by {worst:.3e}");
+    }
+
+    #[test]
+    fn cancel_stops_during_lanczos() {
+        let n = 256usize;
+        let a = Array2::from_elem((n, n), 0.1);
+        let mut hits = 0u32;
+        let t = std::time::Instant::now();
+        let err = largest_singular_value_cancellable(&a, &mut || {
+            hits += 1;
+            hits > 4
+        })
+        .unwrap_err();
+        assert_eq!(err, NormCancelled);
+        assert!(hits < 30, "polled {hits} times");
+        assert!(t.elapsed().as_millis() < 2000, "{:?}", t.elapsed());
     }
 }
