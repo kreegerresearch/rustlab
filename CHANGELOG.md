@@ -6,6 +6,16 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.42
+
+### Fixed
+- **`norm` on a large dense matrix always stops, and Ctrl+C returns to the REPL.** The 2-norm is still the largest singular value (Lanczos on the smaller Gram, no singular vectors). It now caps the iteration count. The old fallback, a full Jacobi of that Gram, ran only after 64 steps missed a 1e-14 residual — which a random matrix around 512×512 does — and that Jacobi took minutes. Measured on this machine: `norm` of a random 512×512 was **256 s** in a debug build before, and **0.27 s** debug / **0.02 s** release after. Past a small side length the Ritz value is the answer instead of that Jacobi. Ctrl+C during the computation uses the same interrupt flag as a plot abort and returns to the `>> ` prompt without an `error:` line (`interrupted` on stderr). `rustlab run` exits 0.
+- **`randn(1000)` was not a 17 s generator.** Release assign is **8.1 ms** before and **7.6 ms** after (a million standard normals; `rand(1000)` is about 7 ms). Debug assign is about **0.38 s**. Printing it was **22 ms** release because `Matrix` display called `nrows()`, which widens every real element into a complex copy; it now reads real storage and the same print is **9.6 ms**. The eight-row preview is unchanged.
+- **`xcorr` and `xcov` no longer panic with `capacity overflow`.** A huge `maxlag` (for example `1e19`, or anything whose `2*maxlag+1` overflows or exceeds the array cap) is a normal rustlab error: `requested … array exceeds the maximum possible variable size`. The same checked-size rule covers a very wide empty matrix whose column-pair width would overflow, `filtfilt`'s reflected length, an FFT length past `2^63` (the old power-of-two loop overflowed or spun), and a CWT pad or streaming window that does not fit.
+
+### Changed
+- **A dense 2-norm that does not meet the residual test after the step cap is the Lanczos Ritz value** (and at least the largest column 2-norm). Sides up to 96 still fall back to an exact Gram Jacobi. Previously a miss on the residual test always built and diagonalized the Gram, which is what made large `norm(A)` run for minutes.
+
 ## 0.3.41
 
 ### Changed

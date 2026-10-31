@@ -957,7 +957,7 @@ y = convolve(signal, h)
 ### `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` / `xcov(...)`
 Cross-correlation, with the zero lag in the middle. `xcov` subtracts the mean of each signal and then calls the same sums, so a constant input is all zeros.
 
-Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`.
+Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`. A `maxlag` whose result length `2·maxlag+1` overflows or exceeds the array cap is an error (`exceeds the maximum possible variable size`), not a panic.
 
 `scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0). A matrix with several columns accepts only `"none"`; the other scales are the two-sequence forms.
 
@@ -1554,7 +1554,9 @@ cross([1, 0, 0], [0, 1, 0])   # → [0, 0, 1]
 
 ### `norm(v)` / `norm(v, p)`
 Vector p-norm (default p=2). For a dense matrix, `norm(A)` and `norm(A, 2)`
-are the 2-norm, the largest singular value. `norm(A, "fro")` is the Frobenius
+are the 2-norm, the largest singular value. The iteration count is capped
+(Lanczos on the smaller of `A'A` and `AA'`, no singular vectors). Ctrl+C
+during that computation returns to the REPL. `norm(A, "fro")` is the Frobenius
 norm, one pass over the entries. `norm(A, 1)` is the max absolute column sum,
 `norm(A, Inf)` the max absolute row sum. An empty matrix is 0. A `NaN` entry
 makes the 2-norm `NaN`. An `Inf` entry makes it `Inf` unless a `NaN` is also

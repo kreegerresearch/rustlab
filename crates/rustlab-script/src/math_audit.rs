@@ -917,6 +917,128 @@ fn phase1_reference_values() {
     assert!(eval_err("t = trace(zeros(1, 4))").contains("square"));
 }
 
+#[test]
+fn randn_1000_finishes_and_stays_real() {
+    use std::time::Instant;
+    let t = Instant::now();
+    let ev = eval("A = randn(1000);");
+    let elapsed = t.elapsed();
+    assert!(
+        elapsed.as_secs() < 5,
+        "randn(1000) took {elapsed:?}; a million standard normals should be well under a few seconds"
+    );
+    match ev.get("A").unwrap() {
+        Value::Matrix(m) => {
+            assert_eq!(Shared::shape(m), &[1000, 1000]);
+            assert!(Shared::is_real(m));
+        }
+        other => panic!("randn(1000) should be a real matrix, got {other:?}"),
+    }
+}
+
+#[test]
+fn printing_a_real_randn_does_not_widen_it() {
+    let before = conversion_counts().0.calls;
+    let ev = eval("A = randn(40)");
+    let after = conversion_counts().0.calls;
+    assert_eq!(
+        before, after,
+        "printing a real matrix widened every element into a complex copy"
+    );
+    let text = format!("{}", ev.get("A").unwrap());
+    assert!(text.starts_with("Matrix(40x40)"), "{text}");
+    assert!(Shared::is_real(match ev.get("A").unwrap() {
+        Value::Matrix(m) => m,
+        _ => panic!("matrix"),
+    }));
+}
+
+#[test]
+fn norm_of_a_512_random_matrix_finishes() {
+    // This size used to miss a 64-step Lanczos residual and then run a
+    // Gram Jacobi for minutes (256 s in a debug build here).
+    use std::time::Instant;
+    let t = Instant::now();
+    let ev = eval("seed(1); A = randn(512); n = norm(A);");
+    let elapsed = t.elapsed();
+    assert!(elapsed.as_secs() < 15, "norm(randn(512)) took {elapsed:?}");
+    let n = num(&ev, "n").re;
+    assert!(n.is_finite() && n > 0.0, "{n}");
+}
+
+#[test]
+fn norm_interrupt_is_a_clean_error_and_the_next_command_runs() {
+    rustlab_plot::request_interrupt();
+    let err = eval_err("n = norm(eye(64));");
+    assert!(
+        err.contains("interrupted"),
+        "expected an interrupt, got {err}"
+    );
+    // The flag must be clear when the guard drops. A second norm arms
+    // the same flag; a leftover interrupt would cancel it too.
+    assert_re(&eval("n = norm(eye(4));"), "n", 1.0, 1e-12);
+    assert_re(&eval("x = 2 + 3;"), "x", 5.0, 0.0);
+}
+
+#[test]
+fn xcorr_nan_inf_and_maxlag_edges_stay_finite_or_propagate() {
+    // maxlag 0, maxlag past the length, and a scalar are the edges that
+    // share the `2*maxlag+1` allocation with the overflow check.
+    let ev = eval(
+        "z = xcorr([1, 2, 3], 0);
+         w = xcorr([1, -2], 5);
+         s = xcorr(4);
+         nan = xcorr([1, NaN, 3], 1);
+         inf = xcorr([1, Inf], 1);",
+    );
+    assert_re(&ev, "z", 14.0, 0.0);
+    assert_eq!(
+        crate::testutil::vec_re(&ev, "w"),
+        vec![0.0, 0.0, 0.0, 0.0, -2.0, 5.0, -2.0, 0.0, 0.0, 0.0, 0.0]
+    );
+    assert_re(&ev, "s", 16.0, 0.0);
+    let nan = crate::testutil::vec_re(&ev, "nan");
+    assert!(
+        nan.iter().any(|v| v.is_nan()),
+        "NaN should propagate, got {nan:?}"
+    );
+    let inf = crate::testutil::vec_re(&ev, "inf");
+    assert!(
+        inf.iter().any(|v| v.is_infinite()),
+        "Inf should propagate, got {inf:?}"
+    );
+}
+
+#[test]
+fn printing_a_real_matrix_matches_the_short_preview() {
+    let ev = eval("A = [1, -2; 3, 4]; C = [1+2j, 0; 0, -3]");
+    let real = format!("{}", ev.get("A").unwrap());
+    assert_eq!(real, "Matrix(2x2)\n  [1.000000, -2.000000]\n  [3.000000, 4.000000]");
+    let complex = format!("{}", ev.get("C").unwrap());
+    assert!(
+        complex.contains("1.000000+2.000000j"),
+        "complex preview lost the imaginary part: {complex}"
+    );
+    let empty = format!("{}", eval("E = zeros(0, 2)").get("E").unwrap());
+    assert_eq!(empty, "Matrix(0x2)");
+}
+
+#[test]
+fn xcorr_and_xcov_reject_a_huge_maxlag_instead_of_panicking() {
+    // 1e19 is an integer-valued f64. `2 * maxlag + 1` does not fit in
+    // usize, which used to panic in `Vec::with_capacity` ("capacity overflow").
+    let err = eval_err("r = xcorr([1, 2, 3], 1e19);");
+    assert!(err.contains("maximum possible variable size"), "{err}");
+    assert!(err.contains("xcorr"), "{err}");
+    let err = eval_err("r = xcov([1, 2, 3], 1e19);");
+    assert!(err.contains("xcov"), "{err}");
+    assert!(err.contains("maximum possible variable size"), "{err}");
+    // 2^62 is exact in f64. The lag count fits in usize and then fails
+    // the element cap, still as an error.
+    let err = eval_err("r = xcorr([1, 2], 4611686018427387904);");
+    assert!(err.contains("maximum possible variable size"), "{err}");
+}
+
 /// Release timing of the matrix 2-norm against a full SVD on one 256×256
 /// matrix. Not part of `cargo test`.
 ///
@@ -967,4 +1089,24 @@ fn bench_matrix_2norm_against_full_svd() {
     );
     eprintln!("svd {}  spectral {}", sv[0], spec);
     assert!((sv[0] - spec).abs() <= 1e-6 * sv[0].abs().max(1.0));
+}
+
+/// Wall time of `randn(1000)` and of printing it. Not part of `cargo test`.
+///
+/// ```text
+/// cargo test -p rustlab-script --release --lib bench_randn_1000 -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_randn_1000() {
+    use std::time::Instant;
+    let t = Instant::now();
+    let _ev = crate::testutil::eval("A = randn(1000);");
+    eprintln!("randn(1000) assign: {:?}", t.elapsed());
+    let t = Instant::now();
+    let _ev = crate::testutil::eval("randn(1000)");
+    eprintln!("randn(1000) print: {:?}", t.elapsed());
+    let t = Instant::now();
+    let _ev = crate::testutil::eval("B = rand(1000);");
+    eprintln!("rand(1000) assign: {:?}", t.elapsed());
 }

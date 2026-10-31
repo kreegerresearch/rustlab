@@ -4,7 +4,7 @@ use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, Wate
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
-use rand_distr::{Distribution, Normal, Uniform};
+use rand_distr::{Distribution, Normal, StandardNormal, Uniform};
 use rustlab_core::{CMatrix, CVector, Filter, SparseMat, SparseVec, C64};
 use rustlab_core::{IntClass, OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
@@ -696,7 +696,7 @@ fn builtin_filtfilt(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     let filt = IirFilter::new(b, a);
-    let y = filt.filtfilt(&x);
+    let y = filt.filtfilt(&x)?;
     let result: CVector = Array1::from_iter(y.into_iter().map(|v| Complex::new(v, 0.0)));
     Ok(Value::Vector(result.into()))
 }
@@ -1672,20 +1672,32 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
     })
 }
 
+fn fill_standard_normal(n: usize) -> Vec<f64> {
+    // One buffer, one borrow of the generator. `StandardNormal` is the
+    // same Ziggurat stream `Normal::new(0, 1)` draws (that path is
+    // `0 + 1 * z`), without building a distribution per call.
+    let mut data = vec![0.0; n];
+    crate::eval::rng::with_rng(|rng| {
+        for x in &mut data {
+            *x = rng.sample(StandardNormal);
+        }
+    });
+    data
+}
+
 fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("randn", &args, 0, 2)?;
-    let dist =
-        Normal::new(0.0_f64, 1.0).map_err(|e| ScriptError::type_err(format!("randn: {e}")))?;
     if args.is_empty() {
         // matlab: randn() returns a single scalar from N(0, 1).
-        return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
+        let mut data = fill_standard_normal(1);
+        return Ok(Value::Scalar(data.pop().unwrap_or(0.0)));
     }
     let (m, n) = unpack_size_args(&args, "randn")?;
     let (r, c) = shape_2d("randn", m, n, rustlab_core::ELEM_F64)?;
-    crate::eval::rng::with_rng(|rng| {
-        let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
-        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
-    })
+    let data = fill_standard_normal(r * c);
+    Ok(Value::real_matrix(
+        Array2::from_shape_vec((r, c), data).expect("randn shape"),
+    ))
 }
 
 /// Unpack (m, n, p) from either 3 scalar args or one 3-element vector.
@@ -9266,12 +9278,22 @@ fn norm_p_arg(v: &Value) -> Result<Option<f64>, ScriptError> {
 }
 
 /// Largest singular value of a matrix. Real storage stays real.
-fn matrix_spectral_norm(m: &Shared<CMatrix>) -> f64 {
-    if let Some(real) = Shared::as_real(m) {
-        rustlab_core::spectral_norm::largest_singular_value(real)
+/// Ctrl+C (or [`rustlab_plot::request_interrupt`]) returns [`ScriptError::Interrupted`].
+fn matrix_spectral_norm(m: &Shared<CMatrix>) -> Result<f64, ScriptError> {
+    let _guard = rustlab_plot::InterruptGuard::arm();
+    let mut stop = || rustlab_plot::interrupt_requested();
+    let got = if let Some(real) = Shared::as_real(m) {
+        rustlab_core::spectral_norm::largest_singular_value_cancellable(real, &mut stop)
     } else {
         // Complex storage. Deref does not widen that case.
-        rustlab_core::spectral_norm::largest_singular_value_complex(m)
+        rustlab_core::spectral_norm::largest_singular_value_complex_cancellable(m, &mut stop)
+    };
+    match got {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            eprintln!("interrupted");
+            Err(ScriptError::Interrupted)
+        }
     }
 }
 
@@ -9325,7 +9347,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else if p == 2.0 {
                 // Largest singular value only. A full SVD also builds every
                 // vector, which this value does not use.
-                matrix_spectral_norm(m)
+                matrix_spectral_norm(m)?
             } else {
                 return Err(ScriptError::type_err(format!(
                     "norm: matrix p-norm supports p = 1, 2, or Inf (got {p})"
@@ -9408,9 +9430,18 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                         )));
                     }
                     let dense = sm.to_dense().map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
-                    Ok(Value::Scalar(
-                        rustlab_core::spectral_norm::largest_singular_value_complex(&dense),
-                    ))
+                    let _guard = rustlab_plot::InterruptGuard::arm();
+                    let mut stop = || rustlab_plot::interrupt_requested();
+                    match rustlab_core::spectral_norm::largest_singular_value_complex_cancellable(
+                        &dense,
+                        &mut stop,
+                    ) {
+                        Ok(v) => Ok(Value::Scalar(v)),
+                        Err(_) => {
+                            eprintln!("interrupted");
+                            Err(ScriptError::Interrupted)
+                        }
+                    }
                 }
                 Some(p) => Err(ScriptError::type_err(format!(
                     "norm: sparse matrix p-norm supports p = 1, 2, Inf, or \"fro\" (got {p})"

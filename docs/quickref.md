@@ -230,7 +230,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
 | `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
-| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (largest singular value, same as `norm(A, 2)`). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Empty is 0. `NaN` in, `NaN` out; `Inf` in, `Inf` out unless a `NaN` is present. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
+| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (largest singular value, same as `norm(A, 2)`), from a capped Lanczos iteration (Ctrl+C stops it). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Empty is 0. `NaN` in, `NaN` out; `Inf` in, `Inf` out unless a `NaN` is present. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
 | `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
@@ -262,7 +262,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
-| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff` (a matrix with several columns accepts only `none`). `xcorr([])` is an empty row. `[r, lags]` returns the lag axis |
+| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff` (a matrix with several columns accepts only `none`). `xcorr([])` is an empty row. `[r, lags]` returns the lag axis. A `maxlag` whose length does not fit is an error |
 | `xcov(...)` | `xcorr` after each signal's mean is removed |
 | `factor(n)` | Prime factorization |
 

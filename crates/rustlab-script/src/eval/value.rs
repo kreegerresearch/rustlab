@@ -2981,6 +2981,28 @@ impl Value {
     }
 }
 
+/// One matrix entry without widening real storage. Display used to
+/// call `nrows()`, which builds a complex copy of every element just
+/// to print eight of them.
+fn matrix_cell(m: &Shared<CMatrix>, r: usize, c: usize) -> (f64, f64) {
+    if let Some(a) = Shared::as_real(m) {
+        (a[[r, c]], 0.0)
+    } else {
+        let z = &m[[r, c]];
+        (z.re, z.im)
+    }
+}
+
+fn write_cell(f: &mut fmt::Formatter<'_>, re: f64, im: f64) -> fmt::Result {
+    if im.abs() < 1e-12 {
+        write!(f, "{re:.6}")
+    } else if im >= 0.0 {
+        write!(f, "{re:.6}+{im:.6}j")
+    } else {
+        write!(f, "{re:.6}{im:.6}j")
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const MAX_ELEMS: usize = 8;
@@ -3032,23 +3054,26 @@ impl fmt::Display for Value {
                 }
             }
             Value::Vector(v) => {
-                let n = v.len();
+                let n = Shared::len(v);
                 write!(f, "[1×{}]", n)?;
                 if n == 0 {
                     return Ok(());
                 }
                 write!(f, "  ")?;
                 let show = n.min(MAX_ELEMS);
-                for (i, c) in v.iter().take(show).enumerate() {
-                    if i > 0 {
-                        write!(f, "  ")?;
+                if let Some(real) = Shared::real_slice(v) {
+                    for (i, &x) in real.iter().take(show).enumerate() {
+                        if i > 0 {
+                            write!(f, "  ")?;
+                        }
+                        write_cell(f, x, 0.0)?;
                     }
-                    if c.im.abs() < 1e-12 {
-                        write!(f, "{:.6}", c.re)?;
-                    } else if c.im >= 0.0 {
-                        write!(f, "{:.6}+{:.6}j", c.re, c.im)?;
-                    } else {
-                        write!(f, "{:.6}{:.6}j", c.re, c.im)?;
+                } else {
+                    for (i, c) in v.iter().take(show).enumerate() {
+                        if i > 0 {
+                            write!(f, "  ")?;
+                        }
+                        write_cell(f, c.re, c.im)?;
                     }
                 }
                 if n > MAX_ELEMS {
@@ -3057,8 +3082,8 @@ impl fmt::Display for Value {
                 Ok(())
             }
             Value::Matrix(m) => {
-                let nrows = m.nrows();
-                let ncols = m.ncols();
+                let shape = Shared::shape(m);
+                let (nrows, ncols) = (shape[0], shape[1]);
                 write!(f, "Matrix({}x{})", nrows, ncols)?;
                 let show_rows = nrows.min(MAX_ELEMS);
                 for r in 0..show_rows {
@@ -3068,14 +3093,8 @@ impl fmt::Display for Value {
                         if c_idx > 0 {
                             write!(f, ", ")?;
                         }
-                        let c = m[[r, c_idx]];
-                        if c.im.abs() < 1e-12 {
-                            write!(f, "{:.6}", c.re)?;
-                        } else if c.im >= 0.0 {
-                            write!(f, "{:.6}+{:.6}j", c.re, c.im)?;
-                        } else {
-                            write!(f, "{:.6}{:.6}j", c.re, c.im)?;
-                        }
+                        let (re, im) = matrix_cell(m, r, c_idx);
+                        write_cell(f, re, im)?;
                     }
                     if ncols > MAX_ELEMS {
                         write!(f, ", ...")?;
@@ -3514,18 +3533,27 @@ impl Value {
             Value::Scalar(n) => fmt_scalar(*n, nf),
             Value::Complex(c) => fmt_complex(c, nf),
             Value::Vector(v) => {
-                let n = v.len();
+                let n = Shared::len(v);
                 let mut s = format!("[1×{}]", n);
                 if n == 0 {
                     return s;
                 }
                 s.push_str("  ");
                 let show = n.min(MAX_ELEMS);
-                for (i, c) in v.iter().take(show).enumerate() {
-                    if i > 0 {
-                        s.push_str("  ");
+                if let Some(real) = Shared::real_slice(v) {
+                    for (i, &x) in real.iter().take(show).enumerate() {
+                        if i > 0 {
+                            s.push_str("  ");
+                        }
+                        s.push_str(&fmt_complex_prec(&C64::new(x, 0.0), nf));
                     }
-                    s.push_str(&fmt_complex_prec(c, nf));
+                } else {
+                    for (i, c) in v.iter().take(show).enumerate() {
+                        if i > 0 {
+                            s.push_str("  ");
+                        }
+                        s.push_str(&fmt_complex_prec(c, nf));
+                    }
                 }
                 if n > MAX_ELEMS {
                     s.push_str(&format!("  ... ({} total)", n));
@@ -3533,8 +3561,8 @@ impl Value {
                 s
             }
             Value::Matrix(m) => {
-                let nrows = m.nrows();
-                let ncols = m.ncols();
+                let shape = Shared::shape(m);
+                let (nrows, ncols) = (shape[0], shape[1]);
                 let mut s = format!("Matrix({}x{})", nrows, ncols);
                 let show_rows = nrows.min(MAX_ELEMS);
                 for r in 0..show_rows {
@@ -3544,8 +3572,8 @@ impl Value {
                         if c_idx > 0 {
                             s.push_str(", ");
                         }
-                        let c = m[[r, c_idx]];
-                        s.push_str(&fmt_complex_prec(&c, nf));
+                        let (re, im) = matrix_cell(m, r, c_idx);
+                        s.push_str(&fmt_complex_prec(&C64::new(re, im), nf));
                     }
                     if ncols > MAX_ELEMS {
                         s.push_str(", ...");

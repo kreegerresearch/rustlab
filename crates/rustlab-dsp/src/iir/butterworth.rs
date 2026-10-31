@@ -62,15 +62,34 @@ impl IirFilter {
     ///   3. Forward filter with IC = si * v[0].
     ///   4. Reverse filter with IC = si * v[end].
     ///   5. Extract center portion corresponding to original signal.
-    pub fn filtfilt(&self, x: &[f64]) -> Vec<f64> {
+    pub fn filtfilt(&self, x: &[f64]) -> Result<Vec<f64>, CoreError> {
         let nx = x.len();
         if nx == 0 {
-            return vec![];
+            return Ok(vec![]);
         }
         let nb = self.b.len();
         let na = self.a.len();
         let n = nb.max(na);
-        let lrefl = 3 * (n - 1);
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        // `3 * (n - 1)` and `nx + 2 * lrefl` overflow for a huge coefficient
+        // vector, and `Vec::with_capacity` then panics.
+        let lrefl = (n - 1).checked_mul(3).ok_or_else(|| {
+            CoreError::InvalidParameter(rustlab_core::variable_too_large("filtfilt", &[n]))
+        })?;
+        let ext = lrefl
+            .checked_mul(2)
+            .and_then(|p| p.checked_add(nx))
+            .ok_or_else(|| {
+                CoreError::InvalidParameter(rustlab_core::variable_too_large(
+                    "filtfilt",
+                    &[nx, lrefl],
+                ))
+            })?;
+        rustlab_core::checked_elems(&[ext], rustlab_core::ELEM_F64).map_err(|_| {
+            CoreError::InvalidParameter(rustlab_core::variable_too_large("filtfilt", &[ext]))
+        })?;
 
         // Pad b and a to length n
         let b: Vec<f64> = {
@@ -114,7 +133,7 @@ impl IirFilter {
 
         // Extend signal with odd reflection:
         //   v = [2*x[0] - x[lrefl:-1:1], x, 2*x[n-1] - x[n-2:-1:n-1-lrefl]]
-        let mut v: Vec<f64> = Vec::with_capacity(nx + 2 * lrefl);
+        let mut v: Vec<f64> = Vec::with_capacity(ext);
         for i in (1..=lrefl).rev() {
             let idx = i.min(nx - 1);
             v.push(2.0 * x[0] - x[idx]);
@@ -138,7 +157,7 @@ impl IirFilter {
 
         // Reverse back and extract center
         v_rev = y_bwd.into_iter().rev().collect();
-        v_rev[lrefl..lrefl + nx].to_vec()
+        Ok(v_rev[lrefl..lrefl + nx].to_vec())
     }
 
     /// Apply filter with given initial state (direct-form II transposed).
