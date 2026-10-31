@@ -266,7 +266,8 @@ enum Command {
             rustlab-notebook render analysis.md -f json            # JSON on stdout (single file)\n  \
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n\n\
+            rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n  \
+            rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
@@ -357,6 +358,16 @@ enum Command {
         /// combined with `--no-comments`.
         #[arg(long, value_name = "keep|footnotes|callouts")]
         comments_style: Option<String>,
+        /// Parent link on a single HTML notebook. The first value is the
+        /// href (`/notebooks/` or `https://…`). The optional second value
+        /// is the label (default: Index). Refused for a directory and for
+        /// every format other than HTML. `javascript:`, `data:`,
+        /// `vbscript:`, and `blob:` are rejected and no file is written.
+        #[arg(long, num_args = 1..=2, value_names = ["HREF", "LABEL"])]
+        index: Option<Vec<String>>,
+        /// Omit the heading sidebar. Single HTML notebook only.
+        #[arg(long)]
+        no_toc: bool,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -629,10 +640,25 @@ fn main() {
             comments,
             no_comments,
             comments_style,
+            index,
+            no_toc,
         } => {
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
+            let (index_href, index_label) = match index {
+                Some(values) => (values.first().cloned(), values.get(1).cloned()),
+                None => (None, None),
+            };
+            let chrome = rustlab_notebook::SingleHtmlOpts {
+                index_href,
+                index_label,
+                no_toc,
+            };
+            if let Err(e) = chrome.check(input.is_dir(), format == CliFormat::Html) {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
             let comments_on = resolve_comments(comments.as_deref(), no_comments, &settings);
             rustlab_notebook::set_comment_display(comments_on);
             if let Err(e) = resolve_comments_style(
@@ -709,7 +735,7 @@ fn main() {
                 if title.is_some() {
                     eprintln!("warning: --title is only used when rendering a directory; ignored for single-file input");
                 }
-                rustlab_notebook::cmd_render(input, output, format, colors)
+                rustlab_notebook::cmd_render_with(input, output, format, colors, &chrome)
             };
             if let Err(e) = result {
                 eprintln!("error: {e}");

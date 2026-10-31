@@ -214,12 +214,85 @@ pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct NotebookNav {
     pub index_href: Option<String>,
+    /// Link text for `index_href`. `None` renders as Index.
+    pub index_label: Option<String>,
     pub prev: Option<(String, String)>,
     pub next: Option<(String, String)>,
     /// Collection file browser. `None` on single-file pages (and on any
     /// nav that only carries prev/next). Directory HTML sets it on the
     /// index and on every notebook page.
     pub files: Option<CollectionBrowser>,
+    /// Drop the in-page heading sidebar. Directory and watch leave this false.
+    pub hide_toc: bool,
+}
+
+/// Single-file HTML chrome from `render --index` and `render --no-toc`.
+///
+/// A default value leaves a single-file page with no parent link and the
+/// heading sidebar. These flags are refused for a directory and for every
+/// format other than HTML.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SingleHtmlOpts {
+    pub index_href: Option<String>,
+    pub index_label: Option<String>,
+    pub no_toc: bool,
+}
+
+impl SingleHtmlOpts {
+    pub fn is_active(&self) -> bool {
+        self.no_toc || self.index_href.is_some() || self.index_label.is_some()
+    }
+
+    /// Usage check. `html` is true only for `--format html`.
+    pub fn check(&self, is_dir: bool, html: bool) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        if is_dir {
+            return Err(
+                "--index and --no-toc apply to a single notebook, not a directory".into(),
+            );
+        }
+        if !html {
+            return Err("--index and --no-toc apply only to HTML".into());
+        }
+        if let Some(href) = &self.index_href {
+            if href.trim().is_empty() {
+                return Err("--index href is empty".into());
+            }
+            if render::is_dangerous_url(href) {
+                return Err("--index href is not allowed".into());
+            }
+        } else if self.index_label.is_some() {
+            return Err("--index requires an href".into());
+        }
+        Ok(())
+    }
+
+    /// Parent link and sidebar flag for one HTML file. `None` when these
+    /// opts are the default.
+    pub fn to_nav(&self) -> Result<Option<NotebookNav>, String> {
+        self.check(false, true)?;
+        if !self.is_active() {
+            return Ok(None);
+        }
+        let href = self
+            .index_href
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let label = self
+            .index_label
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        Ok(Some(NotebookNav {
+            index_href: href,
+            index_label: label,
+            hide_toc: self.no_toc,
+            ..Default::default()
+        }))
+    }
 }
 
 /// Comment line `render_markdown` prepends to every rendered .md file.
@@ -735,6 +808,18 @@ pub fn cmd_render(
     format: Format,
     theme: &ThemeColors,
 ) -> Result<(), String> {
+    cmd_render_with(input, output, format, theme, &SingleHtmlOpts::default())
+}
+
+pub fn cmd_render_with(
+    input: PathBuf,
+    output: Option<PathBuf>,
+    format: Format,
+    theme: &ThemeColors,
+    chrome: &SingleHtmlOpts,
+) -> Result<(), String> {
+    chrome.check(false, matches!(format, Format::Html))?;
+    let nav = chrome.to_nav()?;
     let _cwd_guard = CwdGuard::new();
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
@@ -787,7 +872,7 @@ pub fn cmd_render(
         &title,
         &rendered,
         theme,
-        None,
+        nav.as_ref(),
         &render::LinkMode::single_file(),
         Some(&source),
         Some(&canon_input),
@@ -1098,6 +1183,7 @@ pub fn cmd_render_dir(
                 prev,
                 next,
                 files,
+                ..Default::default()
             })
         } else {
             None
@@ -2438,6 +2524,74 @@ mod tests {
         let single = std::fs::read_to_string(&single_out).unwrap();
         assert!(!single.contains("<nav class=\"file-browser\""));
         assert!(!single.contains("has-files\""));
+    }
+
+    #[test]
+    fn single_html_chrome_parent_link_and_rejections() {
+        let opts = SingleHtmlOpts {
+            index_href: Some("/notebooks/".into()),
+            index_label: Some("Notebooks".into()),
+            no_toc: true,
+        };
+        let err = opts.check(true, true).unwrap_err();
+        assert!(err.contains("not a directory"), "{err}");
+        let err = opts.check(false, false).unwrap_err();
+        assert!(err.contains("only to HTML"), "{err}");
+        for href in ["javascript:alert(1)", "java\nscript:alert(1)", "  "] {
+            let bad = SingleHtmlOpts {
+                index_href: Some(href.into()),
+                ..Default::default()
+            };
+            let err = bad.check(false, true).unwrap_err();
+            assert!(
+                err.contains("not allowed") || err.contains("empty"),
+                "{href:?} -> {err}"
+            );
+            let out = std::env::temp_dir().join(format!(
+                "rustlab-index-reject-{}.html",
+                href.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+            ));
+            let _ = std::fs::remove_file(&out);
+            let rendered = cmd_render_with(
+                PathBuf::from("does-not-exist.md"),
+                Some(out.clone()),
+                Format::Html,
+                Theme::Dark.colors(),
+                &bad,
+            );
+            assert!(rendered.is_err(), "{href:?}");
+            assert!(!out.exists(), "{href:?} wrote {}", out.display());
+        }
+
+        let one = tempfile::tempdir().unwrap();
+        let md = one.path().join("amp.md");
+        std::fs::write(&md, "# Amp\n\n## Setup\n").unwrap();
+        let html_path = one.path().join("amp.html");
+        cmd_render_with(
+            md,
+            Some(html_path.clone()),
+            Format::Html,
+            Theme::Dark.colors(),
+            &opts,
+        )
+        .expect("publish render");
+        let html = std::fs::read_to_string(&html_path).unwrap();
+        assert!(html.contains("href=\"/notebooks/\">Notebooks</a>"));
+        assert!(html.contains("<span class=\"title\">Notebooks</span>"));
+        assert!(!html.contains("<nav class=\"sidebar\""));
+        assert!(html.contains("class=\"no-toc\""));
+
+        let pdf = one.path().join("amp.pdf");
+        let err = cmd_render_with(
+            one.path().join("amp.md"),
+            Some(pdf.clone()),
+            Format::Pdf,
+            Theme::Dark.colors(),
+            &opts,
+        )
+        .unwrap_err();
+        assert!(err.contains("only to HTML"), "{err}");
+        assert!(!pdf.exists());
     }
 
     #[test]

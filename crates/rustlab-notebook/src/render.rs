@@ -876,14 +876,13 @@ pub fn render_html_nonced(
                         )
                     })
                     .unwrap_or_default(),
-                n.index_href
-                    .as_ref()
-                    .map(|href| {
-                        format!(
-                            "<a class=\"index\" href=\"{href}\">Index</a><span class=\"sep\">/</span>",
-                            href = escape_html(href),
-                        )
-                    })
+                n.index_href.as_ref().map(|href| {
+                    format!(
+                        "<a class=\"index\" href=\"{href}\">{label}</a><span class=\"sep\">/</span>",
+                        href = escape_html(href),
+                        label = escape_html(index_link_label(n)),
+                    )
+                })
                     .unwrap_or_default(),
                 n.next
                     .as_ref()
@@ -914,8 +913,9 @@ pub fn render_html_nonced(
     };
 
     // A notebook with no h1–h3 has nothing to put in a TOC; emitting the
-    // sidebar anyway costs 220px of empty chrome. `no-toc` lets main reclaim it.
-    let has_toc = !nav_items.trim().is_empty();
+    // sidebar anyway costs 220px of empty chrome. `no-toc` lets main reclaim
+    // it. `--no-toc` forces the same layout when the page does have headings.
+    let has_toc = !nav_items.trim().is_empty() && !nav.is_some_and(|n| n.hide_toc);
     // Directory pages carry the collection file browser beside the TOC.
     // Single-file nav (or nav with only prev/next) leaves `files` empty.
     let files_block = nav
@@ -2175,6 +2175,13 @@ fn warn_mermaid_disabled_once() {
     }
 }
 
+fn index_link_label(nav: &NotebookNav) -> &str {
+    nav.index_label
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Index")
+}
+
 fn build_footer_nav(nav: &NotebookNav) -> String {
     if nav.prev.is_none() && nav.next.is_none() && nav.index_href.is_none() {
         return String::new();
@@ -2188,8 +2195,9 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
         ));
     }
     if let Some(href) = &nav.index_href {
+        let label = escape_html(index_link_label(nav));
         out.push_str(&format!(
-            "  <a class=\"index\" href=\"{href}\"><span class=\"title\">Index</span></a>\n",
+            "  <a class=\"index\" href=\"{href}\"><span class=\"title\">{label}</span></a>\n",
             href = escape_html(href),
         ));
     }
@@ -2802,7 +2810,9 @@ pub(crate) fn prose_parts(md: &str) -> Vec<(&'static str, String)> {
                 depth += 1;
             }
             Event::End(_) => depth = depth.saturating_sub(1),
-            Event::Rule if depth == 0 => out.push(("rule", protected[range].trim_end().to_string())),
+            Event::Rule if depth == 0 => {
+                out.push(("rule", protected[range].trim_end().to_string()))
+            }
             _ => {}
         }
     }
@@ -6686,6 +6696,7 @@ w = 4
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         for n in [None, Some(&nav)] {
             let html = render_html(
@@ -6705,12 +6716,41 @@ w = 4
     }
 
     #[test]
+    fn single_file_index_label_and_hidden_toc() {
+        let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
+        let nav = NotebookNav {
+            index_href: Some("/notebooks/".to_string()),
+            index_label: Some("Note <b>".to_string()),
+            hide_toc: true,
+            ..Default::default()
+        };
+        let html = render_html(
+            "Alpha",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("<a class=\"index\" href=\"/notebooks/\">Note &lt;b&gt;</a>"));
+        assert!(html.contains(
+            "<a class=\"index\" href=\"/notebooks/\"><span class=\"title\">Note &lt;b&gt;</span></a>"
+        ));
+        assert!(!html.contains("<nav class=\"sidebar\""));
+        assert!(!html.contains("<button class=\"nav-toggle\""));
+        assert!(html.contains("class=\"no-toc\""));
+        assert!(html.contains("id=\"alpha\""));
+    }
+
+    #[test]
     fn render_html_topbar_breadcrumb_when_nav_provided() {
         let nav = NotebookNav {
             index_href: Some("index.html".to_string()),
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
         let html = render_html(
@@ -6832,6 +6872,7 @@ w = 4
             prev: Some(("Lesson 08".to_string(), "08.html".to_string())),
             next: Some(("Lesson 10".to_string(), "10.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let blocks = vec![Rendered::Markdown(
             "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
@@ -6865,6 +6906,7 @@ w = 4
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "A <script> & \"x\"",
@@ -6885,6 +6927,7 @@ w = 4
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6912,6 +6955,7 @@ w = 4
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6934,6 +6978,7 @@ w = 4
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6955,6 +7000,7 @@ w = 4
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",

@@ -600,6 +600,7 @@ fn server_nav(
         prev: (idx > 0).then(|| link(idx - 1)),
         next: (idx + 1 < listing.len()).then(|| link(idx + 1)),
         files,
+        ..Default::default()
     })
 }
 

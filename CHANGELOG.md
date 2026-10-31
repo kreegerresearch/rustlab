@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.43
+
+### Added
+- **`rustlab-notebook render` can publish one HTML notebook.** `--no-toc` omits the heading sidebar. `--index <href> [label]` adds a parent link in the top bar and the footer (the label defaults to Index). Both flags apply only to a single HTML file; a directory or any other format exits with an error and writes nothing. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected before a file is written. `--no-comments` is unchanged and is what hides highlights and notes on that page. HTML comments stay on by default and are read-only; `notebook watch --annotate` is still the way to edit them.
+
 ## 0.3.42
 
 ### Fixed
