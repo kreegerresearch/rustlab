@@ -5670,6 +5670,7 @@ mod tests {
                     },
                 ],
             }),
+            ..Default::default()
         };
         crate::render::render_html_nonced(
             "T",

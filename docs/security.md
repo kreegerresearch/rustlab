@@ -143,6 +143,9 @@ dropped when that cap trips.
 - Dangerous URL schemes (`javascript:`, `data:`, `vbscript:`, `blob:`)
   are stripped from links; images keep `data:image/*` only. The scheme
   test ignores ASCII whitespace and control characters, as browsers do.
+  `render --index` uses that same test and refuses the href instead of
+  rewriting it, so a static page is not written with a live `javascript:`
+  link in the top bar.
 - Math restored into HTML is HTML-escaped before KaTeX delimiters are
   applied (breaks script/tag breakout inside `$…$`). Code output and
   plot text (titles, labels) are escaped by their emitters.

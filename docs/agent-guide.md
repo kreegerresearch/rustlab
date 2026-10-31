@@ -196,6 +196,7 @@ A rustlab notebook is a plain `.md` file. Code in ` ```rustlab ` fences executes
 
 ```sh
 rustlab-notebook render note.md                 # → note.html (self-contained, Plotly + KaTeX)
+rustlab-notebook render note.md --no-toc --no-comments --index /notebooks/ Notebooks
 rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + plots/<stem>/*.svg
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042

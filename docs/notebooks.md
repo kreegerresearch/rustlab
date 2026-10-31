@@ -1656,7 +1656,7 @@ The page also has:
   falls back to open.
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
-- Navigation sidebar from headings
+- Navigation sidebar from headings (`--no-toc` omits it on a single HTML file)
 - Syntax-highlighted `` ```rustlab `` cells. Colors come from the same
   lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
   numbers, operators, call-like names) and follow the Catppuccin theme.
@@ -2052,17 +2052,19 @@ parent directory to enable cross-notebook navigation.
 
 ### Page navigation
 
-Every notebook page carries two navigations, which answer different
-questions and are always both present:
+Every notebook page carries two navigations. The top bar moves between notebooks. The sidebar moves within one.
 
-- The **sidebar** moves *within* a notebook: an in-page TOC built from the
-  H1/H2/H3 headings, in document order. Omitted only when a notebook has
-  no headings at all, in which case the content column centres in the
-  full viewport instead of the space beside the sidebar.
-- The **topbar** moves *between* notebooks: `← Previous`, `Index`, and
-  `Next →` alongside the current page title. A **Previous · Index · Next**
-  bar is also appended at the foot of the page, where it is useful after a
-  long read.
+- The **sidebar** is an in-page TOC built from the H1/H2/H3 headings, in document order. It is omitted when a notebook has no headings, and when a single HTML file is rendered with `--no-toc`. Either way the content column uses the full width (`body.no-toc`).
+- The **topbar** is `← Previous`, the parent link, and `Next →`, alongside the current page title. A directory render labels that parent link Index and points it at `index.html`. A single HTML file has no parent link unless you pass `--index`:
+
+  ```sh
+  rustlab-notebook render amplifier_analysis.md -t dark --no-toc --no-comments \
+    --index /notebooks/ Notebooks
+  ```
+
+  The first value is the href. The optional second value is the label (default Index). The same link is repeated in the footer. `--index` and `--no-toc` apply only to one HTML notebook. A directory, or any other format, exits with an error and writes nothing. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected the same way. `--no-comments` is the existing flag; HTML comments stay on unless you pass it. A static HTML page shows comments read-only. `notebook watch --annotate` is what can edit them.
+
+A **Previous · parent · Next** bar is also appended at the foot of a page that has those links, which is useful after a long read.
 
 Directory HTML (`render` of a folder) adds a third: a **file browser**
 fixed on the left of the index page and of every notebook page. It groups
@@ -2090,9 +2092,10 @@ has the outline and no file tree. The comment margin is unchanged.
 `?contents=open` starts the page with the drawer open.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same
-chrome, minus the cross-notebook links, the file browser, and the footer
-bar — there's no sibling set to navigate. The page layout is otherwise
-identical to a collection page.
+chrome, minus the file browser and, unless `--index` is set, the
+cross-notebook links and the footer bar. `--no-toc` drops the heading
+sidebar on that file. The page layout is otherwise identical to a
+collection page.
 
 TOC entries link headings by their anchor: the explicit `{#anchor}` when
 one is written, the generated slug (`## Section Two` → `#section-two`)
