@@ -974,7 +974,53 @@ fn norm_interrupt_is_a_clean_error_and_the_next_command_runs() {
         err.contains("interrupted"),
         "expected an interrupt, got {err}"
     );
+    // The flag must be clear when the guard drops. A second norm arms
+    // the same flag; a leftover interrupt would cancel it too.
+    assert_re(&eval("n = norm(eye(4));"), "n", 1.0, 1e-12);
     assert_re(&eval("x = 2 + 3;"), "x", 5.0, 0.0);
+}
+
+#[test]
+fn xcorr_nan_inf_and_maxlag_edges_stay_finite_or_propagate() {
+    // maxlag 0, maxlag past the length, and a scalar are the edges that
+    // share the `2*maxlag+1` allocation with the overflow check.
+    let ev = eval(
+        "z = xcorr([1, 2, 3], 0);
+         w = xcorr([1, -2], 5);
+         s = xcorr(4);
+         nan = xcorr([1, NaN, 3], 1);
+         inf = xcorr([1, Inf], 1);",
+    );
+    assert_re(&ev, "z", 14.0, 0.0);
+    assert_eq!(
+        crate::testutil::vec_re(&ev, "w"),
+        vec![0.0, 0.0, 0.0, 0.0, -2.0, 5.0, -2.0, 0.0, 0.0, 0.0, 0.0]
+    );
+    assert_re(&ev, "s", 16.0, 0.0);
+    let nan = crate::testutil::vec_re(&ev, "nan");
+    assert!(
+        nan.iter().any(|v| v.is_nan()),
+        "NaN should propagate, got {nan:?}"
+    );
+    let inf = crate::testutil::vec_re(&ev, "inf");
+    assert!(
+        inf.iter().any(|v| v.is_infinite()),
+        "Inf should propagate, got {inf:?}"
+    );
+}
+
+#[test]
+fn printing_a_real_matrix_matches_the_short_preview() {
+    let ev = eval("A = [1, -2; 3, 4]; C = [1+2j, 0; 0, -3]");
+    let real = format!("{}", ev.get("A").unwrap());
+    assert_eq!(real, "Matrix(2x2)\n  [1.000000, -2.000000]\n  [3.000000, 4.000000]");
+    let complex = format!("{}", ev.get("C").unwrap());
+    assert!(
+        complex.contains("1.000000+2.000000j"),
+        "complex preview lost the imaginary part: {complex}"
+    );
+    let empty = format!("{}", eval("E = zeros(0, 2)").get("E").unwrap());
+    assert_eq!(empty, "Matrix(0x2)");
 }
 
 #[test]

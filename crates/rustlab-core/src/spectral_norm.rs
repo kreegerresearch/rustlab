@@ -951,6 +951,463 @@ mod tests {
         assert!(s <= fro.sqrt() * (1.0 + 1e-8), "σ {s} above Frobenius");
     }
 
+    /// Reference 2-norm: largest eigenvalue of the smaller Gram, via the
+    /// Hermitian eigensolver (the same value a full SVD reports as σ_max).
+    fn reference_sigma(data: &[f64], m: usize, n: usize) -> f64 {
+        let left = m < n;
+        let p = if left { m } else { n };
+        let mut g = Array2::<C64>::zeros((p, p));
+        if left {
+            for i in 0..m {
+                for j in 0..=i {
+                    let mut sum = 0.0;
+                    for k in 0..n {
+                        sum += data[i * n + k] * data[j * n + k];
+                    }
+                    let z = C64::new(sum, 0.0);
+                    g[[i, j]] = z;
+                    g[[j, i]] = z;
+                }
+            }
+        } else {
+            for i in 0..n {
+                for j in 0..=i {
+                    let mut sum = 0.0;
+                    for r in 0..m {
+                        sum += data[r * n + i] * data[r * n + j];
+                    }
+                    let z = C64::new(sum, 0.0);
+                    g[[i, j]] = z;
+                    g[[j, i]] = z;
+                }
+            }
+        }
+        let (vals, _) = crate::dense_eig::eig(&g, false).unwrap();
+        let lam = vals.iter().map(|z| z.re).fold(f64::NEG_INFINITY, f64::max);
+        lam.max(0.0).sqrt()
+    }
+
+    fn reference_sigma_complex(data: &[C64], m: usize, n: usize) -> f64 {
+        let left = m <= n;
+        let p = if left { m } else { n };
+        let mut g = Array2::<C64>::zeros((p, p));
+        if left {
+            for i in 0..m {
+                for j in 0..=i {
+                    let mut sum = C64::new(0.0, 0.0);
+                    for k in 0..n {
+                        sum += data[i * n + k] * data[j * n + k].conj();
+                    }
+                    g[[i, j]] = sum;
+                    g[[j, i]] = sum.conj();
+                }
+            }
+        } else {
+            for i in 0..n {
+                for j in 0..=i {
+                    let mut sum = C64::new(0.0, 0.0);
+                    for r in 0..m {
+                        sum += data[r * n + i].conj() * data[r * n + j];
+                    }
+                    g[[i, j]] = sum;
+                    g[[j, i]] = sum.conj();
+                }
+            }
+        }
+        let (vals, _) = crate::dense_eig::eig(&g, false).unwrap();
+        let lam = vals.iter().map(|z| z.re).fold(f64::NEG_INFINITY, f64::max);
+        lam.max(0.0).sqrt()
+    }
+
+    fn xorshift(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    }
+
+    fn rel_err(got: f64, want: f64) -> f64 {
+        if want == 0.0 {
+            got.abs()
+        } else {
+            (got - want).abs() / want.abs()
+        }
+    }
+
+    fn report(name: &str, got: f64, want: f64, elapsed: std::time::Duration) -> f64 {
+        let rel = rel_err(got, want);
+        eprintln!("{name}: got {got:.12e}  svd {want:.12e}  rel {rel:.3e}  {elapsed:?}");
+        rel
+    }
+
+    /// Accuracy against the Hermitian eig of the Gram (the SVD's σ_max).
+    /// Not part of `cargo test`.
+    ///
+    /// ```text
+    /// cargo test -p rustlab-core --release --lib accuracy_against_svd -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn accuracy_against_svd() {
+        let mut worst = 0.0_f64;
+        let mut state = 0xC0FFEE_u64;
+        for n in [97usize, 128, 256, 512] {
+            let mut data = Vec::with_capacity(n * n);
+            for _ in 0..(n * n) {
+                data.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            let elapsed = t.elapsed();
+            let want = reference_sigma(&data, n, n);
+            worst = worst.max(report(&format!("random {n}"), got, want, elapsed));
+        }
+
+        // Hilbert: huge condition number, σ_max still well separated.
+        for n in [64usize, 128] {
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    data[i * n + j] = 1.0 / (i + j + 1) as f64;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("hilbert {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Badly scaled diagonal, then a Householder similarity so it is dense.
+        // Singular values are the absolute diagonal entries.
+        {
+            let n = 128usize;
+            let mut u = vec![0.0; n];
+            for x in &mut u {
+                *x = xorshift(&mut state);
+            }
+            let unorm = u.iter().map(|x| x * x).sum::<f64>().sqrt();
+            for x in &mut u {
+                *x /= unorm;
+            }
+            let mut s = vec![0.0; n];
+            s[0] = 1e8;
+            s[1] = 1.0;
+            s[2] = 1e-8;
+            for i in 3..n {
+                s[i] = 0.1;
+            }
+            // A = (I - 2uuᵀ) diag(s) (I - 2uuᵀ). Eigenvalues are s.
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    // (H D H)_ij = δ_ij s_j - 2 u_i u_j s_j - 2 u_i u_j s_i
+                    //   + 4 u_i u_j (u·(s⊙u))
+                    let mut dot_su = 0.0;
+                    for k in 0..n {
+                        dot_su += u[k] * s[k] * u[k];
+                    }
+                    let hij = if i == j { s[j] } else { 0.0 }
+                        - 2.0 * u[i] * u[j] * s[j]
+                        - 2.0 * u[i] * u[j] * s[i]
+                        + 4.0 * u[i] * u[j] * dot_su;
+                    data[i * n + j] = hij;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                "scaled-householder 128",
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Top two singular values nearly equal. A = U diag(s) Vᵀ with
+        // U, V from modified Gram-Schmidt of Gaussian matrices.
+        for (gap, n) in [(1e-4, 96usize), (1e-6, 128usize), (1e-3, 256usize)] {
+            let mut cols_u = vec![vec![0.0; n]; n];
+            let mut cols_v = vec![vec![0.0; n]; n];
+            for set in [&mut cols_u, &mut cols_v] {
+                for col in set.iter_mut() {
+                    for x in col.iter_mut() {
+                        *x = xorshift(&mut state);
+                    }
+                }
+                for i in 0..n {
+                    for j in 0..i {
+                        let dot: f64 = cols_u_dot(&set[j], &set[i]);
+                        for k in 0..n {
+                            set[i][k] -= dot * set[j][k];
+                        }
+                    }
+                    let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if nrm > 0.0 {
+                        for x in &mut set[i] {
+                            *x /= nrm;
+                        }
+                    }
+                }
+            }
+            fn cols_u_dot(a: &[f64], b: &[f64]) -> f64 {
+                a.iter().zip(b).map(|(x, y)| x * y).sum()
+            }
+            let mut s = vec![0.5; n];
+            s[0] = 1.0;
+            s[1] = 1.0 - gap;
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for k in 0..n {
+                        acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                    }
+                    data[i * n + j] = acc;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("cluster gap {gap} n {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Rank deficient: random 128×128 with the last 40 columns zero.
+        {
+            let (m, n) = (128usize, 128usize);
+            let mut data = vec![0.0; m * n];
+            for i in 0..m {
+                for j in 0..(n - 40) {
+                    data[i * n + j] = xorshift(&mut state);
+                }
+            }
+            let a = Array2::from_shape_vec((m, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                "rank-deficient 128",
+                got,
+                reference_sigma(&data, m, n),
+                t.elapsed(),
+            ));
+        }
+
+        for (m, n, label) in [
+            (300usize, 40usize, "tall"),
+            (40, 300, "wide"),
+            (200, 80, "tall2"),
+            (80, 200, "wide2"),
+        ] {
+            let mut data = Vec::with_capacity(m * n);
+            for _ in 0..(m * n) {
+                data.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((m, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("{label} {m}x{n}"),
+                got,
+                reference_sigma(&data, m, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Tighter than the cases above, and a spectrum with no isolated gap
+        // (singular values 1, 1+Δ, …). Both sit past the Jacobi cutoff.
+        for (gap, n) in [(1e-8, 160usize)] {
+            let mut cols_u = vec![vec![0.0; n]; n];
+            let mut cols_v = vec![vec![0.0; n]; n];
+            for set in [&mut cols_u, &mut cols_v] {
+                for col in set.iter_mut() {
+                    for x in col.iter_mut() {
+                        *x = xorshift(&mut state);
+                    }
+                }
+                for i in 0..n {
+                    for j in 0..i {
+                        let dot: f64 = set[j].iter().zip(set[i].iter()).map(|(a, b)| a * b).sum();
+                        for k in 0..n {
+                            set[i][k] -= dot * set[j][k];
+                        }
+                    }
+                    let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if nrm > 0.0 {
+                        for x in &mut set[i] {
+                            *x /= nrm;
+                        }
+                    }
+                }
+            }
+            let mut s = vec![0.5; n];
+            s[0] = 1.0;
+            s[1] = 1.0 - gap;
+            let mut data = vec![0.0; n * n];
+            for i in 0..n {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for k in 0..n {
+                        acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                    }
+                    data[i * n + j] = acc;
+                }
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value(&a);
+            worst = worst.max(report(
+                &format!("tight-gap {gap} n {n}"),
+                got,
+                reference_sigma(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        // Complex random.
+        for n in [64usize, 96] {
+            let mut data = Vec::with_capacity(n * n);
+            for _ in 0..(n * n) {
+                data.push(C64::new(xorshift(&mut state), xorshift(&mut state)));
+            }
+            let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+            let t = std::time::Instant::now();
+            let got = largest_singular_value_complex(&a);
+            worst = worst.max(report(
+                &format!("complex {n}"),
+                got,
+                reference_sigma_complex(&data, n, n),
+                t.elapsed(),
+            ));
+        }
+
+        eprintln!("worst relative error {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "worst rel {worst:.3e} (MATLAB-sized 2-norm agreement)"
+        );
+    }
+
+    /// The sizes just past the Jacobi cutoff, a tight gap, Hilbert,
+    /// rank deficiency, a short rectangle, and a complex matrix. σ_max
+    /// must match the Hermitian eig of the Gram to 1e-10.
+    #[test]
+    fn hard_cases_match_svd_to_1e_10() {
+        let mut worst = 0.0_f64;
+        let mut state = 0xA11CE_u64;
+        let n = 97usize;
+        let mut data = Vec::with_capacity(n * n);
+        for _ in 0..(n * n) {
+            data.push(xorshift(&mut state));
+        }
+        let a = Array2::from_shape_vec((n, n), data.clone()).unwrap();
+        let got = largest_singular_value(&a);
+        worst = worst.max(rel_err(got, reference_sigma(&data, n, n)));
+
+        // σ₁ = 1, σ₂ = 1−10⁻⁶, the rest 0.5. Past the Jacobi cutoff.
+        let gap = 1e-6;
+        let mut cols_u = vec![vec![0.0; n]; n];
+        let mut cols_v = vec![vec![0.0; n]; n];
+        for set in [&mut cols_u, &mut cols_v] {
+            for col in set.iter_mut() {
+                for x in col.iter_mut() {
+                    *x = xorshift(&mut state);
+                }
+            }
+            for i in 0..n {
+                for j in 0..i {
+                    let dot: f64 = set[j].iter().zip(set[i].iter()).map(|(p, q)| p * q).sum();
+                    for k in 0..n {
+                        set[i][k] -= dot * set[j][k];
+                    }
+                }
+                let nrm = set[i].iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-30);
+                for x in &mut set[i] {
+                    *x /= nrm;
+                }
+            }
+        }
+        let mut s = vec![0.5; n];
+        s[0] = 1.0;
+        s[1] = 1.0 - gap;
+        let mut clustered = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut acc = 0.0;
+                for k in 0..n {
+                    acc += cols_u[k][i] * s[k] * cols_v[k][j];
+                }
+                clustered[i * n + j] = acc;
+            }
+        }
+        let a = Array2::from_shape_vec((n, n), clustered.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&clustered, n, n),
+        ));
+
+        let h = 32usize;
+        let mut hilbert = vec![0.0; h * h];
+        for i in 0..h {
+            for j in 0..h {
+                hilbert[i * h + j] = 1.0 / (i + j + 1) as f64;
+            }
+        }
+        let a = Array2::from_shape_vec((h, h), hilbert.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&hilbert, h, h),
+        ));
+
+        let (m, nc) = (48usize, 48usize);
+        let mut rank = vec![0.0; m * nc];
+        for i in 0..m {
+            for j in 0..(nc - 12) {
+                rank[i * nc + j] = xorshift(&mut state);
+            }
+        }
+        let a = Array2::from_shape_vec((m, nc), rank.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value(&a),
+            reference_sigma(&rank, m, nc),
+        ));
+
+        for (rm, rn) in [(40usize, 12usize), (12, 40)] {
+            let mut rect = Vec::with_capacity(rm * rn);
+            for _ in 0..(rm * rn) {
+                rect.push(xorshift(&mut state));
+            }
+            let a = Array2::from_shape_vec((rm, rn), rect.clone()).unwrap();
+            worst = worst.max(rel_err(
+                largest_singular_value(&a),
+                reference_sigma(&rect, rm, rn),
+            ));
+        }
+
+        let cn = 32usize;
+        let mut cdata = Vec::with_capacity(cn * cn);
+        for _ in 0..(cn * cn) {
+            cdata.push(C64::new(xorshift(&mut state), xorshift(&mut state)));
+        }
+        let a = Array2::from_shape_vec((cn, cn), cdata.clone()).unwrap();
+        worst = worst.max(rel_err(
+            largest_singular_value_complex(&a),
+            reference_sigma_complex(&cdata, cn, cn),
+        ));
+
+        assert!(worst < 1e-10, "2-norm drifted from the SVD by {worst:.3e}");
+    }
+
     #[test]
     fn cancel_stops_during_lanczos() {
         let n = 256usize;
