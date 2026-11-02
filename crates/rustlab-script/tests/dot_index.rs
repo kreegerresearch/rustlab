@@ -1,4 +1,4 @@
-//! `obj.name(args)`: indexing a struct field, or method-call sugar.
+//! `obj.name(args)`: indexing a struct field or table column, or method-call sugar.
 
 use rustlab_script::{Evaluator, Value};
 
@@ -77,6 +77,28 @@ r = s.size(2);
 ",
     );
     assert_eq!(reals(&ev, "r"), vec![8.0]);
+}
+
+#[test]
+fn table_column_and_properties_are_indexed() {
+    let ev = eval(
+        "a = [1; 2; 3];
+b = [4; 5; 6];
+T = table(a, b);
+x = T.b(2);
+y = T.a(end);
+names = T.Properties.VariableNames(2);
+h = T.height();
+",
+    );
+    assert_eq!(reals(&ev, "x"), vec![5.0]);
+    assert_eq!(reals(&ev, "y"), vec![3.0]);
+    assert_eq!(reals(&ev, "h"), vec![3.0]);
+    match ev.get("names") {
+        Some(Value::Str(s)) => assert_eq!(s, "b"),
+        Some(Value::StringArray(v)) => assert_eq!(v, &vec!["b".to_string()]),
+        other => panic!("names: expected a string, got {other:?}"),
+    }
 }
 
 #[test]

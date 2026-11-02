@@ -31,6 +31,7 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex;
 pub use profile::FnStats;
 use rustlab_core::C64;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -2020,11 +2021,11 @@ impl Evaluator {
                 }
                 self.eval_arith_binop(*op, lhs, rhs)
             }
-            Expr::DotCall { name, args } if self.dot_field(name, args).is_some() => {
+            Expr::DotCall { name, args } if self.is_dot_field(name, args) => {
                 // A field read, not a call: a statement-position flag must
                 // not reach a call inside the subscripts.
                 self.stmt_call_nargout0 = false;
-                let container = self.dot_field(name, args).cloned().expect("checked");
+                let container = self.dot_field(name, args).expect("checked");
                 self.index_value(container, &args[1..])
             }
             Expr::Call { name, args } | Expr::DotCall { name, args } => {
@@ -3727,23 +3728,42 @@ impl Evaluator {
         result
     }
 
-    /// The field `name` of the struct that `args[0]` of a `DotCall` names
-    /// (a variable or a `S.a.b` chain), if it has one.
-    fn dot_field(&self, name: &str, args: &[Expr]) -> Option<&Value> {
-        match self.borrow_field_chain(args.first()?)? {
-            Value::Struct(fields) => fields.get(name),
+    /// Whether `args[0]` of a `DotCall` names (as a variable or a field
+    /// chain) a struct with field `name` or a table with column `name` or
+    /// `Properties`. Copies nothing at the last link.
+    fn is_dot_field(&self, name: &str, args: &[Expr]) -> bool {
+        let Some(obj) = args.first().and_then(|e| self.field_chain(e)) else {
+            return false;
+        };
+        match obj.as_ref() {
+            Value::Struct(fields) => fields.contains_key(name),
+            Value::Table(t) => name == "Properties" || t.has_column(name),
+            _ => false,
+        }
+    }
+
+    /// The value [`Self::is_dot_field`] found.
+    fn dot_field(&self, name: &str, args: &[Expr]) -> Option<Value> {
+        member(self.field_chain(args.first()?)?, name).map(Cow::into_owned)
+    }
+
+    /// A variable or a chain of field reads on one (`S`, `S.a`, `T.Properties`),
+    /// borrowed where it is a struct field and owned past a table. `None` for
+    /// any other expression or a missing link.
+    fn field_chain(&self, e: &Expr) -> Option<Cow<'_, Value>> {
+        match e {
+            Expr::Var(name) => self.env.get(name).map(Cow::Borrowed),
+            Expr::Field { object, field } => member(self.field_chain(object)?, field),
             _ => None,
         }
     }
 
     /// `name` and `args` of a call: an `Expr::Call`, or a `DotCall` that is
-    /// method sugar rather than a struct field's index.
+    /// method sugar rather than a field's index.
     fn as_call<'a>(&self, e: &'a Expr) -> Option<(&'a String, &'a Vec<Expr>)> {
         match e {
             Expr::Call { name, args } => Some((name, args)),
-            Expr::DotCall { name, args } if self.dot_field(name, args).is_none() => {
-                Some((name, args))
-            }
+            Expr::DotCall { name, args } if !self.is_dot_field(name, args) => Some((name, args)),
             _ => None,
         }
     }
@@ -4901,6 +4921,19 @@ impl MatmulSide<'_> {
                 _ => None,
             },
         }
+    }
+}
+
+/// Field `name` of a struct, or column `name` / `Properties` of a table.
+fn member<'a>(obj: Cow<'a, Value>, name: &str) -> Option<Cow<'a, Value>> {
+    match obj {
+        Cow::Borrowed(Value::Struct(fields)) => fields.get(name).map(Cow::Borrowed),
+        Cow::Owned(Value::Struct(mut fields)) => fields.remove(name).map(Cow::Owned),
+        obj => match obj.as_ref() {
+            Value::Table(t) if name == "Properties" => Some(Cow::Owned(t.properties())),
+            Value::Table(t) => t.column(name).ok().map(Cow::Owned),
+            _ => None,
+        },
     }
 }
 
