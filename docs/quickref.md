@@ -21,7 +21,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
-| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` may be a vector or a `1×n` / `n×1` matrix (`zeros(1, n)`); a wider matrix is an error |
+| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |

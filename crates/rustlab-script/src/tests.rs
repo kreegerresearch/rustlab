@@ -1277,6 +1277,81 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn row_matrix_is_a_2d_subscript_on_read_and_write() {
+        // `randi(3, 1, 4)` is a 1×4 matrix. MATLAB uses it as a row list.
+        let ev = eval_str(
+            "E = [1, 2, 3, 4, 5; 6, 7, 8, 9, 10; 11, 12, 13, 14, 15];\n\
+             idx = zeros(1, 4);\n\
+             idx(1) = 1; idx(2) = 3; idx(3) = 2; idx(4) = 1;\n\
+             R = E(idx, :);\n\
+             C = E(:, idx');\n\
+             cols = zeros(1, 2); cols(1) = 2; cols(2) = 5;\n\
+             S = E(idx, cols);\n\
+             E(idx, :) = 0;\n\
+             M = ones(3, 4);\n\
+             rows = zeros(1, 2); rows(1) = 1; rows(2) = 3;\n\
+             M(rows, :) = 0;",
+        );
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (4, 5));
+                assert!((m[[0, 0]].re - 1.0).abs() < 1e-12);
+                assert!((m[[1, 0]].re - 11.0).abs() < 1e-12);
+                assert!((m[[2, 4]].re - 10.0).abs() < 1e-12);
+                assert!((m[[3, 1]].re - 2.0).abs() < 1e-12);
+            }
+            other => panic!("R: {other:?}"),
+        }
+        match ev.get("C").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (3, 4)),
+            other => panic!("C: {other:?}"),
+        }
+        match ev.get("S").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (4, 2));
+                assert!((m[[1, 1]].re - 15.0).abs() < 1e-12);
+            }
+            other => panic!("S: {other:?}"),
+        }
+        match ev.get("E").unwrap() {
+            Value::Matrix(m) => {
+                assert!((m[[0, 2]].re).abs() < 1e-12);
+                assert!((m[[1, 0]].re).abs() < 1e-12);
+            }
+            other => panic!("E: {other:?}"),
+        }
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert!((m[[0, 1]].re).abs() < 1e-12);
+                assert!((m[[1, 0]].re - 1.0).abs() < 1e-12);
+                assert!((m[[2, 3]].re).abs() < 1e-12);
+            }
+            other => panic!("M: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_by_one_matrix_is_accepted_as_a_scalar() {
+        // `b*b'` of a row is 1×1. fprintf and `H(t) = ones(1,1)*7` take it.
+        let ev = eval_str(
+            "b = zeros(1, 2);\n\
+             p = b * b';\n\
+             fprintf(\"%f\\n\", p);\n\
+             h = zeros(1, 3);\n\
+             h(2) = ones(1, 1) * 7;\n\
+             x = p + 1;",
+        );
+        let p = ev.get("p").unwrap().to_scalar().expect("1×1 is a scalar");
+        assert!(p.abs() < 1e-12, "{p}");
+        match ev.get("h").unwrap() {
+            Value::Matrix(m) => assert!((m[[0, 1]].re - 7.0).abs() < 1e-12),
+            other => panic!("h: {other:?}"),
+        }
+        let x = ev.get("x").unwrap().to_scalar().unwrap();
+        assert!((x - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn transpose_operator() {
         // Transposing a row vector [1,2,3] produces a 3×1 column Matrix
         let ev = eval_str("v = [1, 2, 3]\nvt = v'");
@@ -1343,6 +1418,30 @@ mod error_tests {
         assert!(
             msg.contains("invalid index type"),
             "a 2×2 index into a vector should fail, got {msg}"
+        );
+    }
+
+    #[test]
+    fn square_matrix_is_not_a_2d_subscript() {
+        let err = eval_err("E = ones(3, 5); E([1, 2; 3, 1], :)");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid index type"), "{msg}");
+    }
+
+    #[test]
+    fn assigning_a_row_into_one_element_still_errors() {
+        // MATLAB rejects `H(t) = row` when `t` is one index and `row` is
+        // 1×n (the number of elements does not match). A bracket row
+        // `[1, 2, 3]` is a vector and is a different write.
+        let err = eval_err(
+            "h = zeros(1, 4);\n\
+             row = zeros(1, 3); row(1) = 1; row(2) = 2; row(3) = 3;\n\
+             h(2) = row;",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("got matrix"),
+            "a 1×n right-hand side into one element should still fail, got {msg}"
         );
     }
 

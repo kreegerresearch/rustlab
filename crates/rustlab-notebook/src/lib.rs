@@ -23,6 +23,7 @@ pub mod watch;
 pub mod widget;
 
 use rustlab_plot::theme::ThemeColors;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 pub use file_browser::{CollectionBrowser, FileEntry};
@@ -878,6 +879,7 @@ pub fn cmd_render_with(
         Some(&canon_input),
     )?;
     print_summary(&input, &out_path, &rendered);
+    strict_cell_failure(&input, &rendered)?;
     Ok(())
 }
 
@@ -953,6 +955,10 @@ pub fn cmd_render_json(
     }
     .expect("Document serialises (Serialize derive is infallible for our schema)");
     println!("{json}");
+    if let Err(e) = strict_cell_failure(&title_path, &rendered) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
 }
 
 /// Render all .md files in a directory.
@@ -1221,6 +1227,9 @@ pub fn cmd_render_dir(
             continue;
         }
         print_summary(&p.md_path, &p.out_file, &rendered);
+        if let Err(e) = strict_cell_failure(&p.md_path, &rendered) {
+            failed.push(format!("{} ({e})", p.rel_md));
+        }
     }
 
     if matches!(format, Format::Html) {
@@ -1296,6 +1305,9 @@ pub fn cmd_render_dir(
                     failed.push("index.md".to_string());
                 }
                 print_summary(src_index, &index_path, &rendered);
+                if let Err(e) = strict_cell_failure(src_index, &rendered) {
+                    failed.push(format!("index.md ({e})"));
+                }
             }
             None => {
                 let title = index_title.clone().unwrap_or_else(|| {
@@ -1865,6 +1877,38 @@ fn attachments_layout_for(out_path: &PathBuf, attachments_dir: &str) -> (PathBuf
     let plot_dir = parent.join(attachments_dir).join(&stem);
     let href_prefix = format!("{attachments_dir}/{stem}");
     (plot_dir, href_prefix)
+}
+
+thread_local! {
+    static RENDER_STRICT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `rustlab-notebook render --strict`. Off by default: a cell error is
+/// reported in the summary and the process still exits 0, so existing
+/// Makefiles keep working. When set, a cell error makes that render fail.
+pub fn set_render_strict(strict: bool) {
+    RENDER_STRICT.with(|c| c.set(strict));
+}
+
+fn cell_error_count(rendered: &[execute::Rendered]) -> usize {
+    rendered
+        .iter()
+        .filter(|b| matches!(b, execute::Rendered::Code { error: Some(_), .. }))
+        .count()
+}
+
+fn strict_cell_failure(path: &Path, rendered: &[execute::Rendered]) -> Result<(), String> {
+    if !RENDER_STRICT.with(|c| c.get()) {
+        return Ok(());
+    }
+    let n = cell_error_count(rendered);
+    if n == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: {n} code block(s) failed (--strict)",
+        path.display()
+    ))
 }
 
 fn print_summary(input: &PathBuf, out_path: &PathBuf, rendered: &[execute::Rendered]) {

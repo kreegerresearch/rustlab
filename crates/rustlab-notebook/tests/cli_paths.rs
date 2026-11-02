@@ -212,3 +212,61 @@ fn help_puts_render_detail_on_render_not_watch() {
         "render examples must not be stacked on watch:\n{watch_out}"
     );
 }
+
+#[test]
+fn render_strict_exits_nonzero_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("bad.md");
+    std::fs::write(
+        &src,
+        "# Bad\n\n```rustlab\nx = no_such_name\n```\n\n```rustlab\ny = 1 + 1\n```\n",
+    )
+    .unwrap();
+    let out_md = dir.path().join("bad.md.out");
+    // Default: the file is written and the process exits 0.
+    let loose = bin()
+        .args([
+            "render",
+            src.to_str().unwrap(),
+            "-f",
+            "markdown",
+            "-o",
+            out_md.to_str().unwrap(),
+        ])
+        .output()
+        .expect("render");
+    assert!(
+        loose.status.success(),
+        "default render must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&loose.stderr)
+    );
+    let body = std::fs::read_to_string(&out_md).unwrap();
+    assert!(body.contains("undefined variable"), "{body}");
+    let summary = String::from_utf8_lossy(&loose.stdout);
+    assert!(summary.contains("1 errors"), "{summary}");
+
+    let strict = bin()
+        .args([
+            "render",
+            src.to_str().unwrap(),
+            "-f",
+            "markdown",
+            "-o",
+            out_md.to_str().unwrap(),
+            "--strict",
+        ])
+        .output()
+        .expect("strict render");
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "stderr:\n{}stdout:\n{}",
+        String::from_utf8_lossy(&strict.stderr),
+        String::from_utf8_lossy(&strict.stdout)
+    );
+    let err = String::from_utf8_lossy(&strict.stderr);
+    assert!(err.contains("--strict"), "{err}");
+    // The notebook is still written so the cell error is visible.
+    let body = std::fs::read_to_string(&out_md).unwrap();
+    assert!(body.contains("undefined variable"), "{body}");
+}

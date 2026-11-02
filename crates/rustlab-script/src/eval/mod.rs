@@ -387,6 +387,11 @@ impl Evaluator {
     /// `name(indices) = val` — the body of `StmtKind::IndexAssign` after the
     /// right-hand side is evaluated (split out so the profiler can time it
     /// as one `[index-assign]` row).
+    /// A scalar subscript, or a 1×1 matrix (`ones(1, 1)`).
+    fn index_is_scalar(v: &Value) -> bool {
+        matches!(v, Value::Scalar(_)) || v.unit_matrix().is_some()
+    }
+
     fn exec_index_assign(
         &mut self,
         name: &String,
@@ -416,6 +421,15 @@ impl Evaluator {
         if rhs_is_empty {
             return self.exec_index_delete(name, indices, *suppress);
         }
+
+        // A 1×1 matrix is a scalar in every write that accepts a scalar.
+        // A 1×n right-hand side stays a matrix and still errors when the
+        // left side is one element (MATLAB: dimension mismatch).
+        let val = match val.unit_matrix() {
+            Some(c) if c.im.abs() < 1e-10 => Value::Scalar(c.re),
+            Some(c) => Value::Complex(c),
+            None => val,
+        };
 
         // Evaluate indices with `end` bound the same way reads do.
         // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
@@ -515,7 +529,10 @@ impl Evaluator {
             // or any colon range that evaluates to a Vector.
             // Handled before the scalar path because `to_scalar()`
             // would reject the Vector index.
-            let idx_is_multi = matches!(&idx_vals[0], Value::All | Value::Vector(_));
+            let idx_is_multi = matches!(
+                &idx_vals[0],
+                Value::All | Value::Vector(_) | Value::Matrix(_)
+            );
             let env_is_vector =
                 matches!(self.env.get(name.as_str()), Some(Value::Vector(_)));
             if idx_is_multi && env_is_vector {
@@ -769,8 +786,8 @@ impl Evaluator {
             // the full sub-shape. Single-element writes go
             // through the original Scalar/Complex path so the
             // SparseMatrix branch is preserved unchanged.
-            let single_element = matches!(idx_vals[0], Value::Scalar(_))
-                && matches!(idx_vals[1], Value::Scalar(_))
+            let single_element = Self::index_is_scalar(&idx_vals[0])
+                && Self::index_is_scalar(&idx_vals[1])
                 && matches!(&val, Value::Scalar(_) | Value::Complex(_));
             if single_element {
                 let row = idx_vals[0]
@@ -1114,7 +1131,9 @@ impl Evaluator {
                 let len = Shared::len(v);
                 let positions = match i {
                     Value::Scalar(_) if matches!(val, Value::Scalar(_)) => Value::resolve_index_dim(i, len).ok()?,
-                    Value::All | Value::Vector(_) => Value::resolve_index_dim_public(i, len).ok()?,
+                    Value::All | Value::Vector(_) | Value::Matrix(_) => {
+                        Value::resolve_index_dim_public(i, len).ok()?
+                    }
                     _ => return None,
                 };
                 if !matches!(src, Src::Fill(_)) && (!matches!(val, Value::Vector(_)) || src.len() != positions.len()) {
