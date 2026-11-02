@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.47
+
+### Added
+- **3-D FDTD, Phase 1 of `dev/plans/fdtd3d.md`.** A native Yee stepper in `rustlab-dsp` (`src/fdtd/`), vacuum with PEC outer walls, serial. `sim = fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` builds an opaque `fdtd3d` handle; `dt` is the CFL limit times `s` (default 0.99), and `s > 1` is an error before any step. `fdtd_info(sim)` reports the grid, `dt`, and step count. `gaussian_pulse(t, t0, tau [, f0])` is the source waveform. `fdtd_source` adds soft (current) or hard (overwrite) sources on E edges, with `"gaussian"`, `"modulated"`, or a sampled vector, and a range on the component's own axis for a stack of edges. `fdtd_probe` records one component per step. `fdtd_run(sim, n)` / `fdtd_step(sim [, n])` advance the grid and return the record (`t`, `dt`, `steps`, `probe`, `V`, `I`, `Z0`, `interrupted`) plus `seconds`, `cell_updates`, and `cell_rate`; split runs are bit-identical to one run. `fdtd_record` and `fdtd_slice` read the record and one field plane. Ctrl+C during a run returns the partial record with `interrupted = true` and prints `interrupted`; saving a notebook in `rustlab-notebook watch` stops a run in progress (`ScriptError::Cancelled`, no result). Example: `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`.
+
 ## 0.3.46
 
 ### Added

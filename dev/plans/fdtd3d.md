@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** in progress — Phase 0 complete (0.3.46), no FDTD code yet
-**Current phase:** 1 (not started; waits for an explicit yes)
+**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee)
+**Current phase:** 2 (not started; waits for an explicit yes)
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -13,7 +13,7 @@ The questions at the bottom are decided. Do not implement a phase until Michael 
 
 ## What already exists
 
-There is no FDTD, Yee, PML, or near-to-far code in this repo. The pieces the stepper should sit next to:
+When this plan was written there was no FDTD, Yee, PML, or near-to-far code in this repo. Phase 1 added the vacuum stepper in `rustlab-dsp/src/fdtd/` (see Examples, Phase 1, for what shipped). The pieces the stepper sits next to:
 
 | Piece | Where | What it actually is |
 |---|---|---|
@@ -396,27 +396,50 @@ bash dev/run-examples.sh          % same driver as `make examples`
 
 ### Phase 1 — hello
 
-`examples/pde/fdtd_hello.rlab`, notebook `examples/notebooks/fdtd_hello.md`.
+**Status:** complete (0.3.47). `examples/pde/fdtd_hello.rlab`, notebook `examples/notebooks/fdtd_hello.md` (rendered to `gallery/fdtd_hello.md`).
 
-A 40×40×40 vacuum box, 1 mm cells. `fdtd3d` with no `fdtd_media` and no `fdtd_cpml` is vacuum with PEC walls, which is the whole Phase 1 boundary. The source is a soft baseband Gaussian on `Ez` at the centre cell. Indices are 1-based: `ic = 20` is that cell of `1:40`. Call order is `(component, i, j, k)` with `i` the row (y) and `j` the column (x). The probe keeps that row and page and moves six columns toward +x, so the trace is the pulse arriving rather than the source node. `tau = 20 * dt` is about ten cells wide (`c0 * tau`); `t0 = 4*tau` puts the peak after the record starts. Four hundred steps is long enough for the pulse to reach a PEC wall and come back. `out.probe` is `steps × nprobes`; column 1 is this probe. The slice is `Ez` on the z-page through the source (y-rows by x-columns).
+A 40×40×40 vacuum box, 1 mm cells. `fdtd3d` with no `fdtd_media` and no `fdtd_cpml` is vacuum with PEC walls, which is the whole Phase 1 boundary. The source is a soft source on `Ez` at the centre cell. Indices are 1-based. `Ez` node `(i, j, k)` sits at `x = (j−1)·dx`, so the centre of `1:40` is `ic = n/2 + 1 = 21` (node 21 is at 20 mm, half of the 40 mm box). Call order is `(component, i, j, k)` with `i` the row (y) and `j` the column (x). The probe keeps that row and page and moves six columns toward +x, so the trace is the pulse arriving rather than the source node. `tau = 20 * dt` is about ten cells wide (`c0 * tau`); `t0 = 4*tau` puts the peak after the record starts. Four hundred steps is long enough for the pulse to reach a PEC wall and come back. `out.probe` is `steps × nprobes`; column `id` is this probe. The slice is `Ez` on the z-page through the source (y-rows by x-columns).
+
+As shipped (the code cell of the notebook is the same program):
 
 ```text
-n = 40
-dx = 1.0e-3
-sim = fdtd3d(n, n, n, dx, dx, dx)
-info = fdtd_info(sim)
-tau = 20 * info.dt
-ic = 20
-fdtd_source(sim, "ez", ic, ic, ic, "soft", "gaussian", 4*tau, tau)
-fdtd_probe(sim, "ez", ic, ic + 6, ic)
-out = fdtd_run(sim, 400)
-subplot(2, 1, 1)
-plot(out.t * 1e9, out.probe(:, 1))
-xlabel("t (ns)")
-subplot(2, 1, 2)
-imagesc(fdtd_slice(sim, "ez", "z", ic))
-title("Ez on the mid z-plane")
+n = 40;
+dx = 1.0e-3;
+sim = fdtd3d(n, n, n, dx, dx, dx);
+info = fdtd_info(sim);
+nsteps = 400;
+tau = 20 * info.dt;
+t0 = 4 * tau;
+ts = (1:nsteps) * info.dt;
+w = -(ts - t0) / tau .* gaussian_pulse(ts, t0, tau);
+ic = n / 2 + 1;
+fdtd_source(sim, "ez", ic, ic, ic, "soft", w);
+id = fdtd_probe(sim, "ez", ic, ic + 6, ic);
+out = fdtd_run(sim, nsteps);
+t = out.t;
+p = out.probe;
+ez = p(:, id);
+subplot(2, 1, 1);
+plot(t * 1e9, ez);
+xlabel("t (ns)");
+subplot(2, 1, 2);
+imagesc(fdtd_slice(sim, "ez", "z", ic));
+title("Ez on the mid z-plane");
 ```
+
+Where Phase 1 differs from the sketch and the API sections above:
+
+- **Derivative-of-Gaussian waveform, not a baseband Gaussian.** A soft source is a current. A baseband Gaussian current has a nonzero time integral, so it leaves charge on the source edge and a static dipole field: in the sketch's setup the probe settled near −3 V/m and the source cell of the slice sat near −2500 V/m, which swamped the figure. The shipped script samples `−(t − t0)/τ · gaussian_pulse(t, t0, τ)` into a vector (zero net charge). `"gaussian"` and `"modulated"` still work as in the Sources section.
+- **`ic = 21`, not 20.** Node 21 is the exact centre (20 mm of a 40 mm box); node 20 is one cell short of it.
+- **`out.probe(:, 1)` does not parse as indexing.** `a.b(…)` is method-call sugar in the parser, so the script binds `p = out.probe` (and `t = out.t`) first. Fixing the parser is outside this plan.
+- **Sources and probes are added only at `steps == 0`.** Without `fdtd_reset` a late source or probe would have no defined history. Both error and say to build a new grid. `fdtd_reset` and `fdtd_fields` are not in Phase 1.
+- **Stacks run along the component's own axis.** The "last index" wording assumed `ez`. A range is allowed on `j` for `ex`, `i` for `ey`, and `k` for `ez`; any other index with more than one value is an error. A stack of `N` edges shares one amplitude, `g / (N·Δ)` per edge.
+- **Source scaling.** Soft: `E −= (dt/ε0) · g/(N·Δ)` after the E update (a current density `g/(N·Δ)` per unit cross-section). Hard: `E = −g/(N·Δ)`. A hard vector waveform releases the edge after its last sample, so the edge behaves like vacuum again; an analytic hard waveform overwrites on every step.
+- **Rejected edges.** Sources on H components and on tangential E edges of a PEC wall (held at 0) are setup errors, with the 1-based index in the message. A hard source cannot share an edge with another source.
+- **Probe timing.** E probes are sampled after the E update (`n·dt`); H probes after the H update (`(n − ½)·dt`). `t` is the E time in both cases.
+- **Record fields before ports.** `V` and `I` are `steps × 0`, `Z0` is an empty row, so a script written against the full struct runs today. `bytes` counts the six field arrays plus the probe record (there are no coefficient or PML arrays yet).
+- **Ctrl+C guard only for more than one step.** `fdtd_step(sim)` does not arm `InterruptGuard` (a signal-disposition swap per call in a script loop). Outside a guard Ctrl+C keeps its default action, so a script looping on `fdtd_step(sim)` ends as any other script does. Notebook preemption is checked on every step through a thread-local copy of `Evaluator.cancel` (`eval/builtin_cancel.rs`) installed around each builtin call.
+- **Measured.** 60×60×20 vacuum grid, serial release build, 4-vCPU Xeon cloud VM: 390 Mcell/s for the kernel alone (`cargo run --release --example bench_fdtd -p rustlab-dsp`, best of five 2000-step runs, 0.18 ms/step). From a script, `fdtd_run(sim, 8000)` with one source and one probe reports `cell_rate` 310–340 Mcell/s, 1.7–1.9 s for 8000 steps. That is far inside the Phase 6 gate (60 s) before any threading.
 
 ### Phase 2 — PEC cavity
 
@@ -926,7 +949,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | Phase | Delivers | Rough ETA | Done when |
 |---|---|---|---|
 | **0** (complete, 0.3.46) | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
-| **1** | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
+| **1** (complete, 0.3.47) | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
 | **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
 | **4** | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|`). Lossless patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook, including the `tanδ = 0.02` rerun, is Phase 6). `render --strict` and `run-examples` exit 0. |

@@ -125,7 +125,7 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
             true
         }
         // Everything else is uncacheable as an argument either
-        // because of interior mutability (FirState, DspStreamState,
+        // because of interior mutability (FirState, DspStreamState, Fdtd3d,
         // LiveFigure), externally-bound resources (AudioIn/Out),
         // or because the captured environment of a Lambda is too
         // open-ended to fingerprint reliably.
@@ -143,6 +143,7 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
         | Value::Lambda { .. }
         | Value::FirState(_)
         | Value::DspStreamState(_)
+        | Value::Fdtd3d(_)
         | Value::AudioIn { .. }
         | Value::AudioOut { .. }
         | Value::LiveFigure(_)
@@ -294,6 +295,7 @@ fn encode_value(out: &mut Vec<u8>, v: &Value) -> Option<()> {
         | Value::Lambda { .. }
         | Value::FirState(_)
         | Value::DspStreamState(_)
+        | Value::Fdtd3d(_)
         | Value::AudioIn { .. }
         | Value::AudioOut { .. }
         | Value::LiveFigure(_)

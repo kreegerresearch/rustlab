@@ -171,6 +171,16 @@ impl BuiltinRegistry {
         r.register("gradient3", builtin_gradient3);
         r.register("divergence3", builtin_divergence3);
         r.register("curl3", builtin_curl3);
+        // 3-D FDTD
+        r.register("fdtd3d", super::fdtd::builtin_fdtd3d);
+        r.register("fdtd_info", super::fdtd::builtin_fdtd_info);
+        r.register("gaussian_pulse", super::fdtd::builtin_gaussian_pulse);
+        r.register("fdtd_source", super::fdtd::builtin_fdtd_source);
+        r.register("fdtd_probe", super::fdtd::builtin_fdtd_probe);
+        r.register("fdtd_run", super::fdtd::builtin_fdtd_run);
+        r.register("fdtd_step", super::fdtd::builtin_fdtd_step);
+        r.register("fdtd_record", super::fdtd::builtin_fdtd_record);
+        r.register("fdtd_slice", super::fdtd::builtin_fdtd_slice);
         // Array construction
         r.register("zeros", builtin_zeros);
         r.register("ones", builtin_ones);
