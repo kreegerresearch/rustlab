@@ -513,8 +513,8 @@ fn unit_media_and_wall_pec_match_vacuum_bit_for_bit() {
     // PEC on the outer walls only: the lossless kernel runs with Cb = 1 on
     // every updated edge.
     let mut b = golden_sim();
-    b.add_pec_face(Axis::Z, 0, &vec![true; 9 * 10]).unwrap();
-    b.add_pec_face(Axis::X, 10, &vec![true; 9 * 8]).unwrap();
+    b.add_pec_face(Axis::Z, 0, &[true; 9 * 10]).unwrap();
+    b.add_pec_face(Axis::X, 10, &[true; 9 * 8]).unwrap();
     assert!(b.baked.cb.is_some());
     assert_eq!(golden_hash(b), PHASE1_GOLDEN);
 }
@@ -844,11 +844,11 @@ fn media_and_pec_are_validated() {
         assert!(e.contains(msg), "{e}");
     }
     assert!(s.add_pec_volume(&vec![false; n + 1]).is_err());
-    assert!(s.add_pec_face(Axis::Z, 4, &vec![true; 20]).is_err());
-    assert!(s.add_pec_face(Axis::Z, 3, &vec![true; 19]).is_err());
-    assert!(s.add_pec_face(Axis::Z, 3, &vec![true; 20]).is_ok());
-    assert!(s.add_pec_face(Axis::Y, 4, &vec![true; 15]).is_ok());
-    assert!(s.add_pec_face(Axis::X, 5, &vec![true; 12]).is_ok());
+    assert!(s.add_pec_face(Axis::Z, 4, &[true; 20]).is_err());
+    assert!(s.add_pec_face(Axis::Z, 3, &[true; 19]).is_err());
+    assert!(s.add_pec_face(Axis::Z, 3, &[true; 20]).is_ok());
+    assert!(s.add_pec_face(Axis::Y, 4, &[true; 15]).is_ok());
+    assert!(s.add_pec_face(Axis::X, 5, &[true; 12]).is_ok());
 
     // PEC versus sources, in both orders.
     let w = || Waveform::Samples(vec![1.0]);
@@ -881,7 +881,7 @@ fn media_and_pec_are_validated() {
     let e = s.set_media(u(2.0), u(1.0), u(0.0)).unwrap_err().to_string();
     assert!(e.contains("before the first step"), "{e}");
     assert!(s.add_pec_volume(&vec![true; n]).is_err());
-    assert!(s.add_pec_face(Axis::Z, 1, &vec![true; 20]).is_err());
+    assert!(s.add_pec_face(Axis::Z, 1, &[true; 20]).is_err());
 }
 
 #[test]
