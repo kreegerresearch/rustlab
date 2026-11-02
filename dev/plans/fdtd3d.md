@@ -283,7 +283,7 @@ No far-field is stored during the run except the surface phasors (see NTFF secti
 
 ## Patch-antenna script sketch
 
-Not shipped in this PR. This is the shape of `examples/pde/patch_antenna.rlab` once Phase 4 exists. Constants below are the transmission-line model for a 2.4 GHz patch on 1.6 mm FR-4 (`εr = 4.4`); the script computes `L` and `W`, it does not hard-code a published millimetre drawing.
+Not shipped in this PR. This is the Phase 6 capstone: `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. It needs the Phase 4 port and the Phase 5 pattern, so the student-facing files land with Phase 6, not as the first example. The same mesh is the Phase 4 science check (the `|S11|` minimum within 5% of 2.4 GHz); that check is a test. Constants below are the transmission-line model for a 2.4 GHz patch on 1.6 mm FR-4 (`εr = 4.4`); the script computes `L` and `W`, it does not hard-code a published millimetre drawing.
 
 ```text
 eps_r = 4.4
@@ -343,6 +343,63 @@ What this mesh is, and is not:
 - `iy, ix` in the call are **row, column** order only in the sense of the signature `fdtd_port(sim, comp, i, j, k, ...)` where `i` is y (row) and `j` is x (column). The sketch follows that. Getting this backwards is an easy lesson bug; the help text should show one numeric example.
 
 Lossy FR-4 is a one-line change the lesson can add later: `sigma = 2*pi*f0*eps_r*8.854187817e-12*0.02` on the substrate pages. The transmission-line formula above is lossless, so the default comparison run uses `sigma = 0`.
+
+---
+
+## Examples
+
+Sketches only. This plan PR does not add the files. Each implementation phase adds its `.rlab` and its notebook, and that phase is not done until both of these exit 0:
+
+```text
+rustlab-notebook render --strict examples/notebooks/<name>.md
+bash dev/run-examples.sh          % same driver as `make examples`
+```
+
+`run-examples` is `rustlab run --plot none` over every `examples/**/*.rlab`. The notebook is a short page whose code cell is that script, so the two checks run the same program. A failing cell makes `render --strict` exit 1.
+
+### Phase 1 — hello
+
+`examples/pde/fdtd_hello.rlab`, notebook `examples/notebooks/fdtd_hello.md`.
+
+A 40×40×40 vacuum box, 1 mm cells. `fdtd3d` with no `fdtd_media` and no `fdtd_cpml` is vacuum with PEC walls, which is the whole Phase 1 boundary. The source is a soft baseband Gaussian on `Ez` at the centre cell. Indices are 1-based: `ic = 20` is that cell of `1:40`. Call order is `(component, i, j, k)` with `i` the row (y) and `j` the column (x). The probe keeps that row and page and moves six columns toward +x, so the trace is the pulse arriving rather than the source node. `tau = 20 * dt` is about ten cells wide (`c0 * tau`); `t0 = 4*tau` puts the peak after the record starts. Four hundred steps is long enough for the pulse to reach a PEC wall and come back. `out.probe` is `steps × nprobes`; column 1 is this probe. The slice is `Ez` on the z-page through the source (y-rows by x-columns).
+
+```text
+n = 40
+dx = 1.0e-3
+sim = fdtd3d(n, n, n, dx, dx, dx)
+info = fdtd_info(sim)
+tau = 20 * info.dt
+ic = 20
+fdtd_source(sim, "ez", ic, ic, ic, "soft", "gaussian", 4*tau, tau)
+fdtd_probe(sim, "ez", ic, ic + 6, ic)
+out = fdtd_run(sim, 400)
+subplot(2, 1, 1)
+plot(out.t * 1e9, out.probe(:, 1))
+xlabel("t (ns)")
+subplot(2, 1, 2)
+imagesc(fdtd_slice(sim, "ez", "z", ic))
+title("Ez on the mid z-plane")
+```
+
+### Phase 2 — PEC cavity
+
+`examples/pde/fdtd_cavity.rlab`, notebook `examples/notebooks/fdtd_cavity.md`. A rectangular PEC cavity (the six faces set with `fdtd_pec`), a hard Gaussian so the mode rings, one probe. Check: the probe FFT peak is within 2% of the analytic `f_mnp` and within 0.5% of the Yee dispersion prediction (validation item 4).
+
+### Phase 3 — PML box
+
+`examples/pde/fdtd_pml.rlab`, notebook `examples/notebooks/fdtd_pml.md`. The same soft pulse in an 8-cell CPML box and in a PEC-walled box of the same size. Check: once the pulse should have left, the CPML probe is below −40 dB relative to the incident peak (validation item 6), and the notebook shows that quiet trace against the PEC-walled run, where the same pulse reflects.
+
+### Phase 4 — resistor and S11
+
+`examples/pde/fdtd_port.rlab`, notebook `examples/notebooks/fdtd_port.md`. One Ez gap terminated in its own `Z0`, driven by a wide Gaussian, rectangular window on `fdtd_s11`. Check: after the transient, `V/I` is within 1% of `Z0` and `|S11|` stays small across the pulse band (validation item 8).
+
+### Phase 5 — far-field
+
+`examples/pde/fdtd_dipole.rlab`, notebook `examples/notebooks/fdtd_dipole.md`. A short z-directed soft source in a vacuum PML box, one armed frequency, one far-field cut. Check: `Ephi` dominates in the xy-plane, the pattern is symmetric under `φ → φ+π`, and directivity is between 0 and 4 dBi (validation item 12).
+
+### Phase 6 — patch and a sweep
+
+The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the `|S11|` minimum is within 5% of 2.4 GHz on that mesh, and broadside is a peak of the principal cut. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return the frequency of the `|S11|` minimum, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
 
 ---
 
@@ -800,18 +857,25 @@ Estimates are implementer time for someone who already knows this tree, includin
 | Phase | Delivers | Rough ETA | Done when |
 |---|---|---|---|
 | **0** | `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
-| **1** | Opaque handle, vacuum Yee, CFL, `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C and notebook cancel. Serial only. | 4–6 days | Cavity mode vs dispersion relation; interrupt test; bit-stable repeat of a short run. |
-| **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. |
-| **3** | CPML, per-face disable. | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. Reflection < −40 dB. |
-| **4** | Lumped port, `fdtd_s11` pure and handle forms, patch example script. | 3–4 days | Resistor test to 1%. Patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh. |
-| **5** | On-the-fly NTFF, `fdtd_farfield`, directivity and realized gain. | 4–6 days | Dipole symmetry and 0–4 dBi directivity. Patch broadside peak. |
-| **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate, example notebook under `examples/notebooks/`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. |
+| **1** | Opaque handle, vacuum Yee, CFL, `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C and notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test; bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
+| **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
+| **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
+| **4** | Lumped port, `fdtd_s11` pure and handle forms. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md`. | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|` in the example). Patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook is Phase 6). `render --strict` and `run-examples` exit 0. |
+| **5** | On-the-fly NTFF, `fdtd_farfield`, directivity and realized gain. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern. Patch broadside peak. `render --strict` and `run-examples` exit 0. |
+| **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate. Capstone `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`, plus the sweep `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. Both notebooks pass `render --strict`; both scripts pass `run-examples`. The sweep returns one resonance per width. |
 
 Total roughly **three to five weeks**. Phase 0 can merge alone and unblocks rustlab_em Lesson 15 immediately.
 
-Each implementation phase is its own PR on a feature branch, version-bumped, with the Workflow Rules 2, 3, 5, 6, and 7 docs. This document's PR is plan-only: no version bump, no builtin, no CHANGELOG entry.
+Each implementation phase is its own PR on a feature branch, version-bumped, with the Workflow Rules 2, 3, 5, 6, and 7 docs. This document's PR is plan-only: no version bump, no builtin, no CHANGELOG entry. The example paths above are sketches in this file. They are not added to `examples/` here, so this PR does not leave scripts that call missing builtins, and it does not document those builtins in `docs/functions.md` or the REPL help.
 
-Suggested first lesson order once the phases exist: cavity notebook (Phase 1–2), then PML reflection (Phase 3), then the patch (Phase 4–5). The patch script sketch above is the capstone, not the first example a student runs.
+Suggested lesson order once the phases exist, which is also the order of the examples:
+
+1. `fdtd_hello` (Phase 1) — the first script a student runs.
+2. `fdtd_cavity` (Phase 2) — probe FFT against the analytic PEC modes.
+3. `fdtd_pml` (Phase 3) — the pulse leaves, compared with a PEC-walled run.
+4. `fdtd_port` (Phase 4) — a resistor-terminated gap and S11.
+5. `fdtd_dipole` (Phase 5) — one far-field cut.
+6. `patch_antenna`, then `fdtd_sweep` (Phase 6). The patch sketch above is the capstone, not the first example.
 
 ---
 
@@ -823,7 +887,7 @@ Suggested first lesson order once the phases exist: cavity notebook (Phase 1–2
 - REPL `HelpEntry` + exactly one `CategoryRow`.
 - `docs/functions.md`, `docs/quickref.md`, `AGENTS.md` builtin table, `CHANGELOG.md`, version bump — the phase that adds the builtin, not a follow-up.
 - Octave: there is no stock Octave FDTD to add to `make octave-compare`. Do not block on it. The analytic cavity and the dispersion relation are the reference.
-- Plot backends: no new plot kind, so Rule 9 does not add a backend matrix. The notebook example still gets rendered once in Phase 6 so the sketch is not only an `.rlab` file.
+- Plot backends: no new plot kind, so Rule 9 does not add a backend matrix. Each phase's notebook is rendered with `rustlab-notebook render --strict`, and its script is part of `dev/run-examples.sh`, in that phase — see Examples. The hello sketch is not only a block in this plan.
 
 ---
 
