@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** draft — plan only, no FDTD code
-**Current phase:** not started
+**Status:** in progress — Phase 0 complete (0.3.46), no FDTD code yet
+**Current phase:** 1 (not started; waits for an explicit yes)
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -20,7 +20,7 @@ There is no FDTD, Yee, PML, or near-to-far code in this repo. The pieces the ste
 | `Tensor3` | `Value::Tensor3(Shared<CTensor3>)`, `CTensor3 = Array3<C64>` | Script array, shape `(rows, cols, pages)` = `(ny, nx, nz)`. Axis 0 = y, axis 1 = x, axis 2 = z. 1-based `A(i,j,k)`. `ndarray` standard layout is **z-contiguous**. Real storage exists (`Shared::as_real`, `Value::real_tensor3`) and must not be widened just to read a material map. |
 | `zeros3` / `ones3` / `reshape` / `cat` / `permute` | `builtins.rs` | Constructors. `meshgrid` is **2-D only**. |
 | `laplacian_3d` | `rustlab-dsp/src/laplacian.rs` | 7-point **sparse** stencil, flat index `k = (kk*nx + j)*ny + i` (y fastest). Not a time stepper. `laplacian_value` stamps `OrderingHint::Identity`. |
-| `laplacian_eps_2d` | same file | `∇·(ε∇)` with harmonic-mean face coefficients. 3-D form was requested and is **not** implemented. |
+| `laplacian_eps_2d` | same file | `∇·(ε∇)` with harmonic-mean face coefficients. The 3-D form, `laplacian_eps_3d`, shipped in Phase 0 (0.3.46). |
 | `gradient3` / `divergence3` / `curl3` | `rustlab-dsp/src/vector_calc.rs` | Collocated 2nd-order differences on `Tensor3`, complex, rayon above 4096 elements. Useful as a reference for axis order. **Not** a Yee curl (those operators are not staggered, and they allocate). |
 | `rect_mask` / `disk_mask` / `polygon_mask` | `rustlab-dsp/src/rasterize.rs` | 2-D masks on `meshgrid` output. The patch rectangle reuses `rect_mask`. |
 | `fft` / `ifft` | `rustlab-dsp` | Length-preserving. S11 uses this, not a new FFT. |
@@ -815,7 +815,16 @@ Tests: one unit test sets the interrupt flag before `fdtd_run` and asserts the r
 
 ## `laplacian_eps_3d` (Phase 0)
 
+**Status:** complete (0.3.46)
+
 Decided: this lands first, as its own PR, before any Yee code. It does not depend on the stepper.
+
+As shipped:
+
+- Each axis needs at least 2 nodes, the same rule as `laplacian_3d` and `laplacian_eps_2d`. A `(ny, nx, 1)` map is an error, not a 2-D operator.
+- A real-stored `Tensor3` builds through `laplacian_eps_3d_real` without widening. The result is bit for bit the complex path's. No script producer makes a real `Tensor3` yet.
+- The series-capacitor test agrees with `1/C = 1/C1 + 1/C2` to about 1e-14, not a few percent. The interface sits on a cell face (half a cell above a node page), where the harmonic mean is exact.
+- At 100³, building the operator takes about 1.2× as long as `laplacian_3d` (release build, `crates/rustlab-dsp/examples/bench_laplacian_build.rs`).
 
 Mirror `laplacian_eps_2d` in `crates/rustlab-dsp/src/laplacian.rs`:
 
@@ -916,7 +925,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 
 | Phase | Delivers | Rough ETA | Done when |
 |---|---|---|---|
-| **0** | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
+| **0** (complete, 0.3.46) | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
 | **1** | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
 | **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |

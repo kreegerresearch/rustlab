@@ -1968,7 +1968,7 @@ Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `
 - **`"lu"`** — force the sparse LU path. Useful when you know `A` is not Hermitian and want to skip the SPD pre-check.
 
 **Ordering.** The optional fourth argument selects the fill-reducing column permutation:
-- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, and `laplacian_eps_2d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
+- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, and `laplacian_eps_3d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
 - **`"identity"`** (alias `"natural"`) — natural / identity ordering. Roughly 5× faster than AMD on grid-natural Laplacians. Wrong choice for matrices with irregular sparsity — the lack of fill-reducing reordering will blow up the factor's nnz.
 - **`"amd"`** — basic approximate minimum degree on the symmetric pattern of `A + A^T`. Safe default for unknown patterns.
 
@@ -2113,6 +2113,29 @@ A = laplacian_eps_2d(1.0 ./ mu_map, dx, dy);
 # Lossy material with imaginary eps
 eps_lossy = 4.0 - 0.1 * j * ones(ny, nx);
 L = laplacian_eps_2d(eps_lossy, dx, dy);
+```
+
+### `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])`
+
+The 3-D form of `laplacian_eps_2d`: `∇·(ε∇V)` on a uniform grid with a 7-point stencil and the same harmonic-mean face coefficients on all six faces of each cell. Returns an `(ny·nx·nz) × (ny·nx·nz)` sparse matrix.
+
+`eps_map` is a `Tensor3` of shape `(ny, nx, nz)` — axis 0 = y (rows), axis 1 = x (cols), axis 2 = z (pages), the same layout as `zeros3` and `meshgrid`-style grids. Node ordering is the `laplacian_3d` one: `V(i, j, kk) → k = ((kk-1)*nx + (j-1))*ny + i`, so `V(:)` / `reshape(V, ny, nx, nz)` and `ijk2k` / `k2ijk` (last two arguments `ny`, `nx`) round-trip. Note that `laplacian_3d` takes its sizes as `(nx, ny, nz)`, while this builder reads them from the tensor.
+
+Each axis needs at least 2 nodes; a 2-D map is an error that points to `laplacian_eps_2d`. Entries may be real or complex (lossy media). The `bc` selector is the same as `laplacian_3d`: `"dirichlet"` (default; ghost cell 0, so a boundary face still subtracts the cell's own ε from the diagonal), `"neumann"` (no boundary flux; constants are in the null space), `"periodic"` (wrap; constants in the null space). A uniform `eps_map ≡ c` gives exactly `c * laplacian_3d(nx, ny, nz, dx, dy, dz, bc)`. With real ε the matrix is symmetric and negative semidefinite. A face between two cells whose ε sums to zero is left out.
+
+The result carries the `Identity` ordering hint, like the other Laplacian builders.
+
+```
+# Two-layer parallel-plate capacitor: plates on the bottom and top pages
+ny = 4; nx = 5; nz = 13; dz = 0.25e-3;
+eps = 4 * ones3(ny, nx, nz);
+eps(:, :, 1:6) = 25;                         # lower dielectric
+L = laplacian_eps_3d(eps, 1e-3, 2e-3, dz, "neumann");
+plates = zeros3(ny, nx, nz);
+plates(:, :, 1) = 1;  plates(:, :, nz) = 1;
+np = ny * nx;
+[A, b] = pin_dirichlet(L, zeros(ny*nx*nz, 1), plates, [ones(1, np), zeros(1, np)]);
+V = reshape(spsolve(A, b), ny, nx, nz);
 ```
 
 ### `pin_dirichlet(A, b, mask_or_indices, values)`
