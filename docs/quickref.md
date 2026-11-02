@@ -532,6 +532,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
+| `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
 | `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |

@@ -796,6 +796,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "laplacian_3d(nx, ny, nz)                       — unit spacing, Dirichlet\nlaplacian_3d(nx, ny, nz, dx, dy, dz)           — anisotropic spacing\nlaplacian_3d(nx, ny, nz [, dx, dy, dz], bc)    — bc selector\n\n  Returns an (nx*ny*nz) × (nx*ny*nz) sparse matrix on the Tensor3\n  grid (axis 0 = y, axis 1 = x, axis 2 = z). Flat index:\n    V(i, j, kk) → k = ((kk-1)*nx + (j-1))*ny + i  (1-based)\n  Use ijk2k / k2ijk for index sugar.\n\nExample:\n  L = laplacian_3d(8, 8, 8, \"neumann\")" },
     HelpEntry { name: "laplacian_eps_2d", brief: "Variable-coefficient Laplacian ∇·(ε∇)",
         detail: "laplacian_eps_2d(eps_map)                  — unit spacing, Dirichlet\nlaplacian_eps_2d(eps_map, dx, dy)          — uniform spacing\nlaplacian_eps_2d(eps_map [, dx, dy], bc)   — bc selector\n\n  Flux-conservative discretization with harmonic-mean half-cell\n  coefficients — preserves flux continuity across material interfaces.\n  eps_map is shape (ny, nx) matching meshgrid / imagesc; real or complex.\n\n  Setting eps_map ≡ 1 reproduces laplacian_2d. For magnetostatics use\n  1./mu_map. For lossy materials, use complex eps with negative imag.\n\nExample:\n  eps = ones(ny, nx);\n  eps(:, 1:nx/2) = 4.0;       % left half is dielectric\n  L = laplacian_eps_2d(eps, dx, dy)" },
+    HelpEntry { name: "laplacian_eps_3d", brief: "Variable-coefficient Laplacian ∇·(ε∇) on a 3-D grid",
+        detail: "laplacian_eps_3d(eps_map)                      — unit spacing, Dirichlet\nlaplacian_eps_3d(eps_map, dx, dy, dz)          — uniform spacing\nlaplacian_eps_3d(eps_map [, dx, dy, dz], bc)   — bc = \"dirichlet\"|\"neumann\"|\"periodic\"\n\n  7-point stencil with harmonic-mean face coefficients on all six faces.\n  eps_map is a Tensor3 of shape (ny, nx, nz) (axis 0 = y, 1 = x, 2 = z),\n  real or complex; each axis needs at least 2 nodes. Same node ordering\n  as laplacian_3d: V(i, j, kk) → k = ((kk-1)*nx + (j-1))*ny + i.\n\n  A uniform eps_map ≡ c gives c * laplacian_3d(nx, ny, nz, ...) — note\n  laplacian_3d takes (nx, ny, nz). Real eps: symmetric, negative\n  semidefinite. Carries the Identity ordering hint.\n\nExample:\n  eps = 4 * ones3(ny, nx, nz);\n  eps(:, :, 1:nz/2) = 25;     % lower half is a high-eps layer\n  L = laplacian_eps_3d(eps, dx, dy, dz, \"neumann\")" },
     HelpEntry { name: "ij2k", brief: "Column-major grid (i, j) → flat index",
         detail: "ij2k(i, j, ny)  — return 1-based flat index k = (j-1)*ny + i\n  Third argument is ny (row count), not nx. Matches reshape(V_flat, ny, nx).\n\nExample:\n  k = ij2k(3, 4, 6)  → (4-1)*6 + 3 = 21" },
     HelpEntry { name: "k2ij", brief: "Column-major flat index → grid (i, j)",
@@ -1364,7 +1366,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "sparse", subcategory: "Solvers",
         names: &["spsolve", "chol", "lu", "solve"] },
     CategoryRow { toolbox: "sparse", subcategory: "Discrete Laplacians",
-        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d", "pin_dirichlet"] },
+        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d", "laplacian_eps_3d", "pin_dirichlet"] },
     CategoryRow { toolbox: "sparse", subcategory: "Index helpers",
         names: &["ij2k", "k2ij", "ijk2k", "k2ijk"] },
 

@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.46
+
+### Added
+- **`laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])`.** The 3-D mixed-dielectric Laplacian `∇·(ε∇V)`: a 7-point stencil with the same harmonic-mean face coefficients as `laplacian_eps_2d`, on all six faces. `eps_map` is a `(ny, nx, nz)` `Tensor3` (rows y, columns x, pages z), real or complex. Node ordering, spacing, the `"dirichlet"` / `"neumann"` / `"periodic"` selector, and the `Identity` ordering hint are the ones `laplacian_3d` uses, so `ijk2k`, `pin_dirichlet`, and `spsolve` work unchanged. A uniform `eps_map ≡ c` gives `c * laplacian_3d(nx, ny, nz, ...)` exactly. Each axis needs at least 2 nodes; a 2-D map is an error that points to `laplacian_eps_2d`. A two-layer capacitor between `pin_dirichlet` plates reproduces `1/C = 1/C1 + 1/C2` to rounding when the interface lies on a cell face. Building it at 100³ takes about 1.2× as long as `laplacian_3d`. Requested by `rustlab_em` (`dev/rustlab/requests/laplacian-eps-3d.md`); Phase 0 of `dev/plans/fdtd3d.md`. No FDTD code is in this version.
+
 ## 0.3.45
 
 ### Changed
