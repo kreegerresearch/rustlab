@@ -4,7 +4,7 @@
 **Current phase:** not started
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
-A hand-rolled Yee loop in `.rlab` over `zeros3` / `Tensor3` cannot hit the lesson. This plan is the native stepper that can: a 60×60×20 grid for 5–10k steps in seconds to a minute, pure Rust, no new dependencies.
+A hand-rolled Yee loop in `.rlab` over `zeros3` / `Tensor3` cannot hit the lesson. This plan is the native stepper that can: a 60×60×20 grid for 5–10k steps in seconds to a minute, pure Rust, no new dependencies. Parallelism in Phase 6 is the `rayon` already locked in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`), with a unit-stride inner loop so the compiler can autovectorise. It is not a new crate, and it is not a switch to `std::thread::scope`.
 
 Do not implement a phase until the open questions at the bottom are answered and Michael says to start. Per the usual plan protocol, finish a phase, run `cargo test --workspace`, and wait for an explicit yes before the next one.
 
