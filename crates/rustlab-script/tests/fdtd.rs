@@ -351,7 +351,7 @@ fn stack_source_and_hard_waveform() {
 
 #[test]
 fn interrupt_before_run_returns_an_empty_struct() {
-    let mut ev = eval(&format!("{SETUP}"));
+    let mut ev = eval(SETUP);
     rustlab_plot::request_interrupt();
     ev.run(&parse(
         "out = fdtd_run(sim, 50); n = out.steps; it = out.interrupted; P = out.probe; t = out.t;",
