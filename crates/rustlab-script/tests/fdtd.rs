@@ -13,7 +13,8 @@ fn parse(src: &str) -> Vec<rustlab_script::ast::Stmt> {
 
 fn eval(src: &str) -> Evaluator {
     let mut ev = Evaluator::new();
-    ev.run(&parse(src)).unwrap_or_else(|e| panic!("{e}\n--- source ---\n{src}"));
+    ev.run(&parse(src))
+        .unwrap_or_else(|e| panic!("{e}\n--- source ---\n{src}"));
     ev
 }
 
@@ -47,7 +48,10 @@ fn bits(ev: &Evaluator, name: &str) -> Vec<(u64, u64)> {
         Some(Value::Matrix(m)) => m.iter().copied().collect(),
         other => panic!("{name}: expected an array, got {other:?}"),
     };
-    pairs.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()
+    pairs
+        .iter()
+        .map(|c| (c.re.to_bits(), c.im.to_bits()))
+        .collect()
 }
 
 const SETUP: &str = r#"
@@ -174,15 +178,33 @@ fn gaussian_pulse_shapes() {
 #[test]
 fn setup_errors() {
     let e = run_err("sim = fdtd3d(10, 10, 10, 1e-3, 1e-3, 1e-3, \"courant\", 1.5);");
-    assert!(e.contains("fdtd3d: courant must be in (0, 1], got 1.5"), "{e}");
+    assert!(
+        e.contains("fdtd3d: courant must be in (0, 1], got 1.5"),
+        "{e}"
+    );
     eval("sim = fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"courant\", 1);");
     for (src, want) in [
         ("fdtd3d(1, 4, 4, 1e-3, 1e-3, 1e-3)", "at least 2"),
-        ("fdtd3d(4, 4, 4, 0, 1e-3, 1e-3)", "dx must be finite and positive"),
-        ("fdtd3d(4, 4, 4, 1e-3, Inf, 1e-3)", "dy must be finite and positive"),
-        ("fdtd3d(4.5, 4, 4, 1e-3, 1e-3, 1e-3)", "nx must be a positive integer"),
-        ("fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"speed\", 1)", "unknown option"),
-        ("fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0)", "courant must be in (0, 1]"),
+        (
+            "fdtd3d(4, 4, 4, 0, 1e-3, 1e-3)",
+            "dx must be finite and positive",
+        ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, Inf, 1e-3)",
+            "dy must be finite and positive",
+        ),
+        (
+            "fdtd3d(4.5, 4, 4, 1e-3, 1e-3, 1e-3)",
+            "nx must be a positive integer",
+        ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"speed\", 1)",
+            "unknown option",
+        ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0)",
+            "courant must be in (0, 1]",
+        ),
         ("fdtd3d(4, 4, 4, 1e-3, 1e-3)", "wrong number of arguments"),
         ("fdtd_info(3)", "fdtd3d handle"),
         ("gaussian_pulse(0, 0, 0)", "tau must be finite and positive"),
@@ -198,30 +220,87 @@ fn setup_errors() {
 fn source_probe_run_and_slice_errors() {
     let pre = "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3);\n";
     for (src, want) in [
-        ("fdtd_source(sim, \"hz\", 2, 2, 2, \"soft\", [1, 2])", "sources drive E edges"),
-        ("fdtd_source(sim, \"qq\", 2, 2, 2, \"soft\", [1, 2])", "unknown component"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"warm\", [1, 2])", "\"soft\" or \"hard\""),
-        ("fdtd_source(sim, \"ez\", 6, 2, 2, \"soft\", [1, 2])", "i must be an integer in 1..5"),
-        ("fdtd_source(sim, \"ez\", 1, 2, 2, \"soft\", [1, 2])", "PEC outer wall"),
-        ("fdtd_source(sim, \"ez\", 2, 1, 2, \"soft\", [1, 2])", "PEC outer wall"),
-        ("fdtd_source(sim, \"ex\", 2, 2, 1, \"soft\", [1, 2])", "PEC outer wall"),
-        ("fdtd_source(sim, \"ez\", 2:3, 2, 2, \"soft\", [1, 2])", "only k may be a range"),
-        ("fdtd_source(sim, \"ez\", 2, 2, [1, 3], \"soft\", [1, 2])", "consecutive ascending"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"square\", 1, 1)", "waveform must be"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1)", "takes 2 arguments after the waveform name, got 1"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1, 1, 1)", "takes 2 arguments"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1, -1)", "tau must be"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", [1, NaN])", "finite values"),
-        ("fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", ones(2, 2))", "must be a vector"),
-        ("fdtd_probe(sim, \"ez\", 2, 7, 2)", "j must be an integer in 1..6"),
+        (
+            "fdtd_source(sim, \"hz\", 2, 2, 2, \"soft\", [1, 2])",
+            "sources drive E edges",
+        ),
+        (
+            "fdtd_source(sim, \"qq\", 2, 2, 2, \"soft\", [1, 2])",
+            "unknown component",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"warm\", [1, 2])",
+            "\"soft\" or \"hard\"",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 6, 2, 2, \"soft\", [1, 2])",
+            "i must be an integer in 1..5",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 1, 2, 2, \"soft\", [1, 2])",
+            "PEC outer wall",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 1, 2, \"soft\", [1, 2])",
+            "PEC outer wall",
+        ),
+        (
+            "fdtd_source(sim, \"ex\", 2, 2, 1, \"soft\", [1, 2])",
+            "PEC outer wall",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2:3, 2, 2, \"soft\", [1, 2])",
+            "only k may be a range",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, [1, 3], \"soft\", [1, 2])",
+            "consecutive ascending",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"square\", 1, 1)",
+            "waveform must be",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1)",
+            "takes 2 arguments after the waveform name, got 1",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1, 1, 1)",
+            "takes 2 arguments",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", \"gaussian\", 1, -1)",
+            "tau must be",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", [1, NaN])",
+            "finite values",
+        ),
+        (
+            "fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", ones(2, 2))",
+            "must be a vector",
+        ),
+        (
+            "fdtd_probe(sim, \"ez\", 2, 7, 2)",
+            "j must be an integer in 1..6",
+        ),
         ("fdtd_probe(sim, \"ez\", 2, 2:3, 2)", "j must be a scalar"),
-        ("fdtd_probe(sim, \"ez\", 0, 2, 2)", "i must be an integer in 1..5"),
+        (
+            "fdtd_probe(sim, \"ez\", 0, 2, 2)",
+            "i must be an integer in 1..5",
+        ),
         ("fdtd_run(sim, 0)", "nsteps must be a positive integer"),
         ("fdtd_run(sim, 2.5)", "nsteps must be a positive integer"),
         ("fdtd_step(sim, -1)", "n must be a positive integer"),
         ("fdtd_slice(sim, \"ez\", \"w\", 1)", "axis must be"),
-        ("fdtd_slice(sim, \"ez\", \"z\", 5)", "z index (page k) must be an integer in 1..4"),
-        ("fdtd_slice(sim, \"ez\", \"x\", 7)", "x index (column j) must be an integer in 1..6"),
+        (
+            "fdtd_slice(sim, \"ez\", \"z\", 5)",
+            "z index (page k) must be an integer in 1..4",
+        ),
+        (
+            "fdtd_slice(sim, \"ez\", \"x\", 7)",
+            "x index (column j) must be an integer in 1..6",
+        ),
     ] {
         let e = run_err(&format!("{pre}x = {src};"));
         assert!(e.contains(want), "{src}: {e}");
@@ -231,7 +310,9 @@ fn source_probe_run_and_slice_errors() {
          fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", [1, 2]);"
     ));
     assert!(e.contains("cannot share an edge"), "{e}");
-    let e = run_err(&format!("{pre}fdtd_step(sim); p = fdtd_probe(sim, \"ez\", 2, 2, 2);"));
+    let e = run_err(&format!(
+        "{pre}fdtd_step(sim); p = fdtd_probe(sim, \"ez\", 2, 2, 2);"
+    ));
     assert!(e.contains("add probes before the first step"), "{e}");
     let e = run_err(&format!(
         "{pre}fdtd_step(sim); fdtd_source(sim, \"ez\", 2, 2, 2, \"soft\", [1]);"
@@ -245,7 +326,12 @@ fn handle_is_opaque() {
     let shown = ev.get("sim").unwrap().to_string();
     assert!(shown.starts_with("<fdtd3d 4×4×4, dt="), "{shown}");
     assert!(shown.ends_with("steps=0>"), "{shown}");
-    for src in ["x = sim + 1;", "x = -sim;", "x = sim(1);", "x = [sim, sim];"] {
+    for src in [
+        "x = sim + 1;",
+        "x = -sim;",
+        "x = sim(1);",
+        "x = [sim, sim];",
+    ] {
         run_err(&format!("sim = fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3);\n{src}"));
     }
 }
@@ -267,8 +353,10 @@ fn stack_source_and_hard_waveform() {
 fn interrupt_before_run_returns_an_empty_struct() {
     let mut ev = eval(&format!("{SETUP}"));
     rustlab_plot::request_interrupt();
-    ev.run(&parse("out = fdtd_run(sim, 50); n = out.steps; it = out.interrupted; P = out.probe; t = out.t;"))
-        .unwrap();
+    ev.run(&parse(
+        "out = fdtd_run(sim, 50); n = out.steps; it = out.interrupted; P = out.probe; t = out.t;",
+    ))
+    .unwrap();
     assert_eq!(scalar(&ev, "n"), 0.0);
     assert_eq!(scalar(&ev, "it"), 1.0);
     assert_eq!(shape(&ev, "P"), vec![0.0, 2.0]);
@@ -276,8 +364,10 @@ fn interrupt_before_run_returns_an_empty_struct() {
     ev.run(&parse("rec = fdtd_record(sim); rit = rec.interrupted;"))
         .unwrap();
     assert_eq!(scalar(&ev, "rit"), 1.0);
-    ev.run(&parse("out2 = fdtd_run(sim, 5); n2 = out2.steps; it2 = out2.interrupted;"))
-        .unwrap();
+    ev.run(&parse(
+        "out2 = fdtd_run(sim, 5); n2 = out2.steps; it2 = out2.interrupted;",
+    ))
+    .unwrap();
     assert_eq!(scalar(&ev, "n2"), 5.0);
     assert_eq!(scalar(&ev, "it2"), 0.0);
 }

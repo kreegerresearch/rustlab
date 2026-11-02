@@ -8,10 +8,10 @@ use super::builtin_cancel;
 use super::value::Value;
 use crate::error::ScriptError;
 use ndarray::{Array1, Array2};
+use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
     gaussian_pulse, Axis, Component, FdtdSim, SourceKind, Waveform, C0, DEFAULT_COURANT,
 };
-use rustlab_dsp::error::DspError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
@@ -66,7 +66,10 @@ fn finite_scalar(name: &str, what: &str, v: &Value) -> Result<f64, ScriptError> 
 fn positive_scalar(name: &str, what: &str, v: &Value) -> Result<f64, ScriptError> {
     let x = real_scalar(name, what, v)?;
     if !(x.is_finite() && x > 0.0) {
-        return Err(err(name, format!("{what} must be finite and positive, got {x}")));
+        return Err(err(
+            name,
+            format!("{what} must be finite and positive, got {x}"),
+        ));
     }
     Ok(x)
 }
@@ -75,13 +78,20 @@ fn positive_int(name: &str, what: &str, v: &Value) -> Result<usize, ScriptError>
     let x = real_scalar(name, what, v)?;
     match Value::count_from_f64(x) {
         Ok(n) if n >= 1 => Ok(n),
-        _ => Err(err(name, format!("{what} must be a positive integer, got {x}"))),
+        _ => Err(err(
+            name,
+            format!("{what} must be a positive integer, got {x}"),
+        )),
     }
 }
 
 fn str_arg(name: &str, what: &str, v: &Value) -> Result<String, ScriptError> {
-    v.to_str()
-        .map_err(|_| ScriptError::type_err(format!("{name}: {what} must be a string, got {}", v.type_name())))
+    v.to_str().map_err(|_| {
+        ScriptError::type_err(format!(
+            "{name}: {what} must be a string, got {}",
+            v.type_name()
+        ))
+    })
 }
 
 fn component_arg(name: &str, v: &Value) -> Result<Component, ScriptError> {
@@ -183,8 +193,14 @@ fn record_fields(sim: &FdtdSim) -> HashMap<String, Value> {
     f.insert("dt".to_string(), Value::Scalar(dt));
     f.insert("steps".to_string(), Value::Scalar(steps as f64));
     f.insert("probe".to_string(), Value::real_matrix(probe));
-    f.insert("V".to_string(), Value::real_matrix(Array2::zeros((steps, 0))));
-    f.insert("I".to_string(), Value::real_matrix(Array2::zeros((steps, 0))));
+    f.insert(
+        "V".to_string(),
+        Value::real_matrix(Array2::zeros((steps, 0))),
+    );
+    f.insert(
+        "I".to_string(),
+        Value::real_matrix(Array2::zeros((steps, 0))),
+    );
     f.insert("Z0".to_string(), Value::real_vector(Array1::zeros(0)));
     f.insert("interrupted".to_string(), Value::Bool(sim.interrupted()));
     f
@@ -206,7 +222,10 @@ pub(crate) fn builtin_fdtd3d(args: Vec<Value>) -> Result<Value, ScriptError> {
     if args.len() == 8 {
         let key = str_arg(NAME, "option name", &args[6])?;
         if !key.eq_ignore_ascii_case("courant") {
-            return Err(err(NAME, format!("unknown option \"{key}\" (expected \"courant\")")));
+            return Err(err(
+                NAME,
+                format!("unknown option \"{key}\" (expected \"courant\")"),
+            ));
         }
         courant = real_scalar(NAME, "courant", &args[7])?;
     }
@@ -275,13 +294,22 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
     let s = sim_arg(NAME, &args[0])?;
     let comp = component_arg(NAME, &args[1])?;
     if !comp.is_electric() {
-        return Err(err(NAME, format!("sources drive E edges (ex, ey, ez), not {}", comp.name())));
+        return Err(err(
+            NAME,
+            format!("sources drive E edges (ex, ey, ez), not {}", comp.name()),
+        ));
     }
-    let kind = match str_arg(NAME, "source type", &args[5])?.to_ascii_lowercase().as_str() {
+    let kind = match str_arg(NAME, "source type", &args[5])?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "soft" => SourceKind::Soft,
         "hard" => SourceKind::Hard,
         other => {
-            return Err(err(NAME, format!("source type must be \"soft\" or \"hard\", got \"{other}\"")))
+            return Err(err(
+                NAME,
+                format!("source type must be \"soft\" or \"hard\", got \"{other}\""),
+            ))
         }
     };
     let waveform = match &args[6] {
@@ -300,12 +328,20 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
             if args.len() != want {
                 return Err(err(
                     NAME,
-                    format!("\"{w}\" takes {} arguments after the waveform name, got {}", want - 7, args.len() - 7),
+                    format!(
+                        "\"{w}\" takes {} arguments after the waveform name, got {}",
+                        want - 7,
+                        args.len() - 7
+                    ),
                 ));
             }
             let t0 = finite_scalar(NAME, "t0", &args[7])?;
             let tau = positive_scalar(NAME, "tau", &args[8])?;
-            let f0 = if want == 10 { finite_scalar(NAME, "f0", &args[9])? } else { 0.0 };
+            let f0 = if want == 10 {
+                finite_scalar(NAME, "f0", &args[9])?
+            } else {
+                0.0
+            };
             Waveform::Pulse { t0, tau, f0 }
         }
         v => {
@@ -317,7 +353,10 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
                 return Err(err(NAME, "waveform must be a vector"));
             }
             if samples.is_empty() || samples.iter().any(|x| !x.is_finite()) {
-                return Err(err(NAME, "waveform must be a non-empty vector of finite values"));
+                return Err(err(
+                    NAME,
+                    "waveform must be a non-empty vector of finite values",
+                ));
             }
             Waveform::Samples(samples)
         }
@@ -327,7 +366,10 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
     if g.steps() != 0 {
         return Err(err(
             NAME,
-            format!("add sources before the first step ({} steps done); build a new fdtd3d", g.steps()),
+            format!(
+                "add sources before the first step ({} steps done); build a new fdtd3d",
+                g.steps()
+            ),
         ));
     }
     let rows = index_list(NAME, "i", &args[2], g.ny())?;
@@ -351,7 +393,10 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
         }
     }
     if along.windows(2).any(|w| w[1] != w[0] + 1) {
-        return Err(err(NAME, format!("{along_name} must be consecutive ascending indices")));
+        return Err(err(
+            NAME,
+            format!("{along_name} must be consecutive ascending indices"),
+        ));
     }
     let edges: Vec<(usize, usize, usize)> = match comp.axis() {
         Axis::X => cols.iter().map(|&j| (rows[0], j, pages[0])).collect(),
@@ -389,7 +434,10 @@ pub(crate) fn builtin_fdtd_probe(args: Vec<Value>) -> Result<Value, ScriptError>
     if g.steps() != 0 {
         return Err(err(
             NAME,
-            format!("add probes before the first step ({} steps done); build a new fdtd3d", g.steps()),
+            format!(
+                "add probes before the first step ({} steps done); build a new fdtd3d",
+                g.steps()
+            ),
         ));
     }
     let i = index_one(NAME, "i", &args[2], g.ny())?;
@@ -422,7 +470,11 @@ fn run_steps(name: &str, sim: &Value, nsteps: usize) -> Result<Value, ScriptErro
     }
     f.insert("seconds".to_string(), Value::Scalar(seconds));
     f.insert("cell_updates".to_string(), Value::Scalar(cell_updates));
-    let rate = if seconds > 0.0 { cell_updates / seconds } else { 0.0 };
+    let rate = if seconds > 0.0 {
+        cell_updates / seconds
+    } else {
+        0.0
+    };
     f.insert("cell_rate".to_string(), Value::Scalar(rate));
     Ok(Value::Struct(f))
 }
@@ -472,8 +524,12 @@ pub(crate) fn builtin_fdtd_slice(args: Vec<Value>) -> Result<Value, ScriptError>
     let s = sim_arg(NAME, &args[0])?;
     let comp = component_arg(NAME, &args[1])?;
     let axis_s = str_arg(NAME, "axis", &args[2])?;
-    let axis = Axis::parse(&axis_s)
-        .ok_or_else(|| err(NAME, format!("axis must be \"x\", \"y\", or \"z\", got \"{axis_s}\"")))?;
+    let axis = Axis::parse(&axis_s).ok_or_else(|| {
+        err(
+            NAME,
+            format!("axis must be \"x\", \"y\", or \"z\", got \"{axis_s}\""),
+        )
+    })?;
     let g = lock(NAME, &s)?;
     let (what, limit) = match axis {
         Axis::X => ("x index (column j)", g.nx()),

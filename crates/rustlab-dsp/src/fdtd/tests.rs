@@ -122,7 +122,11 @@ fn assert_mode(name: &str, r: ModeCheck) {
         r.bin
     );
     let rel = (r.measured - r.analytic).abs() / r.analytic;
-    assert!(rel < 0.02, "{name}: {rel} relative to analytic {}", r.analytic);
+    assert!(
+        rel < 0.02,
+        "{name}: {rel} relative to analytic {}",
+        r.analytic
+    );
     // On this coarse grid the dispersion shift is several bins, so matching
     // Yee to a tenth of a bin is not the continuum frequency in disguise.
     assert!(
@@ -219,7 +223,13 @@ fn stop_callback_ends_run_at_a_step_boundary() {
         calls > 2
     };
     let r = sim.run(50, &mut stop).unwrap();
-    assert_eq!(r, RunReport { completed: 2, stopped: true });
+    assert_eq!(
+        r,
+        RunReport {
+            completed: 2,
+            stopped: true
+        }
+    );
     assert!(sim.interrupted());
     assert_eq!(sim.steps(), 2);
     assert_eq!(sim.record().len(), 2 * sim.n_probes());
@@ -229,7 +239,13 @@ fn stop_callback_ends_run_at_a_step_boundary() {
     assert_eq!(sim.field_bits(), full.field_bits());
 
     let r = sim.run(3, &mut never()).unwrap();
-    assert_eq!(r, RunReport { completed: 3, stopped: false });
+    assert_eq!(
+        r,
+        RunReport {
+            completed: 3,
+            stopped: false
+        }
+    );
     assert!(!sim.interrupted());
     assert_eq!(sim.steps(), 5);
 }
@@ -238,7 +254,13 @@ fn stop_callback_ends_run_at_a_step_boundary() {
 fn stop_before_first_step_runs_nothing() {
     let mut sim = small_sim();
     let r = sim.run(10, &mut || true).unwrap();
-    assert_eq!(r, RunReport { completed: 0, stopped: true });
+    assert_eq!(
+        r,
+        RunReport {
+            completed: 0,
+            stopped: true
+        }
+    );
     assert_eq!(sim.steps(), 0);
     assert!(sim.record().is_empty());
 }
@@ -263,7 +285,10 @@ fn vacuum_run_stays_bounded() {
     assert!(e0 > 0.0);
     sim.run(1800, &mut never()).unwrap();
     let e1 = sim.energy();
-    assert!(e1.is_finite() && e1 < 2.0 * e0 && e1 > 0.5 * e0, "{e0} -> {e1}");
+    assert!(
+        e1.is_finite() && e1 < 2.0 * e0 && e1 > 0.5 * e0,
+        "{e0} -> {e1}"
+    );
 }
 
 #[test]
@@ -311,18 +336,34 @@ fn soft_source_on_a_stack_splits_the_voltage() {
 fn sources_and_probes_are_validated() {
     let mut sim = FdtdSim::new(5, 5, 5, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
     let w = || Waveform::Samples(vec![1.0]);
-    assert!(sim.add_source(Component::Hz, &[(2, 2, 2)], SourceKind::Soft, w()).is_err());
-    assert!(sim.add_source(Component::Ez, &[(0, 2, 2)], SourceKind::Soft, w()).is_err());
-    assert!(sim.add_source(Component::Ez, &[(2, 0, 2)], SourceKind::Soft, w()).is_err());
-    assert!(sim.add_source(Component::Ez, &[(2, 2, 0)], SourceKind::Soft, w()).is_ok());
-    assert!(sim.add_source(Component::Ex, &[(2, 0, 2)], SourceKind::Soft, w()).is_ok());
-    assert!(sim.add_source(Component::Ex, &[(2, 2, 5)], SourceKind::Soft, w()).is_err());
-    assert!(sim.add_source(Component::Ez, &[(2, 2, 0)], SourceKind::Hard, w()).is_err());
+    assert!(sim
+        .add_source(Component::Hz, &[(2, 2, 2)], SourceKind::Soft, w())
+        .is_err());
+    assert!(sim
+        .add_source(Component::Ez, &[(0, 2, 2)], SourceKind::Soft, w())
+        .is_err());
+    assert!(sim
+        .add_source(Component::Ez, &[(2, 0, 2)], SourceKind::Soft, w())
+        .is_err());
+    assert!(sim
+        .add_source(Component::Ez, &[(2, 2, 0)], SourceKind::Soft, w())
+        .is_ok());
+    assert!(sim
+        .add_source(Component::Ex, &[(2, 0, 2)], SourceKind::Soft, w())
+        .is_ok());
+    assert!(sim
+        .add_source(Component::Ex, &[(2, 2, 5)], SourceKind::Soft, w())
+        .is_err());
+    assert!(sim
+        .add_source(Component::Ez, &[(2, 2, 0)], SourceKind::Hard, w())
+        .is_err());
     assert!(sim.add_probe(Component::Hx, 4, 4, 4).is_ok());
     assert!(sim.add_probe(Component::Hx, 5, 4, 4).is_err());
     sim.run(1, &mut never()).unwrap();
     assert!(sim.add_probe(Component::Ez, 2, 2, 2).is_err());
-    assert!(sim.add_source(Component::Ez, &[(2, 2, 2)], SourceKind::Soft, w()).is_err());
+    assert!(sim
+        .add_source(Component::Ez, &[(2, 2, 2)], SourceKind::Soft, w())
+        .is_err());
 }
 
 #[test]
