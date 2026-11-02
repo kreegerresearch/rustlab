@@ -1244,6 +1244,39 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn vector_indexed_by_row_or_column_matrix() {
+        // `zeros(1, n)` is a matrix. Gathering with it, then reducing
+        // (`max`) turns the target into a vector; the next gather must
+        // use the same row of indices. A column (`idx'`) is the same list.
+        let ev = eval_str(
+            "v = [10, 20, 30, 40, 50];\n\
+             idx = zeros(1, 3);\n\
+             idx(1) = 2; idx(2) = 5; idx(3) = 1;\n\
+             a = v(idx);\n\
+             b = v(idx');\n\
+             pm = -1 * ones(1, 4);\n\
+             pm(1) = 0;\n\
+             P0 = zeros(1, 4);\n\
+             P0(1) = 1; P0(2) = 3; P0(3) = 2; P0(4) = 4;\n\
+             g = pm(P0);\n\
+             pm = max(g, g);\n\
+             h = pm(P0);",
+        );
+        let expect = |name: &str, want: &[f64]| match ev.get(name).unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), want.len(), "{name}");
+                for (i, w) in want.iter().enumerate() {
+                    assert!(close(v[i].re, *w), "{name}({i}) = {}", v[i].re);
+                }
+            }
+            other => panic!("{name}: {other:?}"),
+        };
+        expect("a", &[20.0, 50.0, 10.0]);
+        expect("b", &[20.0, 50.0, 10.0]);
+        expect("h", &[0.0, -1.0, -1.0, -1.0]);
+    }
+
+    #[test]
     fn transpose_operator() {
         // Transposing a row vector [1,2,3] produces a 3×1 column Matrix
         let ev = eval_str("v = [1, 2, 3]\nvt = v'");
@@ -1301,6 +1334,16 @@ mod error_tests {
     #[test]
     fn index_out_of_bounds() {
         let _err = eval_err("v = 1:3\nv(5)");
+    }
+
+    #[test]
+    fn vector_indexed_by_square_matrix_errors() {
+        let err = eval_err("v = 1:4\nv([1, 2; 3, 4])");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid index type"),
+            "a 2×2 index into a vector should fail, got {msg}"
+        );
     }
 
     #[test]

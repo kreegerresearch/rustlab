@@ -1730,7 +1730,7 @@ nextpow2(0.1)    % -3
 
 ## Indexed Assignment
 
-Indexed writes mirror the read forms — anywhere `M(rows, cols)` reads a region, `M(rows, cols) = ...` writes it. Indices may be scalars, `:` (all), or vector index sets (including colon ranges like `1:2:6`).
+Indexed writes mirror the read forms — anywhere `M(rows, cols)` reads a region, `M(rows, cols) = ...` writes it. Indices may be scalars, `:` (all), or vector index sets (including colon ranges like `1:2:6`). A read of a vector, `v(idx)`, also accepts a `1×n` or `n×1` matrix of positions (what `zeros(1, n)` returns); the result is a vector. A matrix index with more than one row and more than one column is an error.
 
 ### Element write: `M(i, j) = scalar`
 Single-element store into a Matrix (or 2-D SparseMatrix). 1-based indexing.

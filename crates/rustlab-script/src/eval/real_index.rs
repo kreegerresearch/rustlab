@@ -174,24 +174,33 @@ impl Value {
             },
             (Value::Vector(v), [i]) => {
                 let d = Shared::real_slice(v)?;
+                let gather = |e: Elems| -> Option<Value> {
+                    if let Some((s, n)) = e.run() {
+                        if s + n <= d.len() {
+                            return Some(Value::real_vector(Array1::from(d[s..s + n].to_vec())));
+                        }
+                    }
+                    let p = match e.mask(d.len()) {
+                        Some(p) => p,
+                        None => e.list(d.len()).ok()?,
+                    };
+                    Some(Value::real_vector(p.iter().map(|&k| d[k]).collect()))
+                };
                 match i {
                     Value::All => Some(Value::Vector(v.clone())),
                     Value::Scalar(n) => {
                         let k = Value::one_based_to_zero_pub(*n).ok()?;
                         d.get(k).map(|&x| Value::Scalar(x))
                     }
-                    Value::Vector(iv) => {
-                        let e = Elems::of_vector(iv)?;
-                        if let Some((s, n)) = e.run() {
-                            if s + n <= d.len() {
-                                return Some(Value::real_vector(Array1::from(d[s..s + n].to_vec())));
-                            }
+                    Value::Vector(iv) => gather(Elems::of_vector(iv)?),
+                    // Same list as a vector index: a 1×n or n×1 matrix.
+                    // A wider matrix stays on the complex path, which errors.
+                    Value::Matrix(im) => {
+                        let s = Shared::shape(im);
+                        if s[0] != 1 && s[1] != 1 {
+                            return None;
                         }
-                        let p = match e.mask(d.len()) {
-                            Some(p) => p,
-                            None => e.list(d.len()).ok()?,
-                        };
-                        Some(Value::real_vector(p.iter().map(|&k| d[k]).collect()))
+                        gather(Elems::of_matrix(im)?)
                     }
                     _ => None,
                 }

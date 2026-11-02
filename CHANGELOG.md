@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.44
+
+### Fixed
+- **A vector can be indexed by a row or a column.** `v(idx)` accepts a `1×n` or `n×1` matrix of positions, the same list a vector index is. The result is a vector. `zeros(1, n)` and `ones(1, n)` are matrices, so an index built that way used to work only while the target was still a matrix and then fail with `invalid index type: matrix` after a reduction such as `max` turned it into a vector. A matrix with more than one row and more than one column is still an error. `examples/notebooks/comm/viterbi_fec.md` gathers predecessor states this way.
+
 ## 0.3.43
 
 ### Added

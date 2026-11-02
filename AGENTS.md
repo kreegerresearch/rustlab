@@ -1255,7 +1255,7 @@ primary     = NUMBER | STRING | IDENT
 | `keyboard` | `keyboard` / `return` / `dbcont` / `dbquit` | Nested `K>> ` prompt on a terminal. `return` and `dbcont` resume. `dbquit` aborts (exit 1). Errors when stdin is not a terminal |
 | `stdin` | `stdin` | Handle for `fgetl`. Survives `clear` |
 | Range | `1:10`, `0:0.5:2`, `10:-1:1` | Creates a real `Vector` |
-| 1-based index | `v(3)`, `v(2:5)`, `v(end)` | `end` = `len(v)` for a vector; on a matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write) |
+| 1-based index | `v(3)`, `v(2:5)`, `v(end)`, `v(idx)` | `end` = `len(v)` for a vector; on a matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write). `idx` may be a vector or a `1×n` / `n×1` matrix |
 | Indexed assign (single element) | `v(i) = val`, `M(r,c) = val` | Vectors auto-created/grown; matrices must exist |
 | Region assign — matrix | `M(i, :) = vec`, `M(:, j) = vec`, `M(rows, cols) = mat`, `M(:, :) = scalar` | Row / column / submatrix / broadcast writes. Indices may be Scalar, `:`, or Vector. RHS must match the target region shape; scalar/complex RHS broadcasts. Sparse matrices: only single-element form supported. Added in 0.3.4. |
 | Region assign — vector | `v(:) = vec`, `v([1,3,5]) = vec`, `v(1:2:end) = vec`, `v(idx) = scalar` | Strided / explicit-list LHS into a Vector. RHS length must match the index count; scalar/complex RHS broadcasts. Added in 0.3.4. |

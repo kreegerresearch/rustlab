@@ -1080,7 +1080,7 @@ the page.
 <!-- details: Show sweep results -->
 ```rustlab
 for k = 1:8
-    plot(freqz(fir_lowpass(32*k, 3000, 16000)))
+    plot(freqz(fir_lowpass(32*k, 3000, 16000, "hamming")))
 end
 ```
 ````

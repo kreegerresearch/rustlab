@@ -1110,6 +1110,15 @@ impl Value {
                         .collect();
                     Ok(Value::Vector(Array1::from_vec(result?).into()))
                 }
+                // A row or column of subscripts (`zeros(1, n)`, `idx'`) is
+                // the same index list as a vector. `v(idx)` already accepts
+                // it when `v` is still a matrix; after a reduction such as
+                // `max` the same name is a vector, and rejecting the matrix
+                // there made the second use fail.
+                Value::Matrix(idx_m) if idx_m.nrows() == 1 || idx_m.ncols() == 1 => {
+                    let flat: Vec<C64> = idx_m.iter().copied().collect();
+                    self.index_1d(Value::Vector(Array1::from_vec(flat).into()))
+                }
                 other => Err(format!("invalid index type: {}", other.type_name())),
             },
             Value::Matrix(m) => {
