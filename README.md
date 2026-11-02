@@ -426,7 +426,7 @@ rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/qui
 | **Streaming** | `state_init`, `filter_stream`, `audio_in`, `audio_out`, `audio_read`, `audio_write` |
 | **Structs** | `struct`, `isstruct`, `fieldnames`, `isfield`, `rmfield` |
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
-| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
+| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
 | **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
 | **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `gaussian_pulse`, `fdtd_source`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice` (vacuum Yee stepper, PEC walls) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |

@@ -10772,6 +10772,185 @@ mod sparse_tests {
         assert!(get_scalar(&ev, "err") < 1e-12);
     }
 
+    // ── laplacian_eps_3d ────────────────────────────────────────
+
+    fn eval_result(src: &str) -> Result<Evaluator, crate::error::ScriptError> {
+        let tokens = lexer::tokenize(&format!("{src}\n")).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt)?;
+        }
+        Ok(ev)
+    }
+
+    #[test]
+    fn laplacian_eps_3d_uniform_matches_scaled_laplacian_3d() {
+        // eps_map is (ny, nx, nz) while laplacian_3d takes (nx, ny, nz):
+        // a 3×4×2 map is ny = 3, nx = 4, nz = 2.
+        for bc in ["dirichlet", "neumann", "periodic"] {
+            let ev = eval_str(&format!(
+                "eps = 2.5 * ones3(3, 4, 2)\n\
+                 Le = full(laplacian_eps_3d(eps, 0.1, 0.2, 0.05, \"{bc}\"))\n\
+                 L = full(laplacian_3d(4, 3, 2, 0.1, 0.2, 0.05, \"{bc}\"))\n\
+                 rel = norm(Le - 2.5 * L) / norm(L)"
+            ));
+            assert!(get_scalar(&ev, "rel") < 1e-14, "{bc}");
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_default_forms_and_ordering_hint() {
+        // (eps) and (eps, bc) are unit spacing; the builtin stamps the
+        // Identity ordering hint like the other laplacian_* builders.
+        let ev = eval_str(
+            "eps = ones3(3, 3, 3)\n\
+             L = laplacian_eps_3d(eps)\n\
+             d1 = norm(full(L) - full(laplacian_eps_3d(eps, 1, 1, 1, \"dirichlet\")))\n\
+             Ln = laplacian_eps_3d(eps, \"neumann\")\n\
+             d2 = norm(full(Ln) - full(laplacian_3d(3, 3, 3, \"neumann\")))",
+        );
+        assert_eq!(get_scalar(&ev, "d1"), 0.0);
+        assert!(get_scalar(&ev, "d2") < 1e-14);
+        match ev.get("L").unwrap() {
+            Value::SparseMatrix(s) => {
+                assert_eq!(s.ordering_hint, Some(rustlab_core::OrderingHint::Identity));
+                assert_eq!((s.rows, s.cols), (27, 27));
+            }
+            other => panic!("expected sparse matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_two_layer_capacitor_is_series() {
+        // Lesson 15: a two-layer MIM stack (eps_r 25 over 4) between two
+        // full-plane plates pinned with pin_dirichlet, Neumann side walls.
+        // The plates are the node pages kk = 1 and kk = nz; the interface
+        // sits half a cell above node page m, so d1 = (m - 1/2) dz and
+        // d2 = (nz - m - 1/2) dz. With harmonic-mean faces the discrete
+        // stack is exactly two capacitors in series.
+        let ev = eval_str(
+            "ny = 4; nx = 5; nz = 13;\n\
+             dx = 1e-3; dy = 2e-3; dz = 0.25e-3;\n\
+             eps1 = 25; eps2 = 4; m = 6;\n\
+             eps = eps2 * ones3(ny, nx, nz);\n\
+             for kk = 1:m\n\
+               eps(:, :, kk) = eps1 * ones(ny, nx);\n\
+             end\n\
+             L = laplacian_eps_3d(eps, dx, dy, dz, \"neumann\");\n\
+             N = ny * nx * nz; np = ny * nx;\n\
+             plates = zeros3(ny, nx, nz);\n\
+             plates(:, :, 1) = ones(ny, nx);\n\
+             plates(:, :, nz) = ones(ny, nx);\n\
+             [A, b] = pin_dirichlet(L, zeros(N, 1), plates, [ones(1, np), zeros(1, np)]);\n\
+             V = spsolve(A, b);\n\
+             r = L * V.';\n\
+             vol = dx * dy * dz;\n\
+             Q = -sum(r(1:np)) * vol;\n\
+             Qb = sum(r(N - np + 1:N)) * vol;\n\
+             area = nx * dx * ny * dy;\n\
+             C1 = eps1 * area / ((m - 0.5) * dz);\n\
+             C2 = eps2 * area / ((nz - m - 0.5) * dz);\n\
+             C = 1 / (1 / C1 + 1 / C2);\n\
+             rel = abs(Q - C) / C;\n\
+             cont = abs(Q - Qb) / C;",
+        );
+        assert!(
+            get_scalar(&ev, "rel") < 1e-10,
+            "rel = {}",
+            get_scalar(&ev, "rel")
+        );
+        // Same charge on both plates: flux is continuous across the interface.
+        assert!(get_scalar(&ev, "cont") < 1e-10);
+    }
+
+    #[test]
+    fn laplacian_eps_3d_complex_eps_solves() {
+        // A lossy layer gives complex entries; spsolve still solves.
+        let ev = eval_str(
+            "eps = 2 * ones3(4, 4, 4);\n\
+             eps(:, :, 3) = (4 - 0.4j) * ones(4, 4);\n\
+             eps(:, :, 4) = (4 - 0.4j) * ones(4, 4);\n\
+             A = -1 * laplacian_eps_3d(eps, 0.5, 0.5, 0.25);\n\
+             b = ones(64, 1);\n\
+             V = spsolve(A, b);\n\
+             res = norm(A * V.' - b) / norm(b);\n\
+             im_part = max(abs(imag(V)));",
+        );
+        assert!(get_scalar(&ev, "res") < 1e-10);
+        assert!(get_scalar(&ev, "im_part") > 1e-6);
+    }
+
+    #[test]
+    fn laplacian_eps_3d_real_storage_not_widened() {
+        // A real-stored map is read as stored: no widened copy, and the
+        // operator equals the one built from the complex-stored map bit
+        // for bit.
+        use crate::eval::shared::{conversion_counts, Shared};
+        let r = ndarray::Array3::from_shape_fn((3, 4, 2), |(i, j, k)| {
+            1.0 + i as f64 * 0.37 + j as f64 * 1.9 + k as f64 * 7.1
+        });
+        let cplx = r.mapv(|x| num_complex::Complex::new(x, 0.0));
+        let mut ev = Evaluator::new();
+        ev.set("er", Value::Tensor3(Shared::from_real(r)));
+        ev.set("ec", Value::Tensor3(Shared::new(cplx)));
+        let widen_before = conversion_counts().0.calls;
+        for line in [
+            "La = laplacian_eps_3d(er, 0.3, 0.7, 0.11, \"periodic\");",
+            "Lb = laplacian_eps_3d(ec, 0.3, 0.7, 0.11, \"periodic\");",
+        ] {
+            let stmts = parser::parse(lexer::tokenize(&format!("{line}\n")).unwrap()).unwrap();
+            for s in &stmts {
+                ev.exec_stmt(s).unwrap();
+            }
+        }
+        assert_eq!(
+            conversion_counts().0.calls,
+            widen_before,
+            "eps_map was widened"
+        );
+        let (Value::SparseMatrix(a), Value::SparseMatrix(b)) =
+            (ev.get("La").unwrap(), ev.get("Lb").unwrap())
+        else {
+            panic!("expected sparse matrices");
+        };
+        assert_eq!(a.entries.len(), b.entries.len());
+        for (x, y) in a.entries.iter().zip(b.entries.iter()) {
+            assert_eq!((x.0, x.1), (y.0, y.1));
+            assert_eq!(x.2.re.to_bits(), y.2.re.to_bits());
+            assert_eq!(x.2.im.to_bits(), y.2.im.to_bits());
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_errors() {
+        let err = |src: &str| match eval_result(src) {
+            Ok(_) => panic!("expected an error from {src}"),
+            Err(e) => e.to_string(),
+        };
+        let e = err("L = laplacian_eps_3d(ones(3, 3))");
+        assert!(
+            e.contains("3-D tensor") && e.contains("laplacian_eps_2d"),
+            "{e}"
+        );
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), 1, 1)");
+        assert!(
+            e.contains("expected (eps_map)") && e.contains("got 3 args"),
+            "{e}"
+        );
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 1))");
+        assert!(e.contains("nz (eps_map pages) must be >= 2"), "{e}");
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), 1, 1, 0)");
+        assert!(e.contains("dz must be positive"), "{e}");
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), \"wrap\")");
+        assert!(e.contains("boundary condition"), "{e}");
+        let e = err("L = laplacian_eps_3d(5)");
+        assert!(e.contains("3-D tensor"), "{e}");
+        // The 7-point operator only accepts a field of matching size.
+        let e = err("L = laplacian_eps_3d(ones3(2, 2, 2)); y = L * ones(9, 1)");
+        assert!(!e.is_empty());
+    }
+
     // ── Sparse eigensolver `eigs` ─────────────────────────────────
 
     #[test]

@@ -452,6 +452,7 @@ impl BuiltinRegistry {
         r.register("laplacian_1d", builtin_laplacian_1d);
         r.register("laplacian_3d", builtin_laplacian_3d);
         r.register("laplacian_eps_2d", builtin_laplacian_eps_2d);
+        r.register("laplacian_eps_3d", builtin_laplacian_eps_3d);
         r.register("ij2k", builtin_ij2k);
         r.register("k2ij", builtin_k2ij);
         r.register("ijk2k", builtin_ijk2k);
@@ -15546,6 +15547,11 @@ fn parse_spacing_and_bc(
              got {} args",
             args.len()
         ))),
+        _ if name == "laplacian_eps_3d" => Err(ScriptError::type_err(format!(
+            "laplacian_eps_3d: expected (eps_map), (eps_map, bc), \
+             (eps_map, dx, dy, dz), or (eps_map, dx, dy, dz, bc); got {} args",
+            args.len()
+        ))),
         _ => unreachable!(),
     }
 }
@@ -15853,6 +15859,35 @@ fn builtin_laplacian_eps_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
         spacing[1],
         bc,
     ))
+}
+
+/// `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` — 3-D form of
+/// `laplacian_eps_2d` on a `Tensor3` ε map (axis 0 = y, 1 = x, 2 = z).
+/// A real-stored map is read as stored, not widened.
+fn builtin_laplacian_eps_3d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("laplacian_eps_3d", &args, 1, 5)?;
+    let eps_map = match &args[0] {
+        Value::Tensor3(t) => t,
+        Value::Matrix(_) => {
+            return Err(ScriptError::type_err(
+                "laplacian_eps_3d: eps_map must be a 3-D tensor (ny x nx x nz), got matrix \
+                 — use laplacian_eps_2d for a 2-D map"
+                    .to_string(),
+            ));
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "laplacian_eps_3d: eps_map must be a 3-D tensor (ny x nx x nz), got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let (spacing, bc) = parse_spacing_and_bc("laplacian_eps_3d", &args, 1, 3)?;
+    let (dx, dy, dz) = (spacing[0], spacing[1], spacing[2]);
+    laplacian_value(match Shared::as_real(eps_map) {
+        Some(real) => rustlab_dsp::laplacian::laplacian_eps_3d_real(real, dx, dy, dz, bc),
+        None => rustlab_dsp::laplacian::laplacian_eps_3d(eps_map, dx, dy, dz, bc),
+    })
 }
 
 /// `ij2k(i, j, ny)` — convert 1-based grid indices `(i, j)` to flat
