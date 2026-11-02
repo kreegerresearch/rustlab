@@ -3721,9 +3721,7 @@ impl Evaluator {
             vals
         };
         let frame = self.profiler.enter_op("[index]");
-        let result = container
-            .index(idx_vals)
-            .map_err(|e| ScriptError::runtime(e));
+        let result = container.index(idx_vals).map_err(ScriptError::runtime);
         self.profiler.exit_op(frame, 0, 0);
         result
     }

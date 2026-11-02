@@ -88,8 +88,8 @@ fn step_e(e: &mut [f64], lo: usize, coef: ERow, curl: impl Fn(usize) -> f64) {
     let n = e.len();
     match coef {
         ERow::Vacuum => {
-            for j in lo..n {
-                e[j] += curl(j);
+            for (x, j) in e[lo..].iter_mut().zip(lo..) {
+                *x += curl(j);
             }
         }
         ERow::Lossless(cb) => {
@@ -112,8 +112,8 @@ fn step_h(h: &mut [f64], lo: usize, hi: usize, coef: HRow, curl: impl Fn(usize) 
     let h = &mut h[..hi];
     match coef {
         HRow::Vacuum => {
-            for j in lo..hi {
-                h[j] -= curl(j);
+            for (x, j) in h[lo..].iter_mut().zip(lo..) {
+                *x -= curl(j);
             }
         }
         HRow::Scaled(db) => {
