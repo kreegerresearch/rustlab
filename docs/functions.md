@@ -298,6 +298,120 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ---
 
+## FDTD (3-D)
+
+A native time-domain Maxwell stepper on a Yee grid. Phase 1 is vacuum with PEC outer walls, soft and hard E sources, and point probes. Materials, metal, the CPML absorber, a lumped port, and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+
+Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
+
+| Component | Position of index `(i, j, k)` |
+|---|---|
+| `ex` | `((j−½)·dx, (i−1)·dy, (k−1)·dz)` |
+| `ey` | `((j−1)·dx, (i−½)·dy, (k−1)·dz)` |
+| `ez` | `((j−1)·dx, (i−1)·dy, (k−½)·dz)` |
+| `hx` | `((j−1)·dx, (i−½)·dy, (k−½)·dz)` |
+| `hy` | `((j−½)·dx, (i−1)·dy, (k−½)·dz)` |
+| `hz` | `((j−½)·dx, (i−½)·dy, (k−1)·dz)` |
+
+Tangential E on the six walls is held at 0.
+
+### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)`
+Create a vacuum grid with `E = H = 0`. `nx`, `ny`, `nz` are integers `>= 2`; `dx`, `dy`, `dz` are metres, finite and positive. The time step is the CFL limit times the Courant number `s`:
+
+```
+dt = s / (c0 * sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
+```
+
+`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
+```
+sim = fdtd3d(40, 40, 40, 1e-3, 1e-3, 1e-3);
+sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
+```
+
+### `info = fdtd_info(sim)`
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field and probe storage), and `c0` (299 792 458 m/s).
+```
+info = fdtd_info(sim);
+tau = 20 * info.dt;
+```
+
+### `y = gaussian_pulse(t, t0, tau)` / `gaussian_pulse(t, t0, tau, f0)`
+`y = exp(-((t − t0)/tau)^2) · cos(2π f0 (t − t0))`. `t` is a real scalar, vector, or matrix in seconds and `y` has its shape. `tau > 0`; `t0` and `f0` are finite, and `f0` defaults to 0 (a baseband pulse). This is a pure function and does not touch a grid; it is the same waveform `fdtd_source` samples for `"gaussian"` and `"modulated"`.
+```
+t = linspace(0, 2e-9, 400);
+plot(t * 1e9, gaussian_pulse(t, 1e-9, 2e-10, 5e9));
+```
+
+### `fdtd_source(sim, comp, i, j, k, kind, waveform...)`
+```
+fdtd_source(sim, comp, i, j, k, "soft", "gaussian", t0, tau)
+fdtd_source(sim, comp, i, j, k, "soft", "modulated", t0, tau, f0)
+fdtd_source(sim, comp, i, j, k, "soft" | "hard", waveform)
+```
+Drive one E edge (`comp` is `"ex"`, `"ey"`, or `"ez"`), or a stack of collinear edges: the index along the component's own axis (`j` for `ex`, `i` for `ey`, `k` for `ez`) may be a consecutive ascending range such as `2:5`. A stack of `N` edges shares one amplitude `g`, divided across them.
+
+- `"soft"` is a current source added after the E update: `E −= (dt/ε0) · g / (N·Δ)` with `Δ` the cell size along the edge. The field keeps its history, so outgoing waves pass through.
+- `"hard"` overwrites the edge: `E = −g / (N·Δ)`. The edge reflects; use it for a ring-down, not as an antenna feed.
+- `"gaussian"` and `"modulated"` are evaluated at `t = n·dt` on step `n`, on every step.
+- A real vector `waveform` gives sample `n` at step `n`. Past its end a soft source adds nothing and a hard source releases the edge.
+
+Sources must be added before the first step. An edge on a PEC wall is an error (it is held at 0), and a hard source cannot share an edge with another source.
+```
+fdtd_source(sim, "ez", 21, 21, 21, "soft", "gaussian", 4*tau, tau);
+fdtd_source(sim, "ez", 10, 10, 2:4, "hard", gaussian_pulse((1:200) * info.dt, 60*info.dt, 20*info.dt));
+```
+
+### `id = fdtd_probe(sim, comp, i, j, k)`
+Record one component at one edge every step. Returns the probe's 1-based column in the record's `probe` matrix. E probes are sampled after the E update (time `n·dt`); H probes after the H update (time `(n − ½)·dt`). Probes must be added before the first step.
+```
+id = fdtd_probe(sim, "ez", 21, 27, 21);
+```
+
+### `out = fdtd_run(sim, nsteps)` / `out = fdtd_step(sim)` / `out = fdtd_step(sim, n)`
+Advance the grid. `fdtd_step(sim)` is one leapfrog step; `fdtd_step(sim, n)` and `fdtd_run(sim, n)` are the same kernel, and splitting a run into several calls gives bit-identical fields and records. The return is the `fdtd_record` struct plus:
+
+| Field | Contents |
+|---|---|
+| `seconds` | wall time of this call |
+| `cell_updates` | `nx·ny·nz` × steps completed in this call |
+| `cell_rate` | `cell_updates / seconds` |
+
+Ctrl+C on a terminal stops a run of more than one step after the step in progress, prints `interrupted` to stderr, and returns the struct with `interrupted = true`; the record is as long as the steps that finished, so the script can plot it. Under `rustlab-notebook watch`, saving the notebook while a run is in progress stops it with no result (the render is discarded).
+```
+out = fdtd_run(sim, 400);
+p = out.probe;
+plot(out.t * 1e9, p(:, 1));
+```
+Use a temporary for the probe matrix: `out.probe(:, 1)` parses as a method call, not as indexing.
+
+### `rec = fdtd_record(sim)`
+The record of every step since the grid was created, without stepping:
+
+| Field | Contents |
+|---|---|
+| `t` | real row, length `steps`; sample `n` is `n·dt` |
+| `dt` | scalar |
+| `steps` | scalar |
+| `probe` | real `steps × nprobes` matrix; column `id` is that probe |
+| `V`, `I` | real `steps × 0` (ports arrive in a later phase) |
+| `Z0` | empty row |
+| `interrupted` | `true` when the last run was stopped by Ctrl+C |
+
+### `M = fdtd_slice(sim, comp, axis, index)`
+Copy one plane of a component. `axis` is `"x"`, `"y"`, or `"z"` and `index` is 1-based on that axis.
+
+| Call | Shape |
+|---|---|
+| `fdtd_slice(sim, comp, "z", k)` | `ny × nx` (y rows, x columns) |
+| `fdtd_slice(sim, comp, "y", i)` | `nx × nz` (x rows, z columns) |
+| `fdtd_slice(sim, comp, "x", j)` | `ny × nz` (y rows, z columns) |
+
+```
+imagesc(fdtd_slice(sim, "ez", "z", 21));
+```
+
+---
+
 ## Statistics
 
 ### `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)`

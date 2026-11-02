@@ -1,0 +1,45 @@
+# Hello FDTD: a Gaussian pulse in a 40 × 40 × 40 vacuum box
+# Demonstrates: fdtd3d, fdtd_info, fdtd_source, fdtd_probe, fdtd_run, fdtd_slice
+#
+# fdtd3d with no materials is vacuum with PEC walls. Indices are 1-based
+# (i, j, k) = (y row, x column, z page). Ez node (i, j, k) sits at
+# x = (j-1)*dx, y = (i-1)*dy, so ic = n/2 + 1 is the centre of the box.
+
+n = 40;
+dx = 1.0e-3;                            # 1 mm cells
+sim = fdtd3d(n, n, n, dx, dx, dx);
+info = fdtd_info(sim);                  # dt from the CFL limit, Courant 0.99
+
+# ── Source: soft derivative-of-Gaussian current on Ez at the centre ──
+# A soft source is a current. A plain Gaussian current leaves charge on
+# the edge (its time integral is not zero) and a static field around it.
+# The derivative of a Gaussian integrates to zero, so the box rings clean.
+nsteps = 400;
+tau = 20 * info.dt;                     # c0 * tau is about 11 cells
+t0 = 4 * tau;
+ts = (1:nsteps) * info.dt;              # sample n drives step n (time n*dt)
+w = -(ts - t0) / tau .* gaussian_pulse(ts, t0, tau);
+ic = n / 2 + 1;
+fdtd_source(sim, "ez", ic, ic, ic, "soft", w);
+
+# ── Probe: same row and page, six cells toward +x ───────────────
+id = fdtd_probe(sim, "ez", ic, ic + 6, ic);
+
+# ── Run long enough for the pulse to hit a wall and come back ───
+out = fdtd_run(sim, nsteps);
+t = out.t;                              # 1 × steps, sample n at n*dt
+p = out.probe;                          # steps × nprobes (out.probe(:, 1) parses as a method call)
+ez = p(:, id);
+
+fprintf("%d steps of %.3g ps\n", out.steps, info.dt * 1e12);   # out.cell_rate: cell updates per second
+[pk, at] = max(abs(ez));
+fprintf("probe peak |Ez| = %.4g at t = %.3f ns\n", pk, t(at) * 1e9);
+
+subplot(2, 1, 1);
+plot(t * 1e9, ez);
+xlabel("t (ns)");
+ylabel("Ez (V/m)");
+title("Ez six cells from the source");
+subplot(2, 1, 2);
+imagesc(fdtd_slice(sim, "ez", "z", ic));
+title("Ez on the mid z-plane");
