@@ -427,3 +427,193 @@ fn cancel_flag_is_scoped_to_the_call() {
     let ev2 = eval("sim = fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3); b = fdtd_run(sim, 3); n = b.steps;");
     assert_eq!(scalar(&ev2, "n"), 3.0);
 }
+
+#[test]
+fn media_sets_dt_from_the_fastest_speed() {
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3);
+dt0 = fdtd_info(sim).dt;
+fdtd_media(sim, 4, 2);
+dt4 = fdtd_info(sim).dt;
+eps = ones3(5, 6, 4); eps(1, 1, 1) = 0.25;
+fdtd_media(sim, eps);
+dt1 = fdtd_info(sim).dt;
+mu = 9 * ones3(5, 6, 4); mu(2, 2, 2) = 0.5;
+fdtd_media(sim, 0.5, mu);
+dt9 = fdtd_info(sim).dt;
+",
+    );
+    let (dt0, dt4, dt1, dt9) = (
+        scalar(&ev, "dt0"),
+        scalar(&ev, "dt4"),
+        scalar(&ev, "dt1"),
+        scalar(&ev, "dt9"),
+    );
+    // Slower than light everywhere: the vacuum step stands.
+    assert_eq!(dt4, dt0);
+    // min(eps) · min(mu) = 0.25 → 2 c0
+    assert!((dt1 / dt0 - 0.5).abs() < 1e-12, "{}", dt1 / dt0);
+    // min(eps) · min(mu) = 0.5 · 0.5 → 2 c0
+    assert!((dt9 / dt0 - 0.5).abs() < 1e-12, "{}", dt9 / dt0);
+}
+
+#[test]
+fn uniform_media_scalar_and_tensor_agree_bit_for_bit() {
+    let body = "
+info = fdtd_info(sim); tau = 10 * info.dt;
+fdtd_source(sim, \"ez\", 5, 6, 4, \"soft\", \"gaussian\", 4*tau, tau);
+fdtd_probe(sim, \"ez\", 5, 9, 4);
+fdtd_probe(sim, \"hy\", 5, 8, 4);
+out = fdtd_run(sim, 60); P = out.probe;
+";
+    let a = eval(&format!(
+        "sim = fdtd3d(12, 10, 8, 1e-3, 1e-3, 1e-3);
+fdtd_media(sim, 2.5, 1.5, 0.02);{body}"
+    ));
+    let b = eval(&format!(
+        "sim = fdtd3d(12, 10, 8, 1e-3, 1e-3, 1e-3);
+fdtd_media(sim, 2.5 * ones3(10, 12, 8), 1.5 * ones3(10, 12, 8), 0.02 * ones3(10, 12, 8));{body}"
+    ));
+    assert_eq!(bits(&a, "P"), bits(&b, "P"));
+    let peak = bits(&a, "P")
+        .iter()
+        .map(|&(re, _)| f64::from_bits(re).abs())
+        .fold(0.0, f64::max);
+    assert!(peak > 0.0, "the medium run never moved the probe");
+}
+
+#[test]
+fn unit_media_matches_vacuum_bit_for_bit() {
+    let tail = "
+out = fdtd_run(sim, 50); P = out.probe;
+";
+    let vac = eval(&format!("{SETUP}{tail}"));
+    let unit = eval(&format!(
+        "sim = fdtd3d(12, 10, 8, 1e-3, 1e-3, 1e-3);
+fdtd_media(sim, 1, ones3(10, 12, 8), 0);
+info = fdtd_info(sim);
+tau = 10 * info.dt;
+fdtd_source(sim, \"ez\", 5, 6, 4, \"soft\", \"gaussian\", 4*tau, tau);
+p1 = fdtd_probe(sim, \"ez\", 5, 9, 4);
+p2 = fdtd_probe(sim, \"hy\", 5, 8, 4);
+{tail}"
+    ));
+    assert_eq!(bits(&vac, "P"), bits(&unit, "P"));
+}
+
+#[test]
+fn pec_face_holds_its_tangential_e_at_zero() {
+    let probes = "
+a = fdtd_probe(sim, \"ex\", 5, 6, 3);
+b = fdtd_probe(sim, \"ey\", 4, 6, 3);
+c = fdtd_probe(sim, \"ez\", 5, 6, 3);
+out = fdtd_run(sim, 60); P = out.probe;
+pa = max(abs(P(:, 3))); pb = max(abs(P(:, 4))); pc = max(abs(P(:, 5)));
+";
+    let open = eval(&format!("{SETUP}{probes}"));
+    let shut = eval(&format!("{SETUP}fdtd_pec(sim, \"z\", 3, true);{probes}"));
+    for name in ["pa", "pb", "pc"] {
+        assert!(scalar(&open, name) > 0.0, "{name} never moved without PEC");
+    }
+    assert_eq!(scalar(&shut, "pa"), 0.0);
+    assert_eq!(scalar(&shut, "pb"), 0.0);
+    // Ez is normal to a z face, so the face leaves it free.
+    assert!(scalar(&shut, "pc") > 0.0);
+}
+
+#[test]
+fn pec_face_mask_and_volume_mask() {
+    // A patch on the z = 3 face: only edges with both nodes inside are metal.
+    let ev = eval(&format!(
+        "{SETUP}
+m = zeros(10, 12); m(4:6, 5:7) = 1;
+fdtd_pec(sim, \"z\", 3, m);
+vol = zeros3(10, 12, 8); vol(2, 2, 6) = 1;
+fdtd_pec(sim, vol);
+a = fdtd_probe(sim, \"ex\", 5, 6, 3);
+b = fdtd_probe(sim, \"ex\", 5, 7, 3);
+c = fdtd_probe(sim, \"ez\", 3, 3, 6);
+d = fdtd_probe(sim, \"ez\", 3, 4, 6);
+out = fdtd_run(sim, 60); P = out.probe;
+pa = max(abs(P(:, 3))); pb = max(abs(P(:, 4))); pc = max(abs(P(:, 5))); pd = max(abs(P(:, 6)));
+"
+    ));
+    assert_eq!(scalar(&ev, "pa"), 0.0, "ex inside the patch");
+    assert!(scalar(&ev, "pb") > 0.0, "ex from the patch edge to outside");
+    assert_eq!(scalar(&ev, "pc"), 0.0, "ez on the metal cell's corner");
+    assert!(scalar(&ev, "pd") > 0.0, "ez one node past the metal cell");
+}
+
+#[test]
+fn media_and_pec_errors() {
+    let pre = "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3);\n";
+    for (src, want) in [
+        (
+            "fdtd_media(sim, 2 + 0.1j)",
+            "eps_r must be real; give loss as sigma",
+        ),
+        ("fdtd_media(sim, 0)", "eps_r must be finite and > 0"),
+        ("fdtd_media(sim, 1, -1)", "mu_r must be finite and > 0"),
+        (
+            "fdtd_media(sim, 1, 1, -0.5)",
+            "sigma must be finite and >= 0",
+        ),
+        ("fdtd_media(sim, ones3(4, 6, 4))", "eps_r must be 5 × 6 × 4"),
+        (
+            "fdtd_media(sim, [1, 2])",
+            "real scalar or an ny × nx × nz Tensor3",
+        ),
+        ("fdtd_media(sim)", "wrong number of arguments"),
+        (
+            "fdtd_pec(sim, zeros(5, 6))",
+            "a volume mask must be an ny × nx × nz Tensor3",
+        ),
+        (
+            "fdtd_pec(sim, \"z\", 6, true)",
+            "z face (page k) must be an integer in 1..5",
+        ),
+        ("fdtd_pec(sim, \"q\", 1, true)", "axis must be"),
+        (
+            "fdtd_pec(sim, \"y\", 2, ones(5, 6))",
+            "mask for the y face must be nx × nz = 6 × 4 (the fdtd_slice shape), got 5 × 6",
+        ),
+        ("fdtd_pec(sim, \"z\", 2, NaN)", "mask contains NaN"),
+        ("fdtd_pec(sim, \"z\", 2)", "expected fdtd_pec(sim, mask)"),
+        (
+            "fdtd_source(sim, \"ex\", 2, 2, 2, \"soft\", [1, 2]); fdtd_pec(sim, \"z\", 2, true)",
+            "PEC would cover an edge of an existing ex source",
+        ),
+        (
+            "fdtd_pec(sim, \"z\", 2, true); fdtd_source(sim, \"ex\", 2, 2, 2, \"soft\", [1, 2])",
+            "ex at (i, j, k) = (2, 2, 2) is PEC (fdtd_pec) and held at 0",
+        ),
+        (
+            "fdtd_step(sim); fdtd_media(sim, 2)",
+            "set materials before the first step (1 steps done)",
+        ),
+        (
+            "fdtd_step(sim); fdtd_pec(sim, \"z\", 2, true)",
+            "set PEC before the first step",
+        ),
+    ] {
+        let e = run_err(&format!("{pre}{src};"));
+        assert!(e.contains(want), "{src}: {e}");
+    }
+    // The max-wall face is already PEC, so it is accepted and changes nothing.
+    eval(&format!("{pre}fdtd_pec(sim, \"z\", 5, true);"));
+}
+
+#[test]
+fn info_bytes_grow_with_materials() {
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3);
+b0 = fdtd_info(sim).bytes;
+fdtd_media(sim, 2);
+b1 = fdtd_info(sim).bytes;
+fdtd_media(sim, 2, 1, 0.1);
+b2 = fdtd_info(sim).bytes;
+",
+    );
+    let (b0, b1, b2) = (scalar(&ev, "b0"), scalar(&ev, "b1"), scalar(&ev, "b2"));
+    assert!(b1 > b0 && b2 > b1, "{b0} {b1} {b2}");
+}
