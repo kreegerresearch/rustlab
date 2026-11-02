@@ -1,4 +1,6 @@
 pub mod builtins;
+pub(crate) mod builtin_cancel;
+pub(crate) mod fdtd;
 mod xcorr;
 pub(crate) mod elementwise;
 pub(crate) mod interp1;
@@ -3386,6 +3388,7 @@ impl Evaluator {
             vals.into_iter().map(Value::widen_int).collect()
         };
 
+        let _cancel_scope = self.cancel.as_ref().map(builtin_cancel::enter);
         if !self.profiler.is_enabled() {
             return self.builtins.call_with_nargout(name, vals, nargout);
         }

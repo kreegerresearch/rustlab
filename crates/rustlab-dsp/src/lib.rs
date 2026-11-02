@@ -1,6 +1,7 @@
 pub mod convolution;
 pub mod xcorr;
 pub mod error;
+pub mod fdtd;
 pub mod fft;
 pub mod fir;
 pub mod fixed;

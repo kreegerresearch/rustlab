@@ -240,6 +240,9 @@ pub enum Value {
     /// script-level `state` handle be rebound across frames without
     /// copying the underlying ring buffer.
     DspStreamState(Arc<Mutex<DspStreamKind>>),
+    /// 3-D FDTD grid (`fdtd3d`). Assignment shares the grid; the fields
+    /// stay inside and are copied out by `fdtd_slice` / `fdtd_record`.
+    Fdtd3d(Arc<Mutex<rustlab_dsp::fdtd::FdtdSim>>),
     /// Metadata handle for stdin audio input. Opens no file descriptors.
     AudioIn {
         sample_rate: f64,
@@ -415,6 +418,7 @@ impl Value {
             Value::FuncHandle(_) => "function_handle",
             Value::FirState(_) => "fir_state",
             Value::DspStreamState(_) => "dsp_stream_state",
+            Value::Fdtd3d(_) => "fdtd3d",
             Value::AudioIn { .. } => "audio_in",
             Value::AudioOut { .. } => "audio_out",
             Value::LiveFigure(_) => "live_figure",
@@ -3288,6 +3292,18 @@ impl fmt::Display for Value {
                 };
                 write!(f, "<dsp_stream_state {tag}>")
             }
+            Value::Fdtd3d(sim) => match sim.lock() {
+                Ok(s) => write!(
+                    f,
+                    "<fdtd3d {}×{}×{}, dt={:e} s, steps={}>",
+                    s.nx(),
+                    s.ny(),
+                    s.nz(),
+                    s.dt(),
+                    s.steps()
+                ),
+                Err(_) => write!(f, "<fdtd3d (unusable)>"),
+            },
             Value::AudioIn {
                 sample_rate,
                 frame_size,
@@ -3522,6 +3538,10 @@ impl Value {
                 let inner = arc.lock().unwrap().clone();
                 Value::FirState(Arc::new(Mutex::new(inner)))
             }
+            Value::Fdtd3d(arc) => match arc.lock() {
+                Ok(sim) => Value::Fdtd3d(Arc::new(Mutex::new(sim.clone()))),
+                Err(_) => Value::Fdtd3d(Arc::clone(arc)),
+            },
             Value::Struct(fields) => {
                 Value::Struct(fields.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect())
             }

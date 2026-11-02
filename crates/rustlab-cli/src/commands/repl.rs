@@ -862,6 +862,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
         Value::FuncHandle(_) => "function_handle",
         Value::FirState(_) => "fir_state",
         Value::DspStreamState(_) => "dsp_stream_state",
+        Value::Fdtd3d(_) => "fdtd3d",
         Value::AudioIn { .. } => "audio_in",
         Value::AudioOut { .. } => "audio_out",
         Value::LiveFigure(_) => "live_figure",
@@ -991,6 +992,7 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
         Value::FuncHandle(name) => format!("@{}", name),
         Value::FirState(buf) => format!("<fir_state {}>", buf.lock().unwrap().len()),
         Value::DspStreamState(_) => "<dsp_stream_state>".to_string(),
+        Value::Fdtd3d(_) => v.to_string(),
         Value::AudioIn {
             sample_rate,
             frame_size,
