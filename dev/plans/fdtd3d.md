@@ -607,11 +607,38 @@ Doing the surface integrals in `.rlab` instead was considered (export the six fa
 ### Strategy
 
 - Serial correctness first (Phases 1–5). Phase 6 turns on parallelism after the bit-exact tests exist.
-- Use the rayon that is already in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`). This is not a new dependency, and Phase 6 does not switch the split to `std::thread::scope`. Do not spawn threads per step; thread start would dominate a 72k-cell step. Rayon's pool stays up. A persistent `std::thread` pool is the fallback only if a profile shows the rayon join is a large fraction of a step.
+- Use the rayon that is already in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`). This is not a new dependency, and Phase 6 does not switch the split to `std::thread::scope`. Do not spawn threads per step; thread start would dominate a 72k-cell step. Stay on the **global** rayon pool (`ParallelIterator` / `join`). A private `ThreadPool` or a `std::thread::scope` of `nproc()` threads would oversubscribe when a step runs inside `parmap` (see below).
 - Parallelise over y-rows (`i`), inner loop x (`j`). The inner loop is the unit-stride axis, written so LLVM can autovectorise it (SIMD-friendly, no SIMD crate). Each row writes its own E (or H) locations and its own ψ. The neighbouring row is only **read** (the y-derivative). That is race-free without a double buffer, as long as one parallel region does not update E and H together.
 - Threshold: parallel only when `nx*ny*nz >= 32_768`. Below that, one thread. Unit tests on small cavities stay on the serial path. A test-only threshold override, same idea as `vector_calc`'s `__test_set_par_threshold`, runs the parallel path on a tiny grid and compares every field bit-for-bit against serial.
 - No `std::simd`, no packed_simd crate, no nightly feature. The inner loop is plain `f64` on a unit stride so LLVM can autovectorise. If Phase 6's profile shows it did not, a later change can add `std::arch` AVX2/NEON behind `cfg` — still no new crate, and not part of this plan's commitment.
-- Do not use `parmap` and do not call back into the interpreter from a worker.
+- A kernel worker must not call back into the interpreter. Sweeps go the other way: a `parmap` lambda calls `fdtd_run` (next section).
+
+### Parameter sweeps
+
+There is no `parfor`. The script-level parallel map is **`parmap(f, xs)`** (`eval/parmap.rs`, `LocalRayonBackend`). It maps a lambda or function handle over a 1-D list on the same global rayon pool `nproc()` reports. `arrayfun` is the sequential twin. `parmap` does **not** speed up one time-stepping loop: step `n+1` depends on step `n`, and the kernel never calls `parmap`.
+
+What it is for is independent simulations. Sweep patch width, substrate height, or feed offset by building a **new** `fdtd3d` inside the lambda and returning a number `parmap` can pack (scalar, vector, or matrix, same shape every trial — a struct or the handle itself is a hard error):
+
+```text
+f_res = parmap(@(W) patch_resonance(W), widths)
+
+function f = patch_resonance(W)
+  sim = fdtd3d(nx, ny, nz, dx, dy, dz)   % one grid, owned by this trial
+  % ... media, patch of width W, port, fdtd_run ...
+  s = fdtd_s11(sim)
+  f = s.freq(argmin(abs(s.s11)))
+end
+```
+
+Plot after `parmap` returns. `plot` / `savefig` / `fprintf` are on `parmap`'s impure denylist, so the FDTD builtins must stay off that list. They only touch the handle they were given.
+
+The handle has to be safe to move onto a worker, and two trials must not share a grid:
+
+- `Value` is already required to be `Send + Sync` (the assert at the bottom of `eval/mod.rs`). `Value::Fdtd3d` is `Arc<Mutex<FdtdSim>>` with `FdtdSim: Send`. No `Rc`, `RefCell`, or raw pointer in the grid.
+- No process-wide "current simulation". ε0, μ0, and c0 are immutable constants. The existing Ctrl+C atomic is process-wide on purpose (one interrupt stops every trial). The fields, coefficients, PML auxiliaries, probes, and port records live on that handle alone.
+- Construct `sim` inside the trial. Cloning the handle shares the `Arc`, so a lambda that captures one `sim` from outside would run every width on the same grid.
+
+Nested threading: `parmap` already occupies the rayon pool. The per-step kernel uses that same pool, so a sweep does not spawn another `nproc()` OS threads per trial. Optional escape hatch on the handle, `fdtd3d(..., "threads", 1)`, forces the kernel serial so each trial is one core and `parmap` owns the split. Default is the shared pool. Phase 6 checks a two-element `parmap` of short runs stays within the pool size (no second pool, no `std::thread::scope` of `nproc()` inside a step).
 
 ### Back-of-envelope
 
@@ -778,7 +805,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | **3** | CPML, per-face disable. | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. Reflection < −40 dB. |
 | **4** | Lumped port, `fdtd_s11` pure and handle forms, patch example script. | 3–4 days | Resistor test to 1%. Patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh. |
 | **5** | On-the-fly NTFF, `fdtd_farfield`, directivity and realized gain. | 4–6 days | Dipole symmetry and 0–4 dBi directivity. Patch broadside peak. |
-| **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Perf gate, example notebook under `examples/notebooks/`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. |
+| **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate, example notebook under `examples/notebooks/`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. |
 
 Total roughly **three to five weeks**. Phase 0 can merge alone and unblocks rustlab_em Lesson 15 immediately.
 
