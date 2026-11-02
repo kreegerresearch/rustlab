@@ -799,9 +799,7 @@ mod tests {
         let n = 6;
         let l = laplacian_1d(n, 0.5, BoundaryCondition::Periodic).unwrap();
         let ones = vec![Complex::new(1.0, 0.0); n];
-        let v = l
-            .spmv(&ndarray::Array1::from_vec(ones))
-            .unwrap();
+        let v = l.spmv(&ndarray::Array1::from_vec(ones)).unwrap();
         for c in v.iter() {
             assert!(c.norm() < 1e-12, "nonzero: {c}");
         }
@@ -840,9 +838,7 @@ mod tests {
         let ny = 4;
         let l = laplacian_2d_bc(nx, ny, 1.0, 1.0, BoundaryCondition::Periodic).unwrap();
         let ones = vec![Complex::new(1.0, 0.0); nx * ny];
-        let v = l
-            .spmv(&ndarray::Array1::from_vec(ones))
-            .unwrap();
+        let v = l.spmv(&ndarray::Array1::from_vec(ones)).unwrap();
         for c in v.iter() {
             assert!(c.norm() < 1e-12);
         }
@@ -878,9 +874,7 @@ mod tests {
     fn lap_3d_periodic_constant_in_nullspace() {
         let l = laplacian_3d(3, 3, 3, 0.5, 0.5, 0.5, BoundaryCondition::Periodic).unwrap();
         let ones = vec![Complex::new(1.0, 0.0); 27];
-        let v = l
-            .spmv(&ndarray::Array1::from_vec(ones))
-            .unwrap();
+        let v = l.spmv(&ndarray::Array1::from_vec(ones)).unwrap();
         for c in v.iter() {
             assert!(c.norm() < 1e-12);
         }
@@ -897,8 +891,7 @@ mod tests {
         let dx = 1.0;
         let dy = 1.0;
         let eps = Array2::from_elem((ny, nx), Complex::new(1.0, 0.0));
-        let le =
-            laplacian_eps_2d(&eps, dx, dy, BoundaryCondition::Dirichlet).unwrap();
+        let le = laplacian_eps_2d(&eps, dx, dy, BoundaryCondition::Dirichlet).unwrap();
         let l = laplacian_2d_bc(nx, ny, dx, dy, BoundaryCondition::Dirichlet).unwrap();
         let me = dense(&le);
         let m = dense(&l);
@@ -927,12 +920,9 @@ mod tests {
                 eps[[i, j]] = Complex::new(1.0 + (i + j) as f64 * 0.5, 0.0);
             }
         }
-        let l =
-            laplacian_eps_2d(&eps, 1.0, 1.0, BoundaryCondition::Neumann).unwrap();
+        let l = laplacian_eps_2d(&eps, 1.0, 1.0, BoundaryCondition::Neumann).unwrap();
         let ones = vec![Complex::new(1.0, 0.0); nx * ny];
-        let v = l
-            .spmv(&ndarray::Array1::from_vec(ones))
-            .unwrap();
+        let v = l.spmv(&ndarray::Array1::from_vec(ones)).unwrap();
         for c in v.iter() {
             assert!(c.norm() < 1e-12, "non-zero entry: {c}");
         }
@@ -950,8 +940,7 @@ mod tests {
                 eps[[i, j]] = Complex::new(2.0, -0.1);
             }
         }
-        let l =
-            laplacian_eps_2d(&eps, 0.1, 0.1, BoundaryCondition::Dirichlet).unwrap();
+        let l = laplacian_eps_2d(&eps, 0.1, 0.1, BoundaryCondition::Dirichlet).unwrap();
         assert_eq!(l.rows, ny * nx);
         assert_eq!(l.cols, ny * nx);
         assert!(l.nnz() > 0);
@@ -1226,13 +1215,7 @@ mod tests {
     /// order, letting `SparseMat::new` HashMap-dedupe-then-sort. This
     /// is what the builders did before Phase 4. The Phase 4 `from_
     /// sorted_entries` path must produce a structurally equal result.
-    fn legacy_lap_2d(
-        nx: usize,
-        ny: usize,
-        dx: f64,
-        dy: f64,
-        bc: BoundaryCondition,
-    ) -> SparseMat {
+    fn legacy_lap_2d(nx: usize, ny: usize, dx: f64, dy: f64, bc: BoundaryCondition) -> SparseMat {
         let inv_dx2 = 1.0 / (dx * dx);
         let inv_dy2 = 1.0 / (dy * dy);
         let n = nx * ny;
@@ -1247,9 +1230,7 @@ mod tests {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dy2,
-                        BoundaryCondition::Periodic => {
-                            entries.push((k, k + (ny - 1), c(inv_dy2)))
-                        }
+                        BoundaryCondition::Periodic => entries.push((k, k + (ny - 1), c(inv_dy2))),
                     }
                 }
                 if i + 1 < ny {
@@ -1258,9 +1239,7 @@ mod tests {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dy2,
-                        BoundaryCondition::Periodic => {
-                            entries.push((k, k - (ny - 1), c(inv_dy2)))
-                        }
+                        BoundaryCondition::Periodic => entries.push((k, k - (ny - 1), c(inv_dy2))),
                     }
                 }
                 if j > 0 {
@@ -1308,8 +1287,7 @@ mod tests {
     #[test]
     fn lap_2d_direct_sorted_matches_legacy_coo_dirichlet() {
         for &(nx, ny) in &[(3, 3), (5, 4), (10, 7), (12, 12)] {
-            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Dirichlet)
-                .unwrap();
+            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Dirichlet).unwrap();
             let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Dirichlet);
             assert_sparse_eq(&new, &legacy, 1e-15);
         }
@@ -1318,8 +1296,7 @@ mod tests {
     #[test]
     fn lap_2d_direct_sorted_matches_legacy_coo_neumann() {
         for &(nx, ny) in &[(3, 3), (5, 4), (10, 7)] {
-            let new =
-                laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Neumann).unwrap();
+            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Neumann).unwrap();
             let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Neumann);
             assert_sparse_eq(&new, &legacy, 1e-15);
         }
@@ -1332,8 +1309,7 @@ mod tests {
         // The new path must still match legacy via from_sorted_entries'
         // consecutive-duplicate merge.
         for &(nx, ny) in &[(2, 2), (3, 3), (5, 4), (10, 7)] {
-            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Periodic)
-                .unwrap();
+            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Periodic).unwrap();
             let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Periodic);
             assert_sparse_eq(&new, &legacy, 1e-15);
         }

@@ -1,7 +1,10 @@
 //! 3-D FDTD (Yee) time stepper.
 //!
-//! Phase 1 of `dev/plans/fdtd3d.md`: vacuum, PEC outer walls, soft and hard
-//! E-edge sources, point probes. Serial.
+//! Phases 1–2 of `dev/plans/fdtd3d.md`: PEC outer walls, soft and hard
+//! E-edge sources, point probes, cell-centred `eps_r` / `mu_r` / `sigma`
+//! ([`FdtdSim::set_media`]) and interior PEC volumes and faces
+//! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]). Serial. The
+//! material bake is in `media.rs`.
 //!
 //! # Layout
 //!
@@ -34,16 +37,19 @@
 //!
 //! Step `s` (1-based) advances H to `(s − ½)·dt`, records H probes, advances
 //! E to `s·dt`, applies sources with the waveform at `s·dt`, then records E
-//! probes. Soft: `E ← E − (dt/ε0)·g/Δ` per edge. Hard: `E ← −g/Δ`. `Δ` is the
-//! cell size along the component; on a stack of `N` edges `g` is split as
-//! `g/N`. Both signs make a positive `g` a positive `V = −Σ E·Δ`.
+//! probes. Soft: `E ← E − Cb·g/Δ` per edge, with `Cb = dt/ε0` in vacuum and
+//! the edge's baked `Cb` in a medium. Hard: `E ← −g/Δ`. `Δ` is the cell size
+//! along the component; on a stack of `N` edges `g` is split as `g/N`. Both
+//! signs make a positive `g` a positive `V = −Σ E·Δ`.
 
+mod media;
 mod pulse;
 mod yee;
 
 #[cfg(test)]
 mod tests;
 
+pub use media::CellMap;
 pub use pulse::gaussian_pulse;
 
 use crate::error::DspError;
@@ -199,11 +205,21 @@ pub struct FdtdSim {
     record: Vec<f64>,
     steps: usize,
     interrupted: bool,
+    /// `None` until [`FdtdSim::set_media`]: vacuum.
+    media: Option<media::Media>,
+    /// Per-cell PEC bits (`media::PEC_EX` …), `None` until the first PEC.
+    pec: Option<Vec<u8>>,
+    baked: media::Baked,
 }
 
 /// `courant / (c0 sqrt(1/dx² + 1/dy² + 1/dz²))`.
 pub fn cfl_dt(dx: f64, dy: f64, dz: f64, courant: f64) -> f64 {
-    courant / (C0 * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz)).sqrt())
+    cfl_dt_at(dx, dy, dz, courant, C0)
+}
+
+/// `courant / (speed sqrt(1/dx² + 1/dy² + 1/dz²))`.
+fn cfl_dt_at(dx: f64, dy: f64, dz: f64, courant: f64, speed: f64) -> f64 {
+    courant / (speed * (1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz)).sqrt())
 }
 
 impl FdtdSim {
@@ -263,6 +279,9 @@ impl FdtdSim {
             record: Vec::new(),
             steps: 0,
             interrupted: false,
+            media: None,
+            pec: None,
+            baked: media::Baked::default(),
         })
     }
 
@@ -298,9 +317,13 @@ impl FdtdSim {
     pub fn interrupted(&self) -> bool {
         self.interrupted
     }
-    /// Field storage plus the probe record, in bytes.
+    /// Field storage, probe record, material maps, baked coefficients and
+    /// the PEC mask, in bytes.
     pub fn bytes(&self) -> usize {
         (6 * self.n_cells() + self.record.len()) * ELEM_F64
+            + self.media.as_ref().map_or(0, |m| m.bytes())
+            + self.baked.bytes()
+            + self.pec.as_ref().map_or(0, |p| p.len())
     }
     /// Row-major `steps × n_probes` probe record.
     pub fn record(&self) -> &[f64] {
@@ -372,9 +395,12 @@ impl FdtdSim {
         }
         let mut flat = Vec::with_capacity(edges.len());
         for &(i, j, k) in edges {
-            if !self.in_bounds(i, j, k) || self.is_wall_edge(comp, i, j, k) {
+            if !self.in_bounds(i, j, k)
+                || self.is_wall_edge(comp, i, j, k)
+                || self.is_pec_edge(comp, i, j, k)
+            {
                 return Err(DspError::InvalidParameter(format!(
-                    "{} edge ({i}, {j}, {k}) is outside the grid or on a PEC wall",
+                    "{} edge ({i}, {j}, {k}) is outside the grid or PEC",
                     comp.name()
                 )));
             }
@@ -421,6 +447,174 @@ impl FdtdSim {
         let idx = self.idx(i, j, k);
         self.probes.push(Probe { comp, idx });
         Ok(self.probes.len() - 1)
+    }
+
+    fn grid(&self) -> media::Grid {
+        media::Grid {
+            nx: self.nx,
+            ny: self.ny,
+            nz: self.nz,
+        }
+    }
+
+    fn require_setup(&self, what: &str) -> Result<(), DspError> {
+        if self.steps != 0 {
+            return Err(DspError::InvalidParameter(format!(
+                "{what} must be set before the first step"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether the E edge of `comp` at 0-based `(i, j, k)` is interior PEC.
+    pub fn is_pec_edge(&self, comp: Component, i: usize, j: usize, k: usize) -> bool {
+        let c = match comp {
+            Component::Ex => 0,
+            Component::Ey => 1,
+            Component::Ez => 2,
+            _ => return false,
+        };
+        self.pec
+            .as_ref()
+            .is_some_and(|p| p[self.idx(i, j, k)] & media::pec_bit(c) != 0)
+    }
+
+    /// Set the cell-centred materials, replacing any earlier call, then
+    /// rebake the coefficients and `dt`. `eps_r` and `mu_r` finite and `> 0`;
+    /// `sigma` (S/m) finite and `>= 0`. A [`CellMap::Cells`] map is x-fastest
+    /// with one value per cell.
+    ///
+    /// `dt` is the CFL limit at the fastest phase speed,
+    /// `c0 / sqrt(min eps_r · min mu_r)`, and never more than the vacuum
+    /// limit.
+    pub fn set_media(
+        &mut self,
+        eps_r: CellMap,
+        mu_r: CellMap,
+        sigma: CellMap,
+    ) -> Result<(), DspError> {
+        self.require_setup("materials")?;
+        let n = self.n_cells();
+        for (name, map, positive) in [
+            ("eps_r", &eps_r, true),
+            ("mu_r", &mu_r, true),
+            ("sigma", &sigma, false),
+        ] {
+            if let CellMap::Cells(v) = map {
+                if v.len() != n {
+                    return Err(DspError::InvalidParameter(format!(
+                        "{name} has {} cells, the grid has {n}",
+                        v.len()
+                    )));
+                }
+            }
+            if let Some(&bad) = map
+                .values()
+                .iter()
+                .find(|&&x| !(x.is_finite() && if positive { x > 0.0 } else { x >= 0.0 }))
+            {
+                let rule = if positive { "> 0" } else { ">= 0" };
+                return Err(DspError::InvalidParameter(format!(
+                    "{name} must be finite and {rule}, got {bad}"
+                )));
+            }
+        }
+        let p = eps_r.min() * mu_r.min();
+        let speed = if p < 1.0 { C0 / p.sqrt() } else { C0 };
+        let dt = cfl_dt_at(self.dx, self.dy, self.dz, self.courant, speed);
+        if !(dt.is_finite() && dt > 0.0) {
+            return Err(DspError::InvalidParameter(format!(
+                "time step is not finite and positive (dt = {dt})"
+            )));
+        }
+        self.dt = dt;
+        self.media = Some(media::Media {
+            eps: eps_r,
+            mu: mu_r,
+            sigma,
+        });
+        self.rebake();
+        Ok(())
+    }
+
+    /// Make every E edge of each nonzero cell PEC. `cells` is x-fastest, one
+    /// flag per cell.
+    pub fn add_pec_volume(&mut self, cells: &[bool]) -> Result<(), DspError> {
+        self.require_setup("PEC")?;
+        if cells.len() != self.n_cells() {
+            return Err(DspError::InvalidParameter(format!(
+                "PEC mask has {} cells, the grid has {}",
+                cells.len(),
+                self.n_cells()
+            )));
+        }
+        let g = self.grid();
+        self.apply_pec(|pec| media::mark_volume(g, cells, pec))
+    }
+
+    /// Make the tangential E edges of one face PEC. `face` is the 0-based
+    /// node plane on `axis`, `0 ..= n` (`n` is the max wall, already PEC).
+    /// `nodes` is row-major in the [`FdtdSim::slice`] layout of that axis
+    /// (`Z`: `ny × nx`, `Y`: `nx × nz`, `X`: `ny × nz`), one flag per node.
+    /// An edge is PEC when both of its end nodes are set; a node on the max
+    /// wall counts as set.
+    pub fn add_pec_face(
+        &mut self,
+        axis: Axis,
+        face: usize,
+        nodes: &[bool],
+    ) -> Result<(), DspError> {
+        self.require_setup("PEC")?;
+        let (limit, rows, cols) = match axis {
+            Axis::X => (self.nx, self.ny, self.nz),
+            Axis::Y => (self.ny, self.nx, self.nz),
+            Axis::Z => (self.nz, self.ny, self.nx),
+        };
+        if face > limit {
+            return Err(DspError::InvalidParameter(format!(
+                "face index {face} out of range 0..={limit}"
+            )));
+        }
+        if nodes.len() != rows * cols {
+            return Err(DspError::InvalidParameter(format!(
+                "face mask has {} nodes, expected {rows} × {cols}",
+                nodes.len()
+            )));
+        }
+        let g = self.grid();
+        self.apply_pec(|pec| media::mark_face(g, axis, face, nodes, pec))
+    }
+
+    fn apply_pec(&mut self, mark: impl FnOnce(&mut [u8])) -> Result<(), DspError> {
+        let mut pec = self
+            .pec
+            .clone()
+            .unwrap_or_else(|| vec![0u8; self.n_cells()]);
+        mark(&mut pec);
+        for s in &self.sources {
+            let bit = media::pec_bit(s.comp.axis() as usize);
+            if s.edges.iter().any(|&e| pec[e] & bit != 0) {
+                return Err(DspError::InvalidParameter(format!(
+                    "PEC would cover an edge of an existing {} source",
+                    s.comp.name()
+                )));
+            }
+        }
+        if self.pec.is_none() && pec.iter().all(|&b| b == 0) {
+            return Ok(());
+        }
+        self.pec = Some(pec);
+        self.rebake();
+        Ok(())
+    }
+
+    fn rebake(&mut self) {
+        self.baked = media::bake(
+            self.grid(),
+            self.media.as_ref(),
+            self.pec.as_deref(),
+            self.dt,
+        );
     }
 
     /// Copy of one plane of `comp`, row-major `(rows, cols, data)`.
@@ -530,9 +724,30 @@ impl FdtdSim {
         let row0 = self.record.len();
         self.record.resize(row0 + np, 0.0);
 
+        let hm = yee::HCoefs {
+            db: self
+                .baked
+                .db
+                .as_ref()
+                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+        };
+        let em = yee::ECoefs {
+            cb: self
+                .baked
+                .cb
+                .as_ref()
+                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+            ca: self
+                .baked
+                .ca
+                .as_ref()
+                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+        };
+
         yee::update_h(
             dims,
             db,
+            hm,
             &self.zero_row,
             &self.ex,
             &self.ey,
@@ -551,6 +766,7 @@ impl FdtdSim {
         yee::update_e(
             dims,
             cb,
+            em,
             &self.hx,
             &self.hy,
             &self.hz,
@@ -576,16 +792,25 @@ impl FdtdSim {
             };
             let delta = self.cell_along(s.comp.axis());
             let per_edge = g / (s.edges.len() as f64 * delta);
-            let field = match s.comp {
-                Component::Ex => &mut self.ex,
-                Component::Ey => &mut self.ey,
-                _ => &mut self.ez,
+            let (field, c) = match s.comp {
+                Component::Ex => (&mut self.ex, 0),
+                Component::Ey => (&mut self.ey, 1),
+                _ => (&mut self.ez, 2),
             };
             match s.kind {
                 SourceKind::Soft => {
                     let cb = self.dt / EPS0;
-                    for &e in &s.edges {
-                        field[e] -= cb * per_edge;
+                    match &self.baked.cb {
+                        None => {
+                            for &e in &s.edges {
+                                field[e] -= cb * per_edge;
+                            }
+                        }
+                        Some(rel) => {
+                            for &e in &s.edges {
+                                field[e] -= cb * rel[c][e] * per_edge;
+                            }
+                        }
                     }
                 }
                 SourceKind::Hard => {

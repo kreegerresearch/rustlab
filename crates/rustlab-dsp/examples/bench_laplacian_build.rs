@@ -50,8 +50,7 @@ fn main() {
         let mut t = f64::INFINITY;
         for _ in 0..runs {
             t = t.min(time_ms(|| {
-                let _ =
-                    laplacian_2d_bc(n, n, 0.01, 0.01, BoundaryCondition::Dirichlet).unwrap();
+                let _ = laplacian_2d_bc(n, n, 0.01, 0.01, BoundaryCondition::Dirichlet).unwrap();
             }));
         }
         println!("{:>10} {:>14.3}", n, t);
