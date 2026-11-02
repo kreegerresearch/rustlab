@@ -1748,7 +1748,8 @@ impl Parser {
                         }
                     };
                     if self.peek_token() == &Token::LParen {
-                        // Method-call sugar: obj.method(args) → method(obj, args)
+                        // obj.name(args): a struct field's index, or
+                        // method-call sugar for name(obj, args).
                         self.advance(); // consume '('
                         self.skip_newlines();
                         let mut args = vec![expr];
@@ -1757,7 +1758,7 @@ impl Parser {
                         }
                         self.skip_newlines();
                         self.expect(&Token::RParen)?;
-                        expr = Expr::Call { name: field, args };
+                        expr = Expr::DotCall { name: field, args };
                     } else {
                         expr = Expr::Field {
                             object: Box::new(expr),

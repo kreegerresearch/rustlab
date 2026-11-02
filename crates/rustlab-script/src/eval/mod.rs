@@ -1491,8 +1491,8 @@ impl Evaluator {
                 //   - lambda or non-Call expression → fall through to the
                 //     normal eval path (the resulting `Value::Tuple` is
                 //     destructured below)
-                let val = match expr {
-                    Expr::Call { name, args }
+                let val = match self.as_call(expr) {
+                    Some((name, args))
                         if !self.env.contains_key(name) && self.user_fns.contains_key(name) =>
                     {
                         let func = self.user_fns.get(name).cloned().unwrap();
@@ -1502,7 +1502,7 @@ impl Evaluator {
                             .collect::<Result<_, _>>()?;
                         self.eval_user_fn_nargout(func, vals, names.len())?
                     }
-                    Expr::Call { name, args }
+                    Some((name, args))
                         if !self.env.contains_key(name) && !self.user_fns.contains_key(name) =>
                     {
                         let vals: Vec<Value> = args
@@ -2020,7 +2020,14 @@ impl Evaluator {
                 }
                 self.eval_arith_binop(*op, lhs, rhs)
             }
-            Expr::Call { name, args } => {
+            Expr::DotCall { name, args } if self.dot_field(name, args).is_some() => {
+                // A field read, not a call: a statement-position flag must
+                // not reach a call inside the subscripts.
+                self.stmt_call_nargout0 = false;
+                let container = self.dot_field(name, args).cloned().expect("checked");
+                self.index_value(container, &args[1..])
+            }
+            Expr::Call { name, args } | Expr::DotCall { name, args } => {
                 // Consume the statement-position marker FIRST — before any
                 // special case or argument evaluation can recurse — so only
                 // this outermost call sees nargout 0; nested calls get 1.
@@ -2305,56 +2312,7 @@ impl Evaluator {
             Expr::All => Ok(Value::All),
             Expr::Index { expr, args } => {
                 let container = self.eval_expr(expr)?;
-                if let Value::Table(t) = &container {
-                    let idx_vals = self.eval_table_subscripts(t, args)?;
-                    return t.select(&idx_vals).map_err(ScriptError::runtime);
-                }
-                // `end` inside a chained index. One index is linear
-                // (`numel` for a matrix). Two indexes on a matrix bind
-                // `end` per dimension, same as `M(i, j)`.
-                let idx_vals = if args.len() == 2 {
-                    if let Value::Matrix(m) = &container {
-                        self.env
-                            .insert("end".to_string(), Value::Scalar(m.nrows() as f64));
-                        let row_val = self.eval_expr(&args[0])?;
-                        self.env
-                            .insert("end".to_string(), Value::Scalar(m.ncols() as f64));
-                        let col_val = self.eval_expr(&args[1])?;
-                        self.env.remove("end");
-                        vec![row_val, col_val]
-                    } else {
-                        let end_val = match &container {
-                            Value::Vector(v) => v.len(),
-                            _ => 0,
-                        };
-                        self.env
-                            .insert("end".to_string(), Value::Scalar(end_val as f64));
-                        let vals: Vec<Value> = args
-                            .iter()
-                            .map(|a| self.eval_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        self.env.remove("end");
-                        vals
-                    }
-                } else {
-                    let end_val = match &container {
-                        Value::Vector(v) => v.len(),
-                        Value::Matrix(m) => m.nrows() * m.ncols(),
-                        _ => 0,
-                    };
-                    self.env
-                        .insert("end".to_string(), Value::Scalar(end_val as f64));
-                    let vals: Vec<Value> = args
-                        .iter()
-                        .map(|a| self.eval_expr(a))
-                        .collect::<Result<_, _>>()?;
-                    self.env.remove("end");
-                    vals
-                };
-                let frame = self.profiler.enter_op("[index]");
-                let result = container.index(idx_vals).map_err(|e| ScriptError::runtime(e));
-                self.profiler.exit_op(frame, 0, 0);
-                result
+                self.index_value(container, args)
             }
             Expr::Lambda { params, body } => Ok(Value::Lambda {
                 params: params.clone(),
@@ -3339,7 +3297,7 @@ impl Evaluator {
     /// `widget`, `arrayfun`, …), variable indexing, lambdas, and user
     /// functions are untouched — they ignore the consumed flag.
     fn eval_expr_stmt(&mut self, expr: &Expr) -> Result<Value, ScriptError> {
-        if matches!(expr, Expr::Call { .. }) {
+        if self.as_call(expr).is_some() {
             self.stmt_call_nargout0 = true;
         }
         let result = self.eval_expr(expr);
@@ -3710,6 +3668,84 @@ impl Evaluator {
         };
         self.profiler.exit_op(frame, in_bytes, out_bytes);
         result.map_err(ScriptError::runtime)
+    }
+
+    /// `container(args)` for a value already in hand: table selection, or
+    /// indexing with `end` bound the same way as `M(i, j)`.
+    fn index_value(&mut self, container: Value, args: &[Expr]) -> Result<Value, ScriptError> {
+        if let Value::Table(t) = &container {
+            let idx_vals = self.eval_table_subscripts(t, args)?;
+            return t.select(&idx_vals).map_err(ScriptError::runtime);
+        }
+        // `end` inside a chained index. One index is linear
+        // (`numel` for a matrix). Two indexes on a matrix bind
+        // `end` per dimension, same as `M(i, j)`.
+        let idx_vals = if args.len() == 2 {
+            if let Value::Matrix(m) = &container {
+                self.env
+                    .insert("end".to_string(), Value::Scalar(m.nrows() as f64));
+                let row_val = self.eval_expr(&args[0])?;
+                self.env
+                    .insert("end".to_string(), Value::Scalar(m.ncols() as f64));
+                let col_val = self.eval_expr(&args[1])?;
+                self.env.remove("end");
+                vec![row_val, col_val]
+            } else {
+                let end_val = match &container {
+                    Value::Vector(v) => v.len(),
+                    _ => 0,
+                };
+                self.env
+                    .insert("end".to_string(), Value::Scalar(end_val as f64));
+                let vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval_expr(a))
+                    .collect::<Result<_, _>>()?;
+                self.env.remove("end");
+                vals
+            }
+        } else {
+            let end_val = match &container {
+                Value::Vector(v) => v.len(),
+                Value::Matrix(m) => m.nrows() * m.ncols(),
+                _ => 0,
+            };
+            self.env
+                .insert("end".to_string(), Value::Scalar(end_val as f64));
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|a| self.eval_expr(a))
+                .collect::<Result<_, _>>()?;
+            self.env.remove("end");
+            vals
+        };
+        let frame = self.profiler.enter_op("[index]");
+        let result = container
+            .index(idx_vals)
+            .map_err(|e| ScriptError::runtime(e));
+        self.profiler.exit_op(frame, 0, 0);
+        result
+    }
+
+    /// The field `name` of the struct that `args[0]` of a `DotCall` names
+    /// (a variable or a `S.a.b` chain), if it has one.
+    fn dot_field(&self, name: &str, args: &[Expr]) -> Option<&Value> {
+        match self.borrow_field_chain(args.first()?)? {
+            Value::Struct(fields) => fields.get(name),
+            _ => None,
+        }
+    }
+
+    /// `name` and `args` of a call: an `Expr::Call`, or a `DotCall` that is
+    /// method sugar rather than a struct field's index.
+    fn as_call<'a>(&self, e: &'a Expr) -> Option<(&'a String, &'a Vec<Expr>)> {
+        match e {
+            Expr::Call { name, args } => Some((name, args)),
+            Expr::DotCall { name, args } if self.dot_field(name, args).is_none() => {
+                Some((name, args))
+            }
+            _ => None,
+        }
     }
 
     /// Borrow the value named by a variable or a chain of struct field

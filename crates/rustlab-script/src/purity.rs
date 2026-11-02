@@ -310,7 +310,7 @@ fn visit_stmt_collect_call_names(stmt: &Stmt, out: &mut BTreeSet<String>) {
 
 fn visit_expr_collect_call_names(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             out.insert(name.clone());
             for a in args {
                 visit_expr_collect_call_names(a, out);
@@ -497,7 +497,7 @@ fn visit_expr_for_var_refs(e: &Expr, out: &mut BTreeSet<String>) {
         Expr::Var(n) => {
             out.insert(n.clone());
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             out.insert(name.clone());
             for a in args {
                 visit_expr_for_var_refs(a, out);
@@ -636,7 +636,7 @@ fn visit_stmt_for_impure_calls(stmt: &Stmt, out: &mut BTreeSet<String>) {
 
 fn visit_expr_for_impure_calls(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             if is_impure_builtin(name) {
                 out.insert(name.clone());
             }
