@@ -26,7 +26,7 @@ There is no FDTD, Yee, PML, or near-to-far code in this repo. The pieces the ste
 | `mag2db`, `plot`, `imagesc`, `surf` | plot builtins | No new plot type. Slices and the gain pattern go through these. |
 | Ctrl+C for a long op | `rustlab_plot::InterruptGuard` + `interrupt_requested` | Used by the dense matrix 2-norm (`matrix_spectral_norm` in `builtins.rs`). The handler stores an atomic; the op polls it. `ScriptError::Interrupted` returns the REPL to `>> ` and makes `rustlab run` exit 0. |
 | Notebook preemption | `Evaluator.cancel: Option<Arc<AtomicBool>>` | Polled in `check_cancelled` **between statements and loop iterations**, not inside a builtin. A single `fdtd_run(...)` call is invisible to it unless the stepper polls the flag itself. |
-| Parallelism already in-tree | `rayon` 1.10 on `rustlab-dsp` and `rustlab-script`; `std::thread` | No SIMD crate. `std::simd` / portable SIMD is not a stable dependency we can add without a nightly feature. Do not add one. |
+| Parallelism already in-tree | `rayon` **is already a workspace dependency.** `Cargo.toml` requires `rayon = "1.10"`. `Cargo.lock` has `name = "rayon"`, version **1.12.0** (plus `rayon-core` 1.13.0). Direct dependents in that lockfile: `rustlab-dsp` and `rustlab-script`. `vector_calc.rs` already calls it. `std::thread` is std. | No SIMD crate. `std::simd` / portable SIMD is not stable without a nightly feature. Do not add one. Phase 6 reuses this rayon; it does not add a dependency. |
 
 Workspace crates that must stay out of the hot loop: `rustlab-plot`, `rustlab-notebook`, `rustlab-viewer`. The stepper returns numbers; existing plot builtins draw them.
 
@@ -59,7 +59,7 @@ Reasons:
 
 - `laplacian`, `vector_calc`, and `rasterize` already live in `rustlab-dsp`. The curriculum binary is `rustlab`, which already links that crate. A default-off `em` feature would make a normal `cargo install` fail the lesson.
 - The hot state cannot be six script `Tensor3`s. A `.rlab` loop that calls a builtin 10k times is acceptable only because each step is a native kernel; the fields themselves stay in Rust between steps. Snapshots copy out on demand.
-- `rayon` is already a `rustlab-dsp` dependency. `std::thread` is std. Both are allowed. Nothing else is needed.
+- `rayon` is already locked. `Cargo.lock` resolves workspace `rayon = "1.10"` to **rayon 1.12.0**, and both `rustlab-dsp` and `rustlab-script` depend on it directly (`vector_calc.rs` is the in-tree caller). Phase 6 uses that crate. `std::thread` stays available as a fallback. No crate is added.
 - Estimated code size in the release binary is well under a megabyte of straight-line numeric code (the plotly / notebook decision was about megabytes of assets, not this).
 
 UPML is rejected for v1. CPML (Roden & Gedney) leaves the interior update identical to vacuum Yee and adds auxiliary variables only where the absorber is. UPML rewrites the material update throughout the layer and is harder to check against the vacuum kernel. Same absorbing job, more ways to get the sign wrong.
@@ -607,8 +607,8 @@ Doing the surface integrals in `.rlab` instead was considered (export the six fa
 ### Strategy
 
 - Serial correctness first (Phases 1–5). Phase 6 turns on parallelism after the bit-exact tests exist.
-- Use `rayon`, already in `rustlab-dsp`. Do not spawn a `std::thread::scope` per step; thread start would dominate a 72k-cell step. Rayon's pool stays up. A persistent `std::thread` pool is the fallback only if a profile shows the rayon join is a large fraction of a step, and it is still not a new dependency.
-- Parallelise over y-rows (`i`), inner loop x (`j`). Each row writes its own E (or H) locations and its own ψ. The neighbouring row is only **read** (the y-derivative). That is race-free without a double buffer, as long as one parallel region does not update E and H together.
+- Use the rayon that is already in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`). This is not a new dependency, and Phase 6 does not switch the split to `std::thread::scope`. Do not spawn threads per step; thread start would dominate a 72k-cell step. Rayon's pool stays up. A persistent `std::thread` pool is the fallback only if a profile shows the rayon join is a large fraction of a step.
+- Parallelise over y-rows (`i`), inner loop x (`j`). The inner loop is the unit-stride axis, written so LLVM can autovectorise it (SIMD-friendly, no SIMD crate). Each row writes its own E (or H) locations and its own ψ. The neighbouring row is only **read** (the y-derivative). That is race-free without a double buffer, as long as one parallel region does not update E and H together.
 - Threshold: parallel only when `nx*ny*nz >= 32_768`. Below that, one thread. Unit tests on small cavities stay on the serial path. A test-only threshold override, same idea as `vector_calc`'s `__test_set_par_threshold`, runs the parallel path on a tiny grid and compares every field bit-for-bit against serial.
 - No `std::simd`, no packed_simd crate, no nightly feature. The inner loop is plain `f64` on a unit stride so LLVM can autovectorise. If Phase 6's profile shows it did not, a later change can add `std::arch` AVX2/NEON behind `cfg` — still no new crate, and not part of this plan's commitment.
 - Do not use `parmap` and do not call back into the interpreter from a worker.
@@ -778,7 +778,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | **3** | CPML, per-face disable. | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. Reflection < −40 dB. |
 | **4** | Lumped port, `fdtd_s11` pure and handle forms, patch example script. | 3–4 days | Resistor test to 1%. Patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh. |
 | **5** | On-the-fly NTFF, `fdtd_farfield`, directivity and realized gain. | 4–6 days | Dipole symmetry and 0–4 dBi directivity. Patch broadside peak. |
-| **6** | Rayon y-slabs, perf gate recorded, example notebook under `examples/notebooks/`, changelog and version already bumped per phase as builtins appeared. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. |
+| **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Perf gate, example notebook under `examples/notebooks/`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. |
 
 Total roughly **three to five weeks**. Phase 0 can merge alone and unblocks rustlab_em Lesson 15 immediately.
 
