@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.45
+
+### Changed
+- **Version only.** `rustlab --version` reports 0.3.45. Nothing else a script or a notebook can observe is different from 0.3.44: no new builtin, no parse change, no numeric change. The number marks the 3-D FDTD plan (`dev/plans/fdtd3d.md`), which is not implemented in this version. Downstream notebooks do not need a re-validation sweep for this bump.
+
 ## 0.3.44
 
 ### Fixed

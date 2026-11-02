@@ -1,12 +1,13 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** draft — plan only, no code
+**Status:** draft — plan only, no FDTD code
 **Current phase:** not started
+**Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
 A hand-rolled Yee loop in `.rlab` over `zeros3` / `Tensor3` cannot hit the lesson. This plan is the native stepper that can: a 60×60×20 grid for 5–10k steps in seconds to a minute, pure Rust, no new dependencies. Parallelism in Phase 6 is the `rayon` already locked in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`), with a unit-stride inner loop so the compiler can autovectorise. It is not a new crate, and it is not a switch to `std::thread::scope`.
 
-Do not implement a phase until the open questions at the bottom are answered and Michael says to start. Per the usual plan protocol, finish a phase, run `cargo test --workspace`, and wait for an explicit yes before the next one.
+The questions at the bottom are decided. Do not implement a phase until Michael says to start. Phase 0 (`laplacian_eps_3d`) is that first PR, on its own, before any Yee work. Per the usual plan protocol, finish a phase, run `cargo test --workspace`, and wait for an explicit yes before the next one.
 
 ---
 
@@ -53,7 +54,7 @@ This plan does **not** build those sparse operators. Michael's ask is a time-dom
 
 ## Recommendation
 
-Put the math in `rustlab-dsp` (`src/fdtd/`), and the script surface in `rustlab-script` as an opaque handle plus ordinary structs of `Tensor3` / vectors. Do **not** add a crate, a feature flag, or a dependency.
+Put the math in `rustlab-dsp` (`src/fdtd/`), and the script surface in `rustlab-script` as an opaque handle plus ordinary structs of `Tensor3` / vectors. Decided: these modules are always on. Do **not** add a crate, a feature flag, or a dependency.
 
 Reasons:
 
@@ -89,7 +90,7 @@ info = fdtd_info(sim)
 
 Struct: `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed), `bytes` (field + coefficient + PML storage), `c0`.
 
-`dt` is fixed by the CFL limit at media-bake time (see kernels). Default Courant number is 0.99. Passing `"courant", s` with `s` in `(0, 1]` overrides it.
+`dt` is fixed by the CFL limit at media-bake time (see kernels). Default Courant number is 0.99. Passing `"courant", s` with `s` in `(0, 1]` overrides it. `s > 1` is a setup error, `fdtd3d: courant must be in (0, 1], got …`, before any step. Exactly 1 is allowed. There is no run that is allowed to blow up.
 
 ```text
 fdtd_reset(sim)
@@ -127,7 +128,7 @@ PEC is applied after the E update and also skips those edges inside the update, 
 
 ```text
 fdtd_cpml(sim, n)
-fdtd_cpml(sim, n, "sigma_factor", 1, "kappa_max", 7, "alpha_max", 0.05, ...
+fdtd_cpml(sim, n, "sigma_factor", 1, "kappa_max", 1, "alpha_max", 0, ...
                "order", 3, "alpha_order", 1)
 fdtd_cpml(sim, "zmin", 0)          % turn one face off
 ```
@@ -178,7 +179,7 @@ id = fdtd_port(sim, "ez", i, j, krange, Z0, waveform)
 - The gap resistance is split equally across the edges in `krange`.
 - Each edge's extra conductivity is `σ = Δ_along / (R_edge · Δ_cross1 · Δ_cross2)`, baked into that edge's `Ca`, `Cb` (same formulas as a material σ).
 - The source term is the open-circuit voltage of the series source, scaled into the E update (kernel section).
-- `id` is a 1-based scalar. v1 may create more than one port; `fdtd_s11` defaults to port 1. A full multi-port S matrix (calibration thru) is **not** v1.
+- `id` is a 1-based scalar. v1 accepts one port. A second `fdtd_port` errors and names the deferred S21 phase. `fdtd_s11` is that port. A full S matrix is not v1.
 
 Voltage and current are recorded every step on the handle:
 
@@ -227,6 +228,7 @@ Both return the same struct as `fdtd_record`, plus:
 | `seconds` | wall time of this call |
 | `cell_updates` | `nx*ny*nz*nsteps_this_call` |
 | `cell_rate` | `cell_updates / seconds` |
+| `interrupted` | `false` after a finished call. `true` when Ctrl+C stopped the call (see cancellation). The probes and port columns are only as long as the steps that finished |
 
 `nsteps` must be a positive integer and the product `nx*ny*nz*nsteps` must pass the existing size check only for the **stored records** (probes and ports are `nsteps` long). The fields themselves are not replicated per step.
 
@@ -253,9 +255,30 @@ S11 = b ./ a
 
 `w` is a Hann window of `length(V)` by default (`"window", "rect"` leaves it off). `freq` is the positive axis including DC and Nyquist, in Hz, from the length-preserving `fft` (bin `m` is `m / (N dt)` for `m = 0 .. floor(N/2)`). Bins where `|a|` is tiny (below `1e-12` times peak `|a|`, or where the source spectrum is in the noise) are returned as `NaN` so a plot does not show a 0/0 spike at high frequency.
 
-Struct: `freq` (real row), `s11` (complex row), `z` (complex row, `Vw./Iw` after the same phase correction).
+The return value is a **1-port `sparameters` network**, the same struct `sparameters(S, freqs, Z0)` builds and the only object both `smith()` and `rfplot()` accept. `smith` also takes a raw complex vector; `rfplot` does not (`unpack_sparameters_typed` requires the sentinel). A hand-built struct with these fields is enough:
 
-`fdtd_s11(sim)` reads port 1's stored `V`, `I`, `dt`, `Z0`.
+| Field | Contents |
+|---|---|
+| `__kind__` | `"sparameters"` |
+| `parameter_type` | `"S"` |
+| `parameters` | complex `Tensor3`, shape `(n_freq, 1, 1)`. `parameters(k, 1, 1)` is S11. Same layout as `sij` (`parameters[[k, i, j]]`, frequency first) |
+| `frequencies` | real vector, Hz, length `n_freq`, strictly increasing, every entry `> 0` |
+| `num_ports` | `1` |
+| `impedance` | the port `Z0` |
+
+DC is dropped. Bin 0 of the FFT is 0 Hz, and `rfplot` draws through `semilogx`, which rejects a non-positive x. The first kept bin is `1/(N dt)`. Nyquist (`1/(2 dt)` when `N` is even) stays. Bins where `|a|` is tiny (below `1e-12` times peak `|a|`) stay in the tensor as `NaN` at that frequency, so the length still matches `frequencies`. `build_sparameters_struct` is the checker: positive `Z0`, strictly increasing frequencies, square port dimensions.
+
+```text
+s = fdtd_s11(sim)
+smith(s)                  % S11 on the Z-grid
+rfplot(s)                 % 1-port: one |S11| dB trace, log frequency
+rfplot(s, "db", 1, 1)
+sij(s, 1, 1)              % the complex S11 vector
+```
+
+There is no separate `freq` / `s11` / `z` return. `s.frequencies` and `sij(s, 1, 1)` are those vectors. `s.impedance` is the scalar `Z0`, not `V/I`.
+
+`fdtd_s11(sim)` reads the one port's stored `V`, `I`, `dt`, `Z0`.
 
 ### Near-to-far
 
@@ -263,6 +286,7 @@ Struct: `freq` (real row), `s11` (complex row), `z` (complex row, `Vw./Iw` after
 fdtd_ntff(sim, freqs)
 fdtd_ntff(sim, freqs, "margin", m)
 pat = fdtd_farfield(sim, theta, phi)
+pat = fdtd_farfield(sim, theta, phi, "origin", [x, y, z])
 ```
 
 `fdtd_ntff` must be called at `steps == 0`. It arms an on-the-fly DFT at the given real frequencies (Hz, finite, `> 0`, a vector). `margin` (default 2) insets the Huygens box by that many cells from the **interior** face of the PML, or from the PEC wall on a face where PML is off. The box has to sit in a homogeneous region (the lesson: air, above the substrate, inside the PML). If the inset is not in range, error before the run.
@@ -276,6 +300,8 @@ pat = fdtd_farfield(sim, theta, phi)
 | `Etheta`, `Ephi` | complex `Tensor3` `(nfreq, ntheta, nphi)` — pages are not used; this is a matrix per frequency stored as a tensor so one object holds the sweep |
 | `directivity_dBi` | real, same shape. Normalised by the pattern integral of that frequency |
 | `realized_gain_dBi` | real, same shape. Directivity scaled by accepted-power fraction `1 − \|S11\|²` of port 1 at that frequency, linearly interpolated in frequency from `fdtd_s11`. `NaN` where `S11` is `NaN` |
+
+`"origin"` is metres, the phase centre subtracted from each face centre `r′`. It is an argument of `fdtd_farfield`, not of the run, so a second call can move it without stepping again. Omitted, the origin is the grid centre `( (nx-1) dx/2, (ny-1) dy/2, (nz-1) dz/2 )`, which is the vacuum-dipole case. The patch notebook passes the metal rectangle's centre. A length other than 3, or a non-finite entry, is an error. v1 does not return `Js` or `Ms`.
 
 No far-field is stored during the run except the surface phasors (see NTFF section). Calling `fdtd_farfield` without `fdtd_ntff` errors.
 
@@ -328,12 +354,23 @@ fdtd_port(sim, "ez", iy, ix, 1:nsub, 50, "modulated", 4*tau, tau, f0)
 fdtd_ntff(sim, f0, "margin", 2)
 
 out = fdtd_run(sim, 6000)
-s = fdtd_s11(sim)
-plot(s.freq/1e9, mag2db(abs(s.s11)))
+s = fdtd_s11(sim)          % 1-port sparameters; this lossless run is the 5% check
+rfplot(s)
 
 th = linspace(0, pi, 37)
 ph = linspace(0, 2*pi, 72)
-pat = fdtd_farfield(sim, th, ph)
+ox = px + L/2
+oy = py + W/2
+oz = nsub * dz             % patch centre, not the grid centre
+pat = fdtd_farfield(sim, th, ph, "origin", [ox, oy, oz])
+
+% Second run, same mesh, realistic FR-4. Not part of the 5% gate.
+fdtd_reset(sim)
+sig = zeros3(ny, nx, nz)
+sig(:, :, 1:nsub) = 2*pi*f0*eps_r*8.854187817e-12*0.02
+fdtd_media(sim, eps, 1, sig)
+fdtd_run(sim, 6000)
+rfplot(fdtd_s11(sim))
 ```
 
 What this mesh is, and is not:
@@ -342,7 +379,7 @@ What this mesh is, and is not:
 - The performance gate (below) is this class of grid. A lesson figure that needs a thicker air box is a larger run, still expected to finish in about a minute if the gate is met, and it is a curriculum choice rather than a second kernel.
 - `iy, ix` in the call are **row, column** order only in the sense of the signature `fdtd_port(sim, comp, i, j, k, ...)` where `i` is y (row) and `j` is x (column). The sketch follows that. Getting this backwards is an easy lesson bug; the help text should show one numeric example.
 
-Lossy FR-4 is a one-line change the lesson can add later: `sigma = 2*pi*f0*eps_r*8.854187817e-12*0.02` on the substrate pages. The transmission-line formula above is lossless, so the default comparison run uses `sigma = 0`.
+The 5% check is the lossless run (`sigma = 0`), because the transmission-line formula is lossless. The shipped example then resets and rebakes `sigma = 2*pi*f0*eps_r*8.854187817e-12*0.02` (`tanδ = 0.02`) on the substrate pages so the notebook shows a realistic FR-4 dip. That second dip is not gated. `fdtd_reset` clears `steps`, which is what lets the second `fdtd_media` bake. PEC, CPML, the port, and the armed NTFF stay.
 
 ---
 
@@ -391,7 +428,7 @@ title("Ez on the mid z-plane")
 
 ### Phase 4 — resistor and S11
 
-`examples/pde/fdtd_port.rlab`, notebook `examples/notebooks/fdtd_port.md`. One Ez gap terminated in its own `Z0`, driven by a wide Gaussian, rectangular window on `fdtd_s11`. Check: after the transient, `V/I` is within 1% of `Z0` and `|S11|` stays small across the pulse band (validation item 8).
+`examples/pde/fdtd_port.rlab`, notebook `examples/notebooks/fdtd_port.md`. One Ez gap terminated in its own `Z0`, driven by a wide Gaussian, rectangular window on `fdtd_s11`. The notebook calls `smith` and `rfplot` on the returned 1-port network. Check: after the transient, `V/I` is within 1% of `Z0` and `|S11|` stays small across the pulse band (validation item 8).
 
 ### Phase 5 — far-field
 
@@ -399,7 +436,7 @@ title("Ez on the mid z-plane")
 
 ### Phase 6 — patch and a sweep
 
-The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the `|S11|` minimum is within 5% of 2.4 GHz on that mesh, and broadside is a peak of the principal cut. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return the frequency of the `|S11|` minimum, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
+The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the lossless `|S11|` minimum is within 5% of 2.4 GHz, broadside is a peak of the principal cut, and the notebook also shows the `tanδ = 0.02` rerun (not gated). The pattern call passes the patch centre as `"origin"`. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return `s.frequencies(argmin(abs(sij(s, 1, 1))))`, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
 
 ---
 
@@ -545,7 +582,7 @@ When CPML is on, each Cartesian derivative in the curl is replaced as in the nex
 
 Convolutional PML, Roden & Gedney, IEEE Trans. Antennas Propagat., 2000. One auxiliary per derivative that the curl takes inside the layer. Twelve auxiliaries in the worst case (each of 6 components has two derivatives), stored as full x-fastest `Vec<f64>` in v1.
 
-Full arrays on the 60×60×20 target are about 12 × 72e3 × 8 ≈ 7 MB. Simple indexing is worth that. A 200×200×80 grid would be ~300 MB of auxiliaries; `fdtd_info.bytes` reports it, and `checked_elems` still applies. Slab-packed ψ is a later optimisation, not a v1 requirement (open question if Michael wants it before any large lesson mesh).
+Full arrays on the 60×60×20 target are about 12 × 72e3 × 8 ≈ 7 MB. Simple indexing is worth that. A 200×200×80 grid would be ~300 MB of auxiliaries; `fdtd_info.bytes` reports it, and `checked_elems` still applies. Slab-packed ψ is a later optimisation, not a v1 requirement.
 
 For a derivative along x of a field `u`, with the difference already the two-point Yee difference `du = u[j] - u[j-1]`:
 
@@ -560,17 +597,33 @@ d/dx |stretched = du / (κ Δx) + ψ
 
 `a ≤ 0` because `(b − 1) ≤ 0`. The sign is whatever this formula produces; do not flip it to "make absorption happen" without changing the formula and the test together.
 
-Profile along a local coordinate `ρ ∈ [0, 1]`, 0 at the inner interface and 1 at the outer PEC wall, evaluated at the **staggered** location of that derivative (half-cell offsets, per axis scale `Δ`):
+Profile along a local coordinate `ρ ∈ [0, 1]`, 0 at the inner interface and 1 at the outer PEC wall. Where that `ρ` is sampled is below (primal for an E derivative, half-cell for an H derivative).
 
 ```text
 σ(ρ) = σ_max * ρ^m
 κ(ρ) = 1 + (κ_max - 1) * ρ^m
 α(ρ) = α_max * (1 - ρ)^{mα}
 
-σ_max = sigma_factor * (m + 1) / (150 * π * Δ)
+σ_max = sigma_factor * (m + 1) * ε0 * c0 / Δ
 ```
 
-Defaults: `n = 8` is the recommended lesson thickness, `m = 3`, `mα = 1`, `κ_max = 7`, `α_max = 0.05`, `sigma_factor = 1`. `σ_max` uses that axis's `Δ` (so `dx`, `dy`, `dz` each get their own profile). `ρ` is computed in metres, not in cell counts, so a graded mesh spacing still ramps smoothly — v1 spacing is uniform per axis, but the profile should still be in metres so a later non-uniform axis does not silently change the polynomial.
+Defaults, matched to `kreegerresearch/rustlab_em` as of 2026-11-02 rather than to the Gedney `1/(150 π Δ)` scale:
+
+| Knob | Value | Where it came from |
+|---|---|---|
+| `order` `m` | 3 | `lessons/_shared/em.rlab`, `pml_sigma_profile`: `σ = σ_max * ρ^3` |
+| `sigma_factor` | 1 | Makes `σ_max = 4 ε0 c0 / Δ` when `m = 3` |
+| `σ_max` | `(m+1) ε0 c0 / Δ` | `lessons/10-fdfd-frequency-domain/fdfd_pml_demo.rlab` sets `sigma_max = 4 * eps0 * c0 / dx`. The helper comment calls `(m+1) ε0 c / (2 Δ)` a textbook start and `4 ε0 c / Δ` the value that measured about −103 dB |
+| `kappa_max` | 1 | `pml_stretching_factor` is `s = 1 + j σ / (ω ε0)`. No κ grading |
+| `alpha_max` | 0 | That same stretch has no CFS α |
+| `alpha_order` | 1 | Unused while `α_max` is 0. Left settable |
+| `n` | 8 | This plan's thickness for the −40 dB gate. The FDFD demo uses 18 cells to reach about −100 dB; that count is not copied |
+
+`σ_max` uses this plan's `ε0 = 1/(μ0 c0²)` and `c0 = 299792458`. At `m = 3` that is `4 ε0 c0 / Δ ≈ 0.01062 / Δ`. The curriculum demo writes the literal `eps0 = 8.854187817e-12`, which is the same formula to the digits a PML profile can tell apart. The old `(m+1)/(150 π Δ)` number is about 25% lower (`4/(150 π) ≈ 0.00849`). `κ_max` and `α_max` stay settable so a later lesson can turn CFS grading on; the default is the curriculum stretch, which is σ only.
+
+`lessons/11-fdtd-simulation/fdtd_pml_depth.rlab` is a separate Bérenger split-field sweep. Its `σ_max` uses `R = 1e-8` and scales with thickness. That file is not `pml_sigma_profile`, so it is not the default here. σ in this plan does not depend on `n`.
+
+Sampling follows those two helpers. An E-edge derivative uses the primal sample: the outermost cell has `ρ = 1` (`σ_max`), the innermost PML cell has `ρ = 1/n`. An H-face derivative uses the half-cell sample from `pml_sigma_profile_h`. `σ_max` uses that axis's `Δ`. `ρ` is computed in metres, not in cell counts, so a graded spacing still ramps smoothly. v1 spacing is uniform per axis.
 
 Outside the slab: `σ = 0`, `κ = 1`, `α = 0`, so `b = 1`, `a = 0`.
 
@@ -614,7 +667,7 @@ Half-step: stored `I[n]` comes from `H^{n+1/2}` while stored `V[n]` comes from `
 
 Window: Hann, generated in-tree (the window builtin already exists; calling it from the wrapper is fine). Rectangular is available for the resistor test, where a window would bias a long steady tail.
 
-This is one-port S11. S21 of a line needs a second port and a definition of the reference planes. Data structures store N ports from day one so Phase 4 does not paint itself into a corner; the helper does not grow a full S matrix in v1.
+This is one-port S11. v1's `fdtd_port` accepts one port; a second call errors. S21 of a line, with a second port and reference planes, is a small phase after the resistor test has passed. It is not in the v1 table. The record matrices are shaped `steps × nports` so that phase adds a column instead of a new struct. The helper does not grow a full S matrix in v1.
 
 ---
 
@@ -647,7 +700,7 @@ L(θ,φ) = Σ Ms exp(j k r′ · r̂) ΔS
 k = 2π f / c0
 ```
 
-`r′` is the face-centre of each Yee face in metres, origin at the grid corner `(0,0,0)` unless we later add an origin argument (open question). Then `Etheta`, `Ephi` from the standard `Nθ, Nφ, Lθ, Lφ` combination, including the `η0 = sqrt(μ0/ε0)` factor. Drop the `exp(-jkr)/r` factor (same for every angle) so the pattern is the angular part only.
+`r′` is the face-centre of each Yee face in metres, minus the origin from `fdtd_farfield` (grid centre if omitted, patch centre in the capstone). Then `Etheta`, `Ephi` from the standard `Nθ, Nφ, Lθ, Lφ` combination, including the `η0 = sqrt(μ0/ε0)` factor. Drop the `exp(-jkr)/r` factor (same for every angle) so the pattern is the angular part only. The surface currents stay inside the stepper. v1 has no builtin that returns `Js` or `Ms`.
 
 Directivity: integrate `(|Eθ|² + |Eφ|²) sinθ` over the requested `theta`/`phi` grid with a trapezoid rule, normalise so the isotropic level is 0 dBi. The test grid must cover full `θ ∈ [0, π]`, `φ ∈ [0, 2π]`; a single cut errors and says so, returning only `Etheta`/`Ephi` and `NaN` directivity.
 
@@ -655,7 +708,7 @@ Realized gain multiplies the linear directivity by `1 − |S11(f)|²` from port 
 
 v1 does not do a total-field/scattered-field plane wave. The patch is a driven port in total field; the Huygens box encloses the patch and the substrate interface it needs, sitting in air. If the box cuts through the substrate, error. That constraint is what `margin` plus a check on `eps_r` variance inside the surface cells enforces.
 
-Doing the surface integrals in `.rlab` instead was considered (export the six faces' phasors, let the notebook sum them). The arithmetic is easy to get a normal-vector wrong in, and it is not the slow part. The stepper keeps the phasors internally and returns the pattern. A debug builtin that returns the phasors is not in v1; add it only if a lesson wants to show the integral (open question).
+Doing the surface integrals in `.rlab` instead was considered (export the six faces' phasors, let the notebook sum them). The arithmetic is easy to get a normal-vector wrong in, and it is not the slow part. The stepper keeps the phasors internally and returns the pattern. Decided: v1 does not export `Js` or `Ms`.
 
 ---
 
@@ -683,7 +736,7 @@ function f = patch_resonance(W)
   sim = fdtd3d(nx, ny, nz, dx, dy, dz)   % one grid, owned by this trial
   % ... media, patch of width W, port, fdtd_run ...
   s = fdtd_s11(sim)
-  f = s.freq(argmin(abs(s.s11)))
+  f = s.frequencies(argmin(abs(sij(s, 1, 1))))
 end
 ```
 
@@ -745,17 +798,24 @@ Two different flags exist today.
 - Arm `InterruptGuard` for the call.
 - Every step (the step is the right granularity; 72k cells is far more work than one atomic load), poll `interrupt_requested()`.
 - Also poll a thread-local `Option<Arc<AtomicBool>>` that `Evaluator` sets around `builtins.call_with_nargout` and clears after. That is a few lines in `eval/mod.rs`. The builtin function pointer type stays unchanged. `norm` does not have to be retrofitted in this work.
-- On Ctrl+C: leave the handle's fields, probes, and port records at the last completed step (the `Arc` is already in the workspace under `sim`). Print `interrupted` to stderr, matching `norm`. Return `ScriptError::Interrupted`. The REPL stays up, so `fdtd_record(sim)` and `fdtd_s11(sim)` still work on the partial run. `rustlab run` exits 0, matching `norm` — a batch script does not get a partial binding, because the error aborts the script. That is acceptable: Ctrl+C during `rustlab run` already throws the process result away for `norm`.
-- On the notebook flag: return `ScriptError::Cancelled` so the watch server's preemption path stays the one it has. Partial notebook output is discarded by the renderer anyway.
+- On Ctrl+C: finish the step in progress (or return immediately if the flag is already set before it), leave the handle's fields, probes, and port records at that step, and **return the usual struct** with `interrupted = true`. Print `interrupted` to stderr. Do not raise `ScriptError::Interrupted`. The assignment binds, so the script plots what it has:
+
+  ```text
+  out = fdtd_run(sim, 8000)
+  plot(out.t, out.probe(:, 1))    % partial record when out.interrupted is true
+  ```
+
+  This is a deliberate split from `norm`, which returns `ScriptError::Interrupted` and leaves `rustlab run` with no binding. A finished call has `interrupted = false`. `fdtd_record` reports the same flag.
+- On the notebook flag: return `ScriptError::Cancelled` so the watch server's preemption path stays the one it has. Partial notebook output is discarded by the renderer anyway. Do not return the partial struct on that path.
 - Do not hold the `FdtdSim` mutex across a `.rlab` callback. There is no callback. The lock is held for the whole `fdtd_run`, which also means a probe copy happens after the loop, under the same lock, then the lock drops before `Value`s are built if we copy into `Vec` first. Copy into `Vec<f64>` under the lock, wrap `Value` after. Poisoned lock → script error.
 
-Tests: a unit test calls `request_interrupt()` after arming (or sets the thread-local cancel) and asserts the run returns within a step or two and that `steps` on the handle is `< nsteps` and `> 0`.
+Tests: one unit test sets the interrupt flag before `fdtd_run` and asserts the return is a struct, `interrupted` is true, and `steps` is 0. Another lets two steps finish, sets the flag, and asserts `steps == 2`, `interrupted` is true, and the probe length is 2. A notebook-cancel test still expects `ScriptError::Cancelled` and no struct.
 
 ---
 
 ## `laplacian_eps_3d` (Phase 0)
 
-Independent of the stepper. Implement even if FDTD waits on an open question.
+Decided: this lands first, as its own PR, before any Yee code. It does not depend on the stepper.
 
 Mirror `laplacian_eps_2d` in `crates/rustlab-dsp/src/laplacian.rs`:
 
@@ -790,7 +850,7 @@ All of these are headless `cargo test` except the perf gate.
 ### Yee kernel
 
 1. **Bit-exact PML-off identity.** CPML structures allocated, `sigma_factor = 0`, versus a build with no CPML. Fields equal bit for bit after a few hundred steps (same source).
-2. **CFL smoke.** `courant = 1.5` on a vacuum cube diverges (max `|E|` exceeds a bound, or a documented `fdtd_run` error if we choose to reject Courant `> 1` — open question; default is to allow it and let the cavity test use 0.99). Default 0.99 on a vacuum run stays bounded over 2k steps.
+2. **CFL smoke.** `courant = 1.5` is an error at `fdtd3d` setup (`courant must be in (0, 1]`), and no step runs. `courant = 1` is accepted. Default 0.99 on a vacuum run stays bounded over 2k steps.
 3. **Numerical dispersion, not just continuum frequency.** A long thin cavity or a periodic 1-D-like mode. The measured FFT peak of a probe matches the Yee dispersion relation
 
    ```text
@@ -816,13 +876,13 @@ All of these are headless `cargo test` except the perf gate.
 
 8. **Matched lumped resistor.** `V/I → Z0` to 1% after a slow Gaussian. Locks σ split, source split, and the Ampère-loop sign.
 9. **Half-step phase.** Synthetic `V`, `I` with a known `dt/2` shift; `fdtd_s11` correction recovers a purely real `Z0` at one frequency.
-10. **Patch vs transmission-line model.** Geometry from the sketch (`εr = 4.4`, `h = 1.6 mm`, design 2.4 GHz, lossless). On the 60×60×20 class mesh, the frequency of the `|S11|` minimum is within **5%** of 2.4 GHz. The dip depth is **not** gated (the feed is a coarse edge feed; a −4 dB dip can still be the right frequency). A finer mesh, if Phase 6 is fast enough to run it in CI, tightens the frequency gate to 2%; otherwise that finer run is nightly / manual.
-11. **Published curve, optional.** Not a CI dependency and not invented here. Candidates, if Michael wants a second anchor: Sheen, Ali, Abouzahra, Kong, IEEE Trans. MTT, vol. 38, no. 7, pp. 849–857, 1990 (the classic microstrip FDTD S-parameter paper); an openEMS microstrip-patch example, cited with its revision. The ACES Journal Nov 2020 comparison (resonance quoted at 6.564 GHz) does not include the metal dimensions in the abstract; do not treat 6.564 GHz as a number we can hit without copying that geometry from the paper. No MATLAB Antenna Toolbox license is assumed in CI.
+10. **Patch vs transmission-line model.** Geometry from the sketch (`εr = 4.4`, `h = 1.6 mm`, design 2.4 GHz, lossless `sigma = 0`). On the 60×60×20 class mesh, the frequency of the `|S11|` minimum is within **5%** of 2.4 GHz. The dip depth is **not** gated (the feed is a coarse edge feed; a −4 dB dip can still be the right frequency). A finer mesh is a student exercise, not a second gate.
+11. **Sheen 1990, optional later anchor.** Not CI, and not this milestone. If a second published curve is added later, it is Sheen, Ali, Abouzahra, and Kong, IEEE Trans. MTT, vol. 38, no. 7, pp. 849–857, 1990. The ACES Journal Nov 2020 comparison (resonance quoted at 6.564 GHz) does not include the metal dimensions in the abstract; do not treat 6.564 GHz as a number we can hit without copying that geometry from the paper. No MATLAB Antenna Toolbox license is assumed.
 
 ### Near-to-far
 
 12. **Dipole sanity.** A small z-directed soft source in a large vacuum PML box, one frequency, no metal. `Ephi` dominates in the xy-plane cut, the pattern is symmetric under `φ → φ+π`, and broadside (θ = π/2) is the maximum of that cut. Directivity of an ideal short dipole is 1.76 dBi; on a coarse box, gate **directivity between 0 and 4 dBi** and symmetry to a few percent. This catches a flipped `n̂` or a missing `η0`, which a patch test will not isolate.
-13. **Patch lobe.** On the lesson mesh, broadside (`theta` near 0) is a peak of the principal cut, and directivity is `> 0 dBi`. Do not gate against a Balanis pattern table on a λ/2 ground plane.
+13. **Patch lobe.** On the 60×60×20 mesh, broadside (`theta` near 0) is a peak of the principal cut. That is a qualitative sanity check. The directivity number is not a lesson result and is not compared with Balanis. A finer mesh is an exercise.
 
 ### Laplacian
 
@@ -838,7 +898,7 @@ What should match existing rustlab / MATLAB array habits:
 
 - `zeros(ny, nx, nz)` in MATLAB is the same axis order as `zeros3(ny, nx, nz)` here: rows, columns, pages. Document that `i` is the row (y), `j` is the column (x), `k` is the page (z). MATLAB `meshgrid` is a 2-D trap; our `meshgrid` is already the `'xy'` form (`X` varies along columns). There is no 3-D `meshgrid` to be compatible with.
 - `fft` length is the length of the record, same as MATLAB `fft`. Positive-frequency slicing in `fdtd_s11` is a helper choice, not a change to `fft`.
-- S11 from `(V ± Z0 I)` is the circuit definition MATLAB RF tools use for a lumped port. It is not `sparameters()` of a Touchstone file. The lesson can pass `s11` into a small struct if it wants `smith()`, but v1 does not auto-build an `sparameters` object (open question). Frequency in Hz, `Z0` scalar, same numbers those builtins already use.
+- S11 from `(V ± Z0 I)` is the circuit definition MATLAB RF tools use for a lumped port. `fdtd_s11` returns that result as a 1-port `sparameters` struct (`__kind__ = "sparameters"`, `parameters` shaped `(n_freq, 1, 1)`, positive `frequencies` in Hz, `impedance = Z0`) so `smith(s)` and `rfplot(s)` take it with no wrapper. DC is omitted because `rfplot` uses `semilogx`.
 - 1-based indices, including port ids and probe ids.
 - No `end` inside `fdtd_port`'s `krange` beyond what the language already does for a range expression (`1:nsub` is just a vector by the time the builtin sees it).
 
@@ -856,17 +916,19 @@ Estimates are implementer time for someone who already knows this tree, includin
 
 | Phase | Delivers | Rough ETA | Done when |
 |---|---|---|---|
-| **0** | `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
-| **1** | Opaque handle, vacuum Yee, CFL, `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C and notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test; bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
+| **0** | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
+| **1** | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
 | **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
-| **4** | Lumped port, `fdtd_s11` pure and handle forms. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md`. | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|` in the example). Patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook is Phase 6). `render --strict` and `run-examples` exit 0. |
-| **5** | On-the-fly NTFF, `fdtd_farfield`, directivity and realized gain. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern. Patch broadside peak. `render --strict` and `run-examples` exit 0. |
+| **4** | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|`). Lossless patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook, including the `tanδ = 0.02` rerun, is Phase 6). `render --strict` and `run-examples` exit 0. |
+| **5** | On-the-fly NTFF, `fdtd_farfield` with a settable origin (default grid centre), directivity and realized gain. No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern (grid-centre origin). Patch broadside peak is qualitative. `render --strict` and `run-examples` exit 0. |
 | **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate. Capstone `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`, plus the sweep `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. Both notebooks pass `render --strict`; both scripts pass `run-examples`. The sweep returns one resonance per width. |
 
-Total roughly **three to five weeks**. Phase 0 can merge alone and unblocks rustlab_em Lesson 15 immediately.
+Total roughly **three to five weeks**. Phase 0 merges alone and unblocks rustlab_em Lesson 15 before any Yee PR.
 
-Each implementation phase is its own PR on a feature branch, version-bumped, with the Workflow Rules 2, 3, 5, 6, and 7 docs. This document's PR is plan-only: no version bump, no builtin, no CHANGELOG entry. The example paths above are sketches in this file. They are not added to `examples/` here, so this PR does not leave scripts that call missing builtins, and it does not document those builtins in `docs/functions.md` or the REPL help.
+S21 is not a row in that table. After the Phase 4 resistor test has passed, a later small phase can add a second port and S21. v1 does not.
+
+Each implementation phase is its own PR on a feature branch, version-bumped, with the Workflow Rules 2, 3, 5, 6, and 7 docs. This document's PR adds no builtin and no example file. The workspace version is **0.3.45** so the plan is not shipped under 0.3.44; `CHANGELOG.md` says the only user-visible change is that version number. The example paths above are sketches in this file. They are not added to `examples/`, so nothing calls a builtin that does not exist, and `docs/functions.md`, `docs/quickref.md`, and the REPL help stay as they are.
 
 Suggested lesson order once the phases exist, which is also the order of the examples:
 
@@ -882,7 +944,7 @@ Suggested lesson order once the phases exist, which is also the order of the exa
 ## Test and doc checklist (for the implementation PRs, not this one)
 
 - `crates/rustlab-dsp/src/fdtd/*.rs` unit tests for CFL, dispersion, CPML reflection, resistor, dipole pattern.
-- `crates/rustlab-script/src/tests.rs` (or a focused `tests/fdtd.rs`) for the handle, 1-based indices, error paths (complex ε, NTFF after steps, port on a hard source), and `fdtd_s11` on a synthetic V/I.
+- `crates/rustlab-script/src/tests.rs` (or a focused `tests/fdtd.rs`) for the handle, 1-based indices, error paths (complex ε, `courant > 1`, a second port, NTFF after steps, port on a hard source), and `fdtd_s11` on a synthetic V/I. That result is a 1-port `sparameters` value: `is_sparameters` is true, `frequencies` are strictly increasing and positive, and `sij(s, 1, 1)` is the corrected S11.
 - `laplacian_eps_3d` tests beside the existing ones in `laplacian.rs`, plus one script-level `spsolve` capacitor test.
 - REPL `HelpEntry` + exactly one `CategoryRow`.
 - `docs/functions.md`, `docs/quickref.md`, `AGENTS.md` builtin table, `CHANGELOG.md`, version bump — the phase that adds the builtin, not a follow-up.
@@ -891,20 +953,20 @@ Suggested lesson order once the phases exist, which is also the order of the exa
 
 ---
 
-## Open questions for Michael
+## Decisions (Michael, 2026-11-02)
 
-1. **Phase 0 first?** `laplacian_eps_3d` is the Lesson 15 request and does not depend on FDTD. Should it merge on its own before any Yee work?
-2. **Opaque handle.** The hot fields stay inside `sim`, with `fdtd_slice` / `fdtd_fields` to copy out. A design where `Ex` is a real `Tensor3` the script can poke every step will not hit the timing target. Is the handle acceptable for the lesson, or do you want a slower "export every step" mode for a short demo?
-3. **Single port vs S matrix.** v1 records N ports but only computes S11 of port 1. Do you want S21 of a microstrip line in the same milestone?
-4. **Reference geometry.** The proposed science check is the lossless transmission-line 2.4 GHz FR-4 patch (`εr = 4.4`, `h = 1.6 mm`), frequency of the S11 dip within 5% on the coarse mesh. Do you instead want a specific published drawing (Sheen 1990, an openEMS example, or the ACES 2020 board)? If so, which one should the lesson treat as truth?
-5. **Realized gain on a half-wave ground.** The 60×60×20 box is about `λ/2` across and only 8 mm tall. Directivity there is a sanity check, not a number to compare with Balanis. Is a qualitative broadside lobe enough for the lesson, with a finer mesh left as an exercise?
-6. **Huygens origin and exported currents.** Far-field phase origin is proposed as the grid corner `(0,0,0)`. Pattern magnitude does not care. Do you want the origin at the patch centre, and do you want the surface `Js`/`Ms` phasors returned so a notebook can show the integral?
-7. **CPML defaults.** Proposed `n = 8`, order 3, `κ_max = 7`, `α_max = 0.05`, `σ_max = (m+1)/(150 π Δ)`. These are the usual textbook defaults, not a fit to a particular absorber paper. Any defaults you already use in `rustlab_em`'s 2-D FDFD PML that this should match so the lessons feel like one method?
-8. **Courant above 1.** Reject `courant > 1` at setup, or allow it and let the field blow up? Rejection is kinder in a classroom.
-9. **Ctrl+C result.** Proposed: `Interrupted`, partial data left on `sim` for the REPL, `rustlab run` exits 0 with no `out` binding (same as `norm`). Prefer instead that `fdtd_run` return the partial struct and keep going, so a script can plot what it has?
-10. **Where it lives.** Proposed: always-on modules in `rustlab-dsp`, no feature flag. The old §2.6 note suggested a default-off `rustlab-em` crate for sparse curl builders. Those builders are out of scope here. Any reason the time stepper should still be behind a flag?
-11. **Loss model in the lesson.** Default patch comparison is lossless, because the transmission-line formula is. Should the shipped example use `tanδ = 0.02` and only check that the dip stays near 2.4 GHz, so students see a realistic FR-4 from the start?
-12. **`sparameters` object.** Should `fdtd_s11` also return something `smith()` / `rfplot()` already accept, or is a `freq` + `s11` struct enough and the lesson can wrap it?
+1. **Phase 0 first.** `laplacian_eps_3d` is its own PR and merges before any Yee work.
+2. **Opaque handle.** Fields stay inside `sim`. `fdtd_slice` and `fdtd_fields` copy out. There is no export-every-step mode.
+3. **One port.** v1 is S11 of that port. S21 is a later small phase after the resistor test, not part of this table.
+4. **Reference check.** Lossless transmission-line 2.4 GHz FR-4 patch (`εr = 4.4`, `h = 1.6 mm`). The `|S11|` minimum is within 5% of 2.4 GHz on the 60×60×20 mesh. Sheen 1990 is an optional later second anchor, not CI.
+5. **Gain.** On that mesh, a broadside lobe is a qualitative sanity check. A finer mesh is an exercise. The directivity number is not compared with a textbook.
+6. **Far-field origin.** Settable on `fdtd_farfield` as `"origin", [x, y, z]` in metres. Default is the grid centre. The patch notebook passes the patch centre. v1 does not export `Js` or `Ms`.
+7. **CPML defaults** match `rustlab_em`'s 2-D SC-PML (`lessons/_shared/em.rlab`, `fdfd_pml_demo.rlab`): cubic order, `σ_max = (m+1) ε0 c0 / Δ` (`4 ε0 c0 / Δ` at `m = 3`), `κ_max = 1`, `α_max = 0`. Thickness `n = 8` stays this plan's gate. The Gedney `1/(150 π Δ)` scale is not the default. See the CPML section.
+8. **Courant.** `courant > 1` is an error at setup. The allowed range is `(0, 1]`.
+9. **Ctrl+C.** `fdtd_run` returns the partial struct with `interrupted = true`. The script plots it. Notebook-watch preemption still raises `ScriptError::Cancelled`.
+10. **Always on.** Modules live in `rustlab-dsp`. No feature flag and no `rustlab-em` crate.
+11. **Loss.** The 5% check is lossless. The shipped patch example then reruns with `tanδ = 0.02`. That rerun is shown, not gated.
+12. **`fdtd_s11` return.** A 1-port `sparameters` struct (`parameters` shaped `(n_freq, 1, 1)`, positive `frequencies`, `impedance = Z0`). `smith(s)` and `rfplot(s)` take it today. DC is dropped because `rfplot` uses `semilogx`.
 
 ---
 
@@ -916,4 +978,5 @@ Suggested lesson order once the phases exist, which is also the order of the exa
 - C. A. Balanis, *Antenna Theory*, transmission-line model for a rectangular patch (the formulas in the script sketch).
 - K. E. Schneider, *Understanding the FDTD Method*, the collocated-index Yee layout this plan standardises on. Online notes, the course text several of the EM lessons already sit next to.
 - rustlab_em requests: `dev/rustlab/requests/laplacian-eps-3d.md`, `dev/rustlab/requests/yee-and-pml-builders.md`.
+- rustlab_em 2-D PML that the CPML defaults follow: `lessons/_shared/em.rlab` (`pml_sigma_profile`, `pml_stretching_factor`), `lessons/10-fdfd-frequency-domain/fdfd_pml_demo.rlab` (`sigma_max = 4 * eps0 * c0 / dx`). Read 2026-11-02.
 - In-tree precedents: `crates/rustlab-dsp/src/laplacian.rs` (`laplacian_eps_2d`, `laplacian_3d`), `crates/rustlab-dsp/src/vector_calc.rs` (rayon threshold), `matrix_spectral_norm` and `rustlab_plot::InterruptGuard` (cancel).
