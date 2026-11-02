@@ -1633,7 +1633,7 @@ impl Evaluator {
                 }
 
                 // Special case: bare load("file.npz") injects all variables into the workspace.
-                if let Expr::Call { name, args } = expr {
+                if let Some((name, args)) = self.as_call(expr) {
                     if name == "load" && args.len() == 1 {
                         let path_val = self.eval_expr(&args[0])?;
                         if let Ok(path) = path_val.to_str() {

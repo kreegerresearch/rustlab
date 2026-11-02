@@ -131,6 +131,28 @@ s.v(size(s.v, 2))
 }
 
 #[test]
+fn bare_dot_load_of_npz_injects_like_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.npz");
+    let path = path.to_str().unwrap().replace('\\', "/");
+    eval(&format!(
+        "save(\"{path}\", \"sig\", [1, 2, 3], \"gain\", 4);"
+    ));
+
+    let dot = eval(&format!("f = \"{path}\";\nf.load();\n"));
+    let call = eval(&format!("f = \"{path}\";\nload(f);\n"));
+    for name in ["sig", "gain"] {
+        assert_eq!(reals(&dot, name), reals(&call, name), "{name}");
+        assert_eq!(dims(&dot, name), dims(&call, name), "{name}");
+    }
+    assert_eq!(reals(&dot, "sig"), vec![1.0, 2.0, 3.0]);
+    assert_eq!(reals(&dot, "gain"), vec![4.0]);
+
+    let field = eval("s.load = [7, 8];\nv = s.load(2);\n");
+    assert_eq!(reals(&field, "v"), vec![8.0]);
+}
+
+#[test]
 fn fdtd_record_probe_column() {
     let ev = eval(
         "sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
