@@ -379,10 +379,8 @@ Advance the grid. `fdtd_step(sim)` is one leapfrog step; `fdtd_step(sim, n)` and
 Ctrl+C on a terminal stops a run of more than one step after the step in progress, prints `interrupted` to stderr, and returns the struct with `interrupted = true`; the record is as long as the steps that finished, so the script can plot it. Under `rustlab-notebook watch`, saving the notebook while a run is in progress stops it with no result (the render is discarded).
 ```
 out = fdtd_run(sim, 400);
-p = out.probe;
-plot(out.t * 1e9, p(:, 1));
+plot(out.t * 1e9, out.probe(:, 1));
 ```
-Use a temporary for the probe matrix: `out.probe(:, 1)` parses as a method call, not as indexing.
 
 ### `rec = fdtd_record(sim)`
 The record of every step since the grid was created, without stepping:

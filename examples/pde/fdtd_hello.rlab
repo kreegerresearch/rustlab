@@ -28,8 +28,7 @@ id = fdtd_probe(sim, "ez", ic, ic + 6, ic);
 # ── Run long enough for the pulse to hit a wall and come back ───
 out = fdtd_run(sim, nsteps);
 t = out.t;                              # 1 × steps, sample n at n*dt
-p = out.probe;                          # steps × nprobes (out.probe(:, 1) parses as a method call)
-ez = p(:, id);
+ez = out.probe(:, id);                  # out.probe is steps × nprobes
 
 fprintf("%d steps of %.3g ps\n", out.steps, info.dt * 1e12);   # out.cell_rate: cell updates per second
 [pk, at] = max(abs(ez));
