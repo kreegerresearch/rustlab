@@ -83,6 +83,7 @@ rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (always ligh
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
 rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native in-place rewrite
 rustlab-notebook render analysis.md -o out.html  # explicit output path
+rustlab-notebook render analysis.md --strict     # exit 1 if a code cell errors (default: exit 0)
 rustlab-notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
 
@@ -1080,7 +1081,7 @@ the page.
 <!-- details: Show sweep results -->
 ```rustlab
 for k = 1:8
-    plot(freqz(fir_lowpass(32*k, 3000, 16000)))
+    plot(freqz(fir_lowpass(32*k, 3000, 16000, "hamming")))
 end
 ```
 ````

@@ -967,14 +967,7 @@ impl Value {
                 // Read the index as stored (a real-stored index is not
                 // widened); same rules, and the same error on a bad entry.
                 if let Some(e) = super::real_index::Elems::of_vector(v) {
-                    return match e.positions(dim_len) {
-                        Some(p) => Ok(p),
-                        None => {
-                            let bad = e.list(dim_len).err().unwrap_or(f64::NAN);
-                            Self::one_based_to_zero(bad)?;
-                            Err(format!("index {} out of bounds (size {})", bad as usize, dim_len))
-                        }
-                    };
+                    return Self::positions_from_elems(e, dim_len);
                 }
                 // A range `a:b` inside the dimension: no per-element checks.
                 // (Only `[1]` on a length-1 dimension is also a logical mask,
@@ -1001,7 +994,83 @@ impl Value {
                     })
                     .collect()
             }
+            // A 1×n or n×1 matrix is a row or column of subscripts, the
+            // same list a vector is (`E(randi(3, 1, 4), :)`). A wider
+            // matrix is not a subscript. 1×1 is one index.
+            Value::Matrix(m) => {
+                let shape = Shared::shape(m);
+                if shape[0] != 1 && shape[1] != 1 {
+                    return Err("invalid index type: matrix".into());
+                }
+                if let Some(e) = super::real_index::Elems::of_matrix(m) {
+                    return Self::positions_from_elems(e, dim_len);
+                }
+                let flat: Vec<C64> = m.iter().copied().collect();
+                let as_vec = Value::Vector(Array1::from_vec(flat).into());
+                Self::resolve_index_dim(&as_vec, dim_len)
+            }
             other => Err(format!("invalid index type: {}", other.type_name())),
+        }
+    }
+
+    fn positions_from_elems(
+        e: super::real_index::Elems<'_>,
+        dim_len: usize,
+    ) -> Result<Vec<usize>, String> {
+        match e.positions(dim_len) {
+            Some(p) => Ok(p),
+            None => {
+                let bad = e.list(dim_len).err().unwrap_or(f64::NAN);
+                Self::one_based_to_zero(bad)?;
+                Err(format!(
+                    "index {} out of bounds (size {})",
+                    bad as usize, dim_len
+                ))
+            }
+        }
+    }
+
+    /// The single entry of a 1×1 matrix, read without widening real storage.
+    /// `None` for every other shape.
+    pub(crate) fn matrix_unit(m: &Shared<CMatrix>) -> Option<C64> {
+        if Shared::shape(m) != [1, 1] {
+            return None;
+        }
+        if let Some(d) = Shared::real_slice(m) {
+            return Some(C64::new(d[0], 0.0));
+        }
+        Some(m[[0, 0]])
+    }
+
+    /// MATLAB treats a 1×1 matrix as a scalar. The number, or `None`.
+    pub(crate) fn as_scalar_number(&self) -> Option<C64> {
+        match self {
+            Value::Scalar(n) => Some(C64::new(*n, 0.0)),
+            Value::Complex(c) => Some(*c),
+            Value::Int { data, .. } => Some(C64::new(*data as f64, 0.0)),
+            Value::Matrix(m) => Self::matrix_unit(m),
+            _ => None,
+        }
+    }
+
+    /// A 1×1 matrix only. Used to coerce an assignment's right-hand side
+    /// before the scalar/complex arms, so every write site accepts it.
+    pub(crate) fn unit_matrix(&self) -> Option<C64> {
+        match self {
+            Value::Matrix(m) => Self::matrix_unit(m),
+            _ => None,
+        }
+    }
+
+    /// True when this subscript is the scalar 1, including a 1×1 matrix.
+    fn subscript_is_one(v: &Value) -> bool {
+        match v {
+            Value::Scalar(c) => (*c as usize) == 1,
+            Value::Matrix(m) => match Self::matrix_unit(m) {
+                Some(z) => z.im.abs() < 1e-12 && (z.re as usize) == 1,
+                None => false,
+            },
+            _ => false,
         }
     }
 
@@ -1109,6 +1178,15 @@ impl Value {
                         })
                         .collect();
                     Ok(Value::Vector(Array1::from_vec(result?).into()))
+                }
+                // A row or column of subscripts (`zeros(1, n)`, `idx'`) is
+                // the same index list as a vector. `v(idx)` already accepts
+                // it when `v` is still a matrix; after a reduction such as
+                // `max` the same name is a vector, and rejecting the matrix
+                // there made the second use fail.
+                Value::Matrix(idx_m) if idx_m.nrows() == 1 || idx_m.ncols() == 1 => {
+                    let flat: Vec<C64> = idx_m.iter().copied().collect();
+                    self.index_1d(Value::Vector(Array1::from_vec(flat).into()))
                 }
                 other => Err(format!("invalid index type: {}", other.type_name())),
             },
@@ -1434,14 +1512,11 @@ impl Value {
                 }
             }
             Value::Vector(_) => {
-                // Allow v(i, 1) or v(1, j) for column/row vector indexing
+                // Allow v(i, 1) or v(1, j) for column/row vector indexing.
+                // The singleton side may be a 1×1 matrix (`ones(1, 1)`).
                 match (&row_idx, &col_idx) {
-                    (_, Value::Scalar(c)) if (*c as usize) == 1 => {
-                        self.index_1d(row_idx)
-                    }
-                    (Value::Scalar(r), _) if (*r as usize) == 1 => {
-                        self.index_1d(col_idx)
-                    }
+                    (_, c) if Self::subscript_is_one(c) => self.index_1d(row_idx),
+                    (r, _) if Self::subscript_is_one(r) => self.index_1d(col_idx),
                     _ => Err("2D indexing on a vector requires one dimension to be 1".to_string()),
                 }
             }
@@ -2921,12 +2996,17 @@ impl Value {
     }
 
     /// Convert to real f64.
+    ///
+    /// A 1×1 matrix is a scalar, the same way MATLAB's `isscalar` treats it.
+    /// A wider matrix is still an error. A nonzero imaginary part is too.
     pub fn to_scalar(&self) -> Result<f64, String> {
-        match self {
-            Value::Scalar(n) => Ok(*n),
-            Value::Int { data, .. } => Ok(*data as f64),
-            Value::Complex(c) if c.im.abs() < 1e-10 => Ok(c.re),
-            other => Err(format!("expected scalar, got {}", other.type_name())),
+        match self.as_scalar_number() {
+            Some(c) if c.im.abs() < 1e-10 => Ok(c.re),
+            Some(_) => Err(match self {
+                Value::Matrix(_) => "expected scalar, got complex".into(),
+                other => format!("expected scalar, got {}", other.type_name()),
+            }),
+            None => Err(format!("expected scalar, got {}", self.type_name())),
         }
     }
 

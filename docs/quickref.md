@@ -21,7 +21,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
-| `v(1)`, `v(end)`, `v(2:4)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector |
+| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
@@ -657,14 +657,17 @@ Capture a sequence of figure snapshots inside a loop, then flush them as an HTML
 
 ```rustlab
 figure()
-for k = 1:60
-  Ez = step(k);
-  imagesc(Ez, "viridis"); title(sprintf("frame %d", k))
+[X, Y] = meshgrid(linspace(-2, 2, 40), linspace(-2, 2, 40));
+for k = 1:8
+  c = -1 + 2 * (k - 1) / 7;
+  imagesc(exp(-((X - c).^2 + Y.^2)), "viridis");
+  title(sprintf("frame %d", k))
   frame()
 end
-saveanim("wave.html", 30)        % interactive Plotly
-saveanim("wave.gif", 30)         % portable GIF (embeds in markdown / PDF)
+saveanim("wave.html", 30)        % interactive Plotly; drains the buffer
 ```
+
+`saveanim` drains the buffer, so a second file (for example `wave.gif`) needs the loop captured again. `step` is the controls step response, not a frame source.
 
 MP4 / animated SVG / APNG export is not supported in this release — other path extensions return a clear error.
 

@@ -41,6 +41,16 @@ pub enum Commands {
     /// Inspect, prune, or clear a persistent function-result cache
     #[command(subcommand)]
     Cache(crate::commands::cache::CacheCommands),
+    /// Notebook commands moved to the separate `rustlab-notebook` binary.
+    ///
+    /// This is not an alias: it prints where to go and exits 2. Hidden so
+    /// `rustlab --help` does not list a command that does not run notebooks.
+    #[command(hide = true, disable_help_flag = true, disable_version_flag = true)]
+    Notebook {
+        /// Leftover arguments (`render`, a path, flags). Ignored.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        args: Vec<String>,
+    },
 }
 
 impl Cli {
@@ -61,6 +71,15 @@ impl Cli {
             Commands::Remote(args) => crate::commands::remote::execute(args),
             Commands::Info => crate::commands::info::execute(),
             Commands::Cache(cmd) => crate::commands::cache::execute(cmd),
+            Commands::Notebook { .. } => {
+                eprintln!(
+                    "error: `rustlab notebook` was removed.\n\
+                     Notebooks, themes, and rendering are the separate `rustlab-notebook` binary.\n\
+                     Example: rustlab-notebook render note.md\n\
+                     Help:    rustlab-notebook --help"
+                );
+                std::process::exit(2);
+            }
         }
     }
 }

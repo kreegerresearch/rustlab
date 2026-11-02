@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.44
+
+### Fixed
+- **A vector can be indexed by a row or a column.** `v(idx)` accepts a `1×n` or `n×1` matrix of positions, the same list a vector index is. The result is a vector. `zeros(1, n)` and `ones(1, n)` are matrices, so an index built that way used to work only while the target was still a matrix and then fail with `invalid index type: matrix` after a reduction such as `max` turned it into a vector. A matrix with more than one row and more than one column is still an error. `examples/notebooks/comm/viterbi_fec.md` gathers predecessor states this way.
+- **A row or column is a subscript in 2-D indexing too.** `E(randi(3, 1, 4), :)` and `E(:, idx)` where `idx` is `1×n` or `n×1` select those rows or columns, on read and on assignment. A wider matrix is still an error. The result shape matches the vector-subscript form (`length` of the row list by `length` of the column list).
+- **A 1×1 matrix is a scalar wherever a scalar is accepted.** `fprintf("%f\n", b*b')` of a row, and `H(t) = ones(1, 1) * 7`, work. `to_scalar` is the choke point, and index assignment coerces a 1×1 right-hand side before the scalar write. A `1×n` right-hand side into one element is still an error (MATLAB: the number of elements does not match). `size` of a 1×1 matrix stays `[1, 1]`.
+
+### Added
+- **`rustlab-notebook render --strict`.** Exit status 1 when any code cell errors. The notebook is still written and the summary still counts the errors. Off by default, so a Makefile that renders a notebook with a failing cell keeps exit status 0. Applies to a file, a directory, and `--format json`.
+- **`rustlab notebook …` names the replacement.** It exits 2 and tells you to use `rustlab-notebook`. It is not an alias and it does not appear in `rustlab --help`.
+
 ## 0.3.43
 
 ### Added

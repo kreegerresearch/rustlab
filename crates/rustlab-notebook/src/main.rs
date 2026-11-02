@@ -267,7 +267,8 @@ enum Command {
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
             rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n  \
-            rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n\n\
+            rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n  \
+            rustlab-notebook render analysis.md --strict            # exit 1 if a cell errors\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
@@ -365,6 +366,11 @@ enum Command {
         /// `vbscript:`, and `blob:` are rejected and no file is written.
         #[arg(long, num_args = 1..=2, value_names = ["HREF", "LABEL"])]
         index: Option<Vec<String>>,
+        /// Exit with status 1 when any code cell errors. The notebook is
+        /// still written, and the summary still reports the error count.
+        /// Off by default, so a render whose cells fail keeps exit status 0.
+        #[arg(long)]
+        strict: bool,
         /// Omit the heading sidebar. Single HTML notebook only.
         #[arg(long)]
         no_toc: bool,
@@ -642,7 +648,9 @@ fn main() {
             comments_style,
             index,
             no_toc,
+            strict,
         } => {
+            rustlab_notebook::set_render_strict(strict);
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
