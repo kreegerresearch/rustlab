@@ -76,7 +76,13 @@ pub fn rect_mask(
 /// Closed-disk mask. `M(i, j) = 1.0` iff `(X-xc)² + (Y-yc)² ≤ r²`.
 ///
 /// `r` must be finite and non-negative; `r = 0` matches only the centre point.
-pub fn disk_mask(x: &CMatrix, y: &CMatrix, xc: f64, yc: f64, r: f64) -> Result<CMatrix, DspError> {
+pub fn disk_mask(
+    x: &CMatrix,
+    y: &CMatrix,
+    xc: f64,
+    yc: f64,
+    r: f64,
+) -> Result<CMatrix, DspError> {
     check_xy_shape("disk_mask", x, y)?;
     check_finite_nonneg("disk_mask", "r", r)?;
     if !xc.is_finite() || !yc.is_finite() {
@@ -220,10 +226,7 @@ mod tests {
         let m = disk_mask(&x, &y, 0.0, 0.0, 1.0).unwrap();
         let area = count(&m) as f64 * step * step;
         // π ≈ 3.14159; allow 1.5% slack for finite-grid sampling.
-        assert!(
-            (area - std::f64::consts::PI).abs() < 0.05,
-            "got area {area}"
-        );
+        assert!((area - std::f64::consts::PI).abs() < 0.05, "got area {area}");
     }
 
     #[test]
