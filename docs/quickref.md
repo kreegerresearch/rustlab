@@ -710,6 +710,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `xlim([lo, hi])` | Fix x-axis range |
 | `ylim([lo, hi])` | Fix y-axis range |
 | `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])` | Lock 1:1 aspect (string) or set both limits (numeric). Required for nyquist plots and any chart where shape matters. |
+| `set_default_axis("xy")` / `set_default_axis("ij")` | Process-wide default for new subplots. `"xy"` puts row 0 at the bottom; `"ij"` (the default) puts row 0 at the top |
 | `subplot(rows, cols, idx)` | Switch to panel idx (1-based, left-to-right then top-to-bottom) |
 | `legend("s1", "s2", ...)` | Label series in order added |
 

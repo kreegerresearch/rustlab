@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.50
+
+### Changed
+- **No script-visible behaviour change.** Dead private imports, an unused test prelude, and two crate dependencies that nothing called (`anyhow` in `rustlab-script`, `serde_json` in `rustlab-plot`) are gone. `docs/functions.md` now documents the integer classes (`int8`…`uint64`, `cast`, `class`, `double`, `intmax`, `intmin`, `isinteger`, `isa`), `nproc`, `waterfall` / `waterfall_stream`, `heatmap`, and `image`, which were already registered. `docs/quickref.md` lists `set_default_axis`.
+
 ## 0.3.49
 
 ### Fixed
