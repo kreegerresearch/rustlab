@@ -5,7 +5,7 @@
 //! (`plots/…` or `/plots/<slug>/…`); PDF includes it with `\includegraphics`
 //! scaled to `\linewidth`. A missing file or a jail escape becomes a visible
 //! placeholder and a stderr warning. Remote URLs are not fetched. Wide PDF
-//! tables are a `tabularx` in `render_latex`, not this module.
+//! tables are an `xltabular` in `render_latex`, not this module.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

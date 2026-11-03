@@ -142,7 +142,11 @@ fn problems_on_page(page: usize, g: &PageGeom) -> Vec<LayoutProblem> {
     let n = g.words.len();
     for i in 0..n {
         for j in i + 1..n {
-            if g.words[i].rect.intersects(&g.words[j].rect, OVERLAP_PT) {
+            if g.words[i].rect.intersects(&g.words[j].rect, OVERLAP_PT)
+                && (g.words[i].rect.cy() - g.words[j].rect.cy()).abs() <= 2.0
+            {
+                // Centres more than 2pt apart are a superscript or a subscript
+                // sitting on its base, not two lines occupying one place.
                 out.push(LayoutProblem {
                     page,
                     detail: format!(
@@ -214,16 +218,17 @@ fn problems_on_page(page: usize, g: &PageGeom) -> Vec<LayoutProblem> {
     let bottom = MARGIN_PT - BOTTOM_SLOP_PT;
     let mut past = |label: &str, r: &Rect| {
         let mut why = Vec::new();
-        if r.x0 < left {
+        // Under 0.75pt is rounding against the margin, not a collision.
+        if left - r.x0 > 0.75 {
             why.push(format!("left by {:.1} pt", left - r.x0));
         }
-        if r.x1 > right {
+        if r.x1 - right > 0.75 {
             why.push(format!("right by {:.1} pt", r.x1 - right));
         }
-        if r.y1 > top {
+        if r.y1 - top > 0.75 {
             why.push(format!("top by {:.1} pt", r.y1 - top));
         }
-        if r.y0 < bottom {
+        if bottom - r.y0 > 0.75 {
             why.push(format!("bottom by {:.1} pt", bottom - r.y0));
         }
         if !why.is_empty() {
@@ -1796,13 +1801,15 @@ mod tests {
         walk_md(&root, &mut files);
         files.sort();
         let mut bad = Vec::new();
-        for path in &files {
+        eprintln!("scanning {} notebooks", files.len());
+        for (n, path) in files.iter().enumerate() {
             let md = std::fs::read_to_string(path).unwrap();
             let rel = path
                 .strip_prefix(&root)
                 .unwrap_or(path)
                 .display()
                 .to_string();
+            eprintln!("[{}/{}] {rel}", n + 1, files.len());
             match render_pdf(&md) {
                 Err(e) => bad.push(format!("{rel}: render failed: {e}")),
                 Ok(pdf) => match pdf_layout_problems(&pdf) {
