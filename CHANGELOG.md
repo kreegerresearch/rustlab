@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.49
+
+### Fixed
+- **Notebook PDF text no longer collides, especially around tables.** A markdown table was a `tabularx` of width `\linewidth` starting in an indented paragraph, so the rules and the last column ran about 17pt past the right margin. Inline code was an unbreakable `\colorbox`, so a long span such as `rect_mask(X, Y, x0, y0, w, h)` painted over the next cell. A table taller than the page was one unbreakable box and the leftover rows ran through the footer. Printed output and a long source line did not wrap. Tables are now an `xltabular` (it breaks between rows and repeats the header), started with `\noindent`, and inline code wraps at punctuation instead of sitting in an unbreakable pill. `fvextra` wraps verbatim output, including a token with no spaces. HTML and `notebook watch` are unchanged.
+
 ## 0.3.48
 
 ### Added

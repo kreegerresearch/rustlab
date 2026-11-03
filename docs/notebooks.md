@@ -753,9 +753,10 @@ stray `$` signs in prose. No `\$` escaping is needed in HTML output.
 
 ### Tables
 
-Markdown tables render as styled HTML tables or a LaTeX `tabularx` that
-fits `\linewidth` (booktabs rules, wrapping `X` columns), so a wide grid
-stays inside the PDF page margins:
+Markdown tables render as styled HTML tables or a LaTeX `xltabular`
+(a `tabularx` that breaks between rows) fitted to `\linewidth`. Booktabs
+rules, wrapping `X` columns, and breakable inline code keep a wide grid
+inside the PDF page margins, including a table taller than one page:
 
 ```markdown
 | Window      | Main Lobe Width | First Sidelobe |
@@ -1751,7 +1752,8 @@ rustlab-notebook render analysis.md -f latex
 
 The `.tex` file uses `article` class with `lmodern`, `amsmath`,
 `booktabs`, `graphicx`, `xcolor` (with the `table` option), `tcolorbox`,
-`fancyvrb`, `sectsty`, `float`, and `hyperref`. Formulas render
+`fancyvrb`, `fvextra`, `xltabular`, `sectsty`, `float`, and `hyperref`.
+Formulas render
 natively. Plot SVGs are converted to PDF by a fixed-argv Inkscape call
 before the engine runs (no TeX shell-escape); the `.tex` includes them
 with `\includegraphics` (no `svg` package). rustlab writes a `.pdf`
