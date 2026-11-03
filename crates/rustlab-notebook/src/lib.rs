@@ -12,6 +12,8 @@ mod file_browser;
 pub mod mermaid;
 pub mod parse;
 pub mod pdf_compile;
+#[cfg(test)]
+mod pdf_layout;
 pub mod prose_media;
 pub mod render;
 pub mod render_json;
