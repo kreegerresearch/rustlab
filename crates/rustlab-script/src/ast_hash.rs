@@ -346,8 +346,12 @@ fn feed_expr(h: &mut blake3::Hasher, e: &Expr) {
             h.update(&[0x25]);
             feed_expr(h, e);
         }
-        Expr::Call { name, args } => {
-            h.update(&[0x26]);
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
+            h.update(&[if matches!(e, Expr::DotCall { .. }) {
+                0x32
+            } else {
+                0x26
+            }]);
             feed_str(h, name);
             h.update(&(args.len() as u64).to_le_bytes());
             for a in args {
@@ -976,7 +980,10 @@ fn feed_expr_canonical(
             h.update(&[0x25]);
             feed_expr_canonical(h, e, stack, ctx);
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
+            if matches!(e, Expr::DotCall { .. }) {
+                h.update(&[0x32]);
+            }
             feed_callable(h, name, stack, ctx);
             h.update(&(args.len() as u64).to_le_bytes());
             for a in args {
@@ -1144,6 +1151,12 @@ mod tests {
     fn identical_source_same_hash() {
         let src = "function y = f(x)\n  y = x + 1\nend\n";
         assert_eq!(fh(src), fh(src));
+    }
+
+    #[test]
+    fn dot_call_and_call_hash_differently() {
+        // `s.f(1)` indexes field `f` when `s` has one, so it is not `f(s, 1)`.
+        assert_ne!(fh("y = s.f(1)\n"), fh("y = f(s, 1)\n"));
     }
 
     #[test]

@@ -208,6 +208,10 @@ impl Table {
         self.columns.len()
     }
 
+    pub fn has_column(&self, name: &str) -> bool {
+        self.names.iter().any(|n| n == name)
+    }
+
     pub fn column(&self, name: &str) -> Result<Value, String> {
         let i = self
             .names

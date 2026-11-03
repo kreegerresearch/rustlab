@@ -10,7 +10,7 @@ use crate::error::ScriptError;
 use ndarray::{Array1, Array2};
 use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
-    gaussian_pulse, Axis, Component, FdtdSim, SourceKind, Waveform, C0, DEFAULT_COURANT,
+    gaussian_pulse, Axis, CellMap, Component, FdtdSim, SourceKind, Waveform, C0, DEFAULT_COURANT,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -404,6 +404,18 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
         Axis::Z => pages.iter().map(|&k| (rows[0], cols[0], k)).collect(),
     };
     for &(i, j, k) in &edges {
+        if g.is_pec_edge(comp, i, j, k) {
+            return Err(err(
+                NAME,
+                format!(
+                    "{} at (i, j, k) = ({}, {}, {}) is PEC (fdtd_pec) and held at 0",
+                    comp.name(),
+                    i + 1,
+                    j + 1,
+                    k + 1
+                ),
+            ));
+        }
         if g.is_wall_edge(comp, i, j, k) {
             return Err(err(
                 NAME,
@@ -541,4 +553,201 @@ pub(crate) fn builtin_fdtd_slice(args: Vec<Value>) -> Result<Value, ScriptError>
     drop(g);
     let m = Array2::from_shape_vec((rows, cols), data).expect("slice is rows × cols");
     Ok(Value::real_matrix(m))
+}
+
+fn setup_check(name: &str, what: &str, g: &FdtdSim) -> Result<(), ScriptError> {
+    if g.steps() != 0 {
+        return Err(err(
+            name,
+            format!(
+                "set {what} before the first step ({} steps done); build a new fdtd3d",
+                g.steps()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Values of a `(ny, nx, nz)` Tensor3, x-fastest like the grid.
+fn tensor_cells(
+    name: &str,
+    what: &str,
+    v: &Value,
+    (ny, nx, nz): (usize, usize, usize),
+) -> Result<Vec<f64>, ScriptError> {
+    let not_real = || {
+        if what == "eps_r" {
+            err(name, EPS_NOT_REAL)
+        } else {
+            err(name, format!("{what} must be real"))
+        }
+    };
+    use super::shared::Shared;
+    let Value::Tensor3(t) = v else {
+        unreachable!("caller matched Tensor3")
+    };
+    let shape = Shared::shape(t);
+    if shape != [ny, nx, nz] {
+        return Err(err(
+            name,
+            format!(
+                "{what} must be {ny} × {nx} × {nz} (ny × nx × nz), got {} × {} × {}",
+                shape[0], shape[1], shape[2]
+            ),
+        ));
+    }
+    let mut out = Vec::with_capacity(ny * nx * nz);
+    match Shared::as_real(t) {
+        Some(r) => {
+            for k in 0..nz {
+                for i in 0..ny {
+                    for j in 0..nx {
+                        out.push(r[[i, j, k]]);
+                    }
+                }
+            }
+        }
+        None => {
+            for k in 0..nz {
+                for i in 0..ny {
+                    for j in 0..nx {
+                        let c = t[[i, j, k]];
+                        if c.im != 0.0 {
+                            return Err(not_real());
+                        }
+                        out.push(c.re);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+const EPS_NOT_REAL: &str =
+    "eps_r must be real; give loss as sigma (S/m), e.g. sigma = 2*pi*f*eps_r*eps0*tan_delta";
+
+fn media_map(
+    name: &str,
+    what: &str,
+    v: &Value,
+    dims: (usize, usize, usize),
+) -> Result<CellMap, ScriptError> {
+    match v {
+        Value::Tensor3(_) => Ok(CellMap::Cells(tensor_cells(name, what, v, dims)?)),
+        Value::Complex(c) if c.im != 0.0 && what == "eps_r" => Err(err(name, EPS_NOT_REAL)),
+        Value::Scalar(_) | Value::Complex(_) => Ok(CellMap::Uniform(real_scalar(name, what, v)?)),
+        Value::Matrix(m) if m.len() == 1 => Ok(CellMap::Uniform(real_scalar(name, what, v)?)),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: {what} must be a real scalar or an ny × nx × nz Tensor3, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `fdtd_media(sim, eps_r [, mu_r [, sigma]])`
+pub(crate) fn builtin_fdtd_media(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_media";
+    if !(2..=4).contains(&args.len()) {
+        return Err(ScriptError::arg_count_range(NAME.into(), 2, 4, args.len()));
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let mut g = lock(NAME, &s)?;
+    setup_check(NAME, "materials", &g)?;
+    let dims = (g.ny(), g.nx(), g.nz());
+    let eps = media_map(NAME, "eps_r", &args[1], dims)?;
+    let mu = match args.get(2) {
+        Some(v) => media_map(NAME, "mu_r", v, dims)?,
+        None => CellMap::Uniform(1.0),
+    };
+    let sigma = match args.get(3) {
+        Some(v) => media_map(NAME, "sigma", v, dims)?,
+        None => CellMap::Uniform(0.0),
+    };
+    g.set_media(eps, mu, sigma).map_err(|e| dsp_err(NAME, e))?;
+    Ok(Value::None)
+}
+
+fn mask_flags(name: &str, values: &[f64]) -> Result<Vec<bool>, ScriptError> {
+    if values.iter().any(|x| x.is_nan()) {
+        return Err(err(name, "mask contains NaN"));
+    }
+    Ok(values.iter().map(|&x| x != 0.0).collect())
+}
+
+/// `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)`
+pub(crate) fn builtin_fdtd_pec(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_pec";
+    if args.len() != 2 && args.len() != 4 {
+        return Err(err(
+            NAME,
+            format!(
+                "expected fdtd_pec(sim, mask) or fdtd_pec(sim, axis, index, mask), got {} arguments",
+                args.len()
+            ),
+        ));
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let mut g = lock(NAME, &s)?;
+    setup_check(NAME, "PEC", &g)?;
+    let (ny, nx, nz) = (g.ny(), g.nx(), g.nz());
+
+    if args.len() == 2 {
+        let cells = match &args[1] {
+            Value::Tensor3(_) => tensor_cells(NAME, "mask", &args[1], (ny, nx, nz))?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "{NAME}: a volume mask must be an ny × nx × nz Tensor3, got {} \
+                     (for a face use fdtd_pec(sim, \"z\", k, mask))",
+                    other.type_name()
+                )))
+            }
+        };
+        let flags = mask_flags(NAME, &cells)?;
+        return g
+            .add_pec_volume(&flags)
+            .map_err(|e| dsp_err(NAME, e))
+            .map(|_| Value::None);
+    }
+
+    let axis_s = str_arg(NAME, "axis", &args[1])?;
+    let axis = Axis::parse(&axis_s).ok_or_else(|| {
+        err(
+            NAME,
+            format!("axis must be \"x\", \"y\", or \"z\", got \"{axis_s}\""),
+        )
+    })?;
+    let (what, limit, rows, cols, layout) = match axis {
+        Axis::X => ("x face (column j)", nx, ny, nz, "ny × nz"),
+        Axis::Y => ("y face (row i)", ny, nx, nz, "nx × nz"),
+        Axis::Z => ("z face (page k)", nz, ny, nx, "ny × nx"),
+    };
+    let face = index_one(NAME, what, &args[2], limit + 1)?;
+    let nodes = match &args[3] {
+        Value::Bool(b) => vec![*b; rows * cols],
+        v => {
+            let (vals, shape) = real_values(NAME, "mask", v)?;
+            match shape.as_slice() {
+                [] => vec![mask_flags(NAME, &vals)?[0]; rows * cols],
+                [r, c] if *r == rows && *c == cols => mask_flags(NAME, &vals)?,
+                _ => {
+                    let got = match shape.as_slice() {
+                        [n] => format!("a vector of {n}"),
+                        [r, c] => format!("{r} × {c}"),
+                        _ => unreachable!("real_values returns rank ≤ 2"),
+                    };
+                    return Err(err(
+                        NAME,
+                        format!(
+                            "mask for the {axis_s} face must be {layout} = {rows} × {cols} \
+                             (the fdtd_slice shape), got {got}"
+                        ),
+                    ));
+                }
+            }
+        }
+    };
+    g.add_pec_face(axis, face, &nodes)
+        .map_err(|e| dsp_err(NAME, e))?;
+    Ok(Value::None)
 }

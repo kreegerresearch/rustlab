@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee)
-**Current phase:** 2 (not started; waits for an explicit yes)
+**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC)
+**Current phase:** 3 (not started; waits for an explicit yes)
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -120,7 +120,7 @@ fdtd_pec(sim, "y", j, mask2d)
 ```
 
 - Volume form: `mask` is a `(ny, nx, nz)` tensor. Nonzero cells are PEC. Every E edge that belongs to that cell is held at 0 (not updated).
-- Face form: a 2-D mask of tangential E on one staggered face. `"z", k` zeros `Ex` and `Ey` on z-face `k`, with `k` in `1 .. nz+1` (the extra face is the top boundary; see the stagger table). The ground plane is `fdtd_pec(sim, "z", 1, ones(ny, nx))`. The patch is `fdtd_pec(sim, "z", nsub+1, rect_mask(...))`.
+- Face form (as shipped, see Phase 2 under Examples for the node-flag rule and that `"x"` takes `j`, `"y"` takes `i`): a 2-D mask of tangential E on one staggered face. `"z", k` zeros `Ex` and `Ey` on z-face `k`, with `k` in `1 .. nz+1` (the extra face is the top boundary; see the stagger table). The ground plane is `fdtd_pec(sim, "z", 1, ones(ny, nx))`. The patch is `fdtd_pec(sim, "z", nsub+1, rect_mask(...))`.
 
 PEC is applied after the E update and also skips those edges inside the update, so a metal face does not get a one-step leak. H is not forced; the surrounding E = 0 is what enforces the tangential-E condition.
 
@@ -431,7 +431,7 @@ Where Phase 1 differs from the sketch and the API sections above:
 
 - **Derivative-of-Gaussian waveform, not a baseband Gaussian.** A soft source is a current. A baseband Gaussian current has a nonzero time integral, so it leaves charge on the source edge and a static dipole field: in the sketch's setup the probe settled near −3 V/m and the source cell of the slice sat near −2500 V/m, which swamped the figure. The shipped script samples `−(t − t0)/τ · gaussian_pulse(t, t0, τ)` into a vector (zero net charge). `"gaussian"` and `"modulated"` still work as in the Sources section.
 - **`ic = 21`, not 20.** Node 21 is the exact centre (20 mm of a 40 mm box); node 20 is one cell short of it.
-- **`out.probe(:, 1)` does not parse as indexing.** `a.b(…)` is method-call sugar in the parser, so the script binds `p = out.probe` (and `t = out.t`) first. Fixing the parser is outside this plan.
+- **`out.probe(:, 1)` did not parse as indexing in 0.3.47.** `a.b(…)` was method-call sugar in the parser, so the script bound `p = out.probe` (and `t = out.t`) first. Fixed in 0.3.48 (Phase 2): `obj.name(args)` indexes a struct field or table column `name` when `obj` has one, and the hello example now writes `ez = out.probe(:, id)`.
 - **Sources and probes are added only at `steps == 0`.** Without `fdtd_reset` a late source or probe would have no defined history. Both error and say to build a new grid. `fdtd_reset` and `fdtd_fields` are not in Phase 1.
 - **Stacks run along the component's own axis.** The "last index" wording assumed `ez`. A range is allowed on `j` for `ex`, `i` for `ey`, and `k` for `ez`; any other index with more than one value is an error. A stack of `N` edges shares one amplitude, `g / (N·Δ)` per edge.
 - **Source scaling.** Soft: `E −= (dt/ε0) · g/(N·Δ)` after the E update (a current density `g/(N·Δ)` per unit cross-section). Hard: `E = −g/(N·Δ)`. A hard vector waveform releases the edge after its last sample, so the edge behaves like vacuum again; an analytic hard waveform overwrites on every step.
@@ -444,6 +444,23 @@ Where Phase 1 differs from the sketch and the API sections above:
 ### Phase 2 — PEC cavity
 
 `examples/pde/fdtd_cavity.rlab`, notebook `examples/notebooks/fdtd_cavity.md`. A rectangular PEC cavity (the six faces set with `fdtd_pec`), a hard Gaussian so the mode rings, one probe. Check: the probe FFT peak is within 2% of the analytic `f_mnp` and within 0.5% of the Yee dispersion prediction (validation item 4).
+
+**Status:** complete (0.3.48). `examples/pde/fdtd_cavity.rlab`, notebook `examples/notebooks/fdtd_cavity.md` (rendered to `gallery/fdtd_cavity.md`).
+
+As shipped: a 24 × 20 × 10 mm cavity of 1 mm cells inside a 26 × 22 × 12 grid. Six `fdtd_pec` faces at node planes 2 and `n` on each axis close it one cell in from the outer walls, so the faces, not the walls, set the mode. A hard baseband Gaussian (`tau = 14·dt`) drives a stack of `ez` edges spanning the cavity height off-centre at `(9, 10)`, then releases; one `ez` probe at `(14, 17, nz/2)` records 8000 steps. The script skips the source window, applies a Hann window, zero-pads to `8·2^nextpow2`, takes the largest peak between 2 and 13 GHz, and refines it with a parabola. It checks TM110 against `f_mnp = (c/2)·sqrt((1/a)² + (1/b)²)` (2%) and the Yee dispersion prediction at the same `dt` (0.5%), then reruns with `fdtd_media(sim, 4)` and checks the ratio is `1/sqrt(4)` to 0.005. Measured: 9.7528 GHz, −0.033% from analytic (the Yee grid is slow by about that much at 1 mm), +0.000% from the dispersion prediction; `eps_r = 4` gives 4.8743 GHz, ratio 0.4998. The script calls `error` if any check fails, so `run-examples` gates it. The notebook's cell is the same program and plots the first 600 steps of both probes plus their normalised spectra.
+
+Where Phase 2 differs from the API sections above:
+
+- **`fdtd_media` takes 2–4 arguments.** `mu_r` defaults to 1 and `sigma` to 0, so a dielectric fill is `fdtd_media(sim, 4)`. A later call replaces the earlier one (not cumulative); `fdtd_pec` calls are cumulative.
+- **After the first step, the error says to build a new `fdtd3d`.** `fdtd_reset` is not in Phase 2, so the message cannot point at it as the Materials section says.
+- **Edge averaging is arithmetic.** An E edge averages `eps_r` and `sigma` over its (up to four) cells; an H edge averages `mu_r` over its two. The tangential E edge sits beside both media, in parallel; the harmonic mean is for the normal flux of `laplacian_eps_*`.
+- **`dt` uses `min(eps_r)·min(mu_r)`, capped at vacuum.** That product is the fastest possible speed even when the two minima are in different cells. When it is `>= 1`, `dt` stays the vacuum step (the section above says "at least the vacuum speed"). So `fdtd_media` only changes `dt` for `eps_r·mu_r < 1`; a waveform vector sampled from `fdtd_info(sim).dt` should be built after `fdtd_media`.
+- **No `Da` array.** There is no magnetic loss, so `Da = 1` would be a multiply by one per H edge; the kernel stores only `Db = 1/mu_r` (relative, times the vacuum `dt/(μ0 Δ)`). Adding magnetic loss later adds a lossy H row next to the lossy E row.
+- **Coefficients are relative and optional.** `Cb = (1/eps_r)/(1 + s)`, `Ca = (1 − s)/(1 + s)` with `s = σ dt/(2 ε0 eps_r)`, `Db = 1/mu_r`, each multiplied by the vacuum curl factor in the kernel. `Ca` is stored only when some `sigma > 0`; nothing is stored for vacuum. A grid with no media and no PEC runs the Phase 1 rows, and a coefficient of exactly 1 is the same arithmetic as vacuum, so vacuum, `fdtd_media(sim, 1)`, and PEC on the walls all reproduce the 0.3.47 golden hash bit for bit.
+- **PEC is `Ca = Cb = 0`, not a skip plus a write-back.** Fields start at 0 and a source cannot drive a PEC edge (either order is a setup error), so such an edge is never changed. That is the same result as skipping it and writing 0 after the E update, without a second pass.
+- **Face masks use node flags.** `mask2d` has one flag per node of the plane in the `fdtd_slice` layout (`"z"`: `ny × nx`, `"y"`: `nx × nz`, `"x"`: `ny × nz`); a tangential edge is PEC when both its end nodes are set, and a node on the max wall (outside the mask) counts as set. A `rect_mask` over a meshgrid of node coordinates is therefore exactly the patch rectangle. A scalar mask is the whole plane. The index letters follow `fdtd_slice`: `"x"` takes the column `j`, `"y"` the row `i` (the Materials section had them swapped).
+- **Volume PEC marks all 12 edges of a cell.** H is never forced, as planned.
+- **Measured.** 60×60×20 grid, serial release build, same VM class as Phase 1, best of five 2000-step runs (`cargo run --release --example bench_fdtd -p rustlab-dsp`): vacuum 374 Mcell/s (Phase 1 code on the same VM: 364–382), PEC box 305 (82% of vacuum), dielectric 290 (78%), dielectric + `mu_r` 242 (65%), lossy dielectric 246 (66%). The material rows read one or two extra `f64` per edge per step; a PEC-only grid pays the `Cb` read.
 
 ### Phase 3 — PML box
 
@@ -950,7 +967,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 |---|---|---|---|
 | **0** (complete, 0.3.46) | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
 | **1** (complete, 0.3.47) | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
-| **2** | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
+| **2** (complete, 0.3.48) | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
 | **4** | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|`). Lossless patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook, including the `tanδ = 0.02` rerun, is Phase 6). `render --strict` and `run-examples` exit 0. |
 | **5** | On-the-fly NTFF, `fdtd_farfield` with a settable origin (default grid centre), directivity and realized gain. No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern (grid-centre origin). Patch broadside peak is qualitative. `render --strict` and `run-examples` exit 0. |

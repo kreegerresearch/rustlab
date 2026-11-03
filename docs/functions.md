@@ -300,7 +300,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid. Phase 1 is vacuum with PEC outer walls, soft and hard E sources, and point probes. Materials, metal, the CPML absorber, a lumped port, and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), soft and hard E sources, and point probes. A grid with no `fdtd_media` or `fdtd_pec` call is vacuum. The CPML absorber, a lumped port, and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -329,10 +329,38 @@ sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field and probe storage), and `c0` (299 792 458 m/s).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, and PEC storage), and `c0` (299 792 458 m/s).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
+```
+
+### `fdtd_media(sim, eps_r)` / `fdtd_media(sim, eps_r, mu_r)` / `fdtd_media(sim, eps_r, mu_r, sigma)`
+Set the materials of every cell. Each argument is a real scalar (the whole grid) or a real `ny × nx × nz` `Tensor3` (one value per cell, the same `(i, j, k)` order as the fields). `mu_r` defaults to 1 and `sigma` to 0.
+
+- `eps_r`: relative permittivity, finite and `> 0`. A complex `eps_r` is an error: give loss as a conductivity, `sigma = 2*pi*f*eps_r*eps0*tan_delta` at the frequency of interest.
+- `mu_r`: relative permeability, finite and `> 0`.
+- `sigma`: electric conductivity in S/m, finite and `>= 0`.
+
+Cell values are averaged onto the edges: an E edge takes the arithmetic mean of `eps_r` and `sigma` over the (up to four) cells that share it, and an H edge the mean of `mu_r` over the two cells on either side. A later call replaces the earlier one. `dt` is recomputed from the fastest wave on the grid, `c0 / sqrt(min(eps_r) · min(mu_r))`, and is never longer than the vacuum step, so ordinary dielectrics (`eps_r·mu_r >= 1` everywhere) leave `dt` unchanged. If some cell has `eps_r·mu_r < 1`, `dt` shrinks: read `fdtd_info(sim).dt` after `fdtd_media` before sampling a waveform vector. Materials must be set before the first step. A grid with `eps_r = mu_r = 1`, `sigma = 0` runs the vacuum kernel and gives bit-identical results to a grid without the call.
+```
+fdtd_media(sim, 4);                                   # fill the box with eps_r = 4
+eps = ones3(ny, nx, nz);  eps(:, :, 1:5) = 4.4;       # a 5-cell FR-4 slab
+fdtd_media(sim, eps, 1, 2*pi*2.4e9*4.4*8.854e-12*0.02);
+```
+
+### `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)`
+Metal. Each call adds to the metal already set; PEC edges are held at `E = 0` on every step.
+
+- Volume: `mask` is an `ny × nx × nz` `Tensor3`. Every E edge of each nonzero cell (its 12 edges) is PEC.
+- Face: a zero-thickness sheet on node plane `index` of `axis` (`"x"`: column `j`, `"y"`: row `i`, `"z"`: page `k`, the same letters as `fdtd_slice`). `index` runs from 1 to `n + 1`; plane `f` sits at `(f − 1)·d`, so 1 and `n + 1` are the outer walls (already PEC). `mask2d` is one flag per node in the `fdtd_slice` layout (`"z"`: `ny × nx`, `"y"`: `nx × nz`, `"x"`: `ny × nz`), or a scalar for the whole plane. A tangential E edge in the plane is PEC when both its end nodes are set; a node beyond the last row or column (on the max wall) counts as set.
+
+A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source, and `fdtd_source` refuses an edge that is already PEC.
+```
+fdtd_pec(sim, "z", 1, 1);                             # ground plane on the bottom wall (already PEC)
+fdtd_pec(sim, "z", 6, rect_mask(X, Y, x0, y0, w, h)); # a patch on top of a 5-cell substrate
+m = zeros3(ny, nx, nz);  m(10:12, 10:12, 4:6) = 1;
+fdtd_pec(sim, m);                                     # a solid 3 × 3 × 3 block
 ```
 
 ### `y = gaussian_pulse(t, t0, tau)` / `gaussian_pulse(t, t0, tau, f0)`
@@ -355,7 +383,7 @@ Drive one E edge (`comp` is `"ex"`, `"ey"`, or `"ez"`), or a stack of collinear 
 - `"gaussian"` and `"modulated"` are evaluated at `t = n·dt` on step `n`, on every step.
 - A real vector `waveform` gives sample `n` at step `n`. Past its end a soft source adds nothing and a hard source releases the edge.
 
-Sources must be added before the first step. An edge on a PEC wall is an error (it is held at 0), and a hard source cannot share an edge with another source.
+Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
 ```
 fdtd_source(sim, "ez", 21, 21, 21, "soft", "gaussian", 4*tau, tau);
 fdtd_source(sim, "ez", 10, 10, 2:4, "hard", gaussian_pulse((1:200) * info.dt, 60*info.dt, 20*info.dt));
@@ -379,10 +407,8 @@ Advance the grid. `fdtd_step(sim)` is one leapfrog step; `fdtd_step(sim, n)` and
 Ctrl+C on a terminal stops a run of more than one step after the step in progress, prints `interrupted` to stderr, and returns the struct with `interrupted = true`; the record is as long as the steps that finished, so the script can plot it. Under `rustlab-notebook watch`, saving the notebook while a run is in progress stops it with no result (the render is discarded).
 ```
 out = fdtd_run(sim, 400);
-p = out.probe;
-plot(out.t * 1e9, p(:, 1));
+plot(out.t * 1e9, out.probe(:, 1));
 ```
-Use a temporary for the probe matrix: `out.probe(:, 1)` parses as a method call, not as indexing.
 
 ### `rec = fdtd_record(sim)`
 The record of every step since the grid was created, without stepping:
@@ -4225,7 +4251,7 @@ names = T.Properties.VariableNames
 names(1)          % first column name
 ```
 
-`.name(` is a method call, so `T.Properties.VariableNames(1)` calls a function named `VariableNames`. Index the string array itself, as above.
+`T.Properties.VariableNames(1)` indexes the string array directly, and `T.a(2)` indexes column `a`: `obj.name(args)` indexes when `obj` is a struct or table that has `name`, and is a call `name(obj, args)` otherwise.
 
 ### `T(rows, vars)`
 Two subscripts, both required. The result is a table.
