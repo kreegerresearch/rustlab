@@ -468,7 +468,7 @@ Where Phase 2 differs from the API sections above:
 
 `fdtd_cpml` is an 8-cell (the gate thickness) convolutional PML inside the PEC walls. The same soft pulse in that box and in a PEC-walled box of the same size: once the pulse should have left, the CPML probe is below −40 dB relative to the incident peak (validation item 6). Measured full-window residual against a reference grid: **−93.3 dB** on the debug grid (PEC sanity −18.0 dB) and **−87.9 dB** (`alpha_max = 0`) / **−92.3 dB** (`alpha_max = 0.033`) on the 40³ hello geometry. The example's late residual is −8.2 / −85.2 / −93.9 dB for PEC / α = 0 / α = 0.033.
 
-The one kernel stores `q = −Δψ` on every cell, including CPML off. On this machine that costs the vacuum step: 184 Mcell/s CPML off versus 355 Mcell/s on 0.3.50 (52%). CPML on is 169 Mcell/s. The 60×60×20, six-face, 8000-step release run is 4.0 s. A non-ψ fast path for the off case was not added; it is the option if that 52% is not acceptable. Gate (c), parallel = serial, is N/A (no parallel stepper; the split-run bit-identity test is the substitute).
+The stepper is the Taflove split, not one kernel. The interior E and H updates are the Phase 2 curl over the whole grid, the same arithmetic as 0.3.50. After each half-step a correction runs only on cells inside an enabled slab: `q := b·q − a·du` with the existing coefficients, then the field gets `c·((κ⁻¹ − 1)·du − q)`. Michael approved that split because the first 0.3.51 kernel carried ψ on every cell and CPML-off vacuum fell to 184 Mcell/s, 52% of 0.3.50's 355. With the correction skipped entirely when CPML is off, the same benchmark is 359 Mcell/s (101% of that 355). CPML on is 139 Mcell/s on this 60×60×20 mesh (the first kernel was 169): an 8-cell face on `nz = 20` puts 16 of 20 planes in the z slab, so the second pass still touches most cells. `q` is stored for every cell when any face is on (12·72e3·8 ≈ 6.9 MB, plus the profiles); packing only the slab cells is still a later optimisation. The 8000-step release gate is 4.6 s. `sigma_factor = 0` (and CPML fully off, including every face turned back off) reproduces the Phase 1 golden hash. Gate (c), parallel = serial, is N/A (no parallel stepper; the split-run bit-identity test is the substitute).
 
 ### Phase 4 — resistor and S11
 
@@ -618,7 +618,7 @@ Recorded gap voltage is `V = −Ez · Δz` (and a sum over a stack). Both formul
 
 ### PML auxiliary in the curl
 
-When CPML is on, each Cartesian derivative in the curl is replaced as in the next section. Interior coefficients have `κ = 1`, `a = 0`, `b = 1`, and the auxiliary stays 0, so the interior curl is the same arithmetic as the no-PML kernel. Implement that as **one** kernel with the `κ` and `ψ` terms always present, and require a test that a grid with PML allocated but `sigma_factor = 0` matches a no-PML run **bit for bit** for a few hundred steps. Two kernels will drift.
+When CPML is on, each Cartesian derivative in the curl is replaced as in the next section. The update that runs on every cell is the Phase 2 kernel, with no `κ` and no `ψ`. After that half-step, a separate pass updates `ψ` and adds the stretch, and only for cells inside an enabled slab. A grid with CPML off never calls that pass, so it cannot drift from the 0.3.50 kernel: it is that kernel. A grid with PML allocated but `sigma_factor = 0` has `κ = 1` and `a = 0` everywhere; the pass returns without writing, and the same bit-identical test applies. The always-ψ kernel was the first 0.3.51 implementation. It kept one code path, and it also put the ψ recurrence on every interior cell, which held CPML-off vacuum at about 185 Mcell/s. The split is what puts that recurrence back on the slab only.
 
 ---
 
@@ -641,7 +641,7 @@ d/dx |stretched = du / (κ Δx) + ψ
 
 `a ≤ 0` because `(b − 1) ≤ 0`. The sign is whatever this formula produces; do not flip it to "make absorption happen" without changing the formula and the test together.
 
-**Shipped in 0.3.51.** The kernel stores `q = −Δ·ψ`, not `ψ`. The update is `q := b·q − a·du`, and the curl multiplies `kinv·du − q`. `x − (+0.0)` keeps a signed zero, which is what makes `sigma_factor = 0` bit-identical to a grid with no CPML, including the golden hard source. `a` is the literal `0.0` whenever `σ = 0`, even if `α ≠ 0`: with `σ = 0` the formula's `a` is already 0, and writing that as a literal keeps `q` at `+0.0`. Both are in `crates/rustlab-dsp/src/fdtd/cpml.rs` and `yee.rs`.
+**Shipped in 0.3.51.** The correction stores `q = −Δ·ψ`, not `ψ`. Its update is `q := b·q − a·du`, and the extra it adds on top of the Phase 2 curl is `c·((kinv − 1)·du − q)`, which is the difference between `c·(kinv·du − q)` and the plain `c·du` the fast kernel already applied. When `kinv = 1` and `a = 0`, that extra is 0 and the pass does not write the fields (a second add of 0 can flip a signed zero). `a` is the literal `0.0` whenever `σ = 0`, even if `α ≠ 0`. Both are in `crates/rustlab-dsp/src/fdtd/cpml.rs` and `yee.rs`. Full `q` arrays, not slab-packed: the E and H slabs do not share an index set (node versus half-node), and corners belong to two axes.
 
 Profile along a local coordinate `ρ ∈ [0, 1]`, 0 at the inner interface and 1 at the outer PEC wall. Where that `ρ` is sampled is below (primal for an E derivative, half-cell for an H derivative).
 

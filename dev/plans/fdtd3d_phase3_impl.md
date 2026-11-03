@@ -333,6 +333,8 @@ In the identity region: `kinv = 1.0` so `kinv*du == du` bit for bit (including `
 
 ### 5.5 One kernel, scratch rows when CPML is off
 
+**Superseded (2026-11-03).** Michael approved the Taflove split after the always-ψ kernel left CPML-off vacuum at 184 Mcell/s (52% of 0.3.50). The shipped stepper is the Phase 2 curl on every cell, then a slab-only correction. See `dev/plans/fdtd3d.md` (Phase 3 status). The paragraphs below are the original brief and are not what landed.
+
 The plan requires **one** kernel with `κ` and `ψ` always present. So:
 
 - No CPML (never called, `n = 0`, or every face disabled): `Absorber` holds identity profiles (lengths `nx`, `ny`, `nz`) and twelve **scratch rows of length `nx`** (`q[0].len() == nx`, `full == false`, every row uses offset 0). They stay `+0.0` forever.
@@ -624,6 +626,8 @@ If branch vacuum CPML-off is below 85% of main (same session, best of 5, measure
 2. Confirm row scalars are hoisted (not reloaded per `j`).
 3. Confirm no `mul_add` and no accidental `Vec` allocation per step.
 Then report the number. Do **not** add a second (non-ψ) kernel path; list it as an option for Michael (section 5.5).
+
+**Superseded (2026-11-03).** The CPML-off number was 52% of main. Michael approved the second path. Shipped behavior and the new numbers are in `dev/plans/fdtd3d.md`.
 
 ---
 

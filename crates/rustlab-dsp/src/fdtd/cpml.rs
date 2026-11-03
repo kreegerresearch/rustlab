@@ -4,11 +4,14 @@
 //! slab on each enabled face. The outer boundary stays PEC. Coefficients are
 //! baked only while `steps == 0`.
 //!
-//! `q` stored on [`Absorber`] is `−Δψ`, not the Roden–Gedney `ψ`. The curl
-//! then multiplies `kinv·du − q`, which is exactly `du` when `kinv = 1` and
-//! `q = +0` (signed zero included). Scratch rows (CPML off) are shared by
-//! every row, which is fine serially; a row-parallel loop needs per-thread
-//! scratch or full arrays.
+//! The Yee update itself is the Phase 2 kernel (no `κ`, no `ψ`). After each
+//! half-step a correction pass, only over cells inside an enabled slab, updates
+//! `q` and adds the stretch. `q` stored on [`Absorber`] is `−Δψ`, not the
+//! Roden–Gedney `ψ`: the correction is `c·((kinv − 1)·du − q)` with
+//! `q := b·q − a·du`. That term is exactly 0 when `kinv = 1` and `q = +0`
+//! (signed zero included), and the pass does not write a 0 back into the
+//! field. Scratch rows (CPML off) are not read by the kernel. Full `q` arrays
+//! are allocated when any face is on.
 
 use super::{Axis, C0, EPS0};
 use crate::error::DspError;
@@ -155,6 +158,23 @@ pub(super) struct CpmlSettings {
     pub params: CpmlParams,
 }
 
+/// `m` is inside the lo or hi slab. `half` is the H (half-node) sampling.
+/// `n_hi = 0` must not match: `len - 0 = len`, and no sample has `m > len`
+/// (E) or `m >= len` (H).
+#[inline]
+pub(super) fn in_slab(m: usize, len: usize, n_lo: usize, n_hi: usize, half: bool) -> bool {
+    if m < n_lo {
+        return true;
+    }
+    n_hi > 0
+        && n_hi <= len
+        && if half {
+            m >= len - n_hi
+        } else {
+            m > len - n_hi
+        }
+}
+
 /// One axis of CPML coefficients, one entry per sample along that axis.
 /// Identity entries are exactly `kinv = 1.0`, `b = 1.0`, `a = 0.0`.
 #[derive(Clone, Debug)]
@@ -190,23 +210,13 @@ impl Profile {
         let mut a = Vec::with_capacity(len);
         let sigma_max = p.sigma_factor * (p.order + 1.0) * EPS0 * C0 / delta;
         for m in 0..len {
-            let on_lo = m < n_lo;
-            // `n_hi = 0` must not match: `len - 0 = len`, and no sample has
-            // `m > len` (E) or `m >= len` (H). Written out so a later edit
-            // cannot drop the guard.
-            let on_hi = n_hi > 0
-                && n_hi <= len
-                && if half {
-                    m >= len - n_hi
-                } else {
-                    m > len - n_hi
-                };
-            if !on_lo && !on_hi {
+            if !in_slab(m, len, n_lo, n_hi, half) {
                 kinv.push(1.0);
                 b.push(1.0);
                 a.push(0.0);
                 continue;
             }
+            let on_lo = m < n_lo;
             let (depth_cells, into) = if on_lo {
                 let pos = if half {
                     (m as f64 + 0.5) * delta

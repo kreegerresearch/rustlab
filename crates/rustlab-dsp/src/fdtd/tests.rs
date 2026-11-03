@@ -498,6 +498,25 @@ fn vacuum_matches_phase1_bit_for_bit() {
     assert_eq!(golden_hash(golden_sim()), PHASE1_GOLDEN);
 }
 
+/// CPML fully off takes the 0.3.50 Yee kernel. `PHASE1_GOLDEN` is that
+/// kernel's FNV-1a on `golden_sim` (field bits and the probe record).
+#[test]
+fn cpml_off_matches_v0_3_50_kernel_bit_for_bit() {
+    assert_eq!(golden_hash(golden_sim()), PHASE1_GOLDEN);
+
+    let mut s = golden_sim();
+    s.set_cpml(0, CpmlParams::default()).unwrap();
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+
+    let mut s = golden_sim();
+    s.set_cpml(3, CpmlParams::default()).unwrap();
+    for face in Face::ALL {
+        s.set_cpml_face(face, 0).unwrap();
+    }
+    assert_eq!(s.cpml_faces(), [0; 6]);
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+}
+
 #[test]
 fn unit_media_and_wall_pec_match_vacuum_bit_for_bit() {
     let mut a = golden_sim();

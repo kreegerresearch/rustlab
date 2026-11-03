@@ -6,8 +6,8 @@
 //! The first form times a 60×60×20 grid (the patch-lesson mesh of
 //! `dev/plans/fdtd3d.md`), one soft source and one probe, best of five
 //! runs of 2000 steps. Each media configuration the kernel distinguishes
-//! is timed twice: CPML off (the Phase 2 rows, plus a one-row scratch
-//! auxiliary) and CPML on (`set_cpml(8)`, full auxiliaries on all six
+//! is timed twice: CPML off (the Phase 2 kernel; the slab correction is
+//! not called) and CPML on (`set_cpml(8)`, full auxiliaries on all six
 //! faces). Cell updates count every cell, slab included. Percentages are
 //! against the vacuum run with CPML off.
 //!

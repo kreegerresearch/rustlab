@@ -846,10 +846,15 @@ impl FdtdSim {
         let np = self.probes.len();
         let row0 = self.record.len();
         self.record.resize(row0 + np, 0.0);
+        // Copied out so the correction call is a branch around the Phase 2
+        // update, not a parameter the update has to read.
+        let cpml_on = self.cpml_active();
+        let faces = self.cpml_faces();
 
         // Split the grid so the absorber profiles, the `q` rows and the six
         // fields can be borrowed together. `HCoefs` / `ECoefs` hold the
-        // material coefficients for the whole step.
+        // material coefficients for the whole step. Order: plain H update,
+        // H slab correction, H probes, plain E update, E slab correction.
         {
             let FdtdSim {
                 absorber,
@@ -872,14 +877,17 @@ impl FdtdSim {
                 cb: baked.cb.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
                 ca: baked.ca.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
             };
-            {
+            yee::update_h(dims, db, hm, zero_row, ex, ey, ez, hx, hy, hz);
+            if cpml_on {
                 let cpml::Absorber { h, q_h, .. } = absorber;
                 let axes = yee::Axes {
                     x: &h[0],
                     y: &h[1],
                     z: &h[2],
                 };
-                yee::update_h(dims, db, hm, axes, q_h, zero_row, ex, ey, ez, hx, hy, hz);
+                yee::correct_h(
+                    dims, db, hm, axes, faces, q_h, zero_row, ex, ey, ez, hx, hy, hz,
+                );
             }
             for (p, probe) in probes.iter().enumerate() {
                 if !probe.comp.is_electric() {
@@ -892,14 +900,15 @@ impl FdtdSim {
                     record[row0 + p] = src[probe.idx];
                 }
             }
-            {
+            yee::update_e(dims, cb, em, hx, hy, hz, ex, ey, ez);
+            if cpml_on {
                 let cpml::Absorber { e, q_e, .. } = absorber;
                 let axes = yee::Axes {
                     x: &e[0],
                     y: &e[1],
                     z: &e[2],
                 };
-                yee::update_e(dims, cb, em, axes, q_e, hx, hy, hz, ex, ey, ez);
+                yee::correct_e(dims, cb, em, axes, faces, q_e, hx, hy, hz, ex, ey, ez);
             }
         }
         self.steps += 1;
