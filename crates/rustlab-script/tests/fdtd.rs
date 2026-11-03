@@ -617,3 +617,124 @@ b2 = fdtd_info(sim).bytes;
     let (b0, b1, b2) = (scalar(&ev, "b0"), scalar(&ev, "b1"), scalar(&ev, "b2"));
     assert!(b1 > b0 && b2 > b1, "{b0} {b1} {b2}");
 }
+
+#[test]
+fn cpml_errors() {
+    let pre = "sim = fdtd3d(12, 10, 8, 1e-3, 1e-3, 1e-3);\n";
+    for (src, want) in [
+        ("fdtd_cpml(sim, 4, \"nope\", 1)", "unknown option \"nope\""),
+        (
+            "fdtd_cpml(sim, 4, \"sigma_factor\")",
+            "options come in name, value pairs",
+        ),
+        (
+            "fdtd_cpml(sim, 4, \"order\", 2, \"order\", 3)",
+            "option \"order\" given twice",
+        ),
+        ("fdtd_cpml(sim, \"wall\", 0)", "unknown face \"wall\""),
+        (
+            "fdtd_cpml(sim, 3); fdtd_cpml(sim, \"xmin\", 1)",
+            "0 (off) or the absorber thickness 3",
+        ),
+        ("fdtd_cpml(sim, \"zmin\", 0)", "before turning a face"),
+        ("fdtd_cpml(sim, 1.5)", "non-negative integer"),
+        ("fdtd_cpml(sim, -1)", "non-negative integer"),
+        ("fdtd_cpml(sim, 4)", "leaves no interior on z"),
+        (
+            "fdtd_step(sim); fdtd_cpml(sim, 2)",
+            "set CPML before the first step (1 steps done)",
+        ),
+    ] {
+        let e = run_err(&format!("{pre}{src};"));
+        assert!(e.contains(want), "{src}: {e}");
+    }
+}
+
+#[test]
+fn cpml_sigma_zero_matches_no_cpml_bit_for_bit() {
+    let src = r#"
+function out = go(use_cpml)
+  sim = fdtd3d(12, 12, 12, 1e-3, 1e-3, 1e-3);
+  dt = fdtd_info(sim).dt;
+  tau = 6 * dt;
+  t = (1:120) * dt;
+  u = (t - 4 * tau) / tau;
+  w = -u .* exp(-u .* u);
+  fdtd_source(sim, "ez", 6, 6, 6, "soft", w);
+  fdtd_probe(sim, "ez", 6, 8, 6);
+  if use_cpml
+    fdtd_cpml(sim, 3, "sigma_factor", 0);
+  end
+  out = fdtd_run(sim, 120);
+end
+a = go(0);
+b = go(1);
+pa = a.probe;
+pb = b.probe;
+"#;
+    let ev = eval(src);
+    assert_eq!(bits(&ev, "pa"), bits(&ev, "pb"));
+}
+
+#[test]
+fn cpml_info_reports_faces_and_bytes() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3);
+b0 = fdtd_info(sim).bytes;
+fdtd_cpml(sim, 1);
+info = fdtd_info(sim);
+b1 = info.bytes;
+c = info.cpml;
+fdtd_cpml(sim, "zmin", 0);
+z = fdtd_info(sim).cpml;
+"#,
+    );
+    let n = 6 * 5 * 4;
+    let add = 12 * n * 8 + 2 * 3 * (6 + 5 + 4) * 8;
+    assert_eq!(scalar(&ev, "b1") - scalar(&ev, "b0"), add as f64);
+    let c = bits(&ev, "c");
+    assert_eq!(c.len(), 6);
+    assert!(c
+        .iter()
+        .all(|(re, im)| *im == 0 && f64::from_bits(*re) == 1.0));
+    let z = bits(&ev, "z");
+    let z: Vec<f64> = z.iter().map(|(re, _)| f64::from_bits(*re)).collect();
+    assert_eq!(z, vec![1.0, 1.0, 1.0, 1.0, 0.0, 1.0]);
+}
+
+#[test]
+fn cpml_absorbs_at_script_level() {
+    let ev = eval(
+        r#"
+function ratio = late(use_cpml)
+  n = 24;
+  sim = fdtd3d(n, n, n, 1e-3, 1e-3, 1e-3);
+  dt = fdtd_info(sim).dt;
+  tau_steps = 6;
+  tau = tau_steps * dt;
+  steps = 250;
+  t = (1:steps) * dt;
+  u = (t - 4 * tau) / tau;
+  w = -u .* exp(-u .* u);
+  ic = n / 2;
+  fdtd_source(sim, "ez", ic, ic, ic, "soft", w);
+  fdtd_probe(sim, "ez", ic, ic + 4, ic);
+  if use_cpml
+    fdtd_cpml(sim, 6);
+  end
+  out = fdtd_run(sim, steps);
+  p = out.probe;
+  n_left = ceil(8 * tau_steps + 20);
+  ratio = max(abs(p(n_left:end))) / max(abs(p));
+end
+pec = late(0);
+cpml = late(1);
+"#,
+    );
+    let pec = scalar(&ev, "pec");
+    let cpml = scalar(&ev, "cpml");
+    let db = 20.0 * (cpml / pec).log10();
+    println!("script late residual: pec {pec:.3e}, cpml {cpml:.3e}, {db:.1} dB");
+    assert!(db < -30.0, "cpml is only {db} dB below pec");
+}

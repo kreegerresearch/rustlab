@@ -300,7 +300,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), soft and hard E sources, and point probes. A grid with no `fdtd_media` or `fdtd_pec` call is vacuum. The CPML absorber, a lumped port, and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, and point probes. A grid with no `fdtd_media`, `fdtd_pec`, or `fdtd_cpml` call is vacuum. A lumped port and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -329,7 +329,7 @@ sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, and PEC storage), and `c0` (299 792 458 m/s).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
@@ -361,6 +361,42 @@ fdtd_pec(sim, "z", 1, 1);                             # ground plane on the bott
 fdtd_pec(sim, "z", 6, rect_mask(X, Y, x0, y0, w, h)); # a patch on top of a 5-cell substrate
 m = zeros3(ny, nx, nz);  m(10:12, 10:12, 4:6) = 1;
 fdtd_pec(sim, m);                                     # a solid 3 × 3 × 3 block
+```
+
+### `fdtd_cpml(sim, n)` / `fdtd_cpml(sim, n, key, value, ...)` / `fdtd_cpml(sim, face, n)`
+Convolutional PML (Roden–Gedney) inside the PEC walls. `n` is the thickness in cells on every face. A later call replaces the earlier one and turns every face back on. `fdtd_cpml(sim, 0)` removes the absorber.
+
+Optional name/value pairs, case-insensitive, each given at most once:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `"sigma_factor"` | 1 | Scales `σ_max = sigma_factor · (order + 1) · ε0 · c0 / Δ`. Finite and `>= 0` |
+| `"kappa_max"` | 1 | `κ` at the wall. Finite and `>= 1` |
+| `"alpha_max"` | 0 | CFS `α` in S/m at the inner interface. Finite and `>= 0` |
+| `"order"` | 3 | Polynomial order `m` of `σ` and `κ`. Finite and `>= 0` |
+| `"alpha_order"` | 1 | Polynomial order of `α`. Finite and `>= 0` |
+
+`σ(ρ) = σ_max · ρ^m`, `κ(ρ) = 1 + (kappa_max − 1) · ρ^m`, `α(ρ) = alpha_max · (1 − ρ)^alpha_order`, with `ρ = 0` at the inner interface and `ρ = 1` at the wall. The curl uses one auxiliary per Cartesian derivative. `dt` does not change.
+
+`fdtd_cpml(sim, face, value)` turns one face on or off. `face` is `xmin`, `xmax`, `ymin`, `ymax`, `zmin`, or `zmax`. `value` is `0` (that side is a plain PEC wall) or the current thickness (turn it back on). Call `fdtd_cpml(sim, n)` first.
+
+| Face | Axis | Indices that sit in the slab |
+|---|---|---|
+| `xmin` | column `j` | `1 .. n` |
+| `xmax` | column `j` | `nx−n+1 .. nx` |
+| `ymin` | row `i` | `1 .. n` |
+| `ymax` | row `i` | `ny−n+1 .. ny` |
+| `zmin` | page `k` | `1 .. n` |
+| `zmax` | page `k` | `nz−n+1 .. nz` |
+
+Each axis needs `n_lo + n_hi < N` so an interior remains. Sources and probes inside the slab are allowed. PEC inside the slab is allowed and still wins. In v1, `σ` uses vacuum `ε0` and that axis's `Δ` and is not scaled by `ε_r` in the slab, and spacing is uniform per axis.
+
+CPML must be set before the first step.
+```
+fdtd_cpml(sim, 8);
+fdtd_cpml(sim, 8, "sigma_factor", 0.5, "alpha_max", 0.033);
+fdtd_cpml(sim, "zmin", 0);          # bottom face stays a PEC wall
+faces = fdtd_info(sim).cpml;       # [8 8 8 8 0 8]
 ```
 
 ### `y = gaussian_pulse(t, t0, tau)` / `gaussian_pulse(t, t0, tau, f0)`

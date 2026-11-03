@@ -10,7 +10,8 @@ use crate::error::ScriptError;
 use ndarray::{Array1, Array2};
 use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
-    gaussian_pulse, Axis, CellMap, Component, FdtdSim, SourceKind, Waveform, C0, DEFAULT_COURANT,
+    gaussian_pulse, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, SourceKind, Waveform, C0,
+    DEFAULT_COURANT,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,6 +82,17 @@ fn positive_int(name: &str, what: &str, v: &Value) -> Result<usize, ScriptError>
         _ => Err(err(
             name,
             format!("{what} must be a positive integer, got {x}"),
+        )),
+    }
+}
+
+fn nonneg_int(name: &str, what: &str, v: &Value) -> Result<usize, ScriptError> {
+    let x = real_scalar(name, what, v)?;
+    match Value::count_from_f64(x) {
+        Ok(n) => Ok(n),
+        _ => Err(err(
+            name,
+            format!("{what} must be a non-negative integer, got {x}"),
         )),
     }
 }
@@ -258,6 +270,11 @@ pub(crate) fn builtin_fdtd_info(args: Vec<Value>) -> Result<Value, ScriptError> 
     ] {
         f.insert(k.to_string(), Value::Scalar(v));
     }
+    let faces = g.cpml_faces();
+    f.insert(
+        "cpml".to_string(),
+        Value::real_vector(Array1::from_vec(faces.map(|n| n as f64).to_vec())),
+    );
     Ok(Value::Struct(f))
 }
 
@@ -749,5 +766,74 @@ pub(crate) fn builtin_fdtd_pec(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     g.add_pec_face(axis, face, &nodes)
         .map_err(|e| dsp_err(NAME, e))?;
+    Ok(Value::None)
+}
+
+/// `fdtd_cpml(sim, n [, key, value]...)` / `fdtd_cpml(sim, face, n)`
+pub(crate) fn builtin_fdtd_cpml(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_cpml";
+    if !(2..=12).contains(&args.len()) {
+        return Err(ScriptError::arg_count_range(NAME.into(), 2, 12, args.len()));
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let mut g = lock(NAME, &s)?;
+    setup_check(NAME, "CPML", &g)?;
+    if matches!(&args[1], Value::Str(_)) {
+        if args.len() != 3 {
+            return Err(err(NAME, "expected fdtd_cpml(sim, face, n)"));
+        }
+        let face_s = str_arg(NAME, "face", &args[1])?;
+        let face = Face::parse(&face_s).ok_or_else(|| {
+            err(
+                NAME,
+                format!(
+                    "unknown face \"{face_s}\" (expected xmin, xmax, ymin, ymax, zmin or zmax)"
+                ),
+            )
+        })?;
+        let n = nonneg_int(NAME, "n", &args[2])?;
+        g.set_cpml_face(face, n).map_err(|e| dsp_err(NAME, e))?;
+        return Ok(Value::None);
+    }
+    let n = nonneg_int(NAME, "n", &args[1])?;
+    if !(args.len() - 2).is_multiple_of(2) {
+        return Err(err(NAME, "options come in name, value pairs"));
+    }
+    let mut params = CpmlParams::default();
+    let names = [
+        "sigma_factor",
+        "kappa_max",
+        "alpha_max",
+        "order",
+        "alpha_order",
+    ];
+    let mut seen = [false; 5];
+    for pair in args[2..].chunks(2) {
+        let key = str_arg(NAME, "option name", &pair[0])?;
+        let idx = names
+            .iter()
+            .position(|n| key.eq_ignore_ascii_case(n))
+            .ok_or_else(|| {
+                err(
+                    NAME,
+                    format!(
+                        "unknown option \"{key}\" (expected sigma_factor, kappa_max, alpha_max, order or alpha_order)"
+                    ),
+                )
+            })?;
+        if seen[idx] {
+            return Err(err(NAME, format!("option \"{key}\" given twice")));
+        }
+        seen[idx] = true;
+        let v = real_scalar(NAME, &key, &pair[1])?;
+        match idx {
+            0 => params.sigma_factor = v,
+            1 => params.kappa_max = v,
+            2 => params.alpha_max = v,
+            3 => params.order = v,
+            _ => params.alpha_order = v,
+        }
+    }
+    g.set_cpml(n, params).map_err(|e| dsp_err(NAME, e))?;
     Ok(Value::None)
 }

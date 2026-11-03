@@ -11,6 +11,23 @@
 //! [`Coeffs`]: an absent array means 1 (vacuum), so a grid without media runs
 //! the same arithmetic as Phase 1, bit for bit. The variant is chosen once per
 //! row, outside the inner loop.
+//!
+//! Every derivative goes through `kinv·du − q` (CPML). `q` is `−Δψ`
+//! (Roden–Gedney `ψ`) so that `kinv·du − q` is exactly `du` when `kinv = 1`
+//! and `q = +0`, signed zero included. A grid without CPML runs that same
+//! arithmetic with identity coefficients (`kinv = 1`, `b = 1`, `a = 0`) and
+//! one scratch row shared by every `(i, k)`. The closure is called once per
+//! `j`; a second call would advance `q` twice.
+
+use super::cpml::Profile;
+use super::cpml::{EX_Y, EX_Z, EY_X, EY_Z, EZ_X, EZ_Y, HX_Y, HX_Z, HY_X, HY_Z, HZ_X, HZ_Y};
+
+/// The twelve auxiliary slots are `0..6` in this order. Referenced so a
+/// reordering of the constants fails here rather than silently in the curl.
+const _: () = {
+    assert!(HX_Y == 0 && HX_Z == 1 && HY_Z == 2 && HY_X == 3 && HZ_X == 4 && HZ_Y == 5);
+    assert!(EX_Y == 0 && EX_Z == 1 && EY_Z == 2 && EY_X == 3 && EZ_X == 4 && EZ_Y == 5);
+};
 
 /// Per-axis curl coefficients: `dt / (μ0 Δ)` for H, `dt / (ε0 Δ)` for E.
 #[derive(Clone, Copy, Debug)]
@@ -83,54 +100,90 @@ impl<'a> HCoefs<'a> {
     }
 }
 
-#[inline(always)]
-fn step_e(e: &mut [f64], lo: usize, coef: ERow, curl: impl Fn(usize) -> f64) {
-    let n = e.len();
-    match coef {
-        ERow::Vacuum => {
-            for (x, j) in e[lo..].iter_mut().zip(lo..) {
-                *x += curl(j);
-            }
-        }
-        ERow::Lossless(cb) => {
-            let cb = &cb[..n];
-            for j in lo..n {
-                e[j] += cb[j] * curl(j);
-            }
-        }
-        ERow::Lossy(ca, cb) => {
-            let (ca, cb) = (&ca[..n], &cb[..n]);
-            for j in lo..n {
-                e[j] = ca[j] * e[j] + cb[j] * curl(j);
-            }
-        }
-    }
+/// E profiles or H profiles, one [`Profile`] per axis.
+#[derive(Clone, Copy)]
+pub(super) struct Axes<'a> {
+    pub x: &'a Profile,
+    pub y: &'a Profile,
+    pub z: &'a Profile,
 }
 
+/// `q := b q − a du`, returning the new `q`. `q` is `−Δψ` (Roden–Gedney ψ).
 #[inline(always)]
-fn step_h(h: &mut [f64], lo: usize, hi: usize, coef: HRow, curl: impl Fn(usize) -> f64) {
-    let h = &mut h[..hi];
-    match coef {
-        HRow::Vacuum => {
-            for (x, j) in h[lo..].iter_mut().zip(lo..) {
-                *x -= curl(j);
+fn aux(q: &mut f64, b: f64, a: f64, du: f64) -> f64 {
+    let s = b * *q - a * du;
+    *q = s;
+    s
+}
+
+/// The material arms of one E row. A `FnMut` closure here compiled to a
+/// call per cell (the curl body is too large to inline into `run`), which
+/// dropped the vacuum kernel from ~350 Mcell/s to ~60. Pasting the body
+/// into the loop keeps one kernel and one evaluation of the curl per `j`.
+macro_rules! step_e {
+    ($e:expr, $lo:expr, $coef:expr, |$j:ident| $body:expr) => {{
+        let e = &mut $e[..];
+        let n = e.len();
+        let lo = $lo;
+        match $coef {
+            ERow::Vacuum => {
+                for (x, $j) in e[lo..].iter_mut().zip(lo..) {
+                    *x += $body;
+                }
+            }
+            ERow::Lossless(cb) => {
+                let cb = &cb[..n];
+                for $j in lo..n {
+                    e[$j] += cb[$j] * $body;
+                }
+            }
+            ERow::Lossy(ca, cb) => {
+                let (ca, cb) = (&ca[..n], &cb[..n]);
+                for $j in lo..n {
+                    e[$j] = ca[$j] * e[$j] + cb[$j] * $body;
+                }
             }
         }
-        HRow::Scaled(db) => {
-            let db = &db[..hi];
-            for j in lo..hi {
-                h[j] -= db[j] * curl(j);
+    }};
+}
+
+/// The material arms of one H row. Same reason as [`step_e`].
+macro_rules! step_h {
+    ($h:expr, $lo:expr, $hi:expr, $coef:expr, |$j:ident| $body:expr) => {{
+        let hi = $hi;
+        let h = &mut $h[..hi];
+        let lo = $lo;
+        match $coef {
+            HRow::Vacuum => {
+                for (x, $j) in h[lo..].iter_mut().zip(lo..) {
+                    *x -= $body;
+                }
+            }
+            HRow::Scaled(db) => {
+                let db = &db[..hi];
+                for $j in lo..hi {
+                    h[$j] -= db[$j] * $body;
+                }
             }
         }
-    }
+    }};
 }
 
 /// `H^{n+1/2} = H^{n-1/2} - (dt/μ) curl E^n`, forward differences of E.
+/// Each difference is the stretched form `kinv·du − q`.
+///
+/// `inline(never)`: the curl closures have to land inside this function's
+/// row loops. Inlining the whole update into `FdtdSim::run` makes that
+/// function large enough that LLVM leaves a call per cell (about 6× slower
+/// than the Phase 2 vacuum kernel).
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_h(
     d: Dims,
     c: Coeffs,
     m: HCoefs,
+    p: Axes,
+    q: &mut [Vec<f64>; 6],
     zero: &[f64],
     ex: &[f64],
     ey: &[f64],
@@ -141,9 +194,16 @@ pub(super) fn update_h(
 ) {
     let nx = d.nx;
     let zero = &zero[..nx];
+    // `false` → one scratch row, shared by every `(i, k)`.
+    let full = q[0].len() == nx * d.ny * d.nz;
+    let (kx, bx, ax) = (&p.x.kinv[..nx], &p.x.b[..nx], &p.x.a[..nx]);
+    let [q_hx_y, q_hx_z, q_hy_z, q_hy_x, q_hz_x, q_hz_y] = q;
     for k in 0..d.nz {
+        let (kz, bz, az) = (p.z.kinv[k], p.z.b[k], p.z.a[k]);
         for i in 0..d.ny {
+            let (ky, by, ay) = (p.y.kinv[i], p.y.b[i], p.y.a[i]);
             let r = d.row(i, k);
+            let pr = if full { r } else { 0 };
             let ex_r = &ex[r..r + nx];
             let ey_r = &ey[r..r + nx];
             let ez_r = &ez[r..r + nx];
@@ -164,33 +224,64 @@ pub(super) fn update_h(
             let hz_r = &mut hz[r..r + nx];
             let (mx, my, mz) = (m.row(0, r, nx), m.row(1, r, nx), m.row(2, r, nx));
 
-            step_h(hx_r, 0, nx, mx, |j| {
-                c.y * (ez_ip[j] - ez_r[j]) - c.z * (ey_kp[j] - ey_r[j])
+            let (q1, q2) = (&mut q_hx_y[pr..pr + nx], &mut q_hx_z[pr..pr + nx]);
+            step_h!(hx_r, 0, nx, mx, |j| {
+                let du_y = ez_ip[j] - ez_r[j];
+                let du_z = ey_kp[j] - ey_r[j];
+                let sy = aux(&mut q1[j], by, ay, du_y);
+                let sz = aux(&mut q2[j], bz, az, du_z);
+                c.y * (ky * du_y - sy) - c.z * (kz * du_z - sz)
             });
-            step_h(hy_r, 0, nx - 1, my, |j| {
-                c.z * (ex_kp[j] - ex_r[j]) - c.x * (ez_r[j + 1] - ez_r[j])
+
+            let (q3, q4) = (&mut q_hy_z[pr..pr + nx], &mut q_hy_x[pr..pr + nx]);
+            step_h!(hy_r, 0, nx - 1, my, |j| {
+                let du_z = ex_kp[j] - ex_r[j];
+                let du_x = ez_r[j + 1] - ez_r[j];
+                let sz = aux(&mut q3[j], bz, az, du_z);
+                let sx = aux(&mut q4[j], bx[j], ax[j], du_x);
+                c.z * (kz * du_z - sz) - c.x * (kx[j] * du_x - sx)
             });
-            step_h(hz_r, 0, nx - 1, mz, |j| {
-                c.x * (ey_r[j + 1] - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
+            let (q5, q6) = (&mut q_hz_x[pr..pr + nx], &mut q_hz_y[pr..pr + nx]);
+            step_h!(hz_r, 0, nx - 1, mz, |j| {
+                let du_x = ey_r[j + 1] - ey_r[j];
+                let du_y = ex_ip[j] - ex_r[j];
+                let sx = aux(&mut q5[j], bx[j], ax[j], du_x);
+                let sy = aux(&mut q6[j], by, ay, du_y);
+                c.x * (kx[j] * du_x - sx) - c.y * (ky * du_y - sy)
             });
             let last = nx - 1;
-            step_h(hy_r, last, nx, my, |j| {
-                c.z * (ex_kp[j] - ex_r[j]) - c.x * (0.0 - ez_r[j])
+            // The `j = nx − 1` column is inside the xmax slab. These closures
+            // are what updates its x auxiliary (the neighbour past the array is 0).
+            step_h!(hy_r, last, nx, my, |j| {
+                let du_z = ex_kp[j] - ex_r[j];
+                let du_x = 0.0 - ez_r[j];
+                let sz = aux(&mut q3[j], bz, az, du_z);
+                let sx = aux(&mut q4[j], bx[j], ax[j], du_x);
+                c.z * (kz * du_z - sz) - c.x * (kx[j] * du_x - sx)
             });
-            step_h(hz_r, last, nx, mz, |j| {
-                c.x * (0.0 - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
+            step_h!(hz_r, last, nx, mz, |j| {
+                let du_x = 0.0 - ey_r[j];
+                let du_y = ex_ip[j] - ex_r[j];
+                let sx = aux(&mut q5[j], bx[j], ax[j], du_x);
+                let sy = aux(&mut q6[j], by, ay, du_y);
+                c.x * (kx[j] * du_x - sx) - c.y * (ky * du_y - sy)
             });
         }
     }
 }
 
 /// `E^{n+1} = Ca E^n + Cb curl H^{n+1/2}`, backward differences of H. On a
-/// vacuum grid `Ca = 1` and `Cb = dt/ε0`.
+/// vacuum grid `Ca = 1` and `Cb = dt/ε0`. Each difference is `kinv·du − q`
+/// with the E (node) profiles. `inline(never)` for the same reason as
+/// [`update_h`]: the curl body must stay inside these loops.
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_e(
     d: Dims,
     c: Coeffs,
     m: ECoefs,
+    p: Axes,
+    q: &mut [Vec<f64>; 6],
     hx: &[f64],
     hy: &[f64],
     hz: &[f64],
@@ -199,9 +290,15 @@ pub(super) fn update_e(
     ez: &mut [f64],
 ) {
     let nx = d.nx;
+    let full = q[0].len() == nx * d.ny * d.nz;
+    let (kx, bx, ax) = (&p.x.kinv[..nx], &p.x.b[..nx], &p.x.a[..nx]);
+    let [q_ex_y, q_ex_z, q_ey_z, q_ey_x, q_ez_x, q_ez_y] = q;
     for k in 0..d.nz {
+        let (kz, bz, az) = (p.z.kinv[k], p.z.b[k], p.z.a[k]);
         for i in 0..d.ny {
+            let (ky, by, ay) = (p.y.kinv[i], p.y.b[i], p.y.a[i]);
             let r = d.row(i, k);
+            let pr = if full { r } else { 0 };
             let hx_r = &hx[r..r + nx];
             let hy_r = &hy[r..r + nx];
             let hz_r = &hz[r..r + nx];
@@ -211,22 +308,37 @@ pub(super) fn update_e(
                 let rkm = d.row(i, k - 1);
                 let hz_im = &hz[rim..rim + nx];
                 let hy_km = &hy[rkm..rkm + nx];
-                step_e(&mut ex[r..r + nx], 0, m.row(0, r, nx), |j| {
-                    c.y * (hz_r[j] - hz_im[j]) - c.z * (hy_r[j] - hy_km[j])
+                let (q7, q8) = (&mut q_ex_y[pr..pr + nx], &mut q_ex_z[pr..pr + nx]);
+                step_e!(&mut ex[r..r + nx], 0, m.row(0, r, nx), |j| {
+                    let du_y = hz_r[j] - hz_im[j];
+                    let du_z = hy_r[j] - hy_km[j];
+                    let sy = aux(&mut q7[j], by, ay, du_y);
+                    let sz = aux(&mut q8[j], bz, az, du_z);
+                    c.y * (ky * du_y - sy) - c.z * (kz * du_z - sz)
                 });
             }
             if k >= 1 {
                 let rkm = d.row(i, k - 1);
                 let hx_km = &hx[rkm..rkm + nx];
-                step_e(&mut ey[r..r + nx], 1, m.row(1, r, nx), |j| {
-                    c.z * (hx_r[j] - hx_km[j]) - c.x * (hz_r[j] - hz_r[j - 1])
+                let (q9, q10) = (&mut q_ey_z[pr..pr + nx], &mut q_ey_x[pr..pr + nx]);
+                step_e!(&mut ey[r..r + nx], 1, m.row(1, r, nx), |j| {
+                    let du_z = hx_r[j] - hx_km[j];
+                    let du_x = hz_r[j] - hz_r[j - 1];
+                    let sz = aux(&mut q9[j], bz, az, du_z);
+                    let sx = aux(&mut q10[j], bx[j], ax[j], du_x);
+                    c.z * (kz * du_z - sz) - c.x * (kx[j] * du_x - sx)
                 });
             }
             if i >= 1 {
                 let rim = d.row(i - 1, k);
                 let hx_im = &hx[rim..rim + nx];
-                step_e(&mut ez[r..r + nx], 1, m.row(2, r, nx), |j| {
-                    c.x * (hy_r[j] - hy_r[j - 1]) - c.y * (hx_r[j] - hx_im[j])
+                let (q11, q12) = (&mut q_ez_x[pr..pr + nx], &mut q_ez_y[pr..pr + nx]);
+                step_e!(&mut ez[r..r + nx], 1, m.row(2, r, nx), |j| {
+                    let du_x = hy_r[j] - hy_r[j - 1];
+                    let du_y = hx_r[j] - hx_im[j];
+                    let sx = aux(&mut q11[j], bx[j], ax[j], du_x);
+                    let sy = aux(&mut q12[j], by, ay, du_y);
+                    c.x * (kx[j] * du_x - sx) - c.y * (ky * du_y - sy)
                 });
             }
         }

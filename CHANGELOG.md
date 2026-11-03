@@ -6,6 +6,16 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.51
+
+### Added
+- **3-D FDTD, Phase 3 of `dev/plans/fdtd3d.md`: a convolutional PML.** `fdtd_cpml(sim, n)` puts an `n`-cell CPML inside the PEC walls on all six faces. Optional pairs: `sigma_factor` (default 1, so `σ_max = (order+1)·ε0·c0/Δ`), `kappa_max` (1), `alpha_max` (0 S/m), `order` (3), `alpha_order` (1). `fdtd_cpml(sim, face, 0)` turns one face off (`xmin`, `xmax`, `ymin`, `ymax`, `zmin`, `zmax`); that side is a plain PEC wall. The same call with the current thickness turns it back on. `fdtd_cpml(sim, 0)` removes the absorber. It has to run before the first step, it does not change `dt`, and `σ` is not scaled by `ε_r` in the slab. `fdtd_info(sim).cpml` is a length-6 vector of the thicknesses (zeros when the absorber is off), and `.bytes` includes the auxiliaries. Example: `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md`.
+- **Absorption.** On the debug reflection grid the full-window residual against a large reference is **−93.3 dB** (PEC walls on the same grid: **−18.0 dB**). On the hello geometry (40³, 8 cells, release) it is **−87.9 dB** with `alpha_max = 0` and **−92.3 dB** with `alpha_max = 0.033`. The example's late residual, after the direct pulse has passed the probe, is **−8.2 dB** (PEC), **−85.2 dB** (`alpha_max = 0`), **−93.9 dB** (`alpha_max = 0.033`). The gate is −40 dB. `alpha_max = 0` stays the default.
+- **Speed.** A grid with no `fdtd_cpml`, and one with `sigma_factor = 0`, keep the Phase 1 fields and records bit for bit. The curl always goes through the CPML auxiliary (`q = −Δψ`), including when the absorber is off, so the vacuum step is slower than 0.3.50: on this machine's 60×60×20 benchmark, best of five, CPML off is vacuum 184, PEC 178, dielectric 179, dielectric+μ 171, lossy 171 Mcell/s (52% of this session's 0.3.50 vacuum, 355 Mcell/s). CPML on (8 cells, six faces) is 169 / 161 / 163 / 142 / 149 Mcell/s. A separate non-ψ vacuum kernel would be the way back to the 0.3.50 rate; it is not in this version. The release time gate, vacuum, CPML on six faces, 8000 steps, is **4.0 s** (under 60 s).
+
+### Changed
+- **No script-visible change without `fdtd_cpml`.** Fields, records, and `dt` match 0.3.50. `fdtd_info` gains a `cpml` field.
+
 ## 0.3.50
 
 ### Changed
