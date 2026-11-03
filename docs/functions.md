@@ -752,6 +752,33 @@ Useful for frequency vectors in Bode plots and log-scale analysis.
 
 ---
 
+## Integer Types
+
+Tagged-width integers: `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`. A cast rounds half away from zero and saturates by default. Pass `"wrap"` for two's-complement wrap. Same-class arithmetic stays in that class (and saturates). Different integer classes are an error — cast one side. An integer plus a double is a double. Other builtins widen an integer to double (`sqrt(int32(16))` is `4`).
+
+```
+int8(200)            % 127   saturates
+int8(2.5)            % 3     round half away from zero
+int8(200, "wrap")    % -56
+uint8(-5)            % 0
+class(int32(5))      % "int32"
+cast(3.7, "int16")   % 4, as int16
+intmax("int8")       % 127
+intmin("int8")       % -128
+isinteger(int8(3))   % true
+isinteger(3)         % false — a double is not an integer class
+isa(int32(1), "integer")  % true
+double(int16(1000))  % 1000.0
+```
+
+`intmax` and `intmin` default to `int32` when called with no argument. `cast` accepts any integer class name or `"double"`. `isa` also accepts the categories `"numeric"`, `"integer"`, and `"float"`.
+
+`0xFF`, `0b1010`, and `0o17` are unsigned integer literals in the smallest class that fits (`0xFF` is `uint8`).
+
+`zeros(n, "int32")` and `ones(n, "int32")` build an integer array. The class name is any of the eight integer classes.
+
+---
+
 ## Random Numbers
 
 ### `rand()` / `rand(n)` / `rand(m, n)`
@@ -969,6 +996,18 @@ x = sin(2*pi*(100*t + 0.5*4900*t.*t / 2));
 spectrogram(x, fs);
 ```
 
+### `waterfall(x, fs)` — frequency waterfall
+
+Same arguments as `stft`. Returns the magnitude spectrogram in dB, transposed and time-reversed so row 1 is the newest segment and column 1 is DC.
+
+```
+[W, f, t] = waterfall(x, fs)
+[W, f, t] = waterfall(x, fs, window, noverlap, nfft, sided)
+W(1, :)    % most recent spectrum
+```
+
+`W` is real, `n_time × n_freqs`. `t` lines up with the rows and decreases (latest segment first). The live two-panel view is `waterfall_stream`, below.
+
 ### `cwt(x, fs)` — Continuous Wavelet Transform (Morlet)
 
 Convolves the signal with scaled, shifted copies of the analytic
@@ -1017,7 +1056,7 @@ for a side-by-side comparison.
 
 ### Streaming time-frequency
 
-Frame-by-frame counterparts to `pwelch`, `stft`, and `cwt`. They mirror
+Frame-by-frame counterparts to `pwelch`, `stft`, `waterfall`, and `cwt`. They mirror
 the `state_init` / `filter_stream` pattern: a single `state` handle
 holds the ring buffer plus any running accumulator, threaded through
 each call. Pair with `plot_update_heatmap` (below) and `figure_live`
@@ -1038,7 +1077,15 @@ state = stft_stream_init(fs, window, noverlap, nfft [, sided])
 state = cwt_stream_init(fs, n_samples)
 state = cwt_stream_init(fs, n_samples, n_scales | scales_vector)
 [W, state] = cwt_stream(frame, state)
+
+% waterfall — line spectrum on top, downward heatmap below
+state = waterfall_stream_init(fs, window, noverlap, nfft, time_history)
+state = waterfall_stream_init(fs, window, noverlap, nfft, time_history, vmin_db, vmax_db, colormap, smooth_frames, update_every)
+fig = figure_live(2, 1)
+[fig, state] = waterfall_stream(samples, fig, state)
 ```
+
+`waterfall_stream_init` is one-sided. `time_history` is seconds of scroll-back. Defaults: `vmin_db = -100`, `vmax_db = 0`, colormap `"viridis"`, `smooth_frames = 1`, `update_every = 4`. `fig` must be `figure_live(2, 1)`. Panel 1 is the spectrum (averaged over `smooth_frames`); panel 2 is the heatmap with the newest row at the top. Labels are set on the first redraw.
 
 **Returned `state` is the same `Arc<Mutex<...>>` handle that was passed
 in** — re-binding it is script-language sugar, not a copy. State
@@ -2678,6 +2725,29 @@ Display a matrix as a false-color heatmap in the terminal. Each cell is colored 
 ```
 imagesc(spectrogram_matrix)
 imagesc(M, "jet")
+```
+
+### `heatmap(M)` / `heatmap(M, "title")` / `heatmap(xlabels, ylabels, M [, "title" [, colormap]])`
+
+Continuous heatmap. Optional string arrays label the columns and the rows. Row 0 is at the top. The terminal colours span the data minimum and maximum.
+
+```
+heatmap(M)
+heatmap(M, "Counts")
+heatmap({"A","B","C"}, {"X","Y"}, [1, 2, 3; 4, 5, 6], "demo")
+heatmap({"A","B","C"}, {"X","Y"}, M, "demo", "viridis")
+```
+
+Colormaps: `"viridis"` (default), `"jet"`, `"hot"`, `"gray"`.
+
+### `image(M)` / `image(M, colormap)` / `image(R, G, B)`
+
+Raw pixels. Values are clamped to `[0, 255]` and are not normalised (that is what `imagesc` does). Row 0 is at the top.
+
+```
+image(M)                 % grayscale
+image(M, "jet")          % one channel through a colormap
+image(R, G, B)           % three real matrices, same shape
 ```
 
 ### `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, colormap)`
@@ -4360,6 +4430,14 @@ Workers do not inherit the caller's variables (a lambda still sees the names it 
 ```
 seed(1);
 y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
+```
+
+### `nproc()`
+
+Number of logical CPUs, the same count the rayon pool and `parmap` use. On Linux this respects a cgroup CPU quota. On macOS it is the total core count.
+
+```
+nproc()
 ```
 
 ### `feval("name", args...)`

@@ -1019,9 +1019,9 @@ mod tests {
         let host = root.join("nested");
         fs::create_dir_all(&host).unwrap();
         let err = resolve_target("../../secret", &host, &root).unwrap_err();
-        let EmbedError::NotFound { target } = err else {
-            panic!("expected NotFound");
-        };
+        // `NotFound` is the only variant. The field is what distinguishes a
+        // jail escape from a missing file.
+        let EmbedError::NotFound { target } = err;
         assert!(target.contains("escapes"), "{target}");
     }
 

@@ -19,7 +19,6 @@ rustlab-plot.workspace  = true
 num-complex             = { workspace = true, features = ["serde"] }
 ndarray                 = { workspace = true, features = ["serde"] }
 thiserror.workspace     = true
-anyhow.workspace        = true
 rand.workspace          = true
 rand_distr.workspace    = true
 rayon.workspace         = true

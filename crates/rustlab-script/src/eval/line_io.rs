@@ -58,8 +58,9 @@ thread_local! {
     static LINE_READER: RefCell<Option<LineReader>> = RefCell::new(None);
 }
 
-/// Test-only count of lines pulled since the current [`IoGuard`].
-/// Production builds do not keep the counter.
+// Test-only count of lines pulled since the current `IoGuard`.
+// Production builds do not keep the counter. `thread_local!` does not
+// accept a doc comment, so this stays a regular comment.
 #[cfg(test)]
 thread_local! {
     static LINE_READS: Cell<u32> = const { Cell::new(0) };

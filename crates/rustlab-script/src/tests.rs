@@ -1382,8 +1382,6 @@ mod evaluator_tests {
 
 #[cfg(test)]
 mod error_tests {
-    use crate::{lexer, parser, Evaluator};
-
     fn eval_err(src: &str) -> crate::error::ScriptError {
         let src = format!("{}\n", src);
         let tokens = crate::lexer::tokenize(&src).unwrap();
@@ -1552,7 +1550,7 @@ mod error_line_tests {
 #[cfg(test)]
 mod matrix_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -1840,7 +1838,7 @@ mod matrix_tests {
 #[cfg(test)]
 mod io_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -1975,7 +1973,7 @@ save("{path}", v)"#
 #[cfg(test)]
 mod factor_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -2059,7 +2057,7 @@ mod factor_tests {
 #[cfg(test)]
 mod eig_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -6921,7 +6919,6 @@ mod math_builtins_tests {
 // ───────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod profiling_tests {
-    use crate::eval::value::Value;
     use crate::{lexer, parser, Evaluator};
 
     /// Run source, then return (evaluator, profile_report).
@@ -14482,18 +14479,11 @@ mod parmap_phase2_dispatch {
 
     #[test]
     fn parmap_propagates_errors() {
-        // Division by zero inside one trial — parmap should cancel
-        // and propagate the first error.
-        let src = "y = parmap(@(k) 1/(k - 3), 1:5);\n";
-        let tokens = crate::lexer::tokenize(src).unwrap();
-        let stmts = crate::parser::parse(tokens).unwrap();
-        let mut ev = Evaluator::new();
-        // The lambda body itself doesn't error on division by zero in
-        // rustlab (1/0 produces Inf), so use a different forcing
-        // function — call an undefined name in one trial.
-        let src2 = "function r = bad(k); if k == 3; r = undefined_fn(k); else; r = k; end; end\n\
+        // Division by zero does not fail the lambda (1/0 is Inf), so the
+        // trial calls an undefined name and parmap must propagate that.
+        let src = "function r = bad(k); if k == 3; r = undefined_fn(k); else; r = k; end; end\n\
                     y = parmap(@bad, 1:5);";
-        let tokens = crate::lexer::tokenize(src2).unwrap();
+        let tokens = crate::lexer::tokenize(src).unwrap();
         let stmts = crate::parser::parse(tokens).unwrap();
         let mut ev = Evaluator::new();
         let err = ev.run(&stmts).unwrap_err();
@@ -16549,7 +16539,6 @@ mod sparameters_phase3_tests {
     //! state (axis_equal flag) and the WireSeries forwarding is covered by
     //! the proto round-trip tests in rustlab-proto.
 
-    use crate::eval::value::Value;
     use crate::Evaluator;
     use rustlab_plot::figure::FIGURE;
 
@@ -16820,7 +16809,6 @@ mod sparameters_phase3_tests {
 mod sparameters_phase4_tests {
     //! Phase-4 (rfplot — mag/dB/phase/group-delay vs frequency) tests.
 
-    use crate::eval::value::Value;
     use crate::Evaluator;
     use rustlab_plot::figure::FIGURE;
 
