@@ -351,7 +351,7 @@ fn pure_expr(ev: &Evaluator, expr: &Expr) -> Result<(), String> {
             pure_expr(ev, lhs)?;
             pure_expr(ev, rhs)
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             if name_rejected(name) {
                 return Err(format!("'{name}' is not allowed"));
             }
