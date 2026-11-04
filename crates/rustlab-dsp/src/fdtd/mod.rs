@@ -1,10 +1,11 @@
 //! 3-D FDTD (Yee) time stepper.
 //!
-//! Phases 1–2 of `dev/plans/fdtd3d.md`: PEC outer walls, soft and hard
+//! Phases 1–3 of `dev/plans/fdtd3d.md`: PEC outer walls, soft and hard
 //! E-edge sources, point probes, cell-centred `eps_r` / `mu_r` / `sigma`
-//! ([`FdtdSim::set_media`]) and interior PEC volumes and faces
-//! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]). Serial. The
-//! material bake is in `media.rs`.
+//! ([`FdtdSim::set_media`]), interior PEC volumes and faces
+//! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]), and a
+//! convolutional PML inside those walls ([`FdtdSim::set_cpml`]). Serial.
+//! The material bake is in `media.rs`; the absorber is in `cpml.rs`.
 //!
 //! # Layout
 //!
@@ -42,6 +43,7 @@
 //! along the component; on a stack of `N` edges `g` is split as `g/N`. Both
 //! signs make a positive `g` a positive `V = −Σ E·Δ`.
 
+mod cpml;
 mod media;
 mod pulse;
 mod yee;
@@ -49,6 +51,7 @@ mod yee;
 #[cfg(test)]
 mod tests;
 
+pub use cpml::{CpmlParams, Face};
 pub use media::CellMap;
 pub use pulse::gaussian_pulse;
 
@@ -182,6 +185,9 @@ pub struct RunReport {
 }
 
 /// One FDTD grid: fields, sources, probes and the probe record.
+///
+/// The outer walls are PEC. [`FdtdSim::set_cpml`] adds an absorbing layer
+/// inside them; a face left at 0 stays a plain PEC wall.
 #[derive(Clone, Debug)]
 pub struct FdtdSim {
     nx: usize,
@@ -210,6 +216,11 @@ pub struct FdtdSim {
     /// Per-cell PEC bits (`media::PEC_EX` …), `None` until the first PEC.
     pec: Option<Vec<u8>>,
     baked: media::Baked,
+    /// `None` until [`FdtdSim::set_cpml`] with `n > 0`.
+    cpml: Option<cpml::CpmlSettings>,
+    /// Identity profiles and one scratch row when CPML is off; full `q`
+    /// arrays when any face is on.
+    absorber: cpml::Absorber,
 }
 
 /// `courant / (c0 sqrt(1/dx² + 1/dy² + 1/dz²))`.
@@ -282,6 +293,8 @@ impl FdtdSim {
             media: None,
             pec: None,
             baked: media::Baked::default(),
+            cpml: None,
+            absorber: cpml::Absorber::off(nx, ny, nz),
         })
     }
 
@@ -317,13 +330,24 @@ impl FdtdSim {
     pub fn interrupted(&self) -> bool {
         self.interrupted
     }
-    /// Field storage, probe record, material maps, baked coefficients and
-    /// the PEC mask, in bytes.
+    /// Field storage, probe record, material maps, baked coefficients, the
+    /// PEC mask and, when a CPML face is on, the absorber arrays, in bytes.
     pub fn bytes(&self) -> usize {
         (6 * self.n_cells() + self.record.len()) * ELEM_F64
             + self.media.as_ref().map_or(0, |m| m.bytes())
             + self.baked.bytes()
             + self.pec.as_ref().map_or(0, |p| p.len())
+            + self.absorber.bytes(self.cpml_active())
+    }
+
+    /// Thickness per face, `[xmin, xmax, ymin, ymax, zmin, zmax]`. Zeros
+    /// when the absorber is off.
+    pub fn cpml_faces(&self) -> [usize; 6] {
+        self.cpml.as_ref().map(|s| s.faces).unwrap_or([0; 6])
+    }
+
+    fn cpml_active(&self) -> bool {
+        self.cpml_faces().iter().any(|&n| n > 0)
     }
     /// Row-major `steps × n_probes` probe record.
     pub fn record(&self) -> &[f64] {
@@ -534,6 +558,105 @@ impl FdtdSim {
             sigma,
         });
         self.rebake();
+        // `b` depends on `dt`. Rebuild the absorber after the step changes.
+        self.rebake_cpml()?;
+        Ok(())
+    }
+
+    /// Absorber on every face with thickness `n` cells. `n = 0` removes it.
+    /// Replaces any earlier call (faces turned off before are on again).
+    /// Does not change `dt`.
+    pub fn set_cpml(&mut self, n: usize, params: CpmlParams) -> Result<(), DspError> {
+        self.require_setup("CPML")?;
+        params.validate()?;
+        if n == 0 {
+            self.cpml = None;
+            self.absorber = cpml::Absorber::off(self.nx, self.ny, self.nz);
+            debug_assert!(!self.absorber.is_full());
+            return Ok(());
+        }
+        let faces = [n; 6];
+        self.check_cpml_interior(&faces)?;
+        let settings = cpml::CpmlSettings { n, faces, params };
+        // Bake into a local first so a failure leaves the grid unchanged.
+        let absorber = cpml::Absorber::bake(
+            self.nx,
+            self.ny,
+            self.nz,
+            (self.dx, self.dy, self.dz),
+            self.dt,
+            &settings,
+        )?;
+        self.cpml = Some(settings);
+        self.absorber = absorber;
+        debug_assert!(self.absorber.is_full());
+        Ok(())
+    }
+
+    /// Turn one face off (`n = 0`, that side is a plain PEC wall) or back on
+    /// (`n` must equal the current thickness). Needs an earlier [`FdtdSim::set_cpml`].
+    pub fn set_cpml_face(&mut self, face: Face, n: usize) -> Result<(), DspError> {
+        self.require_setup("CPML")?;
+        let Some(settings) = self.cpml.clone() else {
+            return Err(DspError::InvalidParameter(
+                "call fdtd_cpml(sim, n) before turning a face on or off".into(),
+            ));
+        };
+        if n != 0 && n != settings.n {
+            return Err(DspError::InvalidParameter(format!(
+                "a face takes 0 (off) or the absorber thickness {}, got {n}",
+                settings.n
+            )));
+        }
+        let mut faces = settings.faces;
+        faces[face.index()] = n;
+        self.check_cpml_interior(&faces)?;
+        let settings = cpml::CpmlSettings { faces, ..settings };
+        let absorber = cpml::Absorber::bake(
+            self.nx,
+            self.ny,
+            self.nz,
+            (self.dx, self.dy, self.dz),
+            self.dt,
+            &settings,
+        )?;
+        self.cpml = Some(settings);
+        self.absorber = absorber;
+        debug_assert_eq!(self.absorber.is_full(), self.cpml_active());
+        Ok(())
+    }
+
+    fn check_cpml_interior(&self, faces: &[usize; 6]) -> Result<(), DspError> {
+        for (axis, len, n_lo, n_hi) in [
+            ("x", self.nx, faces[0], faces[1]),
+            ("y", self.ny, faces[2], faces[3]),
+            ("z", self.nz, faces[4], faces[5]),
+        ] {
+            let sum = n_lo.checked_add(n_hi);
+            if sum.is_some_and(|s| s < len) {
+                continue;
+            }
+            return Err(DspError::InvalidParameter(format!(
+                "CPML of {n_lo} + {n_hi} cells leaves no interior on {axis} ({axis}: {len} cells); need fewer than {len} in total"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Rebuild the absorber from the current settings and `dt`, zeroing `q`.
+    fn rebake_cpml(&mut self) -> Result<(), DspError> {
+        let Some(settings) = self.cpml.clone() else {
+            self.absorber = cpml::Absorber::off(self.nx, self.ny, self.nz);
+            return Ok(());
+        };
+        self.absorber = cpml::Absorber::bake(
+            self.nx,
+            self.ny,
+            self.nz,
+            (self.dx, self.dy, self.dz),
+            self.dt,
+            &settings,
+        )?;
         Ok(())
     }
 
@@ -723,57 +846,71 @@ impl FdtdSim {
         let np = self.probes.len();
         let row0 = self.record.len();
         self.record.resize(row0 + np, 0.0);
+        // Copied out so the correction call is a branch around the Phase 2
+        // update, not a parameter the update has to read.
+        let cpml_on = self.cpml_active();
+        let faces = self.cpml_faces();
 
-        let hm = yee::HCoefs {
-            db: self
-                .baked
-                .db
-                .as_ref()
-                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
-        };
-        let em = yee::ECoefs {
-            cb: self
-                .baked
-                .cb
-                .as_ref()
-                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
-            ca: self
-                .baked
-                .ca
-                .as_ref()
-                .map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
-        };
-
-        yee::update_h(
-            dims,
-            db,
-            hm,
-            &self.zero_row,
-            &self.ex,
-            &self.ey,
-            &self.ez,
-            &mut self.hx,
-            &mut self.hy,
-            &mut self.hz,
-        );
-        for (p, probe) in self.probes.iter().enumerate() {
-            if !probe.comp.is_electric() {
-                let v = self.field(probe.comp)[probe.idx];
-                self.record[row0 + p] = v;
+        // Split the grid so the absorber profiles, the `q` rows and the six
+        // fields can be borrowed together. `HCoefs` / `ECoefs` hold the
+        // material coefficients for the whole step. Order: plain H update,
+        // H slab correction, H probes, plain E update, E slab correction.
+        {
+            let FdtdSim {
+                absorber,
+                ex,
+                ey,
+                ez,
+                hx,
+                hy,
+                hz,
+                zero_row,
+                baked,
+                probes,
+                record,
+                ..
+            } = &mut *self;
+            let hm = yee::HCoefs {
+                db: baked.db.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+            };
+            let em = yee::ECoefs {
+                cb: baked.cb.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+                ca: baked.ca.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
+            };
+            yee::update_h(dims, db, hm, zero_row, ex, ey, ez, hx, hy, hz);
+            if cpml_on {
+                let cpml::Absorber { h, q_h, .. } = absorber;
+                let axes = yee::Axes {
+                    x: &h[0],
+                    y: &h[1],
+                    z: &h[2],
+                };
+                yee::correct_h(
+                    dims, db, hm, axes, faces, q_h, zero_row, ex, ey, ez, hx, hy, hz,
+                );
+            }
+            for (p, probe) in probes.iter().enumerate() {
+                if !probe.comp.is_electric() {
+                    let src: &[f64] = match probe.comp {
+                        Component::Hx => hx,
+                        Component::Hy => hy,
+                        Component::Hz => hz,
+                        _ => unreachable!(),
+                    };
+                    record[row0 + p] = src[probe.idx];
+                }
+            }
+            yee::update_e(dims, cb, em, hx, hy, hz, ex, ey, ez);
+            if cpml_on {
+                let cpml::Absorber { e, q_e, .. } = absorber;
+                let axes = yee::Axes {
+                    x: &e[0],
+                    y: &e[1],
+                    z: &e[2],
+                };
+                yee::correct_e(dims, cb, em, axes, faces, q_e, hx, hy, hz, ex, ey, ez);
             }
         }
-
-        yee::update_e(
-            dims,
-            cb,
-            em,
-            &self.hx,
-            &self.hy,
-            &self.hz,
-            &mut self.ex,
-            &mut self.ey,
-            &mut self.ez,
-        );
         self.steps += 1;
         self.apply_sources();
         for (p, probe) in self.probes.iter().enumerate() {

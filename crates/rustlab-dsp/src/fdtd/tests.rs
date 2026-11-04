@@ -498,6 +498,25 @@ fn vacuum_matches_phase1_bit_for_bit() {
     assert_eq!(golden_hash(golden_sim()), PHASE1_GOLDEN);
 }
 
+/// CPML fully off takes the 0.3.50 Yee kernel. `PHASE1_GOLDEN` is that
+/// kernel's FNV-1a on `golden_sim` (field bits and the probe record).
+#[test]
+fn cpml_off_matches_v0_3_50_kernel_bit_for_bit() {
+    assert_eq!(golden_hash(golden_sim()), PHASE1_GOLDEN);
+
+    let mut s = golden_sim();
+    s.set_cpml(0, CpmlParams::default()).unwrap();
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+
+    let mut s = golden_sim();
+    s.set_cpml(3, CpmlParams::default()).unwrap();
+    for face in Face::ALL {
+        s.set_cpml_face(face, 0).unwrap();
+    }
+    assert_eq!(s.cpml_faces(), [0; 6]);
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+}
+
 #[test]
 fn unit_media_and_wall_pec_match_vacuum_bit_for_bit() {
     let mut a = golden_sim();
@@ -899,4 +918,678 @@ fn bytes_count_the_coefficients() {
     .unwrap();
     // eps map + Cb + Ca
     assert_eq!(s.bytes(), 6 * n * 8 + n * 8 + 6 * n * 8);
+    let with_media = s.bytes();
+    s.set_cpml(1, CpmlParams::default()).unwrap();
+    // full q (12 · ncell) plus kinv/b/a on both E and H samples
+    assert_eq!(s.bytes(), with_media + 12 * n * 8 + 2 * 3 * (5 + 4 + 3) * 8);
+    assert!(s.absorber.is_full());
+    s.set_cpml(0, CpmlParams::default()).unwrap();
+    assert_eq!(s.bytes(), with_media);
+    assert!(!s.absorber.is_full());
+}
+
+// ---------------------------------------------------------------- Phase 3 (CPML)
+
+/// Sample `s` (1-based) drives step `s`:
+/// `w(s·dt) = −((t − t0)/τ)·exp(−((t − t0)/τ)²)` with `t0 = 4τ`.
+fn dgauss(nsteps: usize, dt: f64, tau_steps: f64) -> Vec<f64> {
+    let tau = tau_steps * dt;
+    let t0 = 4.0 * tau;
+    (1..=nsteps)
+        .map(|s| {
+            let u = (s as f64 * dt - t0) / tau;
+            -u * (-u * u).exp()
+        })
+        .collect()
+}
+
+fn coef_at(rho: f64, delta: f64, dt: f64, p: &CpmlParams) -> (f64, f64, f64) {
+    let sigma_max = p.sigma_factor * (p.order + 1.0) * EPS0 * C0 / delta;
+    let rho_m = rho.powf(p.order);
+    let sigma = sigma_max * rho_m;
+    let kappa = 1.0 + (p.kappa_max - 1.0) * rho_m;
+    let alpha = p.alpha_max * (1.0 - rho).powf(p.alpha_order);
+    let b = (-(sigma / kappa + alpha) * dt / EPS0).exp();
+    let a = if sigma == 0.0 {
+        0.0
+    } else {
+        sigma / (kappa * (sigma + kappa * alpha)) * (b - 1.0)
+    };
+    (1.0 / kappa, b, a)
+}
+
+fn rel_close(got: f64, exp: f64) {
+    let scale = got.abs().max(exp.abs()).max(1.0);
+    assert!(
+        (got - exp).abs() <= 4.0 * f64::EPSILON * scale,
+        "{got} vs {exp}"
+    );
+}
+
+#[test]
+fn cpml_profile_samples_match_the_formulas() {
+    let params = CpmlParams {
+        sigma_factor: 1.0,
+        kappa_max: 2.0,
+        alpha_max: 0.05,
+        order: 3.0,
+        alpha_order: 1.0,
+    };
+    let delta = 1e-3;
+    let dt = cfl_dt(delta, delta, delta, DEFAULT_COURANT);
+    let n = 40;
+    let n_lo = 8;
+    let n_hi = 8;
+    let e = cpml::Profile::bake(n, n_lo, n_hi, delta, dt, &params, false);
+    let h = cpml::Profile::bake(n, n_lo, n_hi, delta, dt, &params, true);
+
+    let rho_e = |m: usize| -> Option<f64> {
+        if m < n_lo {
+            Some((n_lo - m) as f64 / n_lo as f64)
+        } else if m > n - n_hi {
+            Some((m - (n - n_hi)) as f64 / n_hi as f64)
+        } else {
+            None
+        }
+    };
+    let rho_h = |m: usize| -> Option<f64> {
+        if m < n_lo {
+            Some((n_lo as f64 - m as f64 - 0.5) / n_lo as f64)
+        } else if m >= n - n_hi {
+            Some((m as f64 + 0.5 - (n - n_hi) as f64) / n_hi as f64)
+        } else {
+            None
+        }
+    };
+    let check = |profile: &cpml::Profile, half: bool| {
+        for m in 0..n {
+            let (k, b, a) = (profile.kinv[m], profile.b[m], profile.a[m]);
+            assert!(a <= 0.0 && b > 0.0 && b <= 1.0, "m={m} a={a} b={b}");
+            match if half { rho_h(m) } else { rho_e(m) } {
+                None => {
+                    assert_eq!(k.to_bits(), 1.0f64.to_bits(), "m={m}");
+                    assert_eq!(b.to_bits(), 1.0f64.to_bits(), "m={m}");
+                    assert_eq!(a.to_bits(), 0.0f64.to_bits(), "m={m}");
+                }
+                Some(rho) => {
+                    let (ek, eb, ea) = coef_at(rho, delta, dt, &params);
+                    rel_close(k, ek);
+                    rel_close(b, eb);
+                    rel_close(a, ea);
+                }
+            }
+        }
+    };
+    check(&e, false);
+    check(&h, true);
+    // Worked rows, N = 40, n = 8 (section 3.2).
+    for (m, rho) in [
+        (0, 1.0),
+        (1, 7.0 / 8.0),
+        (7, 1.0 / 8.0),
+        (33, 1.0 / 8.0),
+        (39, 7.0 / 8.0),
+    ] {
+        let (ek, eb, ea) = coef_at(rho, delta, dt, &params);
+        rel_close(e.kinv[m], ek);
+        rel_close(e.b[m], eb);
+        rel_close(e.a[m], ea);
+    }
+    assert_eq!(e.kinv[8].to_bits(), 1.0f64.to_bits());
+    assert_eq!(e.a[32].to_bits(), 0.0f64.to_bits());
+    for (m, rho) in [
+        (0, 7.5 / 8.0),
+        (7, 0.5 / 8.0),
+        (32, 0.5 / 8.0),
+        (39, 7.5 / 8.0),
+    ] {
+        let (ek, eb, ea) = coef_at(rho, delta, dt, &params);
+        rel_close(h.kinv[m], ek);
+        rel_close(h.b[m], eb);
+        rel_close(h.a[m], ea);
+    }
+    assert_eq!(h.b[8].to_bits(), 1.0f64.to_bits());
+    assert_eq!(h.a[31].to_bits(), 0.0f64.to_bits());
+
+    // `n_hi = 0` never selects the hi side (`len - 0 = len`).
+    let e0 = cpml::Profile::bake(12, 4, 0, delta, dt, &params, false);
+    let h0 = cpml::Profile::bake(12, 4, 0, delta, dt, &params, true);
+    for m in 4..12 {
+        assert_eq!(e0.a[m].to_bits(), 0.0f64.to_bits(), "E m={m}");
+        assert_eq!(h0.kinv[m].to_bits(), 1.0f64.to_bits(), "H m={m}");
+    }
+    assert!(e0.a[0] < 0.0 && h0.a[3] < 0.0);
+}
+
+#[test]
+fn cpml_sigma_zero_matches_phase1_bit_for_bit() {
+    let mut s = golden_sim();
+    s.set_cpml(
+        3,
+        CpmlParams {
+            sigma_factor: 0.0,
+            ..CpmlParams::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+
+    // α without σ is still the identity: `a` is the literal `+0.0`.
+    let mut s = golden_sim();
+    s.set_cpml(
+        3,
+        CpmlParams {
+            sigma_factor: 0.0,
+            alpha_max: 0.05,
+            ..CpmlParams::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(golden_hash(s), PHASE1_GOLDEN);
+
+    let lossy = |cpml: bool| {
+        let mut s = golden_sim();
+        let n = s.n_cells();
+        s.set_media(
+            CellMap::Uniform(1.5),
+            CellMap::Uniform(2.0),
+            CellMap::Uniform(0.02),
+        )
+        .unwrap();
+        let mut cells = vec![false; n];
+        // Away from the golden Ez stack at (4, 5, 3..4) and the Ex source at (2, 2, 2).
+        cells[(5 * 9 + 6) * 10 + 7] = true;
+        s.add_pec_volume(&cells).unwrap();
+        if cpml {
+            s.set_cpml(
+                3,
+                CpmlParams {
+                    sigma_factor: 0.0,
+                    ..CpmlParams::default()
+                },
+            )
+            .unwrap();
+        }
+        s
+    };
+    assert_eq!(golden_hash(lossy(true)), golden_hash(lossy(false)));
+}
+
+#[test]
+fn cpml_defaults_change_the_fields() {
+    let mut plain = golden_sim();
+    let mut absorbed = golden_sim();
+    absorbed.set_cpml(3, CpmlParams::default()).unwrap();
+    plain.run(300, &mut never()).unwrap();
+    absorbed.run(300, &mut never()).unwrap();
+    let hash = fnv(absorbed
+        .field_bits()
+        .into_iter()
+        .chain(absorbed.record().iter().map(|x| x.to_bits())));
+    assert_ne!(hash, PHASE1_GOLDEN);
+    // The golden current is a polynomial, not zero-mean, so it leaves charge.
+    // An α = 0 CPML turns that into a slow late-time growth and the field
+    // energy ends higher than the PEC box (about 5× at step 300). T4, with a
+    // zero-mean derivative-of-Gaussian, is the absorption check.
+    assert_ne!(absorbed.energy().to_bits(), plain.energy().to_bits());
+}
+
+#[test]
+fn cpml_box_drains_while_pec_box_keeps_energy() {
+    let run = |cpml: bool| {
+        let mut s = FdtdSim::new(20, 20, 20, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+        let w = dgauss(300, s.dt(), 6.0);
+        s.add_source(
+            Component::Ez,
+            &[(10, 10, 10)],
+            SourceKind::Soft,
+            Waveform::Samples(w),
+        )
+        .unwrap();
+        if cpml {
+            s.set_cpml(6, CpmlParams::default()).unwrap();
+        }
+        let mut energy = Vec::with_capacity(300);
+        for _ in 0..300 {
+            s.run(1, &mut never()).unwrap();
+            energy.push(s.energy());
+        }
+        energy
+    };
+    let pec = run(false);
+    // Step 8τ + 10. `energy()` is Σ E² + H² at the end of the leapfrog step,
+    // not the conserved quadratic form, so one sample swings by about 10%
+    // while the mode beats. The late-time mean does not drift.
+    let anchor_at = 8 * 6 + 10 - 1;
+    let late = &pec[anchor_at..];
+    let late_mean = late.iter().sum::<f64>() / late.len() as f64;
+    let anchor = pec[anchor_at];
+    assert!(
+        (late_mean - anchor).abs() / anchor < 0.01,
+        "late mean {late_mean} vs anchor {anchor}"
+    );
+    let swing = late
+        .iter()
+        .map(|e| (e - late_mean).abs())
+        .fold(0.0_f64, f64::max)
+        / late_mean;
+    assert!(swing < 0.12, "energy swing {swing}");
+    let cpml = run(true);
+    let peak = cpml.iter().copied().fold(0.0_f64, f64::max);
+    let ratio = cpml[299] / peak;
+    println!("cpml energy(300)/peak = {ratio:.3e}");
+    assert!(ratio < 1e-4, "energy ratio {ratio}");
+}
+
+/// The reflection is `test − reference`, where `reference` is the same source
+/// and probe in a PEC box large enough that no wall echo reaches the probe
+/// inside the window. The interior update is the same arithmetic in both
+/// grids (same `dx`, so the same `dt`), so the difference is exactly what the
+/// absorber sends back, plus whatever comes back from the PEC wall behind it.
+///
+/// Sizing, cubic cells, Courant 0.99 (1.7495 steps/cell), `t0 = 4τ`:
+/// `W ≥ 8τ + 1.75·(N_t + p) + 10` holds the source plus the test-grid echo.
+/// The reference echo's leading edge (`t0 − 3τ + 1.75·(L − p)`) must arrive
+/// after `W`. Here `N_t = 28`, `n = 8`, `p = 3`, `τ = 8`, `W = 128`, `L = 76`
+/// (leading edge ≈ step 135.7).
+fn reflection_db(
+    n_t: usize,
+    npml: usize,
+    src: (usize, usize, usize),
+    probe_off: usize,
+    tau_steps: f64,
+    w: usize,
+    reference_l: usize,
+    alpha_max: f64,
+) -> (f64, f64, f64) {
+    let dx = 1e-3;
+    let dt = cfl_dt(dx, dx, dx, DEFAULT_COURANT);
+    let wave = dgauss(w, dt, tau_steps);
+    let series = |n: usize, origin: (usize, usize, usize), cpml: bool| {
+        let mut s = FdtdSim::new(n, n, n, dx, dx, dx, DEFAULT_COURANT).unwrap();
+        s.add_source(
+            Component::Ez,
+            &[origin],
+            SourceKind::Soft,
+            Waveform::Samples(wave.clone()),
+        )
+        .unwrap();
+        let probe = (origin.0, origin.1 + probe_off, origin.2);
+        s.add_probe(Component::Ez, probe.0, probe.1, probe.2)
+            .unwrap();
+        if cpml {
+            s.set_cpml(
+                npml,
+                CpmlParams {
+                    alpha_max,
+                    ..CpmlParams::default()
+                },
+            )
+            .unwrap();
+        }
+        s.run(w, &mut never()).unwrap();
+        s.record().to_vec()
+    };
+    let test = series(n_t, src, true);
+    let reference = series(
+        reference_l,
+        (reference_l / 2, reference_l / 2, reference_l / 2),
+        false,
+    );
+    metric(&test, &reference, tau_steps, probe_off)
+}
+
+fn metric(test: &[f64], reference: &[f64], tau_steps: f64, probe_off: usize) -> (f64, f64, f64) {
+    let peak = reference.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let err = test
+        .iter()
+        .zip(reference)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    let r = 20.0 * (err / peak).log10();
+    let late_from = (8.0 * tau_steps + 1.75 * probe_off as f64 + 5.0).ceil() as usize;
+    let late_peak = reference[late_from - 1..]
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
+    let late_err = test[late_from - 1..]
+        .iter()
+        .zip(&reference[late_from - 1..])
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    let late = 20.0 * (late_err / late_peak.max(peak * 1e-30)).log10();
+    // The brief's late ratio uses the late reference peak as the denominator.
+    // After the direct pulse that peak is the quiet tail, so the ratio can
+    // read positive even when the residual is far below the incident. The
+    // third number is the same late error against the incident peak.
+    let late_vs_peak = 20.0 * (late_err / peak).log10();
+    (r, late, late_vs_peak)
+}
+
+#[test]
+fn cpml_reflection_below_40_db() {
+    let (r, late, late_vs_peak) = reflection_db(28, 8, (14, 14, 14), 3, 8.0, 128, 76, 0.0);
+    println!(
+        "debug CPML reflection {r:.2} dB, late {late:.2} dB, late vs incident {late_vs_peak:.2} dB"
+    );
+    assert!(r < -40.0, "reflection {r} dB");
+
+    // The same 28³ box with PEC walls is visible to the metric.
+    let dx = 1e-3;
+    let dt = cfl_dt(dx, dx, dx, DEFAULT_COURANT);
+    let w = 128;
+    let wave = dgauss(w, dt, 8.0);
+    let pec = {
+        let mut s = FdtdSim::new(28, 28, 28, dx, dx, dx, DEFAULT_COURANT).unwrap();
+        s.add_source(
+            Component::Ez,
+            &[(14, 14, 14)],
+            SourceKind::Soft,
+            Waveform::Samples(wave.clone()),
+        )
+        .unwrap();
+        s.add_probe(Component::Ez, 14, 17, 14).unwrap();
+        s.run(w, &mut never()).unwrap();
+        s.record().to_vec()
+    };
+    let reference = {
+        let mut s = FdtdSim::new(76, 76, 76, dx, dx, dx, DEFAULT_COURANT).unwrap();
+        s.add_source(
+            Component::Ez,
+            &[(38, 38, 38)],
+            SourceKind::Soft,
+            Waveform::Samples(wave),
+        )
+        .unwrap();
+        s.add_probe(Component::Ez, 38, 41, 38).unwrap();
+        s.run(w, &mut never()).unwrap();
+        s.record().to_vec()
+    };
+    let (pec_r, _, _) = metric(&pec, &reference, 8.0, 3);
+    println!("debug PEC reflection {pec_r:.2} dB");
+    assert!(pec_r > -20.0, "PEC reflection {pec_r} dB should be obvious");
+}
+
+#[test]
+#[ignore = "release-size reference run: cargo test --release -p rustlab-dsp -- --ignored cpml_reflection"]
+fn cpml_reflection_hello_geometry() {
+    let (r, late, late_vs_peak) = reflection_db(40, 8, (20, 20, 20), 6, 20.0, 250, 144, 0.0);
+    println!(
+        "release CPML alpha=0 reflection {r:.2} dB, late {late:.2} dB, late vs incident {late_vs_peak:.2} dB"
+    );
+    assert!(r < -40.0, "reflection {r} dB");
+    let (ra, late_a, late_a_vs_peak) = reflection_db(40, 8, (20, 20, 20), 6, 20.0, 250, 144, 0.033);
+    println!(
+        "release CPML alpha=0.033 reflection {ra:.2} dB, late {late_a:.2} dB, late vs incident {late_a_vs_peak:.2} dB"
+    );
+    assert!(ra < -40.0, "alpha reflection {ra} dB");
+}
+
+#[test]
+fn cpml_split_run_is_bit_identical() {
+    let build = || {
+        let mut sim = FdtdSim::new(24, 22, 20, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+        sim.set_cpml(6, CpmlParams::default()).unwrap();
+        let tau = 15.0 * sim.dt();
+        sim.add_source(
+            Component::Ez,
+            &[(10, 12, 8), (10, 12, 9)],
+            SourceKind::Soft,
+            Waveform::Pulse {
+                t0: 4.0 * tau,
+                tau,
+                f0: 0.0,
+            },
+        )
+        .unwrap();
+        sim.add_source(
+            Component::Ex,
+            &[(8, 8, 8)],
+            SourceKind::Hard,
+            Waveform::Samples(vec![1.0, 2.0, 3.0]),
+        )
+        .unwrap();
+        sim.add_probe(Component::Ez, 10, 14, 8).unwrap();
+        sim.add_probe(Component::Hy, 10, 13, 8).unwrap();
+        sim
+    };
+    let mut a = build();
+    let mut b = build();
+    a.run(150, &mut never()).unwrap();
+    b.run(70, &mut never()).unwrap();
+    b.run(80, &mut never()).unwrap();
+    assert_eq!(a.field_bits(), b.field_bits());
+    assert_eq!(
+        a.record().iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+        b.record().iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+    );
+    let mut c = build();
+    c.run(150, &mut never()).unwrap();
+    assert_eq!(a.field_bits(), c.field_bits());
+}
+
+#[test]
+fn cpml_each_face_absorbs_on_its_own_side() {
+    // nx, ny, nz all different so an axis swap cannot hide. Probes sit one
+    // cell inside each face's interface (section 8.1, T7).
+    let nx = 22;
+    let ny = 20;
+    let nz = 18;
+    let n = 4;
+    let w = 100;
+    let probes = [
+        (Component::Ez, 10, 5, 9),   // xmin
+        (Component::Ez, 10, 17, 9),  // xmax, interface node 18
+        (Component::Ez, 5, 11, 9),   // ymin
+        (Component::Ez, 15, 11, 9),  // ymax, interface node 16
+        (Component::Ex, 10, 11, 5),  // zmin
+        (Component::Ex, 10, 11, 13), // zmax, interface node 14
+    ];
+    let run = |off: Option<Face>| -> Vec<Vec<f64>> {
+        let mut s = FdtdSim::new(nx, ny, nz, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+        s.set_cpml(n, CpmlParams::default()).unwrap();
+        if let Some(face) = off {
+            s.set_cpml_face(face, 0).unwrap();
+        }
+        let wave = dgauss(w, s.dt(), 6.0);
+        for comp in [Component::Ez, Component::Ex] {
+            s.add_source(
+                comp,
+                &[(10, 11, 9)],
+                SourceKind::Soft,
+                Waveform::Samples(wave.clone()),
+            )
+            .unwrap();
+        }
+        for &(c, i, j, k) in &probes {
+            s.add_probe(c, i, j, k).unwrap();
+        }
+        s.run(w, &mut never()).unwrap();
+        (0..6)
+            .map(|p| s.record().iter().skip(p).step_by(6).copied().collect())
+            .collect()
+    };
+    let reference = run(None);
+    let faces = Face::ALL;
+    for (f, face) in faces.iter().enumerate() {
+        let got = run(Some(*face));
+        let mut first = [0usize; 6];
+        let mut peak_f = 0.0;
+        let mut diff_f = 0.0;
+        for g in 0..6 {
+            let peak = reference[g].iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            let diff: Vec<f64> = got[g]
+                .iter()
+                .zip(&reference[g])
+                .map(|(a, b)| a - b)
+                .collect();
+            let max_diff = diff.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            first[g] = diff
+                .iter()
+                .position(|d| d.abs() > 1e-3 * peak)
+                .map(|i| i + 1)
+                .unwrap_or(w + 1);
+            if g == f {
+                peak_f = peak;
+                diff_f = max_diff;
+            }
+        }
+        println!(
+            "face {} off, first step above 1e-3 of the reference peak: {:?}",
+            face.name(),
+            first
+        );
+        for g in 0..6 {
+            if g != f {
+                assert!(
+                    first[f] < first[g],
+                    "{} reflected at step {} before its own probe (step {})",
+                    faces[g].name(),
+                    first[g],
+                    first[f]
+                );
+            }
+        }
+        assert!(
+            diff_f > 0.03 * peak_f,
+            "{} echo {diff_f} vs 0.03·{peak_f}",
+            face.name()
+        );
+    }
+}
+
+#[test]
+fn cpml_then_media_equals_media_then_cpml() {
+    // `eps_r = 2` does not move `dt`: Phase 2 caps the step at the vacuum
+    // CFL, and only `min(eps)·min(mu) < 1` speeds the wave up. A stale-`dt`
+    // rebake (P6) is invisible unless the medium actually changes `dt`, so
+    // this uses `eps_r = 0.25`.
+    let setup = |cpml_first: bool| {
+        let mut s = FdtdSim::new(12, 10, 10, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+        let vacuum_dt = s.dt();
+        let wave = dgauss(100, vacuum_dt, 6.0);
+        s.add_source(
+            Component::Ez,
+            &[(5, 6, 5)],
+            SourceKind::Soft,
+            Waveform::Samples(wave),
+        )
+        .unwrap();
+        let media = |s: &mut FdtdSim| {
+            s.set_media(
+                CellMap::Uniform(0.25),
+                CellMap::Uniform(1.0),
+                CellMap::Uniform(0.0),
+            )
+            .unwrap();
+        };
+        let cpml = |s: &mut FdtdSim| s.set_cpml(3, CpmlParams::default()).unwrap();
+        if cpml_first {
+            cpml(&mut s);
+            media(&mut s);
+        } else {
+            media(&mut s);
+            cpml(&mut s);
+        }
+        assert!(s.dt() < vacuum_dt, "dt {} vs vacuum {vacuum_dt}", s.dt());
+        s.run(100, &mut never()).unwrap();
+        s.field_bits()
+    };
+    assert_eq!(setup(true), setup(false));
+}
+
+#[test]
+fn cpml_setup_rules() {
+    // z is the short axis, so `n = 3` fails there and nowhere else (3+3 < 8).
+    let mk = || FdtdSim::new(8, 8, 5, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    let mut s = mk();
+    s.run(1, &mut never()).unwrap();
+    let e = s
+        .set_cpml(1, CpmlParams::default())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("before the first step"), "{e}");
+
+    let mut s = mk();
+    let bytes = s.bytes();
+    let e = s
+        .set_cpml(3, CpmlParams::default())
+        .unwrap_err()
+        .to_string();
+    // smallest axis is z = 5; 3 + 3 is not fewer than 5
+    assert!(e.contains("leaves no interior on z"), "{e}");
+    assert_eq!(s.cpml_faces(), [0; 6]);
+    assert_eq!(s.bytes(), bytes);
+
+    let e = s.set_cpml_face(Face::ZMin, 0).unwrap_err().to_string();
+    assert!(e.contains("before turning a face"), "{e}");
+    assert_eq!(s.bytes(), bytes);
+
+    s.set_cpml(2, CpmlParams::default()).unwrap();
+    assert_eq!(s.cpml_faces(), [2; 6]);
+    let e = s.set_cpml_face(Face::XMax, 1).unwrap_err().to_string();
+    assert!(e.contains("0 (off) or the absorber thickness 2"), "{e}");
+    assert_eq!(s.cpml_faces(), [2; 6]);
+
+    for (params, msg) in [
+        (
+            CpmlParams {
+                sigma_factor: -1.0,
+                ..CpmlParams::default()
+            },
+            "sigma_factor must be finite and >= 0",
+        ),
+        (
+            CpmlParams {
+                kappa_max: 0.5,
+                ..CpmlParams::default()
+            },
+            "kappa_max must be finite and >= 1",
+        ),
+        (
+            CpmlParams {
+                alpha_max: f64::NAN,
+                ..CpmlParams::default()
+            },
+            "alpha_max must be finite and >= 0",
+        ),
+        (
+            CpmlParams {
+                order: -1.0,
+                ..CpmlParams::default()
+            },
+            "order must be finite and >= 0",
+        ),
+        (
+            CpmlParams {
+                alpha_order: f64::INFINITY,
+                ..CpmlParams::default()
+            },
+            "alpha_order must be finite and >= 0",
+        ),
+    ] {
+        let before = s.cpml_faces();
+        let bytes = s.bytes();
+        let e = s.set_cpml(2, params).unwrap_err().to_string();
+        assert!(e.contains(msg), "{e}");
+        assert_eq!(s.cpml_faces(), before);
+        assert_eq!(s.bytes(), bytes);
+    }
+
+    s.set_cpml_face(Face::ZMin, 0).unwrap();
+    assert_eq!(s.cpml_faces(), [2, 2, 2, 2, 0, 2]);
+    s.set_cpml_face(Face::ZMin, 2).unwrap();
+    assert_eq!(s.cpml_faces(), [2; 6]);
+    let on = s.bytes();
+    s.set_cpml(0, CpmlParams::default()).unwrap();
+    assert_eq!(s.cpml_faces(), [0; 6]);
+    assert_eq!(s.bytes(), bytes);
+    assert!(on > bytes);
+
+    // Fresh 5×4×3 grid: the documented byte delta, with no media.
+    let mut t = FdtdSim::new(5, 4, 3, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    let n = t.n_cells();
+    let base = t.bytes();
+    t.set_cpml(1, CpmlParams::default()).unwrap();
+    assert_eq!(t.bytes(), base + 12 * n * 8 + 2 * 3 * (5 + 4 + 3) * 8);
 }

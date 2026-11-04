@@ -178,6 +178,7 @@ impl BuiltinRegistry {
         r.register("fdtd_source", super::fdtd::builtin_fdtd_source);
         r.register("fdtd_media", super::fdtd::builtin_fdtd_media);
         r.register("fdtd_pec", super::fdtd::builtin_fdtd_pec);
+        r.register("fdtd_cpml", super::fdtd::builtin_fdtd_cpml);
         r.register("fdtd_probe", super::fdtd::builtin_fdtd_probe);
         r.register("fdtd_run", super::fdtd::builtin_fdtd_run);
         r.register("fdtd_step", super::fdtd::builtin_fdtd_step);

@@ -428,7 +428,7 @@ rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/qui
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
 | **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
 | **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
-| **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `gaussian_pulse`, `fdtd_source`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces) |
+| **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, `gaussian_pulse`, `fdtd_source`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces, CPML absorber) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |
 | **Special** | `laguerre`, `legendre`, `factor`, `rk4`, `lyap`, `gram`, `freqresp` |
 | **Profiling** | `profile`, `profile_report` |
