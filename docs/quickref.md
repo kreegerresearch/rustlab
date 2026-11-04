@@ -160,14 +160,15 @@ Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, wi
 
 ## FDTD (3-D)
 
-Yee stepper with PEC walls; vacuum unless `fdtd_media` / `fdtd_pec` add materials or metal. Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
+Yee stepper with PEC walls; vacuum unless `fdtd_media` / `fdtd_pec` add materials or metal. `fdtd_cpml` adds an absorber inside the walls. Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
 
 | Function | Description |
 |---|---|
 | `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99) |
-| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes`, `c0` |
+| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes`, `c0`, `cpml` (1×6 face thicknesses) |
 | `fdtd_media(sim, eps_r [, mu_r [, sigma]])` | Cell-centred materials: real scalars or `ny × nx × nz` Tensor3s; `sigma` in S/m; recomputes `dt` |
 | `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)` | Metal: every edge of each nonzero cell, or a sheet on node plane `index` (`1 .. n+1`, `fdtd_slice` layout) |
+| `fdtd_cpml(sim, n [, key, value...])` / `fdtd_cpml(sim, face, n)` | CPML absorber, `n` cells inside the PEC walls. Faces `xmin`…`zmax`; `0` turns one face off. Defaults: `sigma_factor` 1, `kappa_max` 1, `alpha_max` 0, `order` 3, `alpha_order` 1 |
 | `gaussian_pulse(t, t0, tau [, f0])` | `exp(-((t-t0)/tau)^2) cos(2π f0 (t-t0))`, shape of `t` |
 | `fdtd_source(sim, comp, i, j, k, "soft"\|"hard", waveform...)` | E-edge source: `"gaussian", t0, tau`, `"modulated", t0, tau, f0`, or a sampled vector; a range on the component's axis is a stack |
 | `fdtd_probe(sim, comp, i, j, k)` | Record one component every step; returns the probe column |

@@ -78,7 +78,8 @@ probe peak |Ez| = 0.9066 at t = 0.145 ns
 
 The first lobe of the trace is the pulse passing the probe. What follows
 is the same pulse coming back from the PEC walls, which reflect
-everything; an absorbing boundary (CPML) is a later phase. The lower
+everything. `fdtd_pml` puts a CPML absorber inside those walls so the
+same pulse leaves instead of bouncing. The lower
 panel is $E_z$ on the z-page through the source after the last step.
 
 `fdtd_run` also returns `seconds`, `cell_updates`, and `cell_rate` (cell

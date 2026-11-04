@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC)
-**Current phase:** 3 (not started; waits for an explicit yes)
+**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML)
+**Current phase:** 4 (lumped port; not started; waits for an explicit yes)
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -464,7 +464,11 @@ Where Phase 2 differs from the API sections above:
 
 ### Phase 3 — PML box
 
-`examples/pde/fdtd_pml.rlab`, notebook `examples/notebooks/fdtd_pml.md`. The same soft pulse in an 8-cell CPML box and in a PEC-walled box of the same size. Check: once the pulse should have left, the CPML probe is below −40 dB relative to the incident peak (validation item 6), and the notebook shows that quiet trace against the PEC-walled run, where the same pulse reflects.
+**Status:** complete (0.3.51). `examples/pde/fdtd_pml.rlab`, notebook `examples/notebooks/fdtd_pml.md` (rendered to `gallery/fdtd_pml.md`).
+
+`fdtd_cpml` is an 8-cell (the gate thickness) convolutional PML inside the PEC walls. The same soft pulse in that box and in a PEC-walled box of the same size: once the pulse should have left, the CPML probe is below −40 dB relative to the incident peak (validation item 6). Measured full-window residual against a reference grid: **−93.3 dB** on the debug grid (PEC sanity −18.0 dB) and **−87.9 dB** (`alpha_max = 0`) / **−92.3 dB** (`alpha_max = 0.033`) on the 40³ hello geometry. The example's late residual is −8.2 / −85.2 / −93.9 dB for PEC / α = 0 / α = 0.033.
+
+The stepper is the Taflove split, not one kernel. The interior E and H updates are the Phase 2 curl over the whole grid, the same arithmetic as 0.3.50. After each half-step a correction runs only on cells inside an enabled slab: `q := b·q − a·du` with the existing coefficients, then the field gets `c·((κ⁻¹ − 1)·du − q)`. Michael approved that split because the first 0.3.51 kernel carried ψ on every cell and CPML-off vacuum fell to 184 Mcell/s, 52% of 0.3.50's 355. With the correction skipped entirely when CPML is off, the same benchmark is 359 Mcell/s (101% of that 355). CPML on is 139 Mcell/s on this 60×60×20 mesh (the first kernel was 169): an 8-cell face on `nz = 20` puts 16 of 20 planes in the z slab, so the second pass still touches most cells. `q` is stored for every cell when any face is on (12·72e3·8 ≈ 6.9 MB, plus the profiles); packing only the slab cells is still a later optimisation. The 8000-step release gate is 4.6 s. `sigma_factor = 0` (and CPML fully off, including every face turned back off) reproduces the Phase 1 golden hash. Gate (c), parallel = serial, is N/A (no parallel stepper; the split-run bit-identity test is the substitute).
 
 ### Phase 4 — resistor and S11
 
@@ -614,7 +618,7 @@ Recorded gap voltage is `V = −Ez · Δz` (and a sum over a stack). Both formul
 
 ### PML auxiliary in the curl
 
-When CPML is on, each Cartesian derivative in the curl is replaced as in the next section. Interior coefficients have `κ = 1`, `a = 0`, `b = 1`, and the auxiliary stays 0, so the interior curl is the same arithmetic as the no-PML kernel. Implement that as **one** kernel with the `κ` and `ψ` terms always present, and require a test that a grid with PML allocated but `sigma_factor = 0` matches a no-PML run **bit for bit** for a few hundred steps. Two kernels will drift.
+When CPML is on, each Cartesian derivative in the curl is replaced as in the next section. The update that runs on every cell is the Phase 2 kernel, with no `κ` and no `ψ`. After that half-step, a separate pass updates `ψ` and adds the stretch, and only for cells inside an enabled slab. A grid with CPML off never calls that pass, so it cannot drift from the 0.3.50 kernel: it is that kernel. A grid with PML allocated but `sigma_factor = 0` has `κ = 1` and `a = 0` everywhere; the pass returns without writing, and the same bit-identical test applies. The always-ψ kernel was the first 0.3.51 implementation. It kept one code path, and it also put the ψ recurrence on every interior cell, which held CPML-off vacuum at about 185 Mcell/s. The split is what puts that recurrence back on the slab only.
 
 ---
 
@@ -636,6 +640,8 @@ d/dx |stretched = du / (κ Δx) + ψ
 ```
 
 `a ≤ 0` because `(b − 1) ≤ 0`. The sign is whatever this formula produces; do not flip it to "make absorption happen" without changing the formula and the test together.
+
+**Shipped in 0.3.51.** The correction stores `q = −Δ·ψ`, not `ψ`. Its update is `q := b·q − a·du`, and the extra it adds on top of the Phase 2 curl is `c·((kinv − 1)·du − q)`, which is the difference between `c·(kinv·du − q)` and the plain `c·du` the fast kernel already applied. When `kinv = 1` and `a = 0`, that extra is 0 and the pass does not write the fields (a second add of 0 can flip a signed zero). `a` is the literal `0.0` whenever `σ = 0`, even if `α ≠ 0`. Both are in `crates/rustlab-dsp/src/fdtd/cpml.rs` and `yee.rs`. Full `q` arrays, not slab-packed: the E and H slabs do not share an index set (node versus half-node), and corners belong to two axes.
 
 Profile along a local coordinate `ρ ∈ [0, 1]`, 0 at the inner interface and 1 at the outer PEC wall. Where that `ρ` is sampled is below (primal for an E derivative, half-cell for an H derivative).
 
@@ -968,7 +974,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | **0** (complete, 0.3.46) | First PR, on its own, before any Yee work. `laplacian_eps_3d`, docs, REPL help, capacitor test. No FDTD. | 1–2 days | Uniform-ε identity, Neumann null-space, series `1/C` test, `cargo test --workspace`. |
 | **1** (complete, 0.3.47) | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
 | **2** (complete, 0.3.48) | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
-| **3** | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
+| **3** (complete, 0.3.51) | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
 | **4** | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|`). Lossless patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook, including the `tanδ = 0.02` rerun, is Phase 6). `render --strict` and `run-examples` exit 0. |
 | **5** | On-the-fly NTFF, `fdtd_farfield` with a settable origin (default grid centre), directivity and realized gain. No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern (grid-centre origin). Patch broadside peak is qualitative. `render --strict` and `run-examples` exit 0. |
 | **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate. Capstone `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`, plus the sweep `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. Both notebooks pass `render --strict`; both scripts pass `run-examples`. The sweep returns one resonance per width. |
@@ -1016,6 +1022,7 @@ Suggested lesson order once the phases exist, which is also the order of the exa
 10. **Always on.** Modules live in `rustlab-dsp`. No feature flag and no `rustlab-em` crate.
 11. **Loss.** The 5% check is lossless. The shipped patch example then reruns with `tanδ = 0.02`. That rerun is shown, not gated.
 12. **`fdtd_s11` return.** A 1-port `sparameters` struct (`parameters` shaped `(n_freq, 1, 1)`, positive `frequencies`, `impedance = Z0`). `smith(s)` and `rfplot(s)` take it today. DC is dropped because `rfplot` uses `semilogx`.
+13. **Phase 3 gate (c), parallel = serial, is N/A.** There is no parallel stepper yet (that is Phase 6). The substitute that shipped is the split-run bit-identity test: one `run(150)` matches `run(70)` then `run(80)` on a CPML grid, fields and record. `fdtd_info.cpml` (length-6 face thicknesses) and turning a single face back on (`fdtd_cpml(sim, face, n)` with the same `n`) shipped as the brief proposed; both are API choices for review.
 
 ---
 

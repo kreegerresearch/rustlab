@@ -1,0 +1,85 @@
+# CPML: a pulse leaves the box instead of bouncing
+# Demonstrates: fdtd_cpml, fdtd3d, fdtd_info, fdtd_source, fdtd_probe, fdtd_run
+#
+# An 8-cell convolutional PML sits inside the PEC walls. The same
+# derivative-of-Gaussian that fdtd_hello.rlab uses is launched at the
+# centre. Once it has passed the probe, a PEC box still rings; the
+# absorber does not. alpha_max = 0 is the default. The third run sets
+# alpha_max = 2*pi*eps0*0.6e9 (about 0.033 S/m), a corner a decade
+# below the pulse spectrum.
+
+n = 40;
+dx = 1.0e-3;
+nsteps = 400;
+
+function ez = pml_run(n, dx, nsteps, npml, alpha)
+  sim = fdtd3d(n, n, n, dx, dx, dx);
+  if npml > 0
+    fdtd_cpml(sim, npml, "alpha_max", alpha);
+  end
+  info = fdtd_info(sim);
+  tau = 20 * info.dt;
+  t0 = 4 * tau;
+  ts = (1:nsteps) * info.dt;
+  w = -(ts - t0) / tau .* gaussian_pulse(ts, t0, tau);
+  ic = n / 2 + 1;
+  fdtd_source(sim, "ez", ic, ic, ic, "soft", w);
+  id = fdtd_probe(sim, "ez", ic, ic + 6, ic);
+  out = fdtd_run(sim, nsteps);
+  ez = out.probe(:, id);
+end
+
+bare = fdtd3d(n, n, n, dx, dx, dx);
+info = fdtd_info(bare);
+dt = info.dt;
+c0 = info.c0;
+bytes_off = info.bytes;
+absorbed = fdtd3d(n, n, n, dx, dx, dx);
+fdtd_cpml(absorbed, 8);
+bytes_on = fdtd_info(absorbed).bytes;
+
+mu0 = 1.25663706212e-6;
+eps0 = 1 / (mu0 * c0^2);
+alpha = 2 * pi * eps0 * 0.6e9;
+
+ez_pec = pml_run(n, dx, nsteps, 0, 0);
+ez_cpml = pml_run(n, dx, nsteps, 8, 0);
+ez_alpha = pml_run(n, dx, nsteps, 8, alpha);
+
+# Step after which the direct pulse has passed a probe 6 cells away.
+n_left = ceil(8 * 20 + 6 * dx / (c0 * dt));
+t = (1:nsteps) * dt;
+
+function db = late_db(ez, n_left)
+  db = 20 * log10(max(abs(ez(n_left:end))) / max(abs(ez)));
+end
+
+db_pec = late_db(ez_pec, n_left);
+db_cpml = late_db(ez_cpml, n_left);
+db_alpha = late_db(ez_alpha, n_left);
+
+fprintf("late residual, PEC walls:        %6.1f dB\n", db_pec);
+fprintf("late residual, CPML alpha = 0:   %6.1f dB\n", db_cpml);
+fprintf("late residual, CPML alpha = %.3f: %6.1f dB\n", alpha, db_alpha);
+fprintf("bytes without CPML: %.0f\n", bytes_off);
+fprintf("bytes with CPML:    %.0f\n", bytes_on);
+
+if db_cpml > -40
+  error(sprintf("CPML late residual %.1f dB is above -40 dB", db_cpml));
+end
+
+subplot(2, 1, 1);
+plot(t * 1e9, ez_pec, t * 1e9, ez_cpml);
+xlabel("t (ns)");
+ylabel("Ez (V/m)");
+title("Ez six cells from the source");
+legend("PEC walls", "CPML");
+subplot(2, 1, 2);
+plot(t * 1e9, mag2db(ez_pec / max(abs(ez_pec))), ...
+     t * 1e9, mag2db(ez_cpml / max(abs(ez_cpml))), ...
+     t * 1e9, mag2db(ez_alpha / max(abs(ez_alpha))));
+xlabel("t (ns)");
+ylabel("dB");
+title("Normalised |Ez|");
+legend("PEC walls", "CPML, alpha = 0", "CPML, alpha = 0.033");
+ylim([-120, 0]);
