@@ -26,6 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # rusqlite 0.41 (bundled SQLite) needs rustc 1.89. Stable is at
+      # least that. The runner image's default toolchain may be older.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install system dependencies
         run: |
           sudo apt-get update -y

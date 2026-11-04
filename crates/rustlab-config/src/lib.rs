@@ -26,6 +26,7 @@ pub struct UserSettings {
     pub viewer: ViewerSettings,
     pub notebook: NotebookSettings,
     pub repl: ReplSettings,
+    pub cache: CacheSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -178,6 +179,14 @@ pub struct NotebookSettings {
     pub git_diff: Option<bool>,
 }
 
+/// `[cache]` — SQLite persistent function cache. Off unless `enabled` is true.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CacheSettings {
+    /// `[cache] enabled`. Missing or `false` keeps `cache enable` from
+    /// creating or opening a store. `--cache` / `--no-cache` override this.
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ReplSettings {
     /// rustyline history cap. Built-in default is 1000.
@@ -246,6 +255,12 @@ impl UserSettings {
     /// Effective viewer auto-connect flag.
     pub fn viewer_auto_connect(&self) -> bool {
         self.viewer.auto_connect.unwrap_or(false)
+    }
+
+    /// `[cache] enabled`. Missing key stays off, so `cache enable` does
+    /// not create `cache.db` unless the user opts in.
+    pub fn cache_enabled(&self) -> bool {
+        self.cache.enabled.unwrap_or(false)
     }
 }
 
@@ -424,6 +439,7 @@ pub fn parse_toml(
                 parse_notebook_section(&val, path, &mut settings, &mut unknown, &mut warnings)?
             }
             "repl" => parse_repl_section(&val, path, &mut settings, &mut unknown)?,
+            "cache" => parse_cache_section(&val, path, &mut settings, &mut unknown)?,
             other => unknown.push(other.to_string()),
         }
     }
@@ -626,6 +642,24 @@ fn parse_repl_section(
                 settings.repl.history = Some(expect_bool(v, path, "repl.history")?);
             }
             other => unknown.push(format!("repl.{other}")),
+        }
+    }
+    Ok(())
+}
+
+fn parse_cache_section(
+    val: &TomlValue,
+    path: &Path,
+    settings: &mut UserSettings,
+    unknown: &mut Vec<String>,
+) -> Result<(), ConfigError> {
+    let table = expect_table(val, path, "cache")?;
+    for (key, v) in table {
+        match key.as_str() {
+            "enabled" => {
+                settings.cache.enabled = Some(expect_bool(v, path, "cache.enabled")?);
+            }
+            other => unknown.push(format!("cache.{other}")),
         }
     }
     Ok(())
@@ -969,6 +1003,28 @@ mod tests {
             ConfigSource::Defaults,
         );
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn cache_enabled_defaults_off_and_parses() {
+        let path = Path::new("rc");
+        let missing = parse_toml("", path, ConfigSource::Defaults).unwrap();
+        assert!(missing.settings.cache.enabled.is_none());
+        assert!(!missing.settings.cache_enabled());
+
+        let on = parse_toml("[cache]\nenabled = true\n", path, ConfigSource::Defaults).unwrap();
+        assert_eq!(on.settings.cache.enabled, Some(true));
+        assert!(on.settings.cache_enabled());
+        assert!(on.unknown_keys.is_empty());
+
+        let off = parse_toml("[cache]\nenabled = false\n", path, ConfigSource::Defaults).unwrap();
+        assert_eq!(off.settings.cache.enabled, Some(false));
+        assert!(!off.settings.cache_enabled());
+
+        let err =
+            parse_toml("[cache]\nenabled = \"yes\"\n", path, ConfigSource::Defaults).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cache.enabled"), "{msg}");
     }
 
     #[test]

@@ -1962,6 +1962,56 @@ save("{path}", v)"#
     }
 
     #[test]
+    fn npz_whos_lists_saved_names() {
+        let path = tmp_path("_whos.npz");
+        eval_str(&format!(r#"save("{path}", "arr", 1:3, "col", [4; 5])"#));
+        crate::eval::output::start_capture();
+        eval_str(&format!(r#"whos("{path}")"#));
+        let out = crate::eval::output::stop_capture();
+        assert!(out.contains("arr"), "whos output:\n{out}");
+        assert!(out.contains("col"), "whos output:\n{out}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn npz_load_and_whos_deflate_archive() {
+        use std::io::{Read, Write};
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        use zip::CompressionMethod;
+
+        let stored = tmp_path("_stored.npz");
+        eval_str(&format!(r#"save("{stored}", "arr", 1:3)"#));
+        let file = std::fs::File::open(&stored).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name("arr.npy").unwrap();
+        let mut npy = Vec::new();
+        entry.read_to_end(&mut npy).unwrap();
+        drop(entry);
+        drop(archive);
+
+        let path = tmp_path("_deflate.npz");
+        let out_file = std::fs::File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(out_file);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.start_file("arr.npy", opts).unwrap();
+        writer.write_all(&npy).unwrap();
+        writer.finish().unwrap();
+
+        let ev = eval_str(&format!(r#"x = load("{path}", "arr")"#));
+        let x = get_vector(&ev, "x");
+        assert!(close(x[0], 1.0, 1e-6), "deflate x[0]={}", x[0]);
+        assert!(close(x[2], 3.0, 1e-6), "deflate x[2]={}", x[2]);
+
+        crate::eval::output::start_capture();
+        eval_str(&format!(r#"whos("{path}")"#));
+        let listed = crate::eval::output::stop_capture();
+        assert!(listed.contains("arr"), "whos output:\n{listed}");
+
+        let _ = std::fs::remove_file(&stored);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_missing_file_errors() {
         let _err = eval_err(r#"load("/no/such/file/rustlab_nonexistent_abc123.npy")"#);
         // Just verifying it errors — the eval_err helper panics if no error is produced

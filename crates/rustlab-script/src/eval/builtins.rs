@@ -8370,12 +8370,13 @@ fn save_npz(path: &str, pairs: &[Value]) -> Result<(), String> {
 
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut zip = ZipWriter::new(file);
-    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     for chunk in pairs.chunks(2) {
         let name = chunk[0].to_str().map_err(|e| format!("save NPZ: {e}"))?;
         let (data, shape) = value_to_c64_array(&chunk[1])?;
         let npy = build_npy_bytes(&data, &shape);
+        // Recreate options per entry: zip 9's FileOptions is not Copy.
+        let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file(format!("{name}.npy"), opts)
             .map_err(|e| e.to_string())?;
         zip.write_all(&npy).map_err(|e| e.to_string())?;
@@ -8394,7 +8395,8 @@ pub fn load_all_from_npz(path: &str) -> Result<Vec<(String, Value)>, String> {
     let mut result = Vec::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        let entry_name = entry.name().to_string();
+        // zip 9 returns Result<Cow<str>, ZipError> (invalid UTF-8 in the header).
+        let entry_name = entry.name().map_err(|e| e.to_string())?.into_owned();
         let var_name = entry_name
             .strip_suffix(".npy")
             .unwrap_or(&entry_name)
@@ -10546,7 +10548,10 @@ fn builtin_whos_file(args: Vec<Value>) -> Result<Value, ScriptError> {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| ScriptError::runtime(e.to_string()))?;
-        let raw_name = entry.name().to_string();
+        let raw_name = entry
+            .name()
+            .map_err(|e| ScriptError::runtime(e.to_string()))?
+            .into_owned();
         let name = raw_name.trim_end_matches(".npy");
 
         let mut buf = Vec::new();

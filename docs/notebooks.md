@@ -2169,7 +2169,13 @@ See `docs/functions.md` → Cell Arrays for full reference.
 ## Persistent function cache
 
 The `cache` statement opts a notebook into a SQLite-backed function
-result cache. Place it at the top of a notebook:
+result cache. The file is not created unless the host opts in:
+`rustlab-notebook render --cache`, `rustlab-notebook watch --cache`,
+or `[cache] enabled = true` in the user rc. `--no-cache` overrides a
+true rc key. With the default (off), `cache enable` prints
+`cache: disabled` and the notebook runs uncached; nothing under
+`.rustlab/` is created. Place the statement at the top of a notebook
+and render with `--cache`:
 
 ````markdown
 ```rustlab
@@ -2239,10 +2245,12 @@ function cache speeds up across sessions.
 
 ### Storage
 
-`cache enable` with no path opens `.rustlab/cache.db` relative to the
-notebook's working directory. The workspace `.gitignore` excludes
-`.rustlab/` by default. To ship a notebook with a warm cache, use a
-named store and commit it explicitly:
+With the host opted in, `cache enable` with no path opens
+`.rustlab/cache.db` relative to the notebook's working directory. The
+workspace `.gitignore` excludes `.rustlab/` by default. To ship a
+notebook with a warm cache, use a named store and commit it explicitly
+(the render or watch that fills it still needs `--cache` or
+`[cache] enabled = true`):
 
 ````markdown
 ```rustlab

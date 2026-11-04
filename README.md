@@ -13,6 +13,10 @@ to read.
 
 ## Install (macOS and Linux)
 
+Rust **1.89** or newer is required (`rustc --version`). The bundled
+SQLite in rusqlite 0.41 does not build on an older compiler.
+`rustup default stable` is enough when stable is at least 1.89.
+
 ### Option 1 — into `~/.local/bin` (recommended)
 
 ```sh

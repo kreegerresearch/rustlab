@@ -34,6 +34,7 @@ fn populate_store(dir: &tempfile::TempDir) -> std::path::PathBuf {
         .arg(&script)
         .arg("--plot")
         .arg("none")
+        .arg("--cache")
         .output()
         .expect("run rustlab");
     assert!(

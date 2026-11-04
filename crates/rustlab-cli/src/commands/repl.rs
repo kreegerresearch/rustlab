@@ -587,7 +587,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "history", brief: "Show previously entered commands",
         detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines (override with `[repl] history_limit` in ~/.rustlabrc).\n  The file is owner-only (mode 0600). Prompts can contain secrets, so\n  `[repl] history = false` or RUSTLAB_NO_HISTORY=1 skips both the load\n  and the save; `history` then lists only this process. The environment\n  variable forces history off even when the rc key is true.\n  input and fgetl lines are not recorded. keyboard lines are.\n  After `history clear` that saved file is emptied too, on the\n  next clean exit (when history is on).\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
     HelpEntry { name: "rustlabrc", brief: "User-global settings file (~/.rustlabrc or XDG)",
-        detail: "Optional TOML config — not a startup script. First existing file wins:\n\n  1. $XDG_CONFIG_HOME/rustlab/config.toml   (XDG home defaults to ~/.config)\n  2. ~/.rustlabrc\n  3. built-in defaults (missing file is OK)\n\n  Do not confuse this with ~/.rustlab_history (REPL command history) or\n  the project cache at .rustlab/cache.db. v1 is user-global only; there\n  is no project .rustlab/config.toml, and the file is never executed.\n\n  Precedence (high → low): CLI flags > in-script / REPL commands > rc >\n  built-in defaults. Unknown keys warn once and are ignored; invalid\n  values abort with the file path and key, except [notebook] code,\n  which warns once and falls back to open.\n\nExample ~/.rustlabrc:\n  [display]\n  format = \"commas\"          % short | long | hex | commas\n\n  [plot]\n  theme = \"dark\"             % mocha | macchiato | frappe | latte (dark, light)\n  default_axis = \"ij\"        % ij | xy\n\n  [notebook]\n  theme = \"dark\"             % rustlab-notebook -t default\n  code = \"open\"              % open | collapsed (source disclosure)\n\n  [repl]\n  history_limit = 1000\n  history = true             % false skips ~/.rustlab_history\n\n  [viewer]\n  auto_connect = false       % REPL / rustlab run without --plot\n  name = \"work\"              % rustlab-viewer --name\n\n  Full example: docs/rustlabrc.example.toml" },
+        detail: "Optional TOML config — not a startup script. First existing file wins:\n\n  1. $XDG_CONFIG_HOME/rustlab/config.toml   (XDG home defaults to ~/.config)\n  2. ~/.rustlabrc\n  3. built-in defaults (missing file is OK)\n\n  Do not confuse this with ~/.rustlab_history (REPL command history) or\n  the project cache at .rustlab/cache.db. v1 is user-global only; there\n  is no project .rustlab/config.toml, and the file is never executed.\n\n  Precedence (high → low): CLI flags > in-script / REPL commands > rc >\n  built-in defaults. Unknown keys warn once and are ignored; invalid\n  values abort with the file path and key, except [notebook] code,\n  which warns once and falls back to open.\n\nExample ~/.rustlabrc:\n  [display]\n  format = \"commas\"          % short | long | hex | commas\n\n  [plot]\n  theme = \"dark\"             % mocha | macchiato | frappe | latte (dark, light)\n  default_axis = \"ij\"        % ij | xy\n\n  [notebook]\n  theme = \"dark\"             % rustlab-notebook -t default\n  code = \"open\"              % open | collapsed (source disclosure)\n\n  [repl]\n  history_limit = 1000\n  history = true             % false skips ~/.rustlab_history\n\n  [cache]\n  enabled = false            % true lets `cache enable` open .rustlab/cache.db\n\n  [viewer]\n  auto_connect = false       % REPL / rustlab run without --plot\n  name = \"work\"              % rustlab-viewer --name\n\n  Full example: docs/rustlabrc.example.toml" },
     // Math (additional)
     HelpEntry { name: "atan2", brief: "Two-argument inverse tangent  atan2(y, x)",
         detail: "atan2(y, x)  — angle in radians in the range (-π, π]\n  Element-wise; accepts scalars, vectors, or matrices.\n  atan2(1, 1)   →  π/4\n  atan2(0, -1)  →  π" },
@@ -717,6 +717,11 @@ pub const HELP: &[HelpEntry] = &[
                  (so a typo like `cache list` errors loudly instead of silently opening\n\
                  a new store file called `list`). Quoted strings are always paths.\n\n\
                  With no path, `cache enable` uses .rustlab/cache.db relative to CWD.\n\
+                 The store stays closed unless the host opts in: `rustlab run --cache`,\n\
+                 `rustlab repl --cache`, `rustlab-notebook render --cache`,\n\
+                 `watch --cache`, or `[cache] enabled = true` in ~/.rustlabrc.\n\
+                 `--no-cache` forces it off even when that key is true. With the\n\
+                 default, `cache enable` prints `cache: disabled` and creates no file.\n\
                  Once a store is open, every call to an in-scope user function consults\n\
                  the cache; misses with serialisable results are stored, and matching\n\
                  future calls return the stored value without recomputing.\n\n\
@@ -2014,6 +2019,16 @@ pub struct ReplArgs {
     /// `--viewer` form.
     #[arg(long, value_name = "NAME", requires = "viewer")]
     pub viewer_name: Option<String>,
+
+    /// Let `cache enable` open or create the SQLite function cache.
+    /// Overrides `[cache] enabled = false`.
+    #[arg(long, conflicts_with = "no_cache")]
+    pub cache: bool,
+
+    /// Do not open the SQLite function cache, even when `[cache] enabled`
+    /// is true.
+    #[arg(long, conflicts_with = "cache")]
+    pub no_cache: bool,
 }
 
 
@@ -2142,6 +2157,11 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
         .build();
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(ReplHelper::new()));
+    rustlab_script::set_host_persistent_cache(Some(super::run::persistent_cache_choice(
+        args.cache,
+        args.no_cache,
+        settings,
+    )));
     let mut ev = Evaluator::new();
     ev.color_output = color::is_color_enabled();
 
@@ -2437,6 +2457,7 @@ mod viewer_startup_tests {
         let flag = ReplArgs {
             viewer: true,
             viewer_name: None,
+            ..ReplArgs::default()
         };
         assert_eq!(viewer_startup_choice(&flag, &rc(false, None)), Some(None));
         // rc name still fills in when --viewer has no --viewer-name
@@ -2447,6 +2468,7 @@ mod viewer_startup_tests {
         let named = ReplArgs {
             viewer: true,
             viewer_name: Some("lab".into()),
+            ..ReplArgs::default()
         };
         assert_eq!(
             viewer_startup_choice(&named, &rc(true, Some("work"))),

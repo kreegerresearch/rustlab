@@ -6,6 +6,20 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.52
+
+### Security
+- **rusqlite 0.31.0 → 0.41.1** (`libsqlite3-sys` 0.28.0 → 0.39.1). The bundled SQLite is 3.54.1, which fixes CVE-2026-11822, CVE-2026-11824, CVE-2026-119373, and the other SQLite fixes in that release.
+- **zip 2.4.2 → 9.3.0** (`default-features = false`, `deflate` only). Fixes GHSA-m665-v7pm-7grj (critical) and RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369, and RUSTSEC-2026-0429. NPZ save still writes stored (uncompressed) entries and still reads deflate archives.
+- **Semver-compatible dependency bumps** that pick up advisory fixes: tokio 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, patched in ≥1.53.3; 1.54.1 also avoids the yanked 1.54.0 release covered by RUSTSEC-2026-0384), anyhow 1.0.102 → 1.0.104 (RUSTSEC-2026-0190), pulldown-cmark 0.13.3 → 0.13.6 (RUSTSEC-2026-0433 / RUSTSEC-2026-0414), rand 0.8.5 → 0.8.8 (RUSTSEC-2026-0097; the direct requirement stays 0.8), crossbeam-epoch 0.9.18 → 0.9.21 (RUSTSEC-2026-0204), event-listener 5.4.1 → 5.4.2 (RUSTSEC-2026-0221), memmap2 0.9.10 → 0.9.12 (RUSTSEC-2026-0186), webbrowser 1.2.0 → 1.2.6 (RUSTSEC-2026-0257). Also updated, with no advisory: proptest 1.11.0 → 1.12.0, thiserror 2.0.18 → 2.0.21 (1.0.69 was already current), serde 1.0.228 → 1.0.229, serde_json 1.0.149 → 1.0.154, blake3 1.8.5 → 1.8.7, clap 4.6.0 → 4.6.7, notify 8.2.0 → 8.2.1, futures-util 0.3.32 → 0.3.34, libc 0.2.183 → 0.2.191.
+
+### Breaking / behavior changes
+- **The SQLite function cache is off unless you opt in.** `cache enable` used to create `.rustlab/cache.db` (or the path you named) as soon as a script or notebook ran it. It now prints `cache: disabled (off by default; pass --cache or set [cache] enabled = true)` and does not create or open a file. The script keeps running, uncached. Turn it on with `rustlab run --cache`, `rustlab repl --cache`, `rustlab-notebook render --cache`, `rustlab-notebook watch --cache`, or `[cache] enabled = true` in `~/.rustlabrc` / `$XDG_CONFIG_HOME/rustlab/config.toml`. `--no-cache` forces it off even when that key is true. `rustlab cache` and `rustlab-notebook cache` still only open a store that already exists; they do not create one. The in-memory notebook prefix cache is unchanged.
+
+### Changed
+- **Minimum supported Rust is 1.89**, required by rusqlite 0.41. CI installs the stable toolchain before `cargo test`.
+- **`plotters` is a normal dependency of `rustlab-plot`.** It had been listed after `[target.'cfg(unix)'.dependencies]`, so Windows builds did not get the SVG/PNG backends.
+
 ## 0.3.51
 
 ### Added

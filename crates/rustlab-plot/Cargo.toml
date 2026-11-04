@@ -2,6 +2,7 @@
 name        = "rustlab-plot"
 version.workspace     = true
 edition.workspace     = true
+rust-version.workspace = true
 authors.workspace     = true
 license.workspace     = true
 repository.workspace  = true
@@ -19,13 +20,8 @@ ratatui    = "0.29"
 crossterm  = "0.28"
 thiserror.workspace    = true
 gif.workspace          = true
-
-# Optional viewer deps (only pulled in with `--features viewer`)
-rustlab-proto = { workspace = true, optional = true }
-rmp-serde     = { workspace = true, optional = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+# SVG/PNG backends. Kept in [dependencies] so Windows builds get them too;
+# it used to follow the unix target header and was unix-only by accident.
 plotters   = { version = "0.3", default-features = false, features = [
     "svg_backend",
     "bitmap_backend",
@@ -35,3 +31,10 @@ plotters   = { version = "0.3", default-features = false, features = [
     "all_elements",
     "full_palette",
 ] }
+
+# Optional viewer deps (only pulled in with `--features viewer`)
+rustlab-proto = { workspace = true, optional = true }
+rmp-serde     = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

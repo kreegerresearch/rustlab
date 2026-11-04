@@ -188,7 +188,10 @@ dropped when that cap trips.
 While executing notebook code (and when expanding embeds), every path
 passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`,
 `whos`, `sparameters` (a Touchstone path), `cache enable` (including the
-default `.rustlab/cache.db`), `cache add file`, and `![[embed]]` must
+default `.rustlab/cache.db`, and only after the host opted in with
+`--cache` or `[cache] enabled = true` — otherwise the statement returns
+before any path is checked or any file is created), `cache add file`,
+and `![[embed]]` must
 resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with
