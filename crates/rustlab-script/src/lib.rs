@@ -31,6 +31,7 @@
 
 pub mod ast;
 pub mod ast_hash;
+pub mod cache_host;
 pub mod cache_registry;
 pub mod cache_value;
 pub mod error;
@@ -53,6 +54,7 @@ mod solve_factor;
 #[cfg(test)]
 mod edge_cases;
 
+pub use cache_host::{host_persistent_cache, resolve_persistent_cache, set_host_persistent_cache};
 pub use error::ScriptError;
 pub use eval::line_io::{
     classify_keyboard_line, clear_keyboard_handler, clear_keyboard_line_reader,

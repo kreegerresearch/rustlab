@@ -24,10 +24,13 @@ subsequent render is dominated by parsing and prose pipeline, not by
 ## Enable the cache
 
 `cache enable` with no path opens (or creates) the per-project store
-at `.rustlab/cache.db`. The workspace `.gitignore` excludes
-`.rustlab/` by default — see `docs/notebooks.md` § "Persistent
-function cache" for the named-store form when you want to commit a
-warm cache.
+at `.rustlab/cache.db`, but only after the host opts in. Render or
+watch this notebook with `--cache`, or set `[cache] enabled = true`
+in `~/.rustlabrc`. Without that, the cell prints `cache: disabled`
+and does not create the file; the rest of the notebook still runs.
+The workspace `.gitignore` excludes `.rustlab/` by default — see
+`docs/notebooks.md` § "Persistent function cache" for the named-store
+form when you want to commit a warm cache.
 
 ```rustlab
 cache enable

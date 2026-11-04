@@ -77,7 +77,7 @@ fn resolve_store_path(common: &CommonArgs) -> PathBuf {
 fn open_store(path: &std::path::Path, must_exist: bool) -> Result<Store> {
     if must_exist && !path.exists() {
         anyhow::bail!(
-            "no cache file at {} (use `rustlab run` with `cache enable` first, or pass --store PATH)",
+            "no cache file at {} (pass --cache, or set [cache] enabled = true, then run a script with `cache enable`; or pass --store PATH)",
             path.display(),
         );
     }

@@ -9,6 +9,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Notebook execution denies the SQLite cache unless a host (the
+/// `rustlab-notebook` binary) explicitly allowed it. An unset policy
+/// is deny, so library renders and tests do not create `cache.db`.
+fn apply_persistent_cache_permission(ev: &mut Evaluator) {
+    let permitted = rustlab_script::host_persistent_cache().unwrap_or(false);
+    ev.set_persistent_cache_permitted(permitted);
+}
+
 thread_local! {
     /// Jail root every notebook executed on this thread is confined to.
     /// `None` means "the notebook's own directory" (the process cwd at
@@ -296,12 +304,14 @@ fn execute_core(
     // stale widgets or poll a dead cancel flag.
     let refresh = |ev: &mut Evaluator| {
         ev.set_widgets(widgets.clone());
+        apply_persistent_cache_permission(ev);
         if let Some(c) = &cancel {
             ev.set_cancel(c.clone());
         }
     };
 
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
+    apply_persistent_cache_permission(&mut ev);
     if let Some(c) = &cancel {
         ev.set_cancel(c.clone());
     }
@@ -563,6 +573,7 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
 
     let widgets = Arc::new(build_widget_table(blocks, None));
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
+    apply_persistent_cache_permission(&mut ev);
     // A previous notebook in this process must not leave `hold on`.
     reset_figure_for_render();
     let mut rendered = Vec::with_capacity(blocks.len());

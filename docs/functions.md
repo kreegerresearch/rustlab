@@ -3883,7 +3883,9 @@ Load order (first existing file wins):
 
 v1 is user-global only. There is no project `.rustlab/config.toml` yet.
 Do not confuse this file with `~/.rustlab_history` (REPL command history)
-or `.rustlab/cache.db` (per-project function cache).
+or `.rustlab/cache.db` (per-project function cache; created only
+after `[cache] enabled = true` or a `--cache` flag — see
+[Persistent Function Cache](#persistent-function-cache)).
 
 **Precedence** (high → low): explicit CLI flags → in-script / REPL
 commands → user rc → built-in defaults.
@@ -4811,6 +4813,27 @@ The `cache` statement opts a session into a SQLite-backed persistent cache:
 once enabled, every call to an in-scope user function consults the store,
 and misses with serialisable results are saved for next time.
 
+The store is **off unless the host opts in**. A script or notebook that
+says `cache enable` does not create or open `.rustlab/cache.db` (and
+does not touch any other cache path) until one of these is set:
+
+- `rustlab run --cache`, `rustlab repl --cache`
+- `rustlab-notebook render --cache`, `rustlab-notebook watch --cache`
+- `[cache] enabled = true` in `~/.rustlabrc` or
+  `$XDG_CONFIG_HOME/rustlab/config.toml`
+
+`--no-cache` on those same commands forces the store off even when the
+rc key is true. With the host off, `cache enable` prints
+
+```
+cache: disabled (off by default; pass --cache or set [cache] enabled = true)
+```
+
+and the script keeps running, uncached. `cache status` then prints
+`cache: off`. `rustlab cache` and `rustlab-notebook cache` only open a
+file that already exists; they never create one. The in-memory notebook
+prefix cache is a different mechanism and stays on.
+
 ### Why use this
 
 The hit path returns a stored result in **roughly a millisecond
@@ -4856,8 +4879,8 @@ cache).
 
 | Form | Effect |
 |------|--------|
-| `cache enable` | Open or create the per-project store at `.rustlab/cache.db` |
-| `cache enable "path.rcache"` | Open or create a user-named store at `path.rcache` |
+| `cache enable` | Open or create the per-project store at `.rustlab/cache.db`, if the host opted in (`--cache` or `[cache] enabled = true`). Otherwise print `cache: disabled` and leave the filesystem alone |
+| `cache enable "path.rcache"` | Open or create a user-named store at `path.rcache`, under the same opt-in as `cache enable`. With the host off, this does not create the file either |
 | `cache "path.rcache"` | Sugar for `cache enable "path.rcache"` |
 | `cache off` | Close the active store (DB rows preserved on disk) |
 | `cache add file "helpers.rlab"` | Source a `.rlab` file and register each top-level function as cacheable |
@@ -4955,6 +4978,7 @@ over NFS; pick a local path if your project is on a network mount.
 ### Example
 
 ```
+% host must opt in first: rustlab run --cache, or [cache] enabled = true
 cache enable                          % opens .rustlab/cache.db
 
 function y = expensive(x)

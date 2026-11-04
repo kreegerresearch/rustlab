@@ -73,6 +73,11 @@ pub struct Evaluator {
     /// the StmtKind::Cache arm and the dispatcher (Phase 3c/d) operate
     /// on this. Defaults to inactive — `cache enable` opens a store.
     pub(crate) cache_registry: CacheRegistry,
+    /// When false, `cache enable` prints a notice and does not open or
+    /// create a store. Library evaluators default to true (host policy
+    /// unset). The CLI and notebook binaries set the host policy, and
+    /// notebook execution forces false unless that policy is allow.
+    persistent_cache_permitted: bool,
     /// Memoized canonical entry ids — Phase 7 (Option 3) rename-
     /// invariant function identity hashes. Populated lazily by the
     /// dispatcher; cleared en bloc on every `FunctionDef` so a
@@ -134,6 +139,7 @@ impl Evaluator {
             // cache state consistently with the rest of the eval
             // session.
             cache_registry: self.cache_registry.clone(),
+            persistent_cache_permitted: self.persistent_cache_permitted,
             cached_entry_ids: self.cached_entry_ids.clone(),
             // Share the same cancel flag — a snapshot restored mid-render
             // should still observe a preemption signal.
@@ -179,6 +185,7 @@ impl Evaluator {
             number_format: value::default_number_format(),
             current_line: 0,
             cache_registry: CacheRegistry::new(),
+            persistent_cache_permitted: crate::cache_host::host_persistent_cache().unwrap_or(true),
             cached_entry_ids: HashMap::new(),
             cancel: None,
             widget_values: None,
@@ -252,6 +259,12 @@ impl Evaluator {
     /// `true` when the cache has an open store.
     pub fn cache_active(&self) -> bool {
         self.cache_registry.is_active()
+    }
+
+    /// Allow or refuse `cache enable`. A refusal returns before any path
+    /// check or `Store::open`, so the process does not create `cache.db`.
+    pub fn set_persistent_cache_permitted(&mut self, permitted: bool) {
+        self.persistent_cache_permitted = permitted;
     }
 
     /// `true` iff a call to a user fn named `name` would be routed
@@ -3817,6 +3830,7 @@ impl Evaluator {
             number_format: self.number_format,
             current_line: self.current_line,
             cache_registry: self.cache_registry.clone(),
+            persistent_cache_permitted: self.persistent_cache_permitted,
             cached_entry_ids: self.cached_entry_ids.clone(),
             cancel: self.cancel.clone(),
             widget_values: self.widget_values.clone(),
@@ -3878,6 +3892,14 @@ impl Evaluator {
     }
 
     fn cache_enable(&mut self, path: Option<&str>) -> Result<(), ScriptError> {
+        if !self.persistent_cache_permitted {
+            // Before path_jail and Store::open: a denied host must not
+            // stat or create `.rustlab/` (or any named store path).
+            output::script_println(
+                "cache: disabled (off by default; pass --cache or set [cache] enabled = true)",
+            );
+            return Ok(());
+        }
         let path = match path {
             Some(p) => p,
             None => crate::cache_registry::DEFAULT_STORE_PATH,

@@ -8,6 +8,10 @@ mutual recursion's name-fallback, stale-blob persistence).
 
 ## Setup
 
+The SQLite store is off unless this notebook is rendered with
+`--cache` or `[cache] enabled = true`. Without that, `cache enable`
+prints `cache: disabled` and the later cells recompute.
+
 ```rustlab
 cache enable
 cache clear

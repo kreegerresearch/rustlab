@@ -178,6 +178,14 @@ enum Command {
         /// Ignored by the re-render-on-save watcher.
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
         diff: Option<String>,
+        /// Let `cache enable` open or create the SQLite function cache.
+        /// Overrides `[cache] enabled = false`.
+        #[arg(long, conflicts_with = "no_cache")]
+        cache: bool,
+        /// Do not open the SQLite function cache, even when `[cache] enabled`
+        /// is true.
+        #[arg(long, conflicts_with = "cache")]
+        no_cache: bool,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -374,6 +382,14 @@ enum Command {
         /// Omit the heading sidebar. Single HTML notebook only.
         #[arg(long)]
         no_toc: bool,
+        /// Let `cache enable` open or create the SQLite function cache.
+        /// Overrides `[cache] enabled = false`.
+        #[arg(long, conflicts_with = "no_cache")]
+        cache: bool,
+        /// Do not open the SQLite function cache, even when `[cache] enabled`
+        /// is true.
+        #[arg(long, conflicts_with = "cache")]
+        no_cache: bool,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -519,6 +535,20 @@ enum CliReportFormat {
     Json,
 }
 
+fn apply_cache_policy(cache: bool, no_cache: bool, settings: &UserSettings) {
+    let cli = if no_cache {
+        Some(false)
+    } else if cache {
+        Some(true)
+    } else {
+        None
+    };
+    rustlab_script::set_host_persistent_cache(Some(rustlab_script::resolve_persistent_cache(
+        cli,
+        settings.cache_enabled(),
+    )));
+}
+
 fn parse_linter_override(s: &str) -> Result<(String, PathBuf), String> {
     let (key, path) = s
         .split_once('=')
@@ -540,6 +570,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Default for validate/check and any path that does not take the flags.
+    // Render and watch override this from `--cache` / `--no-cache`.
+    rustlab_script::set_host_persistent_cache(Some(settings.cache_enabled()));
     match cli.command {
         Command::Watch {
             input,
@@ -558,7 +591,10 @@ fn main() {
             annotate,
             git_diff,
             diff,
+            cache,
+            no_cache,
         } => {
+            apply_cache_policy(cache, no_cache, &settings);
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
@@ -649,7 +685,10 @@ fn main() {
             index,
             no_toc,
             strict,
+            cache,
+            no_cache,
         } => {
+            apply_cache_policy(cache, no_cache, &settings);
             rustlab_notebook::set_render_strict(strict);
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
@@ -831,7 +870,7 @@ fn open_cache(path: &std::path::Path, must_exist: bool) -> anyhow::Result<rustla
     use anyhow::Context;
     if must_exist && !path.exists() {
         anyhow::bail!(
-            "no cache file at {} (use `rustlab-notebook render` after `cache enable` in your notebook, or pass --store PATH)",
+            "no cache file at {} (pass --cache, or set [cache] enabled = true, then render a notebook with `cache enable`; or pass --store PATH)",
             path.display(),
         );
     }
