@@ -1660,6 +1660,131 @@ mod tests {
         assert!(out.contains("\\textcolor{rlh1}{\\textbf{"));
     }
 
+    /// PDF pages are Latte ink on white paper, including when a dark theme
+    /// was requested. Header fill, body stripes, and rules are blends of
+    /// that painted foreground over the paper — 11%, 6%, and 30% — and a
+    /// long table keeps the header rule inside `\endhead` so a page break
+    /// repeats it while stripes stay on even body rows.
+    #[test]
+    fn pdf_tables_emit_theme_rules_and_alternating_stripes() {
+        let rows = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+        let mut md = String::from("| Left | Right |\n|---|---|\n");
+        for (i, name) in rows.iter().enumerate() {
+            md.push_str(&format!("| {name} | c{i} |\n"));
+        }
+        let mut stripes = Vec::new();
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let tex = render_latex(
+                "Tables",
+                &[Rendered::Markdown(md.clone())],
+                std::path::Path::new("/tmp/test_plots"),
+                "plots/test",
+                theme,
+                &crate::render::LinkMode::single_file(),
+            );
+            let fg = defined_html_color(&tex, "rltext").unwrap_or_else(|| {
+                panic!("{label}: preamble has no rltext foreground:\n{tex}")
+            });
+            // White article paper. There is no `\pagecolor`.
+            let stripe = blend_hex(&fg, "ffffff", 0.06);
+            let header = blend_hex(&fg, "ffffff", 0.11);
+            let rule = blend_hex(&fg, "ffffff", 0.30);
+            assert_eq!(fg, "4c4f69", "{label}: PDF body ink is Latte");
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltstripe}}{{HTML}}{{{stripe}}}")),
+                "{label}: stripe should be {stripe}, a 6% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rlthead}}{{HTML}}{{{header}}}")),
+                "{label}: header fill should be {header}, an 11% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltrule}}{{HTML}}{{{rule}}}")),
+                "{label}: rules should be {rule}, a 30% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                !tex.contains("\\definecolor{rlthead}{HTML}{ccd0da}"),
+                "{label}: header fill must not stay the fixed inline-code gray"
+            );
+            assert!(
+                tex.contains("\\arrayrulecolor{rltrule}"),
+                "{label}: rules must use the blended rule color\n{tex}"
+            );
+            let endhead = tex.find("\\endhead").expect("endhead");
+            let head = &tex[..endhead];
+            assert!(
+                head.contains("\\rowcolor{rlthead}"),
+                "{label}: header row is filled\n{head}"
+            );
+            assert!(
+                head.contains("\\specialrule{0.4pt}{0.35ex}{0.45ex}"),
+                "{label}: thin rule under the header, repeated via endhead\n{head}"
+            );
+            let body = &tex[endhead..];
+            let mut pos = 0;
+            for (i, name) in rows.iter().enumerate() {
+                let rel = body[pos..].find(name).unwrap_or_else(|| {
+                    panic!("{label}: missing {name} in table body:\n{body}")
+                });
+                let at = pos + rel;
+                let between = &body[pos..at];
+                if i % 2 == 1 {
+                    assert!(
+                        between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be a striped body row:\n{between}"
+                    );
+                } else {
+                    assert!(
+                        !between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be an unstriped body row:\n{between}"
+                    );
+                }
+                if i > 0 {
+                    assert!(
+                        between.contains("\\specialrule{0.2pt}{0.2ex}{0.2ex}"),
+                        "{label}: hairline missing before {name}:\n{between}"
+                    );
+                }
+                pos = at + name.len();
+            }
+            let tail = &body[pos..];
+            assert!(
+                tail.contains("\\specialrule{0.4pt}{0.4ex}{0.25ex}"),
+                "{label}: bottom rule missing:\n{tail}"
+            );
+            assert!(
+                !tail.contains("\\rowcolor{rltstripe}"),
+                "{label}: stripe after the last row:\n{tail}"
+            );
+            stripes.push(stripe);
+        }
+        assert_eq!(
+            stripes[0], stripes[1],
+            "a dark theme request still paints Latte on white, so the stripe matches"
+        );
+    }
+
+    fn blend_hex(fg: &str, bg: &str, t: f64) -> String {
+        fn channel(f: u8, b: u8, t: f64) -> u8 {
+            (f64::from(b) + (f64::from(f) - f64::from(b)) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        }
+        let byte = |s: &str, i: usize| u8::from_str_radix(&s[i..i + 2], 16).unwrap();
+        format!(
+            "{:02x}{:02x}{:02x}",
+            channel(byte(fg, 0), byte(bg, 0), t),
+            channel(byte(fg, 2), byte(bg, 2), t),
+            channel(byte(fg, 4), byte(bg, 4), t)
+        )
+    }
+
+    fn defined_html_color(tex: &str, name: &str) -> Option<String> {
+        let key = format!("\\definecolor{{{name}}}{{HTML}}{{");
+        let i = tex.find(&key)?;
+        Some(tex[i + key.len()..].chars().take(6).collect())
+    }
+
     #[test]
     fn md_to_latex_same_page_anchor_drops_dangling() {
         let single = crate::render::LinkMode::single_file();
