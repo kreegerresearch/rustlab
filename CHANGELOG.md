@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.53
+
+### Changed
+- **Notebook tables have rules and zebra stripes.** PDF tables (`xltabular`) draw a 0.4 pt rule under the header and at the bottom, and a 0.2 pt hairline between body rows. Even body rows and the header are tinted from the painted text color: 6% and 11% over white paper. The rules are the same color at 30%. PDF stays Catppuccin Latte on white (`#4c4f69` over `#ffffff`), so the stripe is `#f4f4f6`, the header `#ebecef`, and the rules `#c9cad2`. A page break repeats the header and its rule; the stripe is part of each row, so the alternation continues. HTML and `notebook watch` use the same percentages via `color-mix` of `--rl-text` into `--rl-bg`, which follows the active theme. Row spacing is unchanged aside from the small gap that keeps a fill off the stroke.
+
 ## 0.3.52
 
 ### Security

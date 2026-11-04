@@ -457,37 +457,57 @@ pub fn render_latex(
     )
 }
 
+/// Body-row stripe: foreground at 6% over the page.
+const TABLE_STRIPE_MIX: f64 = 0.06;
+/// Header wash, inside the 10–12% band.
+const TABLE_HEADER_MIX: f64 = 0.11;
+/// Rule color, inside the 25–35% band.
+const TABLE_RULE_MIX: f64 = 0.30;
+/// `article` paper. The preamble does not set `\pagecolor`.
+const PDF_PAPER: &str = "#ffffff";
+
 fn latex_palette(theme: &ThemeColors) -> String {
+    // Blended once here. pdflatex has no alpha, so the tint is an opaque hex.
+    let header = blend_over_paper(theme.text, TABLE_HEADER_MIX);
+    let stripe = blend_over_paper(theme.text, TABLE_STRIPE_MIX);
+    let rule = blend_over_paper(theme.text, TABLE_RULE_MIX);
     let colors = [
-        ("rltext", theme.text),
-        ("rldim", theme.text_dim),
-        ("rlh1", theme.accent_primary),
-        ("rlh2", theme.accent_secondary),
-        ("rlh3", theme.accent_tertiary),
-        ("rlrule", theme.accent_primary),
-        ("rllink", theme.accent_secondary),
-        ("rlkw", theme.syn_keyword),
-        ("rlfn", theme.syn_function),
-        ("rlnum", theme.syn_number),
-        ("rlstr", theme.syn_string),
-        ("rlcom", theme.syn_comment),
-        ("rlop", theme.syn_operator),
-        ("rlcodebg", theme.code_bg),
-        ("rloutbg", theme.output_bg),
-        ("rlpanel", theme.bg_secondary),
-        ("rlthead", theme.inline_code_bg),
-        ("rlborder", theme.border),
-        ("rlerrbg", theme.error_bg),
-        ("rlerrfg", theme.error_text),
+        ("rltext", theme.text.to_string()),
+        ("rldim", theme.text_dim.to_string()),
+        ("rlh1", theme.accent_primary.to_string()),
+        ("rlh2", theme.accent_secondary.to_string()),
+        ("rlh3", theme.accent_tertiary.to_string()),
+        ("rlrule", theme.accent_primary.to_string()),
+        ("rllink", theme.accent_secondary.to_string()),
+        ("rlkw", theme.syn_keyword.to_string()),
+        ("rlfn", theme.syn_function.to_string()),
+        ("rlnum", theme.syn_number.to_string()),
+        ("rlstr", theme.syn_string.to_string()),
+        ("rlcom", theme.syn_comment.to_string()),
+        ("rlop", theme.syn_operator.to_string()),
+        ("rlcodebg", theme.code_bg.to_string()),
+        ("rloutbg", theme.output_bg.to_string()),
+        ("rlpanel", theme.bg_secondary.to_string()),
+        ("rlthead", header),
+        ("rltstripe", stripe),
+        ("rltrule", rule),
+        ("rlborder", theme.border.to_string()),
+        ("rlerrbg", theme.error_bg.to_string()),
+        ("rlerrfg", theme.error_text.to_string()),
     ];
     let mut out = String::new();
     for (name, hex) in colors {
         out.push_str(&format!(
             "\\definecolor{{{name}}}{{HTML}}{{{}}}\n",
-            html_hex(hex)
+            html_hex(&hex)
         ));
     }
     out
+}
+
+fn blend_over_paper(foreground: &str, amount: f64) -> String {
+    rustlab_plot::theme::blend_srgb(foreground, PDF_PAPER, amount)
+        .unwrap_or_else(|| panic!("theme foreground {foreground} is not #RRGGBB"))
 }
 
 fn callout_frame(kind: &crate::parse::CalloutKind) -> &'static str {
@@ -620,6 +640,7 @@ fn markdown_to_latex_in(
     let mut out = String::new();
     let mut table_cell_idx: usize = 0;
     let mut table_in_head = false;
+    let mut table_body_row: usize = 0;
     let mut heading: Option<HeadingCap> = None;
     let mut image: Option<(String, String)> = None;
     let mut link_live: Vec<bool> = Vec::new();
@@ -730,10 +751,17 @@ fn markdown_to_latex_in(
                             }
                         })
                         .collect();
-                    let mut spec =
-                        String::from("\\par\\noindent\n\\begin{xltabular}{\\linewidth}{");
+                    // `\arrayrulecolor` paints every `\specialrule` with the
+                    // blended foreground. A gap above and below each rule
+                    // keeps the row fill from covering the stroke and keeps
+                    // the stroke off the glyphs, without stretching the row
+                    // enough to collide with the next line.
+                    table_body_row = 0;
+                    let mut spec = String::from(
+                        "\\par\\noindent\n\\arrayrulecolor{rltrule}\n\\begin{xltabular}{\\linewidth}{",
+                    );
                     spec.push_str(&cols);
-                    spec.push_str("}\n\\toprule\n");
+                    spec.push_str("}\n\\specialrule{0.4pt}{0pt}{0.35ex}\n");
                     emit(&mut heading, &mut out, &spec);
                 }
                 Tag::TableHead => {
@@ -743,6 +771,22 @@ fn markdown_to_latex_in(
                 }
                 Tag::TableRow => {
                     table_cell_idx = 0;
+                    if !table_in_head {
+                        if table_body_row > 0 {
+                            emit(
+                                &mut heading,
+                                &mut out,
+                                "\\specialrule{0.2pt}{0.2ex}{0.2ex}\n",
+                            );
+                        }
+                        // Even body rows (2nd, 4th, …) take the stripe.
+                        // The color is in the row, so a page break does not
+                        // restart the alternation.
+                        if table_body_row % 2 == 1 {
+                            emit(&mut heading, &mut out, "\\rowcolor{rltstripe}");
+                        }
+                        table_body_row += 1;
+                    }
                 }
                 Tag::TableCell => {
                     if table_cell_idx > 0 {
@@ -811,12 +855,17 @@ fn markdown_to_latex_in(
                     emit(
                         &mut heading,
                         &mut out,
-                        "\\bottomrule\n\\end{xltabular}\n\\par\n\n",
+                        "\\specialrule{0.4pt}{0.4ex}{0.25ex}\n\\end{xltabular}\n\\arrayrulecolor{black}\n\\par\n\n",
                     );
                 }
                 TagEnd::TableHead => {
-                    // Repeat the header when the table breaks onto the next page.
-                    emit(&mut heading, &mut out, " \\\\\n\\midrule\n\\endhead\n");
+                    // The header rule is inside the head, so a page break
+                    // repeats the wash and the rule with the header text.
+                    emit(
+                        &mut heading,
+                        &mut out,
+                        " \\\\\n\\specialrule{0.4pt}{0.35ex}{0.45ex}\n\\endhead\n",
+                    );
                     table_in_head = false;
                 }
                 TagEnd::TableRow => {
@@ -1648,16 +1697,144 @@ mod tests {
     fn md_to_latex_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
         let out = markdown_to_latex(md, &crate::render::LinkMode::single_file());
-        assert!(out.contains("\\par\\noindent\n\\begin{xltabular}{\\linewidth}"));
+        assert!(out.contains(
+            "\\par\\noindent\n\\arrayrulecolor{rltrule}\n\\begin{xltabular}{\\linewidth}"
+        ));
         assert!(out.contains(">{\\raggedright\\arraybackslash\\hspace{0pt}}X"));
-        assert!(out.contains("\\toprule"));
-        assert!(out.contains("\\midrule"));
+        assert!(out.contains("\\specialrule{0.4pt}{0.35ex}{0.45ex}"));
+        assert!(out.contains("\\specialrule{0.2pt}{0.2ex}{0.2ex}"));
         assert!(out.contains("\\endhead"));
-        assert!(out.contains("\\bottomrule"));
+        assert!(out.contains("\\specialrule{0.4pt}{0.4ex}{0.25ex}"));
         assert!(out.contains("\\end{xltabular}"));
+        assert!(out.contains("\\rowcolor{rltstripe}"));
         assert!(out.contains(" & "));
         assert!(out.contains("\\rowcolor{rlthead}"));
         assert!(out.contains("\\textcolor{rlh1}{\\textbf{"));
+    }
+
+    /// PDF pages are Latte ink on white paper, including when a dark theme
+    /// was requested. Header fill, body stripes, and rules are blends of
+    /// that painted foreground over the paper — 11%, 6%, and 30% — and a
+    /// long table keeps the header rule inside `\endhead` so a page break
+    /// repeats it while stripes stay on even body rows.
+    #[test]
+    fn pdf_tables_emit_theme_rules_and_alternating_stripes() {
+        let rows = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+        let mut md = String::from("| Left | Right |\n|---|---|\n");
+        for (i, name) in rows.iter().enumerate() {
+            md.push_str(&format!("| {name} | c{i} |\n"));
+        }
+        let mut stripes = Vec::new();
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let tex = render_latex(
+                "Tables",
+                &[Rendered::Markdown(md.clone())],
+                std::path::Path::new("/tmp/test_plots"),
+                "plots/test",
+                theme,
+                &crate::render::LinkMode::single_file(),
+            );
+            let fg = defined_html_color(&tex, "rltext").unwrap_or_else(|| {
+                panic!("{label}: preamble has no rltext foreground:\n{tex}")
+            });
+            // White article paper. There is no `\pagecolor`.
+            let stripe = blend_hex(&fg, "ffffff", 0.06);
+            let header = blend_hex(&fg, "ffffff", 0.11);
+            let rule = blend_hex(&fg, "ffffff", 0.30);
+            assert_eq!(fg, "4c4f69", "{label}: PDF body ink is Latte");
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltstripe}}{{HTML}}{{{stripe}}}")),
+                "{label}: stripe should be {stripe}, a 6% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rlthead}}{{HTML}}{{{header}}}")),
+                "{label}: header fill should be {header}, an 11% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltrule}}{{HTML}}{{{rule}}}")),
+                "{label}: rules should be {rule}, a 30% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                !tex.contains("\\definecolor{rlthead}{HTML}{ccd0da}"),
+                "{label}: header fill must not stay the fixed inline-code gray"
+            );
+            assert!(
+                tex.contains("\\arrayrulecolor{rltrule}"),
+                "{label}: rules must use the blended rule color\n{tex}"
+            );
+            let endhead = tex.find("\\endhead").expect("endhead");
+            let head = &tex[..endhead];
+            assert!(
+                head.contains("\\rowcolor{rlthead}"),
+                "{label}: header row is filled\n{head}"
+            );
+            assert!(
+                head.contains("\\specialrule{0.4pt}{0.35ex}{0.45ex}"),
+                "{label}: thin rule under the header, repeated via endhead\n{head}"
+            );
+            let body = &tex[endhead..];
+            let mut pos = 0;
+            for (i, name) in rows.iter().enumerate() {
+                let rel = body[pos..].find(name).unwrap_or_else(|| {
+                    panic!("{label}: missing {name} in table body:\n{body}")
+                });
+                let at = pos + rel;
+                let between = &body[pos..at];
+                if i % 2 == 1 {
+                    assert!(
+                        between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be a striped body row:\n{between}"
+                    );
+                } else {
+                    assert!(
+                        !between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be an unstriped body row:\n{between}"
+                    );
+                }
+                if i > 0 {
+                    assert!(
+                        between.contains("\\specialrule{0.2pt}{0.2ex}{0.2ex}"),
+                        "{label}: hairline missing before {name}:\n{between}"
+                    );
+                }
+                pos = at + name.len();
+            }
+            let tail = &body[pos..];
+            assert!(
+                tail.contains("\\specialrule{0.4pt}{0.4ex}{0.25ex}"),
+                "{label}: bottom rule missing:\n{tail}"
+            );
+            assert!(
+                !tail.contains("\\rowcolor{rltstripe}"),
+                "{label}: stripe after the last row:\n{tail}"
+            );
+            stripes.push(stripe);
+        }
+        assert_eq!(
+            stripes[0], stripes[1],
+            "a dark theme request still paints Latte on white, so the stripe matches"
+        );
+    }
+
+    fn blend_hex(fg: &str, bg: &str, t: f64) -> String {
+        fn channel(f: u8, b: u8, t: f64) -> u8 {
+            (f64::from(b) + (f64::from(f) - f64::from(b)) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        }
+        let byte = |s: &str, i: usize| u8::from_str_radix(&s[i..i + 2], 16).unwrap();
+        format!(
+            "{:02x}{:02x}{:02x}",
+            channel(byte(fg, 0), byte(bg, 0), t),
+            channel(byte(fg, 2), byte(bg, 2), t),
+            channel(byte(fg, 4), byte(bg, 4), t)
+        )
+    }
+
+    fn defined_html_color(tex: &str, name: &str) -> Option<String> {
+        let key = format!("\\definecolor{{{name}}}{{HTML}}{{");
+        let i = tex.find(&key)?;
+        Some(tex[i + key.len()..].chars().take(6).collect())
     }
 
     #[test]

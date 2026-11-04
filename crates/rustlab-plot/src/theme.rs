@@ -280,6 +280,28 @@ pub fn contrast_ratio(fg: &str, bg: &str) -> Option<f64> {
     Some((hi + 0.05) / (lo + 0.05))
 }
 
+/// Mix `fg` over `bg` by `amount` (`0` is the background, `1` is the foreground).
+///
+/// Both arguments are `#RRGGBB` or `RRGGBB`. The result is lowercase `RRGGBB`
+/// with no hash, rounded half away from zero per channel. `None` when either
+/// color is not 6-digit sRGB. Notebook tables use this so a stripe is a tint
+/// of the theme's text color rather than a fixed gray.
+pub fn blend_srgb(fg: &str, bg: &str, amount: f64) -> Option<String> {
+    let (fr, fg_c, fb) = parse_hex_rgb(fg)?;
+    let (br, bg_c, bb) = parse_hex_rgb(bg)?;
+    let channel = |f: u8, b: u8| -> u8 {
+        (f64::from(b) + (f64::from(f) - f64::from(b)) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Some(format!(
+        "{:02x}{:02x}{:02x}",
+        channel(fr, br),
+        channel(fg_c, bg_c),
+        channel(fb, bb)
+    ))
+}
+
 fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
     let h = s.strip_prefix('#')?;
     if h.len() != 6 {
@@ -569,6 +591,24 @@ mod tests {
             MOCHA.css_var("plot-grid"),
             "var(--rl-plot-grid, rgba(150,150,180,0.3))"
         );
+    }
+
+    #[test]
+    fn blend_srgb_tints_foreground_over_the_page() {
+        // Latte text on the white PDF paper.
+        assert_eq!(blend_srgb("#4c4f69", "#ffffff", 0.06).unwrap(), "f4f4f6");
+        assert_eq!(blend_srgb("#4c4f69", "#ffffff", 0.11).unwrap(), "ebecef");
+        assert_eq!(blend_srgb("#4c4f69", "#ffffff", 0.30).unwrap(), "c9cad2");
+        // Mocha text on the Mocha page. A dark theme must not reuse the light gray.
+        assert_eq!(blend_srgb("#cdd6f4", "#1e1e2e", 0.06).unwrap(), "29293a");
+        assert_eq!(blend_srgb("#cdd6f4", "#1e1e2e", 0.11).unwrap(), "313244");
+        assert_eq!(blend_srgb("#cdd6f4", "#1e1e2e", 0.30).unwrap(), "535569");
+        assert_eq!(blend_srgb(MOCHA.text, MOCHA.bg, 0.06).unwrap(), "29293a");
+        assert_ne!(
+            blend_srgb(MOCHA.text, MOCHA.bg, 0.06).unwrap(),
+            blend_srgb(LATTE.text, "#ffffff", 0.06).unwrap()
+        );
+        assert!(blend_srgb("nope", "#ffffff", 0.06).is_none());
     }
 
     #[test]

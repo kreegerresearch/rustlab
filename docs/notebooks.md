@@ -754,9 +754,15 @@ stray `$` signs in prose. No `\$` escaping is needed in HTML output.
 ### Tables
 
 Markdown tables render as styled HTML tables or a LaTeX `xltabular`
-(a `tabularx` that breaks between rows) fitted to `\linewidth`. Booktabs
-rules, wrapping `X` columns, and breakable inline code keep a wide grid
-inside the PDF page margins, including a table taller than one page:
+(a `tabularx` that breaks between rows) fitted to `\linewidth`. A thin
+rule sits under the header, a hairline separates body rows, and a rule
+closes the bottom. Alternating body rows and the header pick up a tint
+of the theme's text color: 6% for a stripe, 11% for the header, 30% for
+the rules, each mixed into the page color (white paper in PDF, the theme
+background in HTML and `notebook watch`). PDF stays Catppuccin Latte on
+white paper, so those tints are blends of `#4c4f69` over white. Wrapping
+`X` columns and breakable inline code keep a wide grid inside the PDF
+page margins, including a table taller than one page:
 
 ```markdown
 | Window      | Main Lobe Width | First Sidelobe |
@@ -1764,7 +1770,9 @@ reports the tail of Inkscape's stderr.
 
 LaTeX and PDF are always Catppuccin Latte on white paper, whatever
 `-t` or `~/.rustlabrc` says. `-t` themes HTML and `notebook watch`
-only. There is no dark `pagecolor`. Body text is `#4c4f69`. Headings
+only. There is no dark `pagecolor`. Body text is `#4c4f69`. Table rules
+and zebra stripes are blends of that text color over the white paper
+(30% rules, 11% header, 6% body stripes). Headings
 are unnumbered: H1 `#7113ec`, H2 `#094dd3`, H3 `#12747a`. The title
 block has no date. Those heading colors are Latte's mauve, blue, and
 teal darkened so each clears 4.5:1 on white paper and on the Latte
