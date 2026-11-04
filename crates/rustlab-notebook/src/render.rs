@@ -1242,14 +1242,19 @@ document.addEventListener('click', (e) => {{
     margin: 1rem 0;
   }}
   .prose th, .prose td {{
-    border: 1px solid {border_subtle};
+    border: none;
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     padding: 0.5rem 0.8rem;
     text-align: left;
   }}
   .prose th {{
-    background: {border};
+    background: color-mix(in srgb, {text} 11%, {bg});
     color: {accent_primary};
     font-weight: 600;
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
+  }}
+  .prose tbody tr:nth-child(even) td {{
+    background: color-mix(in srgb, {text} 6%, {bg});
   }}
   .prose img, .callout img {{
     max-width: 100%;
@@ -1345,8 +1350,9 @@ document.addEventListener('click', (e) => {{
     white-space: pre-wrap;
     line-height: 1.5;
   }}
-  /* Table display. The colors are the notebook theme tokens (`--rl-*`,
-     with the palette literal as fallback). No extra stylesheet and no CDN. */
+  /* Table display. Header wash, zebra, and rules are a mix of the theme
+     text color into the page background (11%, 6%, 30%). No extra stylesheet
+     and no CDN. */
   table.rl-table {{
     border-collapse: collapse;
     margin: 0.6rem 0 0.2rem;
@@ -1354,7 +1360,7 @@ document.addEventListener('click', (e) => {{
     color: {text};
     font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
     font-size: 0.85rem;
-    border: 1px solid {border};
+    border: 1px solid color-mix(in srgb, {text} 30%, {bg});
     border-radius: 6px;
     overflow: hidden;
   }}
@@ -1362,13 +1368,13 @@ document.addEventListener('click', (e) => {{
     text-align: left;
     font-weight: 600;
     color: {accent_primary};
-    background: {bg_secondary};
-    border-bottom: 2px solid {accent_primary};
+    background: color-mix(in srgb, {text} 11%, {bg});
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     padding: 0.4rem 0.8rem;
   }}
   table.rl-table td {{
     padding: 0.3rem 0.8rem;
-    border-bottom: 1px solid {border};
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     color: {text};
   }}
   table.rl-table td.rl-num {{
@@ -1379,7 +1385,7 @@ document.addEventListener('click', (e) => {{
     border-bottom: none;
   }}
   table.rl-table tbody tr:nth-child(even) td {{
-    background: {bg_secondary};
+    background: color-mix(in srgb, {text} 6%, {bg});
   }}
   .error {{
     background: {error_bg};
