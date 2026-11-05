@@ -345,7 +345,7 @@ Authoring features an agent should use (full reference: [`docs/notebooks.md`](no
 - **Frontmatter:** `title:` and `order:` control the directory index.
 - **Caching for slow cells:** put `cache enable` in an early block — pure user functions get a persistent SQLite-backed result cache (`.rustlab/cache.db`) that survives re-renders. The file is created only when the host opts in (`rustlab-notebook render --cache` / `watch --cache`, or `[cache] enabled = true`). The default leaves the notebook uncached and does not touch `.rustlab/`. Functions that call `rand`, plotting, or I/O are excluded automatically.
 
-Verification loop for notebook authoring: edit → `rustlab-notebook render note.md -f html` (watch stderr for block errors) → `rustlab-notebook check note.md`.
+Verification loop for notebook authoring: edit → `rustlab-notebook render note.md -f html` (a failed cell keeps the red error body, paints its left rule in the error color, opens its source, and adds a top-bar `1 error` / `N errors` chip that jumps to `#rl-error-1`; stderr still lists the block errors) → `rustlab-notebook check note.md`. Markdown (`-f markdown`) writes that failure as a `> [!CAUTION]` callout plus `<!-- rustlab:error cell=N -->` in the output region, not back into the authoring source.
 
 The [`gallery/`](../gallery/) directory holds 40 rendered example notebooks (committed Markdown output, browsable on GitHub) — the best source of real authoring patterns. Their sources live in `examples/notebooks/`. `_setup.md` is a partial, not a standalone page.
 

@@ -242,6 +242,18 @@ fn render_strict_exits_nonzero_only_when_asked() {
     );
     let body = std::fs::read_to_string(&out_md).unwrap();
     assert!(body.contains("undefined variable"), "{body}");
+    assert!(
+        body.contains("> [!CAUTION]"),
+        "markdown error should be a callout: {body}"
+    );
+    assert!(
+        body.contains("<!-- rustlab:error cell=1 -->"),
+        "code-cell marker missing: {body}"
+    );
+    assert!(
+        !body.contains("```text\nerror:"),
+        "text fence must not be the only error signal: {body}"
+    );
     let summary = String::from_utf8_lossy(&loose.stdout);
     assert!(summary.contains("1 errors"), "{summary}");
 
@@ -269,4 +281,6 @@ fn render_strict_exits_nonzero_only_when_asked() {
     // The notebook is still written so the cell error is visible.
     let body = std::fs::read_to_string(&out_md).unwrap();
     assert!(body.contains("undefined variable"), "{body}");
+    assert!(body.contains("> [!CAUTION]"), "{body}");
+    assert!(body.contains("<!-- rustlab:error cell=1 -->"), "{body}");
 }
