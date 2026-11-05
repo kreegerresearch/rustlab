@@ -6,6 +6,7 @@ Read it before making any changes.
 > **Using rustlab rather than modifying it?** Read [`docs/agent-guide.md`](docs/agent-guide.md)
 > instead — it covers the scripting language, builtins, plotting, and notebooks from a
 > user's perspective. `llms.txt` at the repo root is the machine-readable doc map.
+> **Writing `.rlab`?** Follow [Script style for agents](docs/agent-guide.md#script-style-for-agents).
 
 ---
 
@@ -44,8 +45,8 @@ rustlab/
 ├── dev/
 │   └── plans/              # multi-phase development plans (see section below)
 ├── perf/                   # performance benchmarks and reports
-├── examples/               # 86 scripts organised by toolbox (one subdir per toolbox):
-│   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling, chat_loop (15)
+├── examples/               # 87 scripts organised by toolbox (one subdir per toolbox):
+│   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling, chat_loop, vectorized_style (16)
 │   ├── math/               # complex basics, trig/special, random, ML activations (4)
 │   ├── linalg/             # eig, matrix_ops, tensor3, rank, roots, linear_algebra (6)
 │   ├── stats/              # stats aggregates, all/any (2)
@@ -69,7 +70,7 @@ rustlab/
 │   └── notebooks/          # source `.md` notebooks rendered by `rustlab-notebook`
 │       └── comm/           # communications notebooks (convolutional codes + Viterbi FEC)
 └── docs/
-    ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows
+    ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows; "Script style for agents" is the .rlab style section
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
     ├── rustlabrc.example.toml # annotated user-global settings template
@@ -1196,7 +1197,7 @@ Documented for users in `docs/notebooks.md` ("Plot output layout").
 
 ## Scripting Language Reference
 
-Scripts use the `.rlab` extension. Run with `rustlab run script.rlab` or enter statements interactively in the REPL.
+Scripts use the `.rlab` extension. Run with `rustlab run script.rlab` or enter statements interactively in the REPL. When writing a script, follow [Script style for agents](docs/agent-guide.md#script-style-for-agents).
 
 ### Grammar (informal)
 
