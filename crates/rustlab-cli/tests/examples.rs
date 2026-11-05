@@ -189,6 +189,11 @@ fn example_vectors() {
 }
 
 #[test]
+fn example_ind2sub() {
+    run_example_ok("linalg", "ind2sub");
+}
+
+#[test]
 fn example_logical_arrays() {
     run_example_ok("language", "logical_arrays");
 }

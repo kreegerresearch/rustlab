@@ -14,6 +14,7 @@ pub(crate) mod real_index;
 pub(crate) mod real_ops;
 pub mod rng;
 pub mod shared;
+pub(crate) mod subscript;
 pub mod sparam_analysis;
 pub mod sparam_conv;
 pub mod table;

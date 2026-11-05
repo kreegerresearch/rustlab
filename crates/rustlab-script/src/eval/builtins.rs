@@ -462,6 +462,8 @@ impl BuiltinRegistry {
         r.register("k2ij", builtin_k2ij);
         r.register("ijk2k", builtin_ijk2k);
         r.register("k2ijk", builtin_k2ijk);
+        r.register_nargout("ind2sub", super::subscript::builtin_ind2sub);
+        r.register("sub2ind", super::subscript::builtin_sub2ind);
 
         // Geometry / shape rasterization masks
         r.register("rect_mask", builtin_rect_mask);

@@ -67,7 +67,7 @@ Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustla
 The authoritative, machine-readable source is the binary itself:
 
 ```sh
-rustlab docs                  # all 369 builtins grouped by toolbox
+rustlab docs                  # all 401 builtins grouped by toolbox
 rustlab docs eig              # full detail for one builtin (signature + example)
 rustlab docs dsp              # one toolbox
 rustlab docs --search welch   # substring match over names and briefs
@@ -76,7 +76,7 @@ rustlab docs --json           # complete JSON index — best single call for an 
 
 Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`. There is no `Plotting` toolbox. A builtin name wins over a toolbox spelled the same way, so `rustlab docs plot` and `rustlab docs sparse` show those functions; `rustlab docs Plot` lists the plot toolbox.
 
-`rustlab docs --json` returns an array of 369 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+`rustlab docs --json` returns an array of 401 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
 
 `rustlab --help` lists this binary's subcommands only. Notebooks, themes, and rendering are `rustlab-notebook --help` (detail for a render is `rustlab-notebook render --help`).
 
@@ -90,7 +90,7 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 
 1. **Every number is complex to the script.** `j` and `i` are the imaginary unit: `z = 3.0 + j*4.0`. Element-wise ops, `*`, and the outer product on purely real inputs return exactly-real results (`[1 Inf] * 2` is `[2 Inf]`). Arrays of real numbers are stored as real numbers (8 bytes each), which is invisible to a script; `RUSTLAB_COMPLEX_STORAGE=1` stores every array as complex, for comparing results when something looks wrong. `real(v)`, `imag(v)`, `conj(v)`, `abs(v)`, `angle(v)` decompose complex values.
 2. **Indexing is 1-based, with `end` for the last element:** `v(1)`, `v(end)`, `v(2:4)`, `M(i, j)`, `M(i, :)`, `M(:, j)`. Slices return new values.
-3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major.
+3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major. `[I, J] = ind2sub(size(M), k)` and `k = sub2ind(size(M), I, J)` are that same index (rows first, rank at most 3). One `ind2sub` output is the linear index. An index outside the array is an error. A one-element `sub2ind` subscript is repeated; two non-scalar arrays must be the same size.
 4. **Ranges:** `1:5`, `0:0.5:2`, `10:-1:1` (`start:stop` or `start:step:stop`).
 5. **Literals:** `[1, 2, 3]` row, `[1; 2; 3]` column, `[a, b; c, d]` matrix. `[A, B]` / `[A; B]` concatenate. `{"a", "b"}` is a string array. `1_000_000` underscores are allowed in numbers.
 6. **`*` is matrix multiply; `.*`, `./`, `.\`, `.^` are element-wise.** `A .\ B` is `B ./ A`. Mixing them up is the most common generated-code bug.
@@ -358,7 +358,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 | Task | Key functions | Example scripts |
 |---|---|---|
 | Elementary math | `exp sqrt abs log sin cos atan2 floor round mod real imag conj angle` | `examples/math/` |
-| Arrays & grids | `linspace zeros ones eye rand randn seed reshape repmat meshgrid size numel` | `examples/language/` |
+| Arrays & grids | `linspace zeros ones eye rand randn seed reshape repmat meshgrid size numel ind2sub sub2ind` | `examples/language/`, `examples/linalg/ind2sub.rlab` |
 | Linear algebra | `inv det rank trace eig svd expm linsolve roots dot cross kron norm` | `examples/linalg/` |
 | Sparse | `sparse speye spdiags spsolve chol lu solve eigs laplacian_1d/2d/3d full nnz find` | `examples/sparse/`, `examples/pde/` |
 | Statistics | `sum mean median std min max argmax sort cumsum trapz hist all any` | `examples/stats/` |

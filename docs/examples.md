@@ -1064,6 +1064,20 @@ rustlab run examples/pde/vector_calc.rlab
 
 ---
 
+## `examples/linalg/ind2sub.rlab`
+
+Checks `ind2sub` / `sub2ind` against the column-major index used by `M(k)` and `find`.
+
+The 3×3 case is the MathWorks example: linear indexes `[3, 4, 5, 6]` are rows `[3, 1, 2, 3]` and columns `[1, 2, 2, 2]`, and `sub2ind` brings them back. One output of `ind2sub` is the linear index itself. On a `2×2×2` cube, three outputs are the full subscripts and two outputs fold the page into the column (`[1, 1, 2, 2, 3, 3, 4, 4]`). A scalar subscript is repeated (`sub2ind([3, 4], [1, 2, 3], 2)` is `[4, 5, 6]`). `find` on `[0, 2; 3, 0]` round-trips through both functions.
+
+**Run it:**
+
+```sh
+rustlab run examples/linalg/ind2sub.rlab --plot none
+```
+
+---
+
 ## `examples/linalg/tensor3.rlab`
 
 **Full script:**
@@ -1317,7 +1331,7 @@ print(err)       # → very small (< 1e-10)
 
 1. **`laplacian_2d(nx, ny, dx, dy)`** returns an `(nx·ny) × (nx·ny)` sparse matrix. Sign convention: `L` approximates `+∇²`, so Poisson `∇²V = -ρ/ε₀` solves as `V = spsolve(L, -rho/eps0)`.
 
-2. **Column-major ordering** is the single most important detail. `V(i, j) → k = (j-1)*ny + i` matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention (modulo the `'` to make it a column vector for `spsolve`). Use `ij2k(i, j, ny)` and `k2ij(k, ny)` when you need the index sugar — note the third argument is **`ny`**, not `nx`.
+2. **Column-major ordering** is the single most important detail. `V(i, j) → k = (j-1)*ny + i` matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention (modulo the `'` to make it a column vector for `spsolve`). Use `ij2k(i, j, ny)` and `k2ij(k, ny)` when you need the index sugar — note the third argument is **`ny`**, not `nx`. `sub2ind([ny, nx], i, j)` is the same index when you already have a size vector.
 
 3. **Boundary conditions.** Homogeneous-Dirichlet: the stencil skips cross-boundary off-diagonal entries and leaves the diagonal at `-2/dx² - 2/dy²`, which is equivalent to assuming `V = 0` outside the grid. For non-zero Dirichlet values, encode them in the right-hand side.
 

@@ -422,12 +422,12 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 401 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|
 | **Math** | `abs`, `angle`, `real`, `imag`, `conj`, `sin`, `cos`, `exp`, `log`, `sqrt`, `atan2`, `floor`, `round`, `mod` |
-| **Array** | `zeros`, `ones`, `eye`, `linspace`, `logspace`, `rand`, `randn`, `randi`, `len`, `size`, `reshape`, `diag`, `meshgrid` |
+| **Array** | `zeros`, `ones`, `eye`, `linspace`, `logspace`, `rand`, `randn`, `randi`, `len`, `size`, `reshape`, `diag`, `meshgrid`, `ind2sub`, `sub2ind` |
 | **Statistics** | `sum`, `prod`, `cumsum`, `mean`, `median`, `std`, `min`, `max`, `sort`, `trapz`, `histogram`, `all`, `any` |
 | **Linear algebra** | `dot`, `cross`, `outer`, `kron`, `norm`, `inv`, `det`, `trace`, `eig`, `svd`, `linsolve`, `expm`, `rank`, `roots` |
 | **DSP — FIR** | `fir_lowpass`, `fir_highpass`, `fir_bandpass`, `fir_lowpass_kaiser`, `firpm`, `firpmq`, `fir_notch`, `window` |
@@ -551,7 +551,7 @@ toolbox.
 
 The `--json` form prints a JSON array of
 `{name, toolbox, subcategory, brief, detail}` records, one per builtin
-(369 entries). `detail` holds the signature and a usage example. Useful
+(401 entries). `detail` holds the signature and a usage example. Useful
 for editor extensions, autocomplete plugins, and AI tooling that wants a
 single authoritative index.
 

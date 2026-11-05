@@ -45,10 +45,10 @@ rustlab/
 ├── dev/
 │   └── plans/              # multi-phase development plans (see section below)
 ├── perf/                   # performance benchmarks and reports
-├── examples/               # 88 scripts organised by toolbox (one subdir per toolbox):
+├── examples/               # 89 scripts organised by toolbox (one subdir per toolbox):
 │   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling, chat_loop, vectorized_style, logical arrays (17)
 │   ├── math/               # complex basics, trig/special, random, ML activations (4)
-│   ├── linalg/             # eig, matrix_ops, tensor3, rank, roots, linear_algebra (6)
+│   ├── linalg/             # eig, matrix_ops, tensor3, rank, roots, linear_algebra, ind2sub (7)
 │   ├── stats/              # stats aggregates, all/any (2)
 │   ├── sparse/             # sparse solve, complex sparse LU, eigs, sparse vec/mat (4)
 │   ├── dsp/                # FIR/IIR, Kaiser, firpm, upfirdn, fixed-point (6)
@@ -1263,6 +1263,7 @@ primary     = NUMBER | STRING | IDENT
 | `stdin` | `stdin` | Handle for `fgetl`. Survives `clear` |
 | Range | `1:10`, `0:0.5:2`, `10:-1:1` | Creates a real `Vector` |
 | 1-based index | `v(3)`, `v(2:5)`, `v(end)`, `v(idx)`, `M(rows, :)` | `end` = `len(v)` for a vector; on a matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write). A subscript may be a vector or a `1×n` / `n×1` matrix. A 1×1 matrix is a scalar where a scalar is accepted |
+| Linear index | `[I, J] = ind2sub(sz, k)`, `k = sub2ind(sz, I, J)` | Column-major, 1-based, same order as `M(k)`, `reshape`, and `find`. Rank at most 3. One `ind2sub` output is the linear index. An index outside the array is an error. A one-element `sub2ind` subscript is repeated |
 | Indexed assign (single element) | `v(i) = val`, `M(r,c) = val` | Vectors auto-created/grown; matrices must exist |
 | Region assign — matrix | `M(i, :) = vec`, `M(:, j) = vec`, `M(rows, cols) = mat`, `M(:, :) = scalar` | Row / column / submatrix / broadcast writes. Indices may be Scalar, `:`, or Vector. RHS must match the target region shape; scalar/complex RHS broadcasts. Sparse matrices: only single-element form supported. Added in 0.3.4. |
 | Region assign — vector | `v(:) = vec`, `v([1,3,5]) = vec`, `v(1:2:end) = vec`, `v(idx) = scalar` | Strided / explicit-list LHS into a Vector. RHS length must match the index count; scalar/complex RHS broadcasts. Added in 0.3.4. |
@@ -1465,6 +1466,8 @@ primary     = NUMBER | STRING | IDENT
 | `issparse` | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros` | `nonzeros(S)` | Vector of non-zero values in storage order |
 | `find` | `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / sparse forms | Nargout-aware. Dense vector → 1-based element indices; dense matrix → column-major linear indices. A logical array returns the 1-based column-major positions of `true`. Multi-output forms return row+col subscripts (and optionally values; a logical value row is logical). Sparse vector → `[I, V]`; sparse matrix → `[I, J, V]`. Element `M(i, j)` sits at linear index `(j - 1) * nrows + i`. |
+| `ind2sub` | `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` / `ind2sub(sz, IND)` | 1-based column-major linear index to subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is the linear index. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error |
+| `sub2ind` | `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)` | Subscripts to that linear index. A one-element subscript is repeated; other subscript arrays must be the same size. A trailing size of 1 may be omitted. An extra subscript pads `sz` with 1 and must be 1. Out of range is an error |
 | `spsolve` | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto detects SPD (Hermitian + real-positive diagonal) and routes accordingly; auto ordering reads the matrix's `ordering_hint` (set by `laplacian_*`) and falls back to AMD when no hint is set. Identity ordering is ~5× faster than AMD on grid Laplacians. Real-vs-complex auto-detection at the entries level. Dense Value::Matrix input still uses the legacy dense Gaussian elimination. |
 | `chol` | `F = chol(A [, ordering])` / `R = chol(A)` / `[R, p] = chol(A)` / `chol(A, "lower")` | Sparse `A` returns a Cholesky factor handle for `solve(F, b)`. Dense `A` returns upper `R` with `A = R'*R`, or lower `L` with `"lower"`. One dense output errors if a pivot is not positive, including a diagonal that is not real. `[R, p]` does not error: `p` is 0 on success, otherwise the 1-based failing pivot. |
 | `lu` | `F = lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns an opaque LU factor handle (partial pivoting, threshold 0.1) for `solve(F, b)`. Dense `A` returns `[L, U]` (`L*U = A`, permutation absorbed) or `[L, U, P]` (`P*A = L*U`). `"vector"` returns a 1-based row `p` (`size` `[1, n]`) with `A(p, :) = L*U`. One dense output is an error. |
