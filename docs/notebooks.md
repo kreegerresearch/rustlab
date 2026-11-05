@@ -677,12 +677,22 @@ A cell shows a plot when it calls `savefig`, or when it changes the live figure 
 
 In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the
-theme accent color. The source alone is a `<details>` (`rustlab`
+theme accent color. A cell that failed uses the error color for that
+rule (`.rl-cell-error`) and keeps the red `<pre class="error">` body.
+The source alone is a `<details>` (`rustlab`
 summary). It starts open unless a cell `<!-- code: collapsed -->`,
 the notebook frontmatter `code: collapsed`, or `~/.rustlabrc`
 `[notebook] code = "collapsed"` says otherwise (most specific wins;
-see [Directives](#directives)). Collapsing it leaves that summary and
-the accent rule, and leaves printed output, errors, and plots visible.
+see [Directives](#directives)). A failed cell opens anyway, so the
+source that produced the error is on screen. Collapsing a cell that
+did not fail leaves that summary and
+the accent rule, and leaves printed output and plots visible.
+When at least one code cell failed, the top bar shows a chip,
+`1 error` or `N errors`, that links to the first failure
+(`#rl-error-1`). Failed cells are anchored `id="rl-error-1"`,
+`id="rl-error-2"`, and so on, in document order. A page with no cell
+errors has no chip. Batch HTML and `notebook watch` use the same
+markup; watch updates the chip when a re-render changes the top bar.
 On `notebook watch`, a disclosure the reader has opened or closed
 keeps that choice across live updates; a cell they have not touched
 picks up a changed directive or frontmatter on the next render.
@@ -715,6 +725,18 @@ tags (`javascript`, `sh`) are unchanged, and an indented code block
 is not a fence. There is no client-side highlighter and no CDN.
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
+`--strict` still only changes the process exit code (1 when any code
+cell failed); the notebook is written either way. There is no
+fail-fast flag.
+
+Markdown (`--format markdown`) writes a cell error as an Obsidian
+`> [!CAUTION]` callout containing the message, plus an HTML comment
+`<!-- rustlab:error cell=N -->`. `N` is the 1-based rustlab code cell
+(mermaid and widgets do not count). Both sit in the output region, so
+they are rendered output only: `strip_render_artifacts` removes them,
+and nothing is written back into the authoring notebook as a `%%`
+comment. A ` ```text ` fence is still used for printed stdout, not for
+the error. LaTeX and PDF keep their `rlerror` boxes.
 
 ### Variable persistence
 
@@ -1030,6 +1052,8 @@ from the hidden block (if any) still appears. `<!-- hide -->` wins over
 Sets the initial state of that cell's source disclosure. `collapsed`
 omits the HTML `open` attribute; `open` forces it. The value is
 case-insensitive. Output, errors, and plots stay visible either way.
+A cell that errored opens its source disclosure even when this
+directive, the frontmatter, or the rc file would collapse it.
 
 The most specific setting wins:
 

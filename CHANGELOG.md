@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.55
+
+### Changed
+- **Failed notebook cells are easier to see.** In HTML and `notebook watch`, a code cell that errored paints its left rule in the error color (`.rl-cell-error`), keeps the red `<pre class="error">` body, and opens its source disclosure even when `<!-- code: collapsed -->`, frontmatter `code:`, or `[notebook] code` would collapse it. The top bar shows a `1 error` / `N errors` chip only when something failed; the chip links to `#rl-error-1`, and failed cells are anchored `rl-error-1`, `rl-error-2`, … in document order. Markdown writes the error as a `> [!CAUTION]` callout plus `<!-- rustlab:error cell=N -->` (`N` is the 1-based rustlab code cell) inside the output region. That marker is rendered output: it is not written into the authoring notebook, and `strip_render_artifacts` removes it. `--strict` is unchanged (exit 1 when a cell fails, and the file is still written). LaTeX and PDF still use their `rlerror` boxes.
+
 ## 0.3.54
 
 ### Added
