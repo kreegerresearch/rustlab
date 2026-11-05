@@ -238,12 +238,159 @@ fn display_uses_ones_and_zeros() {
     assert!(!text.contains("1.000000"), "{text}");
 }
 
+fn assert_logical_cell(src: &str, name: &str, bit: bool) {
+    match val(&eval(src), name) {
+        Value::Logical(a) => {
+            assert_eq!((a.rows(), a.cols()), (1, 1), "{src}");
+            assert_eq!(a.to_flags(), vec![bit], "{src}");
+        }
+        other => panic!("{src}: expected a 1×1 logical, got {other:?}"),
+    }
+}
+
+fn class_of(src: &str) -> String {
+    match val(&eval(src), "a") {
+        Value::Str(s) => s.clone(),
+        other => panic!("{src}: {other:?}"),
+    }
+}
+
+/// One linear or two-dimensional index of a logical array keeps a 1×1
+/// logical. It does not collapse to a scalar bool.
 #[test]
-fn end_indexes_a_logical_array() {
+fn single_index_keeps_a_logical_array() {
+    assert_logical_cell("L = [true, false, true]\na = L(1)", "a", true);
+    assert_logical_cell("L = [true, false, true]\na = L(2)", "a", false);
+    assert_logical_cell("L = [true, false, true]\na = L(end)", "a", true);
+    assert_logical_cell("L = [true, false, true]\na = L(1:1)", "a", true);
+    assert_logical_cell("L = [true, false, true]\na = L([1])", "a", true);
+    assert_eq!(
+        class_of("L = [true, false, true]\na = class(L(1))"),
+        "logical"
+    );
     assert!(matches!(
-        val(&eval("L = [true, false, true]\na = L(end)"), "a"),
+        val(&eval("L = [true, false, true]\na = islogical(L(1))"), "a"),
         Value::Bool(true)
     ));
-    let ev = eval("L = [true, false; false, true]\na = L(end, end)");
-    assert!(matches!(val(&ev, "a"), Value::Bool(true)));
+    // Column-major: [true, false; false, true] is true, false, false, true.
+    assert_logical_cell("L = [true, false; false, true]\na = L(1)", "a", true);
+    assert_logical_cell("L = [true, false; false, true]\na = L(2)", "a", false);
+    assert_logical_cell("L = [true, false; false, true]\na = L(3)", "a", false);
+    assert_logical_cell("L = [true, false; false, true]\na = L(4)", "a", true);
+    assert_logical_cell("L = [true, false; false, true]\na = L(1, 2)", "a", false);
+    assert_logical_cell("L = [true, false; false, true]\na = L(end, end)", "a", true);
+    // The 1×1 result can itself be indexed. A scalar bool cannot.
+    assert_logical_cell("L = [true, false, true]\nx = L(2)\na = x(1)", "a", false);
+    assert_eq!(
+        re(&eval("L = [true, false, true]\na = double(L(1))"), "a"),
+        1.0
+    );
+    assert_eq!(
+        re(&eval("L = [true, false, true]\na = double(L(2))"), "a"),
+        0.0
+    );
+    assert_eq!(
+        re(&eval("L = [true, false, true]\na = sum(L(1))"), "a"),
+        1.0
+    );
+}
+
+/// `true` selects the first element. `false` selects nothing.
+/// A one-element logical is the same subscript (`A(mask(k))`).
+/// A same-length mask with one true stays a length-1 vector.
+#[test]
+fn scalar_logical_subscript_selects_first_or_nothing() {
+    assert!(matches!(
+        val(&eval("v = [10, 20, 30, 40]\na = v(true)"), "a"),
+        Value::Scalar(x) if *x == 10.0
+    ));
+    let ev = eval("v = [10, 20, 30, 40]\na = v(false)");
+    match val(&ev, "a") {
+        Value::Vector(v) => assert_eq!(v.len(), 0),
+        other => panic!("v(false) should be an empty vector, got {other:?}"),
+    }
+    assert!(matches!(
+        val(&eval("v = [10, 20, 30, 40]\na = v(true(1, 1))"), "a"),
+        Value::Scalar(x) if *x == 10.0
+    ));
+    assert!(matches!(
+        val(&eval("v = [10, 20, 30, 40]\na = v(logical(1))"), "a"),
+        Value::Scalar(x) if *x == 10.0
+    ));
+    let ev = eval("v = [10, 20, 30, 40]\na = v(false(1, 1))");
+    match val(&ev, "a") {
+        Value::Vector(v) => assert_eq!(v.len(), 0),
+        other => panic!("v(false(1, 1)) should be empty, got {other:?}"),
+    }
+    assert!(matches!(
+        val(
+            &eval("L = [true, false, true]\nv = [10, 20, 30, 40]\na = v(L(1))"),
+            "a"
+        ),
+        Value::Scalar(x) if *x == 10.0
+    ));
+    let ev = eval("L = [true, false, true]\nv = [10, 20, 30, 40]\na = v(L(2))");
+    match val(&ev, "a") {
+        Value::Vector(v) => assert_eq!(v.len(), 0),
+        other => panic!("v(L(2)) should be empty, got {other:?}"),
+    }
+    assert!(matches!(
+        val(&eval("M = [1, 2; 3, 4]\na = M(true)"), "a"),
+        Value::Scalar(x) if *x == 1.0
+    ));
+    let ev = eval("M = [1, 2; 3, 4]\na = M(false)");
+    match val(&ev, "a") {
+        Value::Vector(v) => assert_eq!(v.len(), 0),
+        other => panic!("M(false) should be empty, got {other:?}"),
+    }
+    assert_eq!(
+        crate::testutil::vec_re(&eval("M = [1, 2; 3, 4]\na = M(true, :)"), "a"),
+        vec![1.0, 2.0]
+    );
+    let ev = eval("M = [1, 2; 3, 4]\na = M(false, :)");
+    match val(&ev, "a") {
+        Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (0, 2)),
+        other => panic!("M(false, :) should be 0×2, got {other:?}"),
+    }
+    // One true in a same-length mask stays a vector, not a scalar and not empty.
+    let ev = eval("v = [10, 20, 30, 40]\na = v([false, true, false, false])");
+    match val(&ev, "a") {
+        Value::Vector(v) => {
+            assert_eq!(v.len(), 1);
+            assert!((v[0].re - 20.0).abs() < 1e-12);
+        }
+        other => panic!("one-true mask should stay a vector, got {other:?}"),
+    }
+    let err = eval_err("v = [1, 2, 3]\nx = v([true, false])");
+    assert!(err.contains("logical"), "{err}");
+    let err = eval_err("v = zeros(1, 0)\na = v(true)");
+    assert!(err.contains("bounds") || err.contains("index"), "{err}");
+    let ev = eval("v = zeros(1, 0)\na = v(false)");
+    match val(&ev, "a") {
+        Value::Vector(v) => assert_eq!(v.len(), 0),
+        other => panic!("empty(false) should be empty, got {other:?}"),
+    }
+    assert_logical_cell("L = [true, false, true]\na = L(true)", "a", true);
+    let ev = eval("L = [true, false, true]\na = L(false)");
+    match val(&ev, "a") {
+        Value::Logical(a) => {
+            assert_eq!((a.rows(), a.cols()), (1, 0));
+            assert!(a.is_empty());
+        }
+        other => panic!("L(false) should be an empty logical, got {other:?}"),
+    }
+    let ev = eval("v = [10, 20, 30]\nv(true) = 7");
+    assert!(matches!(val(&ev, "v"), Value::Vector(v) if (v[0].re - 7.0).abs() < 1e-12));
+    assert_eq!(
+        re(&eval("v = [10, 20, 30]\nv(false) = 9\na = sum(v)"), "a"),
+        60.0
+    );
+    assert_eq!(
+        re(&eval("M = [1, 2; 3, 4]\nM(true) = 9\na = M(1)"), "a"),
+        9.0
+    );
+    assert_eq!(
+        re(&eval("M = [1, 2; 3, 4]\nM(false) = 8\na = sum(sum(M))"), "a"),
+        10.0
+    );
 }
