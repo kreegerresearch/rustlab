@@ -550,7 +550,7 @@ imaginary part is non-negligible, otherwise scalar.
 sum([1.0, 2.0, 3.0])   # → 6.0
 sum(ones(1, 4) * j)     # → 0+4i
 ```
-A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
+A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default. `sum` of a logical array counts the `true` elements as a double (`sum([1, 2, 3] == [1, 0, 3])` is `2`). A vector or a one-row / one-column logical reduces to that scalar; a true matrix reduces down each column.
 
 ### `cumsum(v)`
 Cumulative sum of a vector. Returns a vector of the same length where each element is the
@@ -633,7 +633,7 @@ Returns `true` if all elements are nonzero.
 all([1, 2, 3])     # → true
 all([1, 0, 3])     # → false
 ```
-- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A wider matrix is an error.
+- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix is an error. An empty logical is `true` for `all` and `false` for `any`.
 
 ### `any(v)`
 Returns `true` if any element is nonzero.
@@ -1963,7 +1963,7 @@ M(2, 3) = 7      % only element (2, 3) updated
 ```
 
 ### Linear and logical write: `M(idx) = c`
-One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, or a logical mask (a 0/1 vector of the same length, or a 0/1 matrix of the same shape — what `M > 0` returns). A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape.
+One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, or a logical mask. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. Writing into a logical array (`L(i) = false`) is not supported.
 
 `zeros(size(v))` is a matrix (a row when `v` is a vector). `g(idx) = c` writes that matrix.
 ```
@@ -2439,7 +2439,7 @@ nonzeros(sparse([1,2], [1,2], [7.0, 9.0], 2, 2))   # → [7.0, 9.0]
 ```
 
 ### `find(S)`
-Locate non-zero entries. For a sparse matrix, returns a tuple `[I, J, V]` of 1-based row indices, column indices, and values. For a sparse vector, returns `[I, V]`.
+Locate non-zero entries. For a sparse matrix, returns a tuple `[I, J, V]` of 1-based row indices, column indices, and values. For a sparse vector, returns `[I, V]`. A logical array uses the same positions: `find(M == 1)` is the 1-based column-major indices of the trues. `[I, J] = find(M)` on a logical matrix returns those subscripts; a third output is a logical row of `true`.
 ```
 [I, J, V] = find(S)      # sparse matrix
 [I, V] = find(sv)        # sparse vector
@@ -4319,9 +4319,90 @@ s2 = rmfield(s, "z")
 
 ---
 
+## Logical arrays
+
+An array comparison is a logical array. A scalar comparison stays the bool `true` or `false`. Both answer `islogical`. `class` is `"bool"` for the scalar and `"logical"` for the array. A numeric 0/1 array is not logical.
+
+`!=` is not-equal. `~=` is not a token. `!` is element-wise not (what MATLAB writes as `~`). There is no `&` or `|` token: `and`, `or`, and `xor` are element-wise, and `&&` / `||` stay scalar and short-circuit. A 1-element logical is truthy in `if`, `while`, `&&`, and `||`. A wider logical is an error there — reduce it with `any` or `all`.
+
+Arithmetic promotes a logical to double 0/1, and so does `double`. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
+
+Storage is one byte per element (`0` or `1`), row-major. A release scan of 1,000,000 flags (about one third set), best of five, counted trues in 364 µs on bytes and 92 µs on a packed bit vector, and listed the true positions in 1.10 ms and 695 µs. The byte form stays: each `get` is one load, and that is how MATLAB stores `logical`.
+
+### `logical(x)`
+Convert to logical. A scalar (including `bool`) stays `bool`. An array becomes a logical array of the same shape. Exact `0` and `-0` are false. Every other real, including `NaN`, is true. A nonzero imaginary part is an error.
+
+```
+logical(0)            % false
+logical(-0)           % false
+logical(0.5)          % true
+logical(NaN)          % true
+logical([0, 2, NaN])  % 1×3 logical
+```
+
+### `islogical(x)`
+True for a scalar bool and for a logical array. False for a numeric 0/1 array.
+
+```
+islogical(1 == 1)         % true
+islogical([1, 2] > 0)     % true
+islogical([1, 0])         % false
+class(true)               % "bool"
+class([true, false])      % "logical"
+isa([true, false], "logical")  % true
+isa([true, false], "bool")     % false
+```
+
+### `true(m, n)` / `false(m, n)`
+When `true` and `false` still hold the built-in constants, a call builds a logical array. `true()` is the scalar. `true(n)` is `n×n`, the same shape rule as `zeros(n)`. `true(m, n)` is `m×n`. A shadowed name is not intercepted.
+
+```
+true(2, 3)     % 2×3 logical, every element true
+false(1, 4)    % 1×4 logical, every element false
+```
+
+### Comparisons
+`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool. A shape that does not broadcast is an error.
+
+```
+[1, 2, 3] == [1, 0, 3]    % logical 1 0 1
+[1, 2, 3] > 2             % logical 0 0 1
+1 == 1                    % true  (bool)
+```
+
+### `and(a, b)` / `or(a, b)` / `xor(a, b)`
+Element-wise logical operations. Shapes must match, or one side may be a scalar (including a scalar bool). Two scalars return `bool`. Arrays return a logical array.
+
+```
+and([true, false, true], [false, false, true])   % 0 0 1
+or([true, false], false)                          % 1 0
+xor([true, false, true], [true, true, false])     % 0 1 1
+![true, false]                                    % 0 1
+!0                                                % true
+```
+
+### Mask indexing
+`A(mask)` keeps the elements where `mask` is true, in column-major order. The logical must have the same number of elements as `A`. It is not a list of positions — a short logical is an error. Along one dimension, `M(rowMask, :)` needs a logical vector whose length is that dimension. A numeric 0/1 mask of the same length still works.
+
+```
+v = [10, 20, 30, 40]
+v(v > 20)            % 30 40
+M = [1, 2; 3, 4]
+M(M > 2)             % 3 and 4, column-major
+```
+
+`find(mask)` returns those positions as 1-based indices. `[I, J] = find(M)` on a logical matrix returns row and column. A vector-like logical with two outputs is `[I, V]` and `V` is a logical row of trues.
+
+### `any` / `all` on a logical
+A logical vector, a one-row logical, or a one-column logical reduces to one bool. A wider logical matrix is an error, the same rule as a numeric matrix. `all` of an empty logical is true. `any` of an empty logical is false.
+
+Concatenating only logicals and bools stays logical (`[true, false, true]`). Mixing in a number promotes that row to double 0/1. `L'` transposes a logical and does not conjugate. Indexing one element of a logical returns `bool` (`L(end)`).
+
+---
+
 ## Tables
 
-A table is a list of named columns that all have the same number of rows. Columns may differ in type: a numeric vector, a string or string array, or a one-row logical value. `class(T)` is `"table"`.
+A table is a list of named columns that all have the same number of rows. Columns may differ in type: a numeric vector, a string or string array, or a logical value. `class(T)` is `"table"`.
 
 ### `table(a, b, ...)` / `table(..., "VariableNames", names)`
 Build a table. A bare variable names its column. Any other expression is named `Var1`, `Var2`, … in order. `"VariableNames"` (any capitalization, and it must be a string *literal*) followed by a string or a string array replaces those names. A computed string is data, not the option.
@@ -4335,14 +4416,14 @@ U = table(x, name, "VariableNames", {"level", "label"})
 
 A matrix becomes one numeric column per matrix column. A multi-column matrix named `A` is `A1`, `A2`, …. A single-column matrix keeps its name. A rustlab vector (`[1, 2, 3]`, one row) is **one** column — it is not split the way a MATLAB 1×N matrix is. A string array is one text column, not one column per string.
 
-A scalar `true` or `false` is a logical column of height 1. rustlab has no logical arrays, so a vector of zeros and ones stays numeric.
+A scalar `true` or `false` is a logical column of height 1. A logical vector is one logical column. A wider logical matrix is one logical column per matrix column. A numeric vector of zeros and ones stays numeric.
 
 Every column must have the same length. Names must be a letter followed by letters, digits, or `_`. `Properties` is reserved. Duplicate names are an error.
 
 `feval("table", ...)` sees values, not names, so those columns are `VarN` unless `"VariableNames"` is passed.
 
 ### `T.var` / `T.var = value`
-`T.var` returns the column: a numeric vector (even when it has one row), a string array, or — for a one-row logical column — `true` / `false`.
+`T.var` returns the column: a numeric vector (even when it has one row), a string array, a scalar `true` / `false` for a one-row logical column, or a logical array when the column is longer.
 
 `T.var = value` replaces that column or appends a new one. The new column's length must equal `height(T)`. A table with no columns yet takes the new length. A multi-column matrix is an error (it is not split). A scalar is a one-row column; it is not broadcast down the table.
 
@@ -4364,8 +4445,8 @@ names(1)          % first column name
 ### `T(rows, vars)`
 Two subscripts, both required. The result is a table.
 
-- Rows: `:`, a scalar, a numeric vector, or a 0/1 mask whose length is `height(T)`.
-- Variables: `:`, numeric indices, a variable name, a string array of names, or a 0/1 mask whose length is `width(T)`.
+- Rows: `:`, a scalar, a numeric vector, or a logical or 0/1 mask whose length is `height(T)`.
+- Variables: `:`, numeric indices, a variable name, a string array of names, or a logical or 0/1 mask whose length is `width(T)`.
 
 `end` is the height on the row side and the width on the variable side. Selecting the same variable twice is an error. An empty variable selection is an error. `T(rows)` with one subscript is an error — write `T(rows, :)`.
 
@@ -4382,7 +4463,7 @@ Same two subscripts, and exactly one variable. The result is the cells, not a ta
 
 - One numeric row → scalar (or complex). Several → vector.
 - One text row → string. Several → string array.
-- One logical row → `true` / `false`. Several → a 0/1 vector.
+- One logical row → `true` / `false`. Several → a logical row.
 
 ```
 T{2, "x"}          % the number in row 2

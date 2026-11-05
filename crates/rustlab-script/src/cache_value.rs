@@ -59,6 +59,9 @@ mod tag {
     pub const SPARSE_VECTOR: u8 = 0x0A;
     pub const SPARSE_MATRIX: u8 = 0x0B;
     pub const FUNC_HANDLE: u8 = 0x0C;
+    /// Logical array: `u64` rows, `u64` cols, then one byte per element
+    /// (0 or 1), row-major. Added after 0x0C; do not recycle.
+    pub const LOGICAL: u8 = 0x0D;
 }
 
 const ARGS_TAG: &[u8] = b"rustlab-cache/args/v1\0";
@@ -76,6 +79,13 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
         Value::Vector(v) => v.feed(hasher),
         Value::Matrix(m) => m.feed(hasher),
         Value::Bool(b) => b.feed(hasher),
+        Value::Logical(a) => {
+            hasher.update(&[tag::LOGICAL]);
+            hasher.update(&(a.rows() as u64).to_le_bytes());
+            hasher.update(&(a.cols() as u64).to_le_bytes());
+            hasher.update(a.as_slice());
+            true
+        }
         Value::Str(s) => s.feed(hasher),
         Value::SparseVector(sv) => sv.feed(hasher),
         Value::SparseMatrix(sm) => sm.feed(hasher),
@@ -209,6 +219,12 @@ fn encode_value(out: &mut Vec<u8>, v: &Value) -> Option<()> {
             out.push(tag::BOOL);
             out.push(*b as u8);
         }
+        Value::Logical(a) => {
+            out.push(tag::LOGICAL);
+            out.extend_from_slice(&(a.rows() as u64).to_le_bytes());
+            out.extend_from_slice(&(a.cols() as u64).to_le_bytes());
+            out.extend_from_slice(a.as_slice());
+        }
         Value::Str(s) => {
             out.push(tag::STR);
             encode_str(out, s);
@@ -317,6 +333,18 @@ fn decode_value(cur: &mut Cursor) -> Option<Value> {
             Some(Value::Complex(Complex::new(re, im)))
         }
         tag::BOOL => Some(Value::Bool(cur.take_u8()? != 0)),
+        tag::LOGICAL => {
+            let rows = cur.take_u64()? as usize;
+            let cols = cur.take_u64()? as usize;
+            let n = rows.checked_mul(cols)?;
+            let mut data = Vec::with_capacity(n);
+            for _ in 0..n {
+                data.push(cur.take_u8()?);
+            }
+            rustlab_core::LogicalArray::from_bytes(data, rows, cols)
+                .ok()
+                .map(Value::Logical)
+        }
         tag::STR => Some(Value::Str(cur.take_str()?)),
         tag::VECTOR => {
             let n = cur.take_u64()? as usize;
@@ -588,10 +616,8 @@ mod tests {
 
     #[test]
     fn non_cacheable_values_serialize_to_none() {
-        let v = Value::Tensor3(ndarray::Array3::from_elem(
-            (2, 2, 2),
-            Complex::new(0.0, 0.0),
-        ).into());
+        let v =
+            Value::Tensor3(ndarray::Array3::from_elem((2, 2, 2), Complex::new(0.0, 0.0)).into());
         assert!(serialize_value(&v).is_none());
 
         let v = Value::Lambda {

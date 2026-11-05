@@ -133,9 +133,12 @@ mod bool_tests {
     // ── Error cases ──────────────────────────────────────────────────────────
 
     #[test]
-    fn not_on_scalar_errors() {
-        assert!(Value::Bool(true).not().is_ok());
-        assert!(Value::Scalar(1.0).not().is_err());
+    fn not_on_scalar_is_logical() {
+        assert!(matches!(Value::Bool(true).not().unwrap(), Value::Bool(false)));
+        // A numeric scalar is truthy when nonzero, so `!` is a bool, not an error.
+        assert!(matches!(Value::Scalar(1.0).not().unwrap(), Value::Bool(false)));
+        assert!(matches!(Value::Scalar(0.0).not().unwrap(), Value::Bool(true)));
+        assert!(Value::Str("no".into()).not().is_err());
     }
 
     #[test]
@@ -21315,9 +21318,13 @@ mod printf_and_row_matrix_tests {
                s = s + i
              end",
         );
-        assert_eq!(shape(&ev, "cmp"), (1, 3));
-        assert_eq!(cell(&ev, "cmp", 0, 0), 1.0);
-        assert_eq!(cell(&ev, "cmp", 0, 2), 0.0);
+        match ev.get("cmp").unwrap() {
+            Value::Logical(a) => {
+                assert_eq!((a.rows(), a.cols()), (1, 3));
+                assert_eq!(a.to_flags(), vec![true, true, false]);
+            }
+            other => panic!("cmp: expected logical, got {other:?}"),
+        }
         match ev.get("ok").unwrap() {
             Value::Bool(b) => assert!(*b),
             other => panic!("{other:?}"),
