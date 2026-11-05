@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.54
+
+### Added
+- **Script style for agents.** [`docs/agent-guide.md`](docs/agent-guide.md) now has a short section, [Script style for agents](docs/agent-guide.md#script-style-for-agents), with six practices for writing `.rlab`: array ops and slices, `arrayfun` / `parmap` (or one vectorized call), logical and fancy indexing, reduction builtins, a loop only when the step is sequential (with a one-line comment saying why), and named intermediate arrays. Each practice has a bad snippet and a good one. `examples/language/vectorized_style.rlab` runs the good forms and checks them against a small reference, including a couple of tiny looped goldens. `rustlab run examples/language/vectorized_style.rlab --plot none` exits 0. The section is linked from `AGENTS.md` and `llms.txt`.
+
 ## 0.3.53
 
 ### Changed

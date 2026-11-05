@@ -745,6 +745,7 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 |------|-------------|
 | `examples/math/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
 | `examples/language/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
+| `examples/language/vectorized_style.rlab` | Array style for scripts: slices, `arrayfun`/`parmap`, masks, reductions, and the checks that match a small loop |
 | `examples/math/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
 | `examples/stats/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
 | `examples/linalg/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |

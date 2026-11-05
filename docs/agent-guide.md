@@ -10,7 +10,7 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 84 runnable scripts and 40 rendered notebooks to copy patterns from.
+5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from. When you write `.rlab`, follow [Script style for agents](#script-style-for-agents) below.
 
 ---
 
@@ -123,6 +123,133 @@ y  = convolve(x, h);
 H  = freqz(h, 512, sr);
 plotdb(H, "Kaiser lowpass response"); savefig("response.svg")
 fprintf("designed %d taps\n", length(h))
+```
+
+---
+
+## Script style for agents
+
+Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote. The same six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab).
+
+### 1. Prefer array ops and indexing over nested `for` loops
+
+`.*`, `./`, `.^`, `+`, `-`, and a colon slice already walk the array. A scalar broadcasts, so `2 * x` and `2 .* x` both multiply element by element.
+
+```rustlab
+# bad
+n = length(x);
+for k = 1:n
+  y(k) = x(k)^2 + 2*x(k);
+end
+```
+
+```rustlab
+# good
+y = x .^ 2 + 2 .* x;
+block = M(2:end, 1:3);          # rows 2..end, columns 1..3
+scaled = block .* [10, 100, 1000];
+```
+
+### 2. Prefer lambdas with `arrayfun` / `parmap` for per-element work
+
+If `sin`, `exp`, and `.*` already describe the math, call them on the whole array. If the body is a scalar calculation per element, pass a lambda to `arrayfun`, or to `parmap` when the array is long enough that the workers earn their keep. A `parmap` lambda cannot plot, `fprintf`, `savefig`, or call `seed`.
+
+```rustlab
+# bad
+for k = 1:length(t)
+  y(k) = sin(t(k)) * exp(-t(k));
+end
+```
+
+```rustlab
+# good — the math is already element-wise
+f = @(u) sin(u) .* exp(-u);
+y = f(t);
+
+# good — one scalar result per element
+y = arrayfun(@(u) u^2 + 1/u, t);
+y = parmap(@(u) u^2 + 1/u, t);
+```
+
+### 3. Prefer logical / fancy indexing over scanning
+
+A comparison is a 0/1 array, and that array is a subscript. `find` returns the 1-based positions when the indices themselves are what you need.
+
+```rustlab
+# bad
+n = 0;
+for k = 1:length(v)
+  if v(k) > 0
+    n = n + 1;
+    kept(n) = v(k);
+  end
+end
+```
+
+```rustlab
+# good
+pos = v(v > 0);
+idx = find(v > 0);
+picked = v(idx);
+```
+
+### 4. Prefer reduction builtins over hand-rolled accumulators
+
+`sum`, `mean`, `cumsum`, `diff`, `min`, `max`, `all`, `any`, and `trapz` are the reduction. On a matrix, `sum(M)` is one sum per column; `sum(sum(M))` is the total.
+
+```rustlab
+# bad
+s = 0;
+for k = 1:length(x)
+  s = s + x(k);
+end
+```
+
+```rustlab
+# good
+s = sum(x);
+m = mean(x);
+c = cumsum(x);
+d = diff(x);
+lo = min(x);
+hi = max(x);
+ok = all(x > 0);
+hit = any(x == 0);
+area = trapz(t, x);
+```
+
+### 5. Keep a loop only when the step is inherently sequential
+
+An animation frame that carries state, an IIR or other recursive filter, and an iterative solver each need the previous value. Leave the loop in place and say why in a one-line comment. There is no `break` and no `continue`; put a stop test in the `while` header.
+
+```rustlab
+# bad — the feedback term is gone, so this is a different filter
+y = (1 - a) .* x;
+```
+
+```rustlab
+# good
+y(1) = x(1);
+# y(k) depends on y(k-1), so this recurrence stays a loop.
+for k = 2:length(x)
+  y(k) = a * y(k - 1) + (1 - a) * x(k);
+end
+```
+
+### 6. Name intermediate arrays instead of deep nested index expressions
+
+A subscript stacked on a subscript is hard to check, and it evaluates the slice twice. Name the slice, then the next operation.
+
+```rustlab
+# bad
+s = sum(sum(A(2:end-1, 2:end-1) .* A(2:end-1, 2:end-1)));
+```
+
+```rustlab
+# good
+inner = A(2:end-1, 2:end-1);
+sq = inner .* inner;
+s = sum(sum(sq));
 ```
 
 ---
@@ -253,7 +380,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 When asked to produce rustlab code:
 
 1. **Check the capability index first** (`docs/quickref.md` or `rustlab docs --json`). Never invent function names.
-2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots.
+2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
 3. **Run it:** `rustlab run script.rlab --plot none`, capturing stderr.
 4. **A nonzero exit code means the script failed.** Without `--profile`, stderr also has a line starting with `error:`. Fix and re-run.
 5. **Verify artifacts** (the SVG/CSV/NPZ files you expected) exist and are non-trivial in size.

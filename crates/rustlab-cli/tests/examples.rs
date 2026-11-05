@@ -182,6 +182,30 @@ fn example_vectors() {
     run_example_ok("language", "vectors");
 }
 
+#[test]
+fn example_vectorized_style() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let script = workspace_root()
+        .join("examples")
+        .join("language")
+        .join("vectorized_style.rlab");
+    let bin = env!("CARGO_BIN_EXE_rustlab");
+
+    let output = Command::new(bin)
+        .args(["run", "--plot", "none", script.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to launch rustlab for example 'vectorized_style'");
+
+    assert!(
+        output.status.success(),
+        "example 'language/vectorized_style' exited with {}\nstderr:\n{}\nstdout:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 // ── Plot-producing examples (render_figure_terminal is a no-op under `cargo
 //    test` because stdout is not a TTY; savefig writes into the temp dir and
 //    is cleaned up automatically when the TempDir drops) ────────────────────
