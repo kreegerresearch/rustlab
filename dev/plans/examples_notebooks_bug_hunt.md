@@ -152,7 +152,8 @@ Original findings (for reference) below.
 ### P1 — wrong result / broken on common or edge inputs
 - **E2 Logical/mask indexing `v(v>2)` is unusable** (errors `index 0 is invalid`); masked
   assignment `v(v>3)=0` too. Comparisons yield a numeric 0/1 vector and there is no
-  logical-indexing branch. `value.rs` index path.
+  logical-indexing branch. `value.rs` index path. Fixed in 0.3.56: array comparisons
+  are logical arrays, and `v(v>2)` indexes with that mask.
 - **E3 Element-wise comparison missing** for `vector⊗vector` (`[1,2,3]==[1,0,3]`) and
   `matrix⊗scalar` (`[1,2;3,4]>2`) — both error. `value.rs:1034-1101` (only scalar/vector-op-scalar).
 - **E4 `eigs(…,"sm")` (the DEFAULT) returns wrong/unconverged eigenvalues** once the matrix

@@ -44,15 +44,17 @@ pub mod path_jail;
 pub mod purity;
 
 #[cfg(test)]
-mod tests;
+mod edge_cases;
 #[cfg(test)]
-mod testutil;
+mod logical_tests;
 #[cfg(test)]
 mod math_audit;
 #[cfg(test)]
 mod solve_factor;
 #[cfg(test)]
-mod edge_cases;
+mod tests;
+#[cfg(test)]
+mod testutil;
 
 pub use cache_host::{host_persistent_cache, resolve_persistent_cache, set_host_persistent_cache};
 pub use error::ScriptError;
@@ -77,9 +79,8 @@ pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuar
 /// - Lex / parse errors propagate from the respective stages.
 pub fn parse_file(path: impl AsRef<std::path::Path>) -> Result<Vec<ast::Stmt>, ScriptError> {
     let path = path.as_ref();
-    let source = std::fs::read_to_string(path).map_err(|e| {
-        ScriptError::runtime(format!("read {}: {e}", path.display()))
-    })?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| ScriptError::runtime(format!("read {}: {e}", path.display())))?;
     let tokens = lexer::tokenize(&source)?;
     parser::parse(tokens)
 }

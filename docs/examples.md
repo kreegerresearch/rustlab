@@ -142,6 +142,16 @@ rustlab run examples/language/vectors.rlab
 
 ---
 
+## `examples/language/logical_arrays.rlab`
+
+Headless checks for logical arrays. Nothing is plotted. A comparison of two arrays is logical, a scalar comparison stays `bool`, `islogical` rejects numeric 0/1, a mask subscript and `find` select the trues, `and` / `or` / `xor` and `!` run element-wise, `true(2, 2)` is a full logical matrix, and a logical table column stays logical. A mismatch calls `error`, so a bad run exits 1. Stdout ends with `logical_arrays: all checks passed`.
+
+```
+rustlab run examples/language/logical_arrays.rlab --plot none
+```
+
+---
+
 ## `examples/language/vectorized_style.rlab`
 
 Headless checks for the six practices in [`docs/agent-guide.md`](agent-guide.md#script-style-for-agents). Nothing is plotted. Each vectorized result is compared with a tiny loop (or, for the recurrence, with the closed form) and with a literal where one is known. A mismatch calls `error`, so a bad run exits 1.

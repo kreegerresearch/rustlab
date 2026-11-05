@@ -18,7 +18,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `2j`, `1.5i`, `3e8j` | Imaginary literal suffix — `z = 1 + 2j` parses directly; printed complex values round-trip as input |
 | `pi`, `e` | Built-in constants |
 | `Inf`, `NaN` | IEEE infinity and Not-a-Number |
-| `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
+| `true`, `false` | Boolean constants — usable in `if` and `while` conditions. `true(m, n)` / `false(m, n)` build a logical array when the name is not shadowed; `true(n)` is `n×n` |
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
 | `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
@@ -40,7 +40,14 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
-| `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero); rhs only evaluated if lhs is not decisive |
+| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
+| `!` | Element-wise not (MATLAB `~`). `!0` is true. `!NaN` is false. An array result is logical |
+| `and(a, b)`, `or(a, b)`, `xor(a, b)` | Element-wise logical ops. Shapes match, or one side is scalar. Two scalars stay `bool`. No `&` or `\|` token |
+| `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero, including a 1-element logical); rhs only evaluated if lhs is not decisive. A wider array is an error — use `any` / `all` |
+| `logical(x)` | Convert to logical. A scalar stays `bool`. Exact 0 is false; any other real, including `NaN`, is true. Nonzero imag is an error |
+| `islogical(x)` | True for `bool` and for a logical array. False for numeric 0/1. `class` is `"bool"` or `"logical"`. `isa(x, "logical")` is true for both |
+| `A(mask)`, `M(rowMask, :)` | Logical mask subscript. The mask length must match the array (or that dimension). Selects trues in column-major order. A numeric 0/1 mask of the same length still works |
+| `find(mask)` | 1-based column-major positions of true elements. `[I, J] = find(M)` on a logical matrix returns subscripts |
 | `+=`, `-=`, `*=`, `/=` | Compound assignment: `x += 1` is equivalent to `x = x + 1` |
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
@@ -462,7 +469,7 @@ from zero and saturate by default; pass `"wrap"` for 2's-complement wraparound.
 | `intmax(["int8"])` / `intmin(["int8"])` | Largest / smallest value of a class (default `int32`) |
 | `isinteger(x)` | True for an integer-class value |
 | `isa(x, "integer")` | Class or category test (`"numeric"`, `"integer"`, `"float"`, or a class name) |
-| `double(x)` | Convert to double precision |
+| `double(x)` | Convert to double precision. A logical array becomes real 0/1 |
 | `0xFF` `0b1010` `0o17` | Radix literals → smallest fitting unsigned class (`0xFF` → `uint8`) |
 
 Semantics: same-class `int⊗int` stays integer (saturating/wrapping);
@@ -518,16 +525,16 @@ yields a `double`**. Integers flow through other builtins by widening to double
 |---|---|
 | `T = table(a, b, ...)` | Columns share a row count. A bare variable names its column; an expression is `VarN` |
 | `table(..., "VariableNames", {"x","y"})` | Rename every column. The option name is a string literal |
-| `T.x` | Column as a vector, a string array, or (one-row logical) `true`/`false` |
+| `T.x` | Column as a vector, a string array, a scalar `true`/`false`, or a longer logical array |
 | `T.x = v` | Replace or append one column. Length must equal `height(T)` |
-| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a 0/1 mask. Vars: the same, or names |
+| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a logical or 0/1 mask. Vars: the same, or names |
 | `T{rows, var}` | Cells of exactly one variable (scalar, vector, string, or string array) |
 | `T.Properties.VariableNames` | String array of column names. `Properties` is read-only |
 | `height(T)` / `width(T)` | Row count / column count. Also `size(..., 1)` / `size(..., 2)` for a matrix or vector |
 | `size(T)` | `[height, width]`. `ndims` is 2, `numel` is `height*width` |
 | `head(T)` / `head(T, n)` / `tail(T, n)` | First or last rows (default 8), as a table |
 
-A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
+A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A logical vector is one logical column; a wider logical matrix splits per column. A numeric 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
 
 ---
 

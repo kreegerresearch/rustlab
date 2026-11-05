@@ -4,7 +4,9 @@ use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use rustlab_core::sparse_solve::{SparseChol, SparseLU};
-use rustlab_core::{CMatrix, CTensor3, CVector, IntClass, OverflowMode, SparseMat, SparseVec, C64};
+use rustlab_core::{
+    CMatrix, CTensor3, CVector, IntClass, LogicalArray, OverflowMode, SparseMat, SparseVec, C64,
+};
 use rustlab_dsp::fixed::QFmtSpec;
 use std::collections::HashMap;
 use std::fmt;
@@ -194,6 +196,10 @@ pub enum Value {
     /// 1-based indexing via `A(i, j, k)`; `A(:, :, k)` returns a `Matrix` (drops trailing singleton).
     Tensor3(Shared<CTensor3>),
     Bool(bool),
+    /// Logical array, row-major, one byte per element. A scalar logical is
+    /// [`Value::Bool`]; this variant is the array (`[true, false]`,
+    /// `v > 0`). See [`LogicalArray`].
+    Logical(LogicalArray),
     Str(String),
     QFmt(QFmtSpec),
     /// Key-value struct: `s.x`, created with `struct("x", 1, "y", 2)` or `s.x = 1`
@@ -301,7 +307,10 @@ impl Value {
         class: IntClass,
         overflow: OverflowMode,
     ) -> Value {
-        let data: Vec<i128> = data.into_iter().map(|v| class.coerce(v, overflow)).collect();
+        let data: Vec<i128> = data
+            .into_iter()
+            .map(|v| class.coerce(v, overflow))
+            .collect();
         if rows == 1 && cols == 1 {
             return Value::Int {
                 data: data[0],
@@ -346,7 +355,9 @@ impl Value {
                 class,
                 overflow,
             } => Ok(Value::int_array(
-                data.into_iter().map(|v| class.coerce(-v, overflow)).collect(),
+                data.into_iter()
+                    .map(|v| class.coerce(-v, overflow))
+                    .collect(),
                 rows,
                 cols,
                 class,
@@ -406,6 +417,7 @@ impl Value {
             Value::Matrix(_) => "matrix",
             Value::Tensor3(_) => "tensor3",
             Value::Bool(_) => "bool",
+            Value::Logical(_) => "logical",
             Value::Str(_) => "string",
             Value::QFmt(_) => "qfmt",
             Value::Struct(_) => "struct",
@@ -641,7 +653,10 @@ impl Value {
         };
         // Once per call, before either expanded buffer is allocated.
         if rustlab_core::checked_elems(&[nrows, ncols], rustlab_core::ELEM_C64).is_err() {
-            return Err(rustlab_core::variable_too_large("broadcast", &[nrows, ncols]));
+            return Err(rustlab_core::variable_too_large(
+                "broadcast",
+                &[nrows, ncols],
+            ));
         }
         let a_exp = if (am, an) == (nrows, ncols) {
             a.clone()
@@ -673,7 +688,11 @@ impl Value {
             ElemMul => &a_exp * &b_exp,
             ElemDiv => Array2::from_shape_vec(
                 a_exp.dim(),
-                a_exp.iter().zip(b_exp.iter()).map(|(&x, &y)| Self::div_c64(x, y)).collect(),
+                a_exp
+                    .iter()
+                    .zip(b_exp.iter())
+                    .map(|(&x, &y)| Self::div_c64(x, y))
+                    .collect(),
             )
             .map_err(|e| e.to_string())?,
             ElemPow | Pow => {
@@ -751,9 +770,9 @@ impl Value {
                         b.len()
                     ));
                 }
-                Ok(Value::Vector(Array1::from_iter(
-                    a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)),
-                ).into()))
+                Ok(Value::Vector(
+                    Array1::from_iter(a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y))).into(),
+                ))
             }
             (Value::Matrix(a), Value::Matrix(b)) => Ok(Value::Matrix(zip_mm(a, b, &f)?.into())),
             (Value::Matrix(m), Value::Scalar(_) | Value::Complex(_)) => {
@@ -824,14 +843,18 @@ impl Value {
         match self {
             Value::Vector(v) => {
                 if let Some(d) = Shared::real_slice(v) {
-                    return Ok(Value::real_matrix(Array2::from_shape_vec((d.len(), 1), d.to_vec()).expect("n × 1")));
+                    return Ok(Value::real_matrix(
+                        Array2::from_shape_vec((d.len(), 1), d.to_vec()).expect("n × 1"),
+                    ));
                 }
             }
             Value::Matrix(m) => {
                 if let Some(d) = Shared::real_slice(m) {
                     let s = Shared::shape(m);
                     let out = super::real_ops::transpose_f64(d, s[0], s[1]);
-                    return Ok(Value::real_matrix(Array2::from_shape_vec((s[1], s[0]), out).expect("c × r")));
+                    return Ok(Value::real_matrix(
+                        Array2::from_shape_vec((s[1], s[0]), out).expect("c × r"),
+                    ));
                 }
             }
             _ => {}
@@ -847,10 +870,13 @@ impl Value {
             Value::Matrix(m) => Ok(Value::Matrix(Self::transpose_matrix::<CONJ>(m).into())),
             Value::Scalar(n) => Ok(Value::Scalar(*n)),
             v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v.clone())),
+            Value::Logical(a) => Ok(Value::Logical(a.transpose())),
             Value::Complex(c) => Ok(Value::Complex(f(*c))),
             Value::SparseMatrix(sm) => {
                 let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, f(v))).collect();
-                Ok(Value::SparseMatrix(SparseMat::new(sm.cols, sm.rows, entries)))
+                Ok(Value::SparseMatrix(SparseMat::new(
+                    sm.cols, sm.rows, entries,
+                )))
             }
             other => Err(format!("cannot transpose {}", other.type_name())),
         }
@@ -881,7 +907,10 @@ impl Value {
 
     fn one_based_to_zero(n: f64) -> Result<usize, String> {
         if !n.is_finite() {
-            return Err(format!("index {} is invalid (must be a positive integer)", n));
+            return Err(format!(
+                "index {} is invalid (must be a positive integer)",
+                n
+            ));
         }
         if n.fract() != 0.0 {
             return Err(format!(
@@ -928,8 +957,7 @@ impl Value {
         if v.len() != dim_len {
             return None;
         }
-        if v
-            .iter()
+        if v.iter()
             .any(|c| c.im.abs() > 1e-12 || (c.re != 0.0 && c.re != 1.0))
         {
             return None;
@@ -1013,6 +1041,7 @@ impl Value {
                 let as_vec = Value::Vector(Array1::from_vec(flat).into());
                 Self::resolve_index_dim(&as_vec, dim_len)
             }
+            Value::Logical(a) => a.dimension_mask(dim_len).map_err(|e| e.to_string()),
             other => Err(format!("invalid index type: {}", other.type_name())),
         }
     }
@@ -1133,6 +1162,34 @@ impl Value {
         }
     }
 
+    /// Linear index of a logical array. One element is a [`Value::Bool`].
+    /// A selection is a logical row, in column-major order.
+    fn index_logical_1d(a: &LogicalArray, idx: Value) -> Result<Value, String> {
+        let gather = |pos: Vec<usize>| -> Result<Value, String> {
+            let flags: Vec<bool> = pos
+                .iter()
+                .map(|&k| a.get_column_major(k).unwrap_or(false))
+                .collect();
+            LogicalArray::row(flags)
+                .map(Value::Logical)
+                .map_err(|e| e.to_string())
+        };
+        match idx {
+            Value::All => gather((0..a.len()).collect()),
+            Value::Scalar(n) => {
+                let k = Self::one_based_to_zero(n)?;
+                a.get_column_major(k)
+                    .map(Value::Bool)
+                    .ok_or_else(|| format!("index {n} out of bounds ({} elements)", a.len()))
+            }
+            Value::Logical(mask) => gather(mask.linear_mask(a.len()).map_err(|e| e.to_string())?),
+            other => {
+                let pos = Self::resolve_index_dim(&other, a.len())?;
+                gather(pos)
+            }
+        }
+    }
+
     fn index_1d(&self, idx: Value) -> Result<Value, String> {
         match self {
             Value::Vector(v) => match &idx {
@@ -1156,7 +1213,9 @@ impl Value {
                     if let Some((start, n)) = Self::consecutive_positions(idx_v) {
                         if start + n <= v.len() {
                             let out = super::elementwise::par_vector_copy(v, start, n)
-                                .unwrap_or_else(|| v.slice(ndarray::s![start..start + n]).to_owned());
+                                .unwrap_or_else(|| {
+                                    v.slice(ndarray::s![start..start + n]).to_owned()
+                                });
                             return Ok(Value::Vector(out.into()));
                         }
                     }
@@ -1183,6 +1242,11 @@ impl Value {
                         .collect();
                     Ok(Value::Vector(Array1::from_vec(result?).into()))
                 }
+                Value::Logical(mask) => {
+                    let pos = mask.dimension_mask(v.len()).map_err(|e| e.to_string())?;
+                    let data: Vec<C64> = pos.iter().map(|&i| v[i]).collect();
+                    Ok(Value::Vector(Array1::from_vec(data).into()))
+                }
                 // A row or column of subscripts (`zeros(1, n)`, `idx'`) is
                 // the same index list as a vector. `v(idx)` already accepts
                 // it when `v` is still a matrix; after a reduction such as
@@ -1208,7 +1272,10 @@ impl Value {
                     if k0 >= total {
                         return Err(format!(
                             "linear index {} out of bounds ({}×{} = {} elements)",
-                            k_one_based as i64, m.nrows(), m.ncols(), total
+                            k_one_based as i64,
+                            m.nrows(),
+                            m.ncols(),
+                            total
                         ));
                     }
                     // column-major: k0 = col * nrows + row
@@ -1263,6 +1330,15 @@ impl Value {
                         let picks: Result<Vec<C64>, _> =
                             idx_m.iter().map(|c| pick(c.re)).collect();
                         Ok(Value::Vector(Array1::from_vec(picks?).into()))
+                    }
+                    Value::Logical(mask) => {
+                        let total = m.nrows() * m.ncols();
+                        let pos = mask.linear_mask(total).map_err(|e| e.to_string())?;
+                        let data: Vec<C64> = pos
+                            .iter()
+                            .map(|&k0| m[[k0 % m.nrows(), k0 / m.nrows()]])
+                            .collect();
+                        Ok(Value::Vector(Array1::from_vec(data).into()))
                     }
                     Value::All => {
                         let mut flat_data: Vec<C64> = Vec::with_capacity(m.nrows() * m.ncols());
@@ -1461,6 +1537,7 @@ impl Value {
                     other.type_name()
                 )),
             },
+            Value::Logical(a) => Self::index_logical_1d(a, idx),
             other => Err(format!("cannot index into {}", other.type_name())),
         }
     }
@@ -1483,22 +1560,28 @@ impl Value {
                     // Single row → Vector
                     let r = rows[0];
                     if let Some((c0, n)) = Self::run_of(&cols) {
-                        return Ok(Value::Vector(m.slice(ndarray::s![r, c0..c0 + n]).to_owned().into()));
+                        return Ok(Value::Vector(
+                            m.slice(ndarray::s![r, c0..c0 + n]).to_owned().into(),
+                        ));
                     }
-                    Ok(Value::Vector(Array1::from_iter(
-                        cols.iter().map(|&c| m[[r, c]]),
-                    ).into()))
+                    Ok(Value::Vector(
+                        Array1::from_iter(cols.iter().map(|&c| m[[r, c]])).into(),
+                    ))
                 } else if cols.len() == 1 {
                     // Single column → Vector
                     let c = cols[0];
-                    Ok(Value::Vector(Array1::from_iter(
-                        rows.iter().map(|&r| m[[r, c]]),
-                    ).into()))
-                } else if let (Some((r0, nr)), Some((c0, nc))) = (Self::run_of(&rows), Self::run_of(&cols)) {
+                    Ok(Value::Vector(
+                        Array1::from_iter(rows.iter().map(|&r| m[[r, c]])).into(),
+                    ))
+                } else if let (Some((r0, nr)), Some((c0, nc))) =
+                    (Self::run_of(&rows), Self::run_of(&cols))
+                {
                     // Block of consecutive rows and columns (`M(:, a:b)`):
                     // copy it as a slice, row by row, instead of per element.
                     let out = super::elementwise::par_block_copy(m, (r0, nr), (c0, nc))
-                        .unwrap_or_else(|| m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned());
+                        .unwrap_or_else(|| {
+                            m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned()
+                        });
                     Ok(Value::Matrix(out.into()))
                 } else {
                     // Submatrix
@@ -1511,7 +1594,9 @@ impl Value {
                         }
                     }
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?.into(),
+                        Array2::from_shape_vec((nr, nc), data)
+                            .map_err(|e| e.to_string())?
+                            .into(),
                     ))
                 }
             }
@@ -1547,6 +1632,30 @@ impl Value {
                         Self::sparse_matrix_dense(sm)?.index_2d(row_idx, col_idx)
                     }
                 }
+            }
+            Value::Logical(a) => {
+                let rows = Self::resolve_index_dim(&row_idx, a.rows())?;
+                let cols = Self::resolve_index_dim(&col_idx, a.cols())?;
+                if rows.len() == 1 && cols.len() == 1 {
+                    return Ok(Value::Bool(a.get(rows[0], cols[0]).unwrap_or(false)));
+                }
+                let mut flags = Vec::with_capacity(rows.len() * cols.len());
+                for &r in &rows {
+                    for &c in &cols {
+                        flags.push(a.get(r, c).unwrap_or(false));
+                    }
+                }
+                let (nr, nc) = (rows.len(), cols.len());
+                // A single row or column stays a logical row, matching
+                // `M(i, :)` returning a vector.
+                if nr == 1 || nc == 1 {
+                    return LogicalArray::row(flags)
+                        .map(Value::Logical)
+                        .map_err(|e| e.to_string());
+                }
+                LogicalArray::from_flags(flags, nr, nc)
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
             }
             other => Err(format!(
                 "2D indexing requires a matrix, got {}",
@@ -1620,19 +1729,25 @@ impl Value {
                 if singletons[0] {
                     // Drop i: Matrix (nc × np)
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nc, np), data).map_err(|e| e.to_string())?.into(),
+                        Array2::from_shape_vec((nc, np), data)
+                            .map_err(|e| e.to_string())?
+                            .into(),
                     ))
                 } else if singletons[1] {
                     // Drop j: Matrix (nr × np)
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, np), data).map_err(|e| e.to_string())?.into(),
+                        Array2::from_shape_vec((nr, np), data)
+                            .map_err(|e| e.to_string())?
+                            .into(),
                     ))
                 } else {
                     // Drop k: Matrix (nr × nc), but the walk order above is
                     // (r major, c middle, k inner) — so for np=1 we already
                     // collected in row-major (nr, nc) order.
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?.into(),
+                        Array2::from_shape_vec((nr, nc), data)
+                            .map_err(|e| e.to_string())?
+                            .into(),
                     ))
                 }
             }
@@ -1642,18 +1757,65 @@ impl Value {
                 // for shape (nr, nc, np) — what Array3::from_shape_vec expects by default.
                 Ok(Value::Tensor3(
                     ndarray::Array3::from_shape_vec((nr, nc, np), data)
-                        .map_err(|e| e.to_string())?.into(),
+                        .map_err(|e| e.to_string())?
+                        .into(),
                 ))
             }
         }
     }
 
-    /// Logical NOT — only valid for Bool.
+    /// Logical NOT. `!` is MATLAB's `~`.
+    ///
+    /// A scalar result is [`Value::Bool`]. An array result is a logical
+    /// array. A value is true when it is not exact zero (both parts, for
+    /// complex); `NaN` is true, so `!NaN` is false.
+    /// Element-wise logical not.
+    ///
+    /// A scalar bool, number, or integer stays [`Value::Bool`]. An array
+    /// becomes a [`Value::Logical`]. A numeric value is false only when both
+    /// parts are exact `0` (`!NaN` is false, because `NaN` is truthy). A
+    /// string is an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_script::Value;
+    /// assert!(matches!(Value::Scalar(0.0).not().unwrap(), Value::Bool(true)));
+    /// assert!(matches!(Value::Scalar(1.0).not().unwrap(), Value::Bool(false)));
+    /// assert!(Value::Str("no".into()).not().is_err());
+    /// ```
     pub fn not(self) -> Result<Value, String> {
+        let flags_from = |re: f64, im: f64| re == 0.0 && im == 0.0;
         match self {
             Value::Bool(b) => Ok(Value::Bool(!b)),
+            Value::Logical(a) => Ok(Value::Logical(a.not())),
+            Value::Scalar(x) => Ok(Value::Bool(x == 0.0)),
+            Value::Int { data, .. } => Ok(Value::Bool(data == 0)),
+            Value::Complex(c) => Ok(Value::Bool(flags_from(c.re, c.im))),
+            Value::Vector(v) => {
+                let n = Shared::len(&v);
+                let flags: Vec<bool> = if let Some(r) = Shared::real_slice(&v) {
+                    r.iter().map(|&x| x == 0.0).collect()
+                } else {
+                    v.iter().map(|c| flags_from(c.re, c.im)).collect()
+                };
+                LogicalArray::from_flags(flags, 1, n)
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
+            }
+            Value::Matrix(m) => {
+                let s = Shared::shape(&m);
+                let flags: Vec<bool> = if let Some(r) = Shared::real_slice(&m) {
+                    r.iter().map(|&x| x == 0.0).collect()
+                } else {
+                    m.iter().map(|c| flags_from(c.re, c.im)).collect()
+                };
+                LogicalArray::from_flags(flags, s[0], s[1])
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
+            }
             other => Err(format!(
-                "'!' operator requires bool, got {}",
+                "'!' operator requires bool or a numeric array, got {}",
                 other.type_name()
             )),
         }
@@ -1661,11 +1823,23 @@ impl Value {
 
     /// Truth value for the short-circuit logical operators `&&` / `||`.
     /// Matches matlab/octave: scalars are truthy iff non-zero (complex iff
-    /// either part is non-zero). Matrix/Vector operands error — matlab
-    /// requires explicit `any(...)`/`all(...)` to collapse them first.
+    /// either part is non-zero). A 1-element logical is that element. A
+    /// wider array is an error — matlab requires explicit `any(...)` /
+    /// `all(...)` to collapse it first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_script::Value;
+    /// assert!(Value::Scalar(2.0).is_truthy_for_logical().unwrap());
+    /// assert!(!Value::Bool(false).is_truthy_for_logical().unwrap());
+    /// ```
     pub fn is_truthy_for_logical(&self) -> Result<bool, String> {
         match self {
             Value::Bool(b) => Ok(*b),
+            Value::Logical(a) if a.len() == 1 => {
+                Ok(a.as_slice().first().copied().unwrap_or(0) != 0)
+            }
             Value::Scalar(s) => Ok(*s != 0.0),
             Value::Int { data, .. } => Ok(*data != 0),
             Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
@@ -1816,7 +1990,12 @@ impl Value {
                 Ok(Value::int_array(data?, rows, cols, ca, ma))
             }
             // Array ⊗ scalar-int broadcast — array on the left.
-            (Value::IntArray { data, rows, cols, .. }, Value::Int { data: s, .. }) => {
+            (
+                Value::IntArray {
+                    data, rows, cols, ..
+                },
+                Value::Int { data: s, .. },
+            ) => {
                 let out: Result<Vec<i128>, String> = data
                     .iter()
                     .map(|&x| Self::int_arith(op, x, s, ca, ma))
@@ -1825,7 +2004,12 @@ impl Value {
             }
             // Scalar-int ⊗ array broadcast — scalar on the left (order matters
             // for `-`, `/`, `^`).
-            (Value::Int { data: s, .. }, Value::IntArray { data, rows, cols, .. }) => {
+            (
+                Value::Int { data: s, .. },
+                Value::IntArray {
+                    data, rows, cols, ..
+                },
+            ) => {
                 let out: Result<Vec<i128>, String> = data
                     .iter()
                     .map(|&x| Self::int_arith(op, s, x, ca, ma))
@@ -1850,7 +2034,11 @@ impl Value {
             } => {
                 // Release builds keep the multiply. Debug builds refuse a
                 // wrapped product before that repeat expression runs.
-                debug_assert_eq!(rows.checked_mul(cols), Some(data.len()), "integer transpose size");
+                debug_assert_eq!(
+                    rows.checked_mul(cols),
+                    Some(data.len()),
+                    "integer transpose size"
+                );
                 let mut nd = vec![0i128; rows * cols];
                 for r in 0..rows {
                     for c in 0..cols {
@@ -1881,7 +2069,13 @@ impl Value {
             },
             Value::Vector(vec) => {
                 let n = vec.len();
-                Value::int_array(vec.iter().map(|c| tag(c.re)).collect(), 1, n, class, overflow)
+                Value::int_array(
+                    vec.iter().map(|c| tag(c.re)).collect(),
+                    1,
+                    n,
+                    class,
+                    overflow,
+                )
             }
             Value::Matrix(m) => {
                 let (r, c) = (m.nrows(), m.ncols());
@@ -1902,6 +2096,212 @@ impl Value {
                 class, overflow, ..
             } => (*class, *overflow),
             _ => unreachable!("int_meta on non-integer"),
+        }
+    }
+
+    /// `logical(x)`. A scalar (including `bool`) stays [`Value::Bool`].
+    /// An array becomes a [`Value::Logical`]. Exact `0` and `-0` are false;
+    /// every other real, including `NaN`, is true. A nonzero imaginary part
+    /// is an error.
+    pub(crate) fn to_logical(&self) -> Result<Value, String> {
+        fn flag(re: f64, im: f64) -> Result<bool, String> {
+            if im != 0.0 {
+                return Err("logical: complex values cannot be converted to logical".to_string());
+            }
+            Ok(re != 0.0)
+        }
+        match self {
+            Value::Bool(b) => Ok(Value::Bool(*b)),
+            Value::Logical(a) => Ok(Value::Logical(a.clone())),
+            Value::Scalar(x) => Ok(Value::Bool(flag(*x, 0.0)?)),
+            Value::Complex(c) => Ok(Value::Bool(flag(c.re, c.im)?)),
+            Value::Int { data, .. } => Ok(Value::Bool(*data != 0)),
+            Value::IntArray {
+                data, rows, cols, ..
+            } => {
+                let flags = data.iter().map(|x| *x != 0).collect();
+                LogicalArray::from_flags(flags, *rows, *cols)
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
+            }
+            Value::Vector(v) => {
+                let n = Shared::len(v);
+                let flags = if let Some(r) = Shared::real_slice(v) {
+                    r.iter()
+                        .map(|&x| Ok(x != 0.0))
+                        .collect::<Result<Vec<_>, String>>()?
+                } else {
+                    v.iter()
+                        .map(|c| flag(c.re, c.im))
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                LogicalArray::from_flags(flags, 1, n)
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
+            }
+            Value::Matrix(m) => {
+                let s = Shared::shape(m);
+                let flags = if let Some(r) = Shared::real_slice(m) {
+                    r.iter()
+                        .map(|&x| Ok(x != 0.0))
+                        .collect::<Result<Vec<_>, String>>()?
+                } else if let Some(sl) = m.as_slice() {
+                    sl.iter()
+                        .map(|c| flag(c.re, c.im))
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    let mut flags = Vec::with_capacity(s[0] * s[1]);
+                    for i in 0..s[0] {
+                        for j in 0..s[1] {
+                            flags.push(flag(m[[i, j]].re, m[[i, j]].im)?);
+                        }
+                    }
+                    flags
+                };
+                LogicalArray::from_flags(flags, s[0], s[1])
+                    .map(Value::Logical)
+                    .map_err(|e| e.to_string())
+            }
+            other => Err(format!("logical: cannot convert {}", other.type_name())),
+        }
+    }
+
+    /// Arithmetic promotes a logical array to double `0` / `1`. A `1×1`
+    /// logical becomes a scalar. A single row becomes a real vector. A
+    /// single column stays an `n×1` real matrix. Anything wider stays a
+    /// real matrix.
+    pub(crate) fn logical_as_double(a: &LogicalArray) -> Value {
+        let data: Vec<f64> = a
+            .as_slice()
+            .iter()
+            .map(|&b| if b != 0 { 1.0 } else { 0.0 })
+            .collect();
+        if a.rows() == 1 && a.cols() == 1 {
+            return Value::Scalar(data.first().copied().unwrap_or(0.0));
+        }
+        if a.rows() == 1 {
+            return Value::real_vector(Array1::from_vec(data));
+        }
+        Value::real_matrix(
+            Array2::from_shape_vec((a.rows(), a.cols()), data).expect("logical shape"),
+        )
+    }
+
+    /// Relational operators. Two scalars (including `bool`) return [`Value::Bool`].
+    /// An array operand returns a [`Value::Logical`] of the same shape.
+    /// Real parts are compared, including `NaN` (which compares false for
+    /// `==` and true for `~=`). A vector is a `1×n` row, so it matches a
+    /// `1×n` matrix and not an `n×1` column.
+    fn compare_numeric(op: BinOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+        enum Side {
+            Scalar(f64),
+            Grid {
+                rows: usize,
+                cols: usize,
+                re: Vec<f64>,
+            },
+        }
+        fn side(v: &Value) -> Result<Side, String> {
+            match v {
+                Value::Scalar(x) => Ok(Side::Scalar(*x)),
+                Value::Bool(b) => Ok(Side::Scalar(if *b { 1.0 } else { 0.0 })),
+                Value::Logical(a) => Ok(Side::Grid {
+                    rows: a.rows(),
+                    cols: a.cols(),
+                    re: a
+                        .as_slice()
+                        .iter()
+                        .map(|&b| if b != 0 { 1.0 } else { 0.0 })
+                        .collect(),
+                }),
+                Value::Vector(v) => {
+                    let n = Shared::len(v);
+                    let re = if let Some(r) = Shared::real_slice(v) {
+                        r.to_vec()
+                    } else {
+                        v.iter().map(|c| c.re).collect()
+                    };
+                    Ok(Side::Grid {
+                        rows: 1,
+                        cols: n,
+                        re,
+                    })
+                }
+                Value::Matrix(m) => {
+                    let s = Shared::shape(m);
+                    let re = if let Some(r) = Shared::real_slice(m) {
+                        r.to_vec()
+                    } else if let Some(sl) = m.as_slice() {
+                        sl.iter().map(|c| c.re).collect()
+                    } else {
+                        let mut re = Vec::with_capacity(s[0] * s[1]);
+                        for i in 0..s[0] {
+                            for j in 0..s[1] {
+                                re.push(m[[i, j]].re);
+                            }
+                        }
+                        re
+                    };
+                    Ok(Side::Grid {
+                        rows: s[0],
+                        cols: s[1],
+                        re,
+                    })
+                }
+                other => Err(format!(
+                    "comparison requires compatible operands, got {}",
+                    other.type_name()
+                )),
+            }
+        }
+        let flag = |a: f64, b: f64| match op {
+            BinOp::Eq => a == b,
+            BinOp::Ne => a != b,
+            BinOp::Lt => a < b,
+            BinOp::Le => a <= b,
+            BinOp::Gt => a > b,
+            BinOp::Ge => a >= b,
+            _ => unreachable!("comparison"),
+        };
+        let logical = |flags: Vec<bool>, rows: usize, cols: usize| {
+            LogicalArray::from_flags(flags, rows, cols)
+                .map(Value::Logical)
+                .map_err(|e| e.to_string())
+        };
+        let left = side(lhs)?;
+        let right = side(rhs)?;
+        match (left, right) {
+            (Side::Scalar(a), Side::Scalar(b)) => Ok(Value::Bool(flag(a, b))),
+            (Side::Scalar(s), Side::Grid { rows, cols, re }) => {
+                logical(re.into_iter().map(|x| flag(s, x)).collect(), rows, cols)
+            }
+            (Side::Grid { rows, cols, re }, Side::Scalar(s)) => {
+                logical(re.into_iter().map(|x| flag(x, s)).collect(), rows, cols)
+            }
+            (
+                Side::Grid {
+                    rows: r1,
+                    cols: c1,
+                    re: a,
+                },
+                Side::Grid {
+                    rows: r2,
+                    cols: c2,
+                    re: b,
+                },
+            ) => {
+                if (r1, c1) != (r2, c2) {
+                    if r1 == 1 && r2 == 1 {
+                        return Err(format!("comparison length mismatch: {c1} vs {c2}"));
+                    }
+                    return Err(format!("comparison shape mismatch: {r1}x{c1} vs {r2}x{c2}"));
+                }
+                logical(
+                    a.into_iter().zip(b).map(|(x, y)| flag(x, y)).collect(),
+                    r1,
+                    c1,
+                )
+            }
         }
     }
 
@@ -1943,158 +2343,39 @@ impl Value {
             return Self::int_binop(op, lhs, rhs);
         }
 
-        // Comparison operators: compare scalar/complex values, return Bool
+        // Comparisons: scalars (and `bool`) return Bool. Arrays return a
+        // logical array. Strings stay a separate equality.
         if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
-            // Element-wise real comparison → 1.0 / 0.0 (used by the array arms).
-            let cmp = |a: f64, b: f64| -> f64 {
-                let flag = match op {
-                    Eq => a == b,
-                    Ne => a != b,
-                    Lt => a < b,
-                    Le => a <= b,
-                    Gt => a > b,
-                    Ge => a >= b,
-                    _ => unreachable!(),
-                };
-                if flag {
-                    1.0
-                } else {
-                    0.0
-                }
-            };
-            return match (&lhs, &rhs) {
-                (Value::Scalar(a), Value::Scalar(b)) => Ok(Value::Bool(match op {
-                    Eq => a == b,
-                    Ne => a != b,
-                    Lt => a < b,
-                    Le => a <= b,
-                    Gt => a > b,
-                    Ge => a >= b,
-                    _ => unreachable!(),
-                })),
-                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(match op {
-                    Eq => a == b,
-                    Ne => a != b,
-                    _ => return Err("ordered comparison not defined for bool".to_string()),
-                })),
-                (Value::Str(a), Value::Str(b)) => Ok(Value::Bool(match op {
+            if let (Value::Str(a), Value::Str(b)) = (&lhs, &rhs) {
+                return Ok(Value::Bool(match op {
                     Eq => a == b,
                     Ne => a != b,
                     _ => return Err("ordered comparison not defined for strings".to_string()),
-                })),
-                // Element-wise comparison: Vector op Scalar or Scalar op Vector → real 0/1 vector
-                (Value::Vector(v), Value::Scalar(b)) => {
-                    let b = *b;
-                    let data: Vec<C64> = v
-                        .iter()
-                        .map(|c| {
-                            let a = c.re;
-                            let flag = match op {
-                                Eq => a == b,
-                                Ne => a != b,
-                                Lt => a < b,
-                                Le => a <= b,
-                                Gt => a > b,
-                                Ge => a >= b,
-                                _ => unreachable!(),
-                            };
-                            Complex::new(if flag { 1.0 } else { 0.0 }, 0.0)
-                        })
-                        .collect();
-                    Ok(Value::Vector(Array1::from_vec(data).into()))
+                }));
+            }
+            return match Self::compare_numeric(op, &lhs, &rhs) {
+                Ok(v) => Ok(v),
+                Err(e) if e.starts_with("comparison requires compatible operands, got ") => {
+                    Err(format!(
+                        "comparison requires compatible operands, got {} and {}",
+                        lhs.type_name(),
+                        rhs.type_name()
+                    ))
                 }
-                (Value::Scalar(a), Value::Vector(v)) => {
-                    let a = *a;
-                    let data: Vec<C64> = v
-                        .iter()
-                        .map(|c| {
-                            let b = c.re;
-                            let flag = match op {
-                                Eq => a == b,
-                                Ne => a != b,
-                                Lt => a < b,
-                                Le => a <= b,
-                                Gt => a > b,
-                                Ge => a >= b,
-                                _ => unreachable!(),
-                            };
-                            Complex::new(if flag { 1.0 } else { 0.0 }, 0.0)
-                        })
-                        .collect();
-                    Ok(Value::Vector(Array1::from_vec(data).into()))
-                }
-                // Element-wise Vector op Vector (equal length) → 0/1 vector.
-                (Value::Vector(x), Value::Vector(y)) => {
-                    if x.len() != y.len() {
-                        return Err(format!(
-                            "comparison length mismatch: {} vs {}",
-                            x.len(),
-                            y.len()
-                        ));
-                    }
-                    let data: Vec<C64> = x
-                        .iter()
-                        .zip(y.iter())
-                        .map(|(a, b)| Complex::new(cmp(a.re, b.re), 0.0))
-                        .collect();
-                    Ok(Value::Vector(Array1::from_vec(data).into()))
-                }
-                // Matrix op Scalar / Scalar op Matrix → 0/1 matrix.
-                (Value::Matrix(m), Value::Scalar(b)) => {
-                    let b = *b;
-                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(c.re, b), 0.0)).into()))
-                }
-                (Value::Scalar(a), Value::Matrix(m)) => {
-                    let a = *a;
-                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(a, c.re), 0.0)).into()))
-                }
-                // Element-wise Matrix op Matrix (equal shape) → 0/1 matrix.
-                (Value::Matrix(x), Value::Matrix(y)) => {
-                    if x.dim() != y.dim() {
-                        return Err(format!(
-                            "comparison shape mismatch: {:?} vs {:?}",
-                            x.dim(),
-                            y.dim()
-                        ));
-                    }
-                    let data = Array2::from_shape_fn(x.dim(), |(i, j)| {
-                        Complex::new(cmp(x[[i, j]].re, y[[i, j]].re), 0.0)
-                    });
-                    Ok(Value::Matrix(data.into()))
-                }
-                // A vector is a row. Compare it with a 1×N matrix of the
-                // same length elementwise; the result is a 0/1 matrix.
-                // Other matrix shapes (an N×1 column, a wider matrix) stay
-                // an error — they are not the same orientation.
-                (Value::Vector(v), Value::Matrix(m)) if m.nrows() == 1 && m.ncols() == v.len() => {
-                    let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
-                        Complex::new(cmp(v[j].re, m[[0, j]].re), 0.0)
-                    });
-                    Ok(Value::Matrix(data.into()))
-                }
-                (Value::Matrix(m), Value::Vector(v)) if m.nrows() == 1 && m.ncols() == v.len() => {
-                    let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
-                        Complex::new(cmp(m[[0, j]].re, v[j].re), 0.0)
-                    });
-                    Ok(Value::Matrix(data.into()))
-                }
-                _ => Err(format!(
-                    "comparison requires compatible operands, got {} and {}",
-                    lhs.type_name(),
-                    rhs.type_name()
-                )),
+                Err(e) => Err(e),
             };
         }
 
-        // Coerce bool operands to numeric 0.0 / 1.0 for the remaining
-        // (arithmetic) operators — `true + 1`, counting with `sum(a == b)`, etc.
-        // (And/Or and comparison operators above already consumed any bools.)
+        // Coerce bool and logical operands to numeric 0/1 for arithmetic.
+        // `true + 1` is 2. `sum` of a comparison counts trues itself.
         let lhs = match lhs {
             Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            Value::Logical(a) => Self::logical_as_double(&a),
             other => other,
         };
         let rhs = match rhs {
             Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            Value::Logical(a) => Self::logical_as_double(&a),
             other => other,
         };
 
@@ -2710,6 +2991,94 @@ impl Value {
         }
     }
 
+    /// `[true, false]` and `[true, false; false, true]` stay logical.
+    /// Anything that is not a `bool` or a logical array returns `None` so
+    /// the numeric path can promote a mix (`[true, 1]`).
+    fn concat_all_logical(rows: &[Vec<Value>]) -> Result<Option<Value>, String> {
+        if rows
+            .iter()
+            .flatten()
+            .any(|v| !matches!(v, Value::Bool(_) | Value::Logical(_)))
+        {
+            return Ok(None);
+        }
+        if rows.iter().all(|r| r.is_empty()) {
+            return Ok(None);
+        }
+        let mut built: Vec<Vec<bool>> = Vec::new();
+        for row in rows {
+            if row.is_empty() {
+                continue;
+            }
+            let mut height = 1usize;
+            for v in row {
+                if let Value::Logical(a) = v {
+                    if a.rows() > 1 {
+                        if height == 1 {
+                            height = a.rows();
+                        } else if height != a.rows() {
+                            return Err(format!(
+                                "matrix concat: vertical dimension mismatch ({} vs {} rows)",
+                                height,
+                                a.rows()
+                            ));
+                        }
+                    }
+                }
+            }
+            let mut actual = vec![Vec::new(); height];
+            for v in row {
+                match v {
+                    Value::Bool(b) => {
+                        for r in 0..height {
+                            actual[r].push(*b);
+                        }
+                    }
+                    Value::Logical(a) if a.rows() == height => {
+                        for r in 0..height {
+                            for c in 0..a.cols() {
+                                actual[r].push(a.get(r, c).unwrap_or(false));
+                            }
+                        }
+                    }
+                    Value::Logical(a) if a.rows() == 1 && a.cols() == 1 => {
+                        let bit = a.get(0, 0).unwrap_or(false);
+                        for r in 0..height {
+                            actual[r].push(bit);
+                        }
+                    }
+                    Value::Logical(a) => {
+                        return Err(format!(
+                            "matrix concat: cannot mix a {}x{} logical with blocks of height {height}",
+                            a.rows(),
+                            a.cols()
+                        ));
+                    }
+                    _ => unreachable!("filtered to bool and logical"),
+                }
+            }
+            built.extend(actual);
+        }
+        if built.is_empty() {
+            return Ok(None);
+        }
+        let ncols = built[0].len();
+        for (i, row) in built.iter().enumerate() {
+            if row.len() != ncols {
+                return Err(format!(
+                    "matrix concat: row {} has {} columns, expected {ncols}",
+                    i + 1,
+                    row.len()
+                ));
+            }
+        }
+        let nrows = built.len();
+        let flags: Vec<bool> = built.into_iter().flatten().collect();
+        LogicalArray::from_flags(flags, nrows, ncols)
+            .map(|a| Some(Value::Logical(a)))
+            .map_err(|e| e.to_string())
+    }
+
     /// Build a Value from evaluated matrix literal rows.
     ///
     /// Each element in a row may be Scalar, Complex, Vector, or Matrix.
@@ -2719,6 +3088,23 @@ impl Value {
         if rows.is_empty() {
             return Ok(Value::Vector(Array1::zeros(0).into()));
         }
+        if let Some(v) = Self::concat_all_logical(&rows)? {
+            return Ok(v);
+        }
+        // A logical mixed with numbers promotes to 0/1, matching MATLAB
+        // `[true, 1]`.
+        let rows: Vec<Vec<Value>> = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|v| match v {
+                        Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+                        Value::Logical(a) => Self::logical_as_double(&a),
+                        other => other,
+                    })
+                    .collect()
+            })
+            .collect();
         // Integer elements widen to double: a matrix/vector literal built from
         // integers is a double array (consistent with the widening rule; use an
         // explicit cast like `int8([...])` to build a typed integer array).
@@ -2800,9 +3186,9 @@ impl Value {
         }
 
         if all_rows.len() == 1 {
-            Ok(Value::Vector(Array1::from_vec(
-                all_rows.into_iter().next().unwrap(),
-            ).into()))
+            Ok(Value::Vector(
+                Array1::from_vec(all_rows.into_iter().next().unwrap()).into(),
+            ))
         } else {
             let ncols = all_rows[0].len();
             for (i, row) in all_rows.iter().enumerate() {
@@ -2959,7 +3345,8 @@ impl Value {
         };
         let mut out: Vec<f64> = Vec::with_capacity(total);
         let dst = &mut out.spare_capacity_mut()[..total];
-        let check = |n: usize, want: usize| assert_eq!(n, want, "concatenation filled {n} of {want} slots");
+        let check =
+            |n: usize, want: usize| assert_eq!(n, want, "concatenation filled {n} of {want} slots");
         if total >= super::elementwise::PAR_MIN_LEN {
             use rayon::prelude::*;
             let chunk = super::elementwise::PAR_CHUNK;
@@ -2992,9 +3379,9 @@ impl Value {
             Value::Complex(c) => Ok(Array1::from_vec(vec![*c])),
             Value::Matrix(m) if m.ncols() == 1 => Ok(m.column(0).to_owned()),
             Value::Matrix(m) if m.nrows() == 1 => Ok(m.row(0).to_owned()),
-            Value::SparseVector(sv) => sv.to_dense().map_err(|_| {
-                rustlab_core::variable_too_large("to_dense", &[sv.len])
-            }),
+            Value::SparseVector(sv) => sv
+                .to_dense()
+                .map_err(|_| rustlab_core::variable_too_large("to_dense", &[sv.len])),
             other => Err(format!("expected vector, got {}", other.type_name())),
         }
     }
@@ -3197,7 +3584,11 @@ impl fmt::Display for Value {
                     return Ok(());
                 }
                 // Show up to 2 pages (first and last) with matrix-style formatting.
-                let show_pages: Vec<usize> = if p <= 2 { (0..p).collect() } else { vec![0, p - 1] };
+                let show_pages: Vec<usize> = if p <= 2 {
+                    (0..p).collect()
+                } else {
+                    vec![0, p - 1]
+                };
                 for (idx, &k) in show_pages.iter().enumerate() {
                     if idx > 0 && p > 2 {
                         write!(f, "\n  ... ({} pages omitted)", p - 2)?;
@@ -3228,6 +3619,48 @@ impl fmt::Display for Value {
                     if m > MAX_ELEMS {
                         write!(f, "\n    ... ({} rows total)", m)?;
                     }
+                }
+                Ok(())
+            }
+            Value::Logical(a) => {
+                let (nrows, ncols) = (a.rows(), a.cols());
+                if nrows <= 1 {
+                    write!(f, "[1×{ncols} logical]")?;
+                    if ncols == 0 {
+                        return Ok(());
+                    }
+                    write!(f, "  ")?;
+                    let show = ncols.min(MAX_ELEMS);
+                    for c in 0..show {
+                        if c > 0 {
+                            write!(f, "  ")?;
+                        }
+                        let bit = a.get(0, c).unwrap_or(false);
+                        write!(f, "{}", u8::from(bit))?;
+                    }
+                    if ncols > MAX_ELEMS {
+                        write!(f, "  ... ({ncols} total)")?;
+                    }
+                    return Ok(());
+                }
+                write!(f, "logical({nrows}x{ncols})")?;
+                let show_rows = nrows.min(MAX_ELEMS);
+                for r in 0..show_rows {
+                    write!(f, "\n  [")?;
+                    let show_cols = ncols.min(MAX_ELEMS);
+                    for c in 0..show_cols {
+                        if c > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", u8::from(a.get(r, c).unwrap_or(false)))?;
+                    }
+                    if ncols > MAX_ELEMS {
+                        write!(f, ", ...")?;
+                    }
+                    write!(f, "]")?;
+                }
+                if nrows > MAX_ELEMS {
+                    write!(f, "\n  ... ({nrows} rows total)")?;
                 }
                 Ok(())
             }
@@ -3542,11 +3975,18 @@ impl Value {
                 Ok(sim) => Value::Fdtd3d(Arc::new(Mutex::new(sim.clone()))),
                 Err(_) => Value::Fdtd3d(Arc::clone(arc)),
             },
-            Value::Struct(fields) => {
-                Value::Struct(fields.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect())
-            }
+            Value::Struct(fields) => Value::Struct(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .collect(),
+            ),
             Value::Tuple(items) => Value::Tuple(items.iter().map(|v| v.deep_clone()).collect()),
-            Value::Lambda { params, body, captured_env } => Value::Lambda {
+            Value::Lambda {
+                params,
+                body,
+                captured_env,
+            } => Value::Lambda {
                 params: params.clone(),
                 body: body.clone(),
                 captured_env: captured_env
