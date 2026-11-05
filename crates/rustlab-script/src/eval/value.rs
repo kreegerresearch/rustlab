@@ -977,8 +977,42 @@ impl Value {
         Self::resolve_index_dim(idx, dim_len)
     }
 
+    /// Scalar `true` / `false`, or a one-element logical array.
+    /// `None` for every other index.
+    fn scalar_logical_bit(idx: &Value) -> Option<bool> {
+        match idx {
+            Value::Bool(b) => Some(*b),
+            Value::Logical(a) if a.len() == 1 => {
+                Some(a.as_slice().first().copied().unwrap_or(0) != 0)
+            }
+            _ => None,
+        }
+    }
+
+    /// Positions a scalar logical subscript selects.
+    /// `true` is the first element. `false` selects nothing.
+    /// `true` on an empty dimension is the same error as the index `1`.
+    fn scalar_logical_positions(bit: bool, dim_len: usize) -> Result<Vec<usize>, String> {
+        if !bit {
+            return Ok(Vec::new());
+        }
+        if dim_len == 0 {
+            return Err("index 1 out of bounds (size 0)".to_string());
+        }
+        Ok(vec![0])
+    }
+
+    fn logical_row(flags: Vec<bool>) -> Result<Value, String> {
+        LogicalArray::row(flags)
+            .map(Value::Logical)
+            .map_err(|e| e.to_string())
+    }
+
     /// Resolve an index value to a list of 0-based indices for a dimension of `dim_len`.
     pub fn resolve_index_dim(idx: &Value, dim_len: usize) -> Result<Vec<usize>, String> {
+        if let Some(bit) = Self::scalar_logical_bit(idx) {
+            return Self::scalar_logical_positions(bit, dim_len);
+        }
         match idx {
             Value::All => Ok((0..dim_len).collect()),
             Value::Scalar(n) => {
@@ -1162,25 +1196,37 @@ impl Value {
         }
     }
 
-    /// Linear index of a logical array. One element is a [`Value::Bool`].
+    /// Linear index of a logical array. One element stays a 1×1 logical.
     /// A selection is a logical row, in column-major order.
     fn index_logical_1d(a: &LogicalArray, idx: Value) -> Result<Value, String> {
+        // `L(true)` / `L(L(k))`: a one-element logical is a scalar subscript,
+        // not a mask that has to match the length.
+        if let Some(bit) = Self::scalar_logical_bit(&idx) {
+            return if bit {
+                if a.is_empty() {
+                    Err(format!("index 1 out of bounds ({} elements)", a.len()))
+                } else {
+                    Self::logical_row(vec![a.get_column_major(0).unwrap_or(false)])
+                }
+            } else {
+                Self::logical_row(Vec::new())
+            };
+        }
         let gather = |pos: Vec<usize>| -> Result<Value, String> {
             let flags: Vec<bool> = pos
                 .iter()
                 .map(|&k| a.get_column_major(k).unwrap_or(false))
                 .collect();
-            LogicalArray::row(flags)
-                .map(Value::Logical)
-                .map_err(|e| e.to_string())
+            Self::logical_row(flags)
         };
         match idx {
             Value::All => gather((0..a.len()).collect()),
             Value::Scalar(n) => {
                 let k = Self::one_based_to_zero(n)?;
-                a.get_column_major(k)
-                    .map(Value::Bool)
-                    .ok_or_else(|| format!("index {n} out of bounds ({} elements)", a.len()))
+                match a.get_column_major(k) {
+                    Some(bit) => Self::logical_row(vec![bit]),
+                    None => Err(format!("index {n} out of bounds ({} elements)", a.len())),
+                }
             }
             Value::Logical(mask) => gather(mask.linear_mask(a.len()).map_err(|e| e.to_string())?),
             other => {
@@ -1191,6 +1237,20 @@ impl Value {
     }
 
     fn index_1d(&self, idx: Value) -> Result<Value, String> {
+        // `v(true)` is `v(1)`. `v(false)` is empty. A 1×1 logical is the
+        // same subscript (`v(mask(k))`). A longer logical stays a mask.
+        if matches!(
+            self,
+            Value::Vector(_) | Value::Matrix(_) | Value::Tensor3(_)
+        ) {
+            if let Some(bit) = Self::scalar_logical_bit(&idx) {
+                return if bit {
+                    self.index_1d(Value::Scalar(1.0))
+                } else {
+                    Ok(Value::Vector(Array1::zeros(0).into()))
+                };
+            }
+        }
         match self {
             Value::Vector(v) => match &idx {
                 Value::All => Ok(Value::Vector(v.clone())),
@@ -1637,7 +1697,7 @@ impl Value {
                 let rows = Self::resolve_index_dim(&row_idx, a.rows())?;
                 let cols = Self::resolve_index_dim(&col_idx, a.cols())?;
                 if rows.len() == 1 && cols.len() == 1 {
-                    return Ok(Value::Bool(a.get(rows[0], cols[0]).unwrap_or(false)));
+                    return Self::logical_row(vec![a.get(rows[0], cols[0]).unwrap_or(false)]);
                 }
                 let mut flags = Vec::with_capacity(rows.len() * cols.len());
                 for &r in &rows {

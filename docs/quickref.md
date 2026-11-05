@@ -46,7 +46,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero, including a 1-element logical); rhs only evaluated if lhs is not decisive. A wider array is an error — use `any` / `all` |
 | `logical(x)` | Convert to logical. A scalar stays `bool`. Exact 0 is false; any other real, including `NaN`, is true. Nonzero imag is an error |
 | `islogical(x)` | True for `bool` and for a logical array. False for numeric 0/1. `class` is `"bool"` or `"logical"`. `isa(x, "logical")` is true for both |
-| `A(mask)`, `M(rowMask, :)` | Logical mask subscript. The mask length must match the array (or that dimension). Selects trues in column-major order. A numeric 0/1 mask of the same length still works |
+| `A(mask)`, `M(rowMask, :)` | Logical mask subscript. The mask length must match the array (or that dimension). A one-element logical, and scalar `true` / `false`, select the first element or nothing. Selects trues in column-major order. A numeric 0/1 mask of the same length still works. `L(k)` stays a 1×1 logical |
 | `find(mask)` | 1-based column-major positions of true elements. `[I, J] = find(M)` on a logical matrix returns subscripts |
 | `+=`, `-=`, `*=`, `/=` | Compound assignment: `x += 1` is equivalent to `x = x + 1` |
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |

@@ -390,7 +390,10 @@ fn scalar_logical_subscript_selects_first_or_nothing() {
         9.0
     );
     assert_eq!(
-        re(&eval("M = [1, 2; 3, 4]\nM(false) = 8\na = sum(sum(M))"), "a"),
+        re(
+            &eval("M = [1, 2; 3, 4]\nM(false) = 8\na = sum(sum(M))"),
+            "a"
+        ),
         10.0
     );
 }
