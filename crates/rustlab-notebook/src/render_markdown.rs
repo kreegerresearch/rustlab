@@ -144,6 +144,9 @@ pub(crate) fn render_markdown_rebased(
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0usize;
+    // 1-based rustlab code cells only. Mermaid and widgets do not count.
+    // The `<!-- rustlab:error cell=N -->` marker uses this index.
+    let mut code_cell = 0usize;
 
     // Ensure plot directory exists.
     let _ = std::fs::create_dir_all(plot_dir);
@@ -211,6 +214,7 @@ pub(crate) fn render_markdown_rebased(
                 source_open: _,
                 widget_reads: _,
             } => {
+                code_cell += 1;
                 if !hidden {
                     body.push_str("```rustlab\n");
                     body.push_str(source.trim_end());
@@ -238,10 +242,11 @@ pub(crate) fn render_markdown_rebased(
                 }
 
                 if let Some(err) = error {
-                    output_chunk.push_str("```text\n");
-                    output_chunk.push_str("error: ");
-                    output_chunk.push_str(err.trim_end());
-                    output_chunk.push_str("\n```\n\n");
+                    // Same GFM callout the Callout block emits. The marker
+                    // sits in this output region, so `strip_render_artifacts`
+                    // drops it and the authoring `.md` is not annotated.
+                    output_chunk.push_str(&gfm_callout(CalloutKind::Caution, None, err));
+                    output_chunk.push_str(&format!("<!-- rustlab:error cell={code_cell} -->\n\n"));
                 }
 
                 for fig in figures {
@@ -391,25 +396,9 @@ pub(crate) fn render_markdown_rebased(
                 title,
                 content,
             } => {
-                // Emit the GitHub / Obsidian-native blockquote syntax so the
-                // committed `book/*.md` renders as a styled callout on both
-                // surfaces without any per-target translation.
-                let tag = match kind {
-                    CalloutKind::Note => "NOTE",
-                    CalloutKind::Tip => "TIP",
-                    CalloutKind::Important => "IMPORTANT",
-                    CalloutKind::Warning => "WARNING",
-                    CalloutKind::Caution => "CAUTION",
-                };
-                if let Some(t) = title {
-                    body.push_str(&format!("> [!{tag}] {t}\n"));
-                } else {
-                    body.push_str(&format!("> [!{tag}]\n"));
-                }
-                let indented = content.trim().replace('\n', "\n> ");
-                body.push_str("> ");
-                body.push_str(&indented);
-                body.push_str("\n\n");
+                // GitHub / Obsidian blockquote, so the committed `.md`
+                // renders as a styled callout on both surfaces.
+                body.push_str(&gfm_callout(*kind, title.as_deref(), content));
             }
             Rendered::ExerciseStart { number } => {
                 body.push_str(&format!("**Exercise {number}.** "));
@@ -434,6 +423,29 @@ pub(crate) fn render_markdown_rebased(
     }
 
     collapse_blank_runs(&body)
+}
+
+/// Obsidian / GitHub callout. A blank line would end the blockquote, so
+/// every continuation line is prefixed with `> `.
+fn gfm_callout(kind: CalloutKind, title: Option<&str>, content: &str) -> String {
+    let tag = match kind {
+        CalloutKind::Note => "NOTE",
+        CalloutKind::Tip => "TIP",
+        CalloutKind::Important => "IMPORTANT",
+        CalloutKind::Warning => "WARNING",
+        CalloutKind::Caution => "CAUTION",
+    };
+    let mut out = String::new();
+    if let Some(t) = title {
+        out.push_str(&format!("> [!{tag}] {t}\n"));
+    } else {
+        out.push_str(&format!("> [!{tag}]\n"));
+    }
+    let indented = content.trim().replace('\n', "\n> ");
+    out.push_str("> ");
+    out.push_str(&indented);
+    out.push_str("\n\n");
+    out
 }
 
 /// Final-pass cleanup: collapse runs of two or more blank lines to a
@@ -1152,12 +1164,11 @@ mod tests {
         assert!(md.contains("```text\nanswer: 42\n```"));
     }
 
-    #[test]
-    fn error_is_rendered_as_code_block() {
-        let blocks = vec![Rendered::Code {
-            source: "oops".to_string(),
+    fn code_cell(source: &str, error: Option<&str>) -> Rendered {
+        Rendered::Code {
+            source: source.to_string(),
             text_output: String::new(),
-            error: Some("undefined variable 'x'".to_string()),
+            error: error.map(str::to_string),
             figures: Vec::new(),
             animations: Vec::new(),
             hidden: false,
@@ -1165,9 +1176,56 @@ mod tests {
             grid_cols: None,
             source_open: None,
             widget_reads: Vec::new(),
-        }];
+        }
+    }
+
+    #[test]
+    fn error_is_a_caution_callout_with_cell_marker() {
+        // Mermaid sits between the two code cells and must not consume a
+        // code-cell index. The marker names the failing code cell (2),
+        // and the message is a callout rather than a bare ```text fence.
+        let blocks = vec![
+            code_cell("x = 1", None),
+            Rendered::Mermaid {
+                source: "graph LR; A-->B".to_string(),
+                hidden: false,
+                details: None,
+                caption: None,
+            },
+            code_cell("oops", Some("line 1: undefined variable 'x'\nsee the name")),
+        ];
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
-        assert!(md.contains("error: undefined variable 'x'"));
+        assert!(
+            md.contains("> [!CAUTION]\n> line 1: undefined variable 'x'\n> see the name"),
+            "error should be a caution callout: {md}"
+        );
+        assert!(
+            md.contains("<!-- rustlab:error cell=2 -->"),
+            "1-based code-cell marker missing: {md}"
+        );
+        assert!(
+            !md.contains("```text\nerror:"),
+            "a text fence must not be the error signal: {md}"
+        );
+        assert!(!md.contains("%%"), "errors stay out of authoring comments: {md}");
+        let stripped = crate::strip_render_artifacts(&md);
+        assert!(
+            !stripped.contains("rustlab:error"),
+            "the marker is rendered output and strips with the output region: {stripped}"
+        );
+        assert!(
+            !stripped.contains("[!CAUTION]"),
+            "the callout must not leak into the authoring source: {stripped}"
+        );
+        assert!(stripped.contains("```rustlab\noops\n```"), "{stripped}");
+    }
+
+    #[test]
+    fn clean_markdown_has_no_error_callout() {
+        let blocks = vec![code_cell("x = 1", None)];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
+        assert!(!md.contains("[!CAUTION]"), "{md}");
+        assert!(!md.contains("rustlab:error"), "{md}");
     }
 
     #[test]

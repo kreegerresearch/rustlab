@@ -11,6 +11,11 @@ should re-validate against those entries when upgrading.
 ### Added
 - **`ind2sub` and `sub2ind`.** Column-major, 1-based conversion between a linear index and subscripts, the same order as `A(k)`, `reshape`, and `find`. `[I, J] = ind2sub(sz, IND)` and `IND = sub2ind(sz, I, J)`, plus the rank-3 form. One output of `ind2sub` merges every dimension, so it returns the linear index. Fewer outputs fold the trailing sizes into the last subscript; extra outputs are 1. A one-element `sub2ind` subscript is repeated. A trailing size of 1 may be omitted. An index outside the array is an error — MATLAB and Octave `ind2sub` would return a subscript past the last dimension instead. Example: `examples/linalg/ind2sub.rlab`.
 
+## 0.3.55
+
+### Changed
+- **Failed notebook cells are easier to see.** In HTML and `notebook watch`, a code cell that errored paints its left rule in the error color (`.rl-cell-error`), keeps the red `<pre class="error">` body, and opens its source disclosure even when `<!-- code: collapsed -->`, frontmatter `code:`, or `[notebook] code` would collapse it. The top bar shows a `1 error` / `N errors` chip only when something failed; the chip links to `#rl-error-1`, and failed cells are anchored `rl-error-1`, `rl-error-2`, … in document order. Markdown writes the error as a `> [!CAUTION]` callout plus `<!-- rustlab:error cell=N -->` (`N` is the 1-based rustlab code cell) inside the output region. That marker is rendered output: it is not written into the authoring notebook, and `strip_render_artifacts` removes it. `--strict` is unchanged (exit 1 when a cell fails, and the file is still written). LaTeX and PDF still use their `rlerror` boxes.
+
 ## 0.3.54
 
 ### Added
