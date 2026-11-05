@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.57
+
+### Added
+- **`ind2sub` and `sub2ind`.** Column-major, 1-based conversion between a linear index and subscripts, the same order as `A(k)`, `reshape`, and `find`. `[I, J] = ind2sub(sz, IND)` and `IND = sub2ind(sz, I, J)`, plus the rank-3 form. One output of `ind2sub` merges every dimension, so it returns the linear index. Fewer outputs fold the trailing sizes into the last subscript; extra outputs are 1. A one-element `sub2ind` subscript is repeated. A trailing size of 1 may be omitted. An index outside the array is an error — MATLAB and Octave `ind2sub` would return a subscript past the last dimension instead. Example: `examples/linalg/ind2sub.rlab`.
+
 ## 0.3.54
 
 ### Added

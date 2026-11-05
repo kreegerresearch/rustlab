@@ -22,7 +22,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
 | `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
-| `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
+| `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)` and with `ind2sub` / `sub2ind`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
 | `M(i, :) = vec`, `M(:, j) = vec` | Row / column write into a Matrix (since 0.3.4). Symmetric with the matching read forms. |
@@ -133,6 +133,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `numel(v)` | Total element count |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
+| `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |
+| `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)` | Subscripts → the same linear index. A one-element subscript is repeated; other subscript arrays must be the same size (no row×column expansion). A trailing size of 1 may be omitted. An extra subscript pads `sz` with 1 and must be 1. Out of range is an error |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
 | `transpose(M)` | Non-conjugate transpose |
@@ -554,7 +556,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
 | `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
 | `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
-| `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx` |
+| `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx`. For a size vector, use `sub2ind` / `ind2sub` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `k2ijk(k, ny, nx)` | `[i, j, kk] = k2ijk(k, ny, nx)` — inverse of `ijk2k` |

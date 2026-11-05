@@ -4,6 +4,7 @@ pub mod factor;
 pub mod fingerprint;
 pub mod matmul;
 pub mod size;
+pub mod subscript;
 pub mod sparse_eig;
 pub mod sparse_solve;
 pub mod spectral_norm;

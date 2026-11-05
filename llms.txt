@@ -40,7 +40,7 @@ interrupt (Ctrl-C or `q` on a live figure).
 
 ## Examples
 
-- [examples/](examples/): 88 runnable .rlab scripts, grouped by toolbox
+- [examples/](examples/): 89 runnable .rlab scripts, grouped by toolbox
   (language, math, linalg, stats, sparse, dsp, spectral, controls, rf, pde,
   plot, audio), plus a helper under notebooks
 - [gallery/](gallery/): 40 rendered notebooks with inline plots, browsable on GitHub

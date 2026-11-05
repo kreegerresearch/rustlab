@@ -16,6 +16,7 @@ pub mod profile;
 pub mod rng;
 pub mod fast_hash;
 pub mod shared;
+pub(crate) mod subscript;
 pub mod sparam_analysis;
 pub mod sparam_conv;
 pub mod toml_io;

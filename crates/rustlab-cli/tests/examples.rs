@@ -183,6 +183,11 @@ fn example_vectors() {
 }
 
 #[test]
+fn example_ind2sub() {
+    run_example_ok("linalg", "ind2sub");
+}
+
+#[test]
 fn example_vectorized_style() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let script = workspace_root()

@@ -1712,6 +1712,49 @@ reshape(1:24, 2, 3, 4)          # → 2×3×4 Tensor3 (column-major walk)
 - If `m == 1` or `n == 1` (and no `p`), returns a vector instead of a matrix.
 - The 4-argument form returns a `Tensor3`. See [Rank-3 Tensors](#rank-3-tensors).
 
+### `ind2sub(sz, IND)` / `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)`
+
+Convert 1-based column-major linear indexes to subscripts. `sz` is a size vector (the same vector `size` returns: rows, then columns, then pages). The linear index is the one `A(k)`, `reshape`, and `find` use:
+
+```
+k = (j - 1) * rows + i                  # 2-D
+k = ((kk - 1) * cols + (j - 1)) * rows + i   # 3-D
+```
+
+```
+[r, c] = ind2sub([3, 3], [3, 4, 5, 6])   # r = [3, 1, 2, 3], c = [1, 2, 2, 2]
+[r, c] = ind2sub([3, 3], [2, 8])         # r = [2, 2], c = [1, 3]
+[r, c, s] = ind2sub([2, 2, 2], 1:8)
+# r = [1, 2, 1, 2, 1, 2, 1, 2]
+# c = [1, 1, 2, 2, 1, 1, 2, 2]
+# s = [1, 1, 1, 1, 2, 2, 2, 2]
+```
+
+- One output merges every dimension, so `ind2sub(sz, IND)` is `IND` when every index is inside the array.
+- Fewer outputs than `sz` has entries fold the trailing sizes into the last subscript. `[r, c] = ind2sub([2, 2, 2], 1:8)` gives columns `[1, 1, 2, 2, 3, 3, 4, 4]` (effective size `[2, 4]`).
+- More outputs than dimensions are filled with 1. `[r, c, s] = ind2sub([3, 3], [2, 8])` gives `s = [1, 1]`.
+- The result has the shape of `IND`. A scalar stays a scalar. An empty array stays empty.
+- rustlab arrays are at most rank 3, so `sz` has at most 3 entries and at most 3 outputs.
+- An index outside `1:prod(sz)` is an error. MATLAB and Octave `ind2sub` do not range-check; they can return a subscript past the last dimension.
+
+### `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)`
+
+Inverse of `ind2sub` for a matching subscript count. Each subscript is 1-based and must lie on that dimension.
+
+```
+sub2ind([3, 3], 2, 2)                 # 5
+sub2ind([3, 3], [1, 2, 3, 1], [2, 2, 2, 3])   # [4, 5, 6, 7]
+sub2ind([3, 4], [1, 2, 3], 2)         # [4, 5, 6]  — the scalar is repeated
+sub2ind([10, 10, 10], 10, 10, 10)     # 1000
+sub2ind([3, 4, 1], 2, 3)              # 8  — a trailing size of 1 may be omitted
+sub2ind([10, 10], 2, 2, 1)            # 12 — an extra subscript pads sz with 1
+```
+
+- Subscript arrays must be the same size. A one-element array (or a scalar) is repeated. A row and a column are not expanded into a grid.
+- A trailing size of 1 may be left off. An extra subscript is legal only when it is 1 (the size is padded with ones). Fewer subscripts do not fold a non-singleton trailing dimension — that is an error, unlike the fewer-output form of `ind2sub`.
+- `[I, J] = find(M)` round-trips: `sub2ind(size(M), I, J)` is `find(M)`, and `ind2sub(size(M), find(M))` is `[I, J]`.
+- A subscript of 0, a negative size, or a non-integer is an error. Empty subscript arrays return an empty array of the same shape.
+
 ### `repmat(A, m, n)`
 Tile matrix `A` m times vertically and n times horizontally.
 ```
@@ -2263,7 +2306,7 @@ x2 = solve(F, [j; 1]);
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
-**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`.
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
 
 **Boundary conditions.** The optional trailing string argument selects:
 - `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
@@ -2381,7 +2424,7 @@ V = reshape(spsolve(A, b), ny, nx);
 
 ### `ij2k(i, j, ny)`
 
-Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering.
+Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering. For a size vector rather than separate `ny` / `nx` arguments, use `sub2ind` / `ind2sub`.
 
 ```
 k = ij2k(3, 4, 6)     # → (4-1)*6 + 3 = 21
@@ -3984,7 +4027,7 @@ v(1)       # first element
 v(end)     # last element
 v(2:4)     # elements 2, 3, 4
 ```
-On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column.
+On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column. `ind2sub(size(M), k)` and `sub2ind(size(M), i, j)` convert between that linear index and subscripts.
 
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.
