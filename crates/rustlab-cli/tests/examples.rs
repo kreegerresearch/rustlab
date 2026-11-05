@@ -43,7 +43,10 @@ fn run_example(toolbox: &str, name: &str) -> std::process::ExitStatus {
 
 fn run_example_ok(toolbox: &str, name: &str) {
     let status = run_example(toolbox, name);
-    assert!(status.success(), "example '{toolbox}/{name}' exited with {status}");
+    assert!(
+        status.success(),
+        "example '{toolbox}/{name}' exited with {status}"
+    );
 }
 
 // ── Non-interactive examples ───────────────────────────────────────────────
@@ -91,7 +94,10 @@ fn example_trig_special() {
 #[test]
 fn example_fixed_point() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("dsp").join("fixed_point.rlab");
+    let script = workspace_root()
+        .join("examples")
+        .join("dsp")
+        .join("fixed_point.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)
@@ -188,6 +194,11 @@ fn example_ind2sub() {
 }
 
 #[test]
+fn example_logical_arrays() {
+    run_example_ok("language", "logical_arrays");
+}
+
+#[test]
 fn example_vectorized_style() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let script = workspace_root()
@@ -256,7 +267,10 @@ fn example_toml_io() {
 #[test]
 fn run_banner_emits_rustlab_identifier_to_stderr() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("linalg").join("eig.rlab");
+    let script = workspace_root()
+        .join("examples")
+        .join("linalg")
+        .join("eig.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)

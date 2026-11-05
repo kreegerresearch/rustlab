@@ -67,7 +67,7 @@ Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustla
 The authoritative, machine-readable source is the binary itself:
 
 ```sh
-rustlab docs                  # all 396 builtins grouped by toolbox
+rustlab docs                  # all 401 builtins grouped by toolbox
 rustlab docs eig              # full detail for one builtin (signature + example)
 rustlab docs dsp              # one toolbox
 rustlab docs --search welch   # substring match over names and briefs
@@ -76,7 +76,7 @@ rustlab docs --json           # complete JSON index — best single call for an 
 
 Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`. There is no `Plotting` toolbox. A builtin name wins over a toolbox spelled the same way, so `rustlab docs plot` and `rustlab docs sparse` show those functions; `rustlab docs Plot` lists the plot toolbox.
 
-`rustlab docs --json` returns an array of 396 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+`rustlab docs --json` returns an array of 401 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
 
 `rustlab --help` lists this binary's subcommands only. Notebooks, themes, and rendering are `rustlab-notebook --help` (detail for a render is `rustlab-notebook render --help`).
 
@@ -102,13 +102,13 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 12. **Multi-output builtins use the same destructuring:** `[V, D] = eig(A)`, `[m, idx] = max(v)`, `[Pxx, f] = pwelch(x, fs)`, `[I, J, V] = find(M)`. There is **no `~` placeholder** to skip an output — bind it to a dummy variable, or use a single-output alternative (`argmax(v)` instead of the index from `max`).
 13. **Indexed assignment grows vectors automatically:** `v(i) = val` extends `v` as needed. Matrix region writes `M(rows, cols) = mat` require exact shape match.
 14. **Structs:** `s.field = val` auto-creates the struct; `struct("x", 1, "y", 2)` constructs directly; `fieldnames`, `isfield`, `rmfield` introspect.
-15. **Booleans:** `true` / `false` are constants; `&&` / `||` short-circuit with scalar operands (non-zero is truthy). Comparison results behave as 0/1 numerics.
+15. **Logical arrays:** `true` / `false` are scalar bools. An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array, not numeric 0/1. `islogical` is true for both; `class` is `"bool"` or `"logical"`. `logical(x)` converts (exact 0 is false, `NaN` is true, nonzero imag errors). `true(m, n)` / `false(m, n)` build an array when the names are not shadowed. `!` is element-wise not. `and` / `or` / `xor` are element-wise. `&&` / `||` stay scalar and short-circuit. `A(mask)` indexes where the mask is true. `double(mask)` or `mask + 0` is the 0/1 double. `sum(mask)` counts trues. `!=` is not-equal; `~=` is not a token. There is no `&` or `|` token.
 16. **Compound assignment:** `+=`, `-=`, `*=`, `/=`.
 17. **Constants always in scope:** `pi`, `e`, `Inf`, `NaN`, `i`, `j`.
 18. **`run file.rlab`** (bare statement, no quotes needed) executes another script and merges its variables/functions into the current scope — the script equivalent of an include.
 19. **Tensor3** is the rank-3 type: build with `zeros3(m, n, p)` / `reshape(v, m, n, p)` / `cat(3, A, B)`; slice pages with `T(:, :, k)`. No broadcasting between Matrix and Tensor3, and no `*` between two Tensor3s — use `.*`.
 20. **Sparse matrices** come from `sparse(I, J, V, m, n)`, `speye`, `spdiags`, `laplacian_1d/2d/3d`; solve with `spsolve(A, b)` or factor once with `F = chol(A)` / `F = lu(A)` then `solve(F, b)` many times. Mixed sparse+dense arithmetic promotes to dense.
-21. **Tables** are named columns with one shared row count: `T = table(x, name)`. A bare variable names its column; `"VariableNames", {"a","b"}` renames them (the option is a string literal). A matrix splits into one numeric column per matrix column; a vector stays one column; a string array is one text column; a 0/1 vector stays numeric (only a scalar `true`/`false` is logical, and only for one row). `T.x` reads a column, `T.x = v` replaces or appends one (the length must match), `T(rows, vars)` is a sub-table, `T{rows, var}` returns one column's cells, and `T.Properties.VariableNames` lists the names. `height`, `width`, `size`, `head`, `tail`. There is no `T(rows, vars) =`, no row names, and no joins.
+21. **Tables** are named columns with one shared row count: `T = table(x, name)`. A bare variable names its column; `"VariableNames", {"a","b"}` renames them (the option is a string literal). A matrix splits into one numeric column per matrix column; a vector stays one column; a string array is one text column; a logical vector stays one logical column (a numeric 0/1 vector stays numeric). `T.x` reads a column, `T.x = v` replaces or appends one (the length must match), `T(rows, vars)` is a sub-table, `T{rows, var}` returns one column's cells, and `T.Properties.VariableNames` lists the names. `height`, `width`, `size`, `head`, `tail`. There is no `T(rows, vars) =`, no row names, and no joins.
 
 A minimal end-to-end script:
 
@@ -173,7 +173,7 @@ y = parmap(@(u) u^2 + 1/u, t);
 
 ### 3. Prefer logical / fancy indexing over scanning
 
-A comparison is a 0/1 array, and that array is a subscript. `find` returns the 1-based positions when the indices themselves are what you need.
+A comparison is a logical array, and that array is a subscript. `find` returns the 1-based positions when the indices themselves are what you need. `double(mask)` is the numeric 0/1 form.
 
 ```rustlab
 # bad

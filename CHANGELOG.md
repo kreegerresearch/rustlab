@@ -11,6 +11,15 @@ should re-validate against those entries when upgrading.
 ### Added
 - **`ind2sub` and `sub2ind`.** Column-major, 1-based conversion between a linear index and subscripts, the same order as `A(k)`, `reshape`, and `find`. `[I, J] = ind2sub(sz, IND)` and `IND = sub2ind(sz, I, J)`, plus the rank-3 form. One output of `ind2sub` merges every dimension, so it returns the linear index. Fewer outputs fold the trailing sizes into the last subscript; extra outputs are 1. A one-element `sub2ind` subscript is repeated. A trailing size of 1 may be omitted. An index outside the array is an error — MATLAB and Octave `ind2sub` would return a subscript past the last dimension instead. Example: `examples/linalg/ind2sub.rlab`.
 
+## 0.3.56
+
+### Added
+- **Logical arrays.** A comparison of two arrays (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array, not a numeric 0/1 array. A scalar comparison stays `true` / `false`. `islogical` is true for both; `class` is `"bool"` for the scalar and `"logical"` for the array. `logical(x)` converts: exact `0` and `-0` are false, every other real (including `NaN`) is true, and a nonzero imaginary part is an error. `true(m, n)` and `false(m, n)` build an array when those names still hold the constants (`true(n)` is `n×n`, like `zeros(n)`). Element-wise `and`, `or`, and `xor` return logical. `!` is element-wise not (MATLAB `~`). `&&` and `||` stay scalar and short-circuit. A logical mask indexes with `A(mask)` and `M(rowMask, :)` when the mask length matches; `find` returns the 1-based column-major positions of the trues. `any` and `all` accept a logical vector. A logical column in a table stays logical. Printing a row shows `[1×N logical]` and `1` / `0`, not `1.000000`. Example: `examples/language/logical_arrays.rlab`.
+- **Storage.** A logical element is one byte (`0` or `1`), the same width MATLAB uses. A release scan of 1,000,000 flags (about one third set), best of five: counting trues is 364 µs for bytes and 92 µs for a packed `u64` bit vector; listing the true positions is 1.10 ms and 695 µs. The packed scan is faster. Mask indexing still uses the byte form: each element is one load, and a second representation is not worth a few hundred microseconds on a million elements. The numbers are in the `LogicalArray` rustdoc.
+
+### Breaking / behavior changes
+- **Array comparisons are no longer doubles.** `class([1, 2] > 0)` is `"logical"`, and `islogical([1, 0])` is false. A script that needed the old 0/1 numbers can write `double(mask)` or `mask + 0`. `sum(mask)` still counts the trues, so `sum([1, 2, 3] == [1, 0, 3])` is still `2`. Numeric 0/1 masks still index. `!` on a numeric scalar is now a bool (`!0` is true, `!1` is false) instead of an error. `!=` is not-equal; `~=` is not a token. There is no `&` or `|` token — use `and` / `or`, or `&&` / `||` for scalars. Assigning into a logical array (`L(1) = false`) is not supported. `parmap` still packs scalar bools and numeric arrays; it does not pack a logical array returned from a worker.
+
 ## 0.3.55
 
 ### Changed

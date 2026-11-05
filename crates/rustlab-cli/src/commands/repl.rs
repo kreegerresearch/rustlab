@@ -381,7 +381,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "rmfield", brief: "Remove a field from a struct (returns new struct)",
         detail: "s2 = rmfield(s, \"x\")  — returns a copy of s with field 'x' removed" },
     HelpEntry { name: "table", brief: "Build a table from named columns",
-        detail: "T = table(a, b)\n  T = table(a, b, 'VariableNames', {\"x\", \"y\"})\n\n  Columns share one row count. A bare variable names its column; an\n  expression is Var1, Var2, ... A matrix becomes one column per matrix\n  column (A1, A2, ...). A vector stays one column. A string array is one\n  text column. A scalar true/false is a one-row logical column — rustlab\n  has no logical arrays, so a 0/1 vector stays numeric.\n\n  T.x reads a column. T.x = v replaces or appends one (length must match).\n  T(rows, vars) is a sub-table. T{rows, vars} returns one variable's cells.\n  T.Properties.VariableNames lists the names. height, width, size, head, tail.\n\n  Not included: row names, renaming through Properties, T(rows, vars) =\n  assignment, multi-column T{...}, joins, sortrows, timetables, categoricals." },
+        detail: "T = table(a, b)\n  T = table(a, b, 'VariableNames', {\"x\", \"y\"})\n\n  Columns share one row count. A bare variable names its column; an\n  expression is Var1, Var2, ... A matrix becomes one column per matrix\n  column (A1, A2, ...). A vector stays one column. A string array is one\n  text column. A scalar true/false is a one-row logical column. A longer\n  logical array stays logical: one column for a vector, or one logical\n  column per column of a wider logical matrix. A numeric 0/1 vector\n  stays numeric.\n\n  T.x reads a column. T.x = v replaces or appends one (length must match).\n  T(rows, vars) is a sub-table. T{rows, vars} returns one variable's cells.\n  T.Properties.VariableNames lists the names. height, width, size, head, tail.\n\n  Not included: row names, renaming through Properties, T(rows, vars) =\n  assignment, multi-column T{...}, joins, sortrows, timetables, categoricals." },
     HelpEntry { name: "height", brief: "Number of rows",
         detail: "height(T)  — rows of a table. Also size(A, 1) for a matrix or vector." },
     HelpEntry { name: "width", brief: "Number of columns",
@@ -870,7 +870,17 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "isa", brief: "Class or category membership test",
         detail: "isa(x, \"class\")  — categories: \"numeric\", \"integer\", \"float\";\n  otherwise an exact class-name match. isa(int32(1), \"integer\") → true." },
     HelpEntry { name: "double", brief: "Convert to double precision",
-        detail: "double(x)  — integers → real; bool → 0/1; reals/complex unchanged.\n  double(int16(1000)) → 1000. Note: int + double arithmetic already\n  yields a double." },
+        detail: "double(x)  — integers → real; bool and logical → 0/1;\n  reals/complex unchanged. double(int16(1000)) → 1000.\n  double([true, false]) is the real row [1, 0]. int + double\n  arithmetic already yields a double. A logical in arithmetic\n  promotes the same way." },
+    HelpEntry { name: "logical", brief: "Convert to logical",
+        detail: "logical(x)  — scalar bool, or a logical array.\n  Exact 0 and -0 are false. Any other real, including NaN, is true.\n  A nonzero imaginary part is an error.\n  logical(0) → false. logical([0, 2, NaN]) is a 1×3 logical.\n  true(m, n) and false(m, n) build an array when true/false are\n  not shadowed. true(n) is n×n, like zeros(n). true() is the scalar." },
+    HelpEntry { name: "islogical", brief: "True for bool and logical arrays",
+        detail: "islogical(x)  — true for a scalar true/false and for a\n  logical array. A numeric 0/1 array is false.\n  islogical(1 == 1) → true. islogical([1, 0]) → false.\n  class(true) is \"bool\"; class([true, false]) is \"logical\".\n  isa(x, \"logical\") is true for both." },
+    HelpEntry { name: "and", brief: "Element-wise logical and",
+        detail: "and(a, b)  — logical array (or a scalar bool when both\n  sides are scalar). Shapes must match, or one side may be scalar.\n  && stays the short-circuit scalar operator. There is no & token." },
+    HelpEntry { name: "or", brief: "Element-wise logical or",
+        detail: "or(a, b)  — logical array (or a scalar bool when both\n  sides are scalar). Shapes must match, or one side may be scalar.\n  || stays the short-circuit scalar operator. There is no | token." },
+    HelpEntry { name: "xor", brief: "Element-wise logical exclusive or",
+        detail: "xor(a, b)  — true where the sides differ. Same shape\n  rules as and and or. A scalar result is bool." },
     HelpEntry { name: "widget", brief: "Read an interactive notebook widget's current value",
         detail: "widget(name)  — return the current value of a notebook widget\n  Notebook-only: a ```rustlab-widget``` fence declares a control\n  (slider / number → number, option → string); widget(\"name\") reads\n  its live value. Under `notebook watch`, moving the control re-runs\n  the blocks that read it. In batch `notebook render` it returns the\n  declared default. Errors outside a notebook, or on an unknown name.\n\nExample (in a notebook):\n  ```rustlab-widget\n  name = \"cutoff\"\n  type = \"slider\"\n  min = 0.1\n  max = 10\n  default = 1\n  ```\n  fc = widget(\"cutoff\");   % current slider value" },
 ];
@@ -886,6 +896,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
         Value::Matrix(_) => "matrix",
         Value::Tensor3(_) => "tensor3",
         Value::Bool(_) => "bool",
+        Value::Logical(_) => "logical",
         Value::Str(_) => "string",
         Value::QFmt(_) => "qfmt",
         Value::Struct(_) => "struct",
@@ -950,6 +961,7 @@ fn whos_size(v: &rustlab_script::Value) -> String {
         Value::StringArray(v) => format!("1×{}", v.len()),
         Value::Table(t) => format!("{}×{}", t.height(), t.width()),
         Value::IntArray { rows, cols, .. } => format!("{}×{}", rows, cols),
+        Value::Logical(a) => format!("{}×{}", a.rows(), a.cols()),
         Value::All => "—".to_string(),
         _ => "1×1".to_string(),
     }
@@ -979,6 +991,22 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
             }
         }
         Value::Bool(b) => format!("{b}"),
+        Value::Logical(a) => {
+            let flags = a.to_flags();
+            let preview: Vec<&str> = flags
+                .iter()
+                .take(6)
+                .map(|b| if *b { "1" } else { "0" })
+                .collect();
+            let suffix = if flags.len() > 6 { " …" } else { "" };
+            format!(
+                "{}×{} logical [{}{}]",
+                a.rows(),
+                a.cols(),
+                preview.join(" "),
+                suffix
+            )
+        }
         Value::Str(s) => {
             if s.len() <= 40 {
                 format!("\"{s}\"")
@@ -1312,212 +1340,582 @@ pub struct CategoryRow {
 
 pub static CATEGORIES: &[CategoryRow] = &[
     // ── language ─────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "language", subcategory: "Constants",
-        names: &["i / j", "pi", "e", "Inf", "NaN"] },
-    CategoryRow { toolbox: "language", subcategory: "Variables",
-        names: &["clear", "whos"] },
-    CategoryRow { toolbox: "language", subcategory: "Control flow",
-        names: &["if", "elseif", "switch", "for", "function", "error"] },
-    CategoryRow { toolbox: "language", subcategory: "Indexing",
-        names: &["range", "index", "index_assign", "chained_index", "compound_assign", "str_index"] },
-    CategoryRow { toolbox: "language", subcategory: "Output",
-        names: &["disp", "fprintf", "sprintf", "print", "commas", "format", "underscores",
-                 "input", "fgetl", "keyboard", "dbcont", "dbquit", "ischar", "stdin"] },
-    CategoryRow { toolbox: "language", subcategory: "Data I/O",
-        names: &["save", "load"] },
-    CategoryRow { toolbox: "language", subcategory: "Timing",
-        names: &["tic", "toc", "sleep"] },
-    CategoryRow { toolbox: "language", subcategory: "Filesystem",
-        names: &["run", "ls", "cd", "pwd"] },
-    CategoryRow { toolbox: "language", subcategory: "Session",
-        names: &["history", "rustlabrc"] },
-    CategoryRow { toolbox: "language", subcategory: "Higher-order",
-        names: &["arrayfun", "feval"] },
-    CategoryRow { toolbox: "language", subcategory: "Profiling",
-        names: &["profile", "profile_report"] },
-    CategoryRow { toolbox: "language", subcategory: "Persistent cache",
-        names: &["cache"] },
-    CategoryRow { toolbox: "language", subcategory: "Parallelism",
-        names: &["parmap", "nproc"] },
-    CategoryRow { toolbox: "language", subcategory: "Notebook",
-        names: &["widget"] },
-    CategoryRow { toolbox: "language", subcategory: "Structs",
-        names: &["struct", "isstruct", "fieldnames", "isfield", "rmfield"] },
-    CategoryRow { toolbox: "language", subcategory: "Tables",
-        names: &["table", "height", "width", "head", "tail"] },
-    CategoryRow { toolbox: "language", subcategory: "Cell arrays",
-        names: &["iscell"] },
-    CategoryRow { toolbox: "language", subcategory: "Integer types",
-        names: &["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
-                 "class", "cast", "intmax", "intmin", "isinteger", "isa", "double"] },
-
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Constants",
+        names: &["i / j", "pi", "e", "Inf", "NaN"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Variables",
+        names: &["clear", "whos"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Control flow",
+        names: &["if", "elseif", "switch", "for", "function", "error"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Indexing",
+        names: &[
+            "range",
+            "index",
+            "index_assign",
+            "chained_index",
+            "compound_assign",
+            "str_index",
+        ],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Output",
+        names: &[
+            "disp",
+            "fprintf",
+            "sprintf",
+            "print",
+            "commas",
+            "format",
+            "underscores",
+            "input",
+            "fgetl",
+            "keyboard",
+            "dbcont",
+            "dbquit",
+            "ischar",
+            "stdin",
+        ],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Data I/O",
+        names: &["save", "load"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Timing",
+        names: &["tic", "toc", "sleep"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Filesystem",
+        names: &["run", "ls", "cd", "pwd"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Session",
+        names: &["history", "rustlabrc"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Higher-order",
+        names: &["arrayfun", "feval"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Profiling",
+        names: &["profile", "profile_report"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Persistent cache",
+        names: &["cache"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Parallelism",
+        names: &["parmap", "nproc"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Notebook",
+        names: &["widget"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Structs",
+        names: &["struct", "isstruct", "fieldnames", "isfield", "rmfield"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Tables",
+        names: &["table", "height", "width", "head", "tail"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Cell arrays",
+        names: &["iscell"],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Integer types",
+        names: &[
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
+            "class",
+            "cast",
+            "intmax",
+            "intmin",
+            "isinteger",
+            "isa",
+            "double",
+        ],
+    },
+    CategoryRow {
+        toolbox: "language",
+        subcategory: "Logical",
+        names: &["logical", "islogical", "and", "or", "xor"],
+    },
     // ── math ─────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "math", subcategory: "Polynomials & interpolation",
-        names: &["polyfit", "polyval", "interp1"] },
-    CategoryRow { toolbox: "math", subcategory: "Elementary",
-        names: &["abs", "angle", "real", "imag", "conj", "sqrt", "exp",
-                 "log", "log10", "log2", "floor", "ceil", "round", "sign", "mod",
-                 "nextpow2"] },
-    CategoryRow { toolbox: "math", subcategory: "Trigonometry",
-        names: &["cos", "sin", "acos", "asin", "atan", "atan2", "tanh", "sinh", "cosh"] },
-    CategoryRow { toolbox: "math", subcategory: "Special functions",
-        names: &["ellipke", "laguerre", "legendre", "factor"] },
-    CategoryRow { toolbox: "math", subcategory: "Activations",
-        names: &["softmax", "relu", "gelu", "gelu_grad", "layernorm"] },
-
+    CategoryRow {
+        toolbox: "math",
+        subcategory: "Polynomials & interpolation",
+        names: &["polyfit", "polyval", "interp1"],
+    },
+    CategoryRow {
+        toolbox: "math",
+        subcategory: "Elementary",
+        names: &[
+            "abs", "angle", "real", "imag", "conj", "sqrt", "exp", "log", "log10", "log2", "floor",
+            "ceil", "round", "sign", "mod", "nextpow2",
+        ],
+    },
+    CategoryRow {
+        toolbox: "math",
+        subcategory: "Trigonometry",
+        names: &[
+            "cos", "sin", "acos", "asin", "atan", "atan2", "tanh", "sinh", "cosh",
+        ],
+    },
+    CategoryRow {
+        toolbox: "math",
+        subcategory: "Special functions",
+        names: &["ellipke", "laguerre", "legendre", "factor"],
+    },
+    CategoryRow {
+        toolbox: "math",
+        subcategory: "Activations",
+        names: &["softmax", "relu", "gelu", "gelu_grad", "layernorm"],
+    },
     // ── linalg ───────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "linalg", subcategory: "Construction",
-        names: &["zeros", "ones", "eye", "linspace", "logspace",
-                 "rand", "randn", "randi", "seed", "rng", "meshgrid"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Inspection",
-        names: &["size", "ndims", "numel", "len", "length", "ind2sub", "sub2ind"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Reshape & assembly",
-        names: &["transpose", "diag", "trace", "reshape", "repmat",
-                 "horzcat", "vertcat", "cat", "rank", "fliplr"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Vector operations",
-        names: &["dot", "cross", "outer", "kron", "norm", "cond"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Solvers",
-        names: &["det", "inv", "pinv", "expm", "linsolve", "mldivide", "mrdivide", "roots", "fzero"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Decompositions",
-        names: &["eig", "eigs", "svd", "qr", "null", "orth"] },
-    CategoryRow { toolbox: "linalg", subcategory: "Tensor3 (rank-3)",
-        names: &["zeros3", "ones3", "rand3", "randn3", "permute", "squeeze"] },
-
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Construction",
+        names: &[
+            "zeros", "ones", "eye", "linspace", "logspace", "rand", "randn", "randi", "seed",
+            "rng", "meshgrid",
+        ],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Inspection",
+        names: &[
+            "size", "ndims", "numel", "len", "length", "ind2sub", "sub2ind",
+        ],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Reshape & assembly",
+        names: &[
+            "transpose",
+            "diag",
+            "trace",
+            "reshape",
+            "repmat",
+            "horzcat",
+            "vertcat",
+            "cat",
+            "rank",
+            "fliplr",
+        ],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Vector operations",
+        names: &["dot", "cross", "outer", "kron", "norm", "cond"],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Solvers",
+        names: &[
+            "det", "inv", "pinv", "expm", "linsolve", "mldivide", "mrdivide", "roots", "fzero",
+        ],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Decompositions",
+        names: &["eig", "eigs", "svd", "qr", "null", "orth"],
+    },
+    CategoryRow {
+        toolbox: "linalg",
+        subcategory: "Tensor3 (rank-3)",
+        names: &["zeros3", "ones3", "rand3", "randn3", "permute", "squeeze"],
+    },
     // ── stats ────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "stats", subcategory: "Aggregates",
-        names: &["min", "max", "sum", "prod", "cumsum", "mean", "median", "std", "var",
-                 "trapz", "cumtrapz", "diff"] },
-    CategoryRow { toolbox: "stats", subcategory: "Ordering & search",
-        names: &["argmin", "argmax", "sort"] },
-    CategoryRow { toolbox: "stats", subcategory: "Logical reductions",
-        names: &["all", "any"] },
-    CategoryRow { toolbox: "stats", subcategory: "Histograms",
-        names: &["hist", "histogram"] },
-
+    CategoryRow {
+        toolbox: "stats",
+        subcategory: "Aggregates",
+        names: &[
+            "min", "max", "sum", "prod", "cumsum", "mean", "median", "std", "var", "trapz",
+            "cumtrapz", "diff",
+        ],
+    },
+    CategoryRow {
+        toolbox: "stats",
+        subcategory: "Ordering & search",
+        names: &["argmin", "argmax", "sort"],
+    },
+    CategoryRow {
+        toolbox: "stats",
+        subcategory: "Logical reductions",
+        names: &["all", "any"],
+    },
+    CategoryRow {
+        toolbox: "stats",
+        subcategory: "Histograms",
+        names: &["hist", "histogram"],
+    },
     // ── sparse ───────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "sparse", subcategory: "Construction",
-        names: &["sparse", "sparsevec", "speye", "spzeros", "spdiags", "sprand"] },
-    CategoryRow { toolbox: "sparse", subcategory: "Inspection",
-        names: &["full", "nnz", "issparse", "nonzeros", "find"] },
-    CategoryRow { toolbox: "sparse", subcategory: "Solvers",
-        names: &["spsolve", "chol", "lu", "solve"] },
-    CategoryRow { toolbox: "sparse", subcategory: "Discrete Laplacians",
-        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d", "laplacian_eps_3d", "pin_dirichlet"] },
-    CategoryRow { toolbox: "sparse", subcategory: "Index helpers",
-        names: &["ij2k", "k2ij", "ijk2k", "k2ijk"] },
-
+    CategoryRow {
+        toolbox: "sparse",
+        subcategory: "Construction",
+        names: &[
+            "sparse",
+            "sparsevec",
+            "speye",
+            "spzeros",
+            "spdiags",
+            "sprand",
+        ],
+    },
+    CategoryRow {
+        toolbox: "sparse",
+        subcategory: "Inspection",
+        names: &["full", "nnz", "issparse", "nonzeros", "find"],
+    },
+    CategoryRow {
+        toolbox: "sparse",
+        subcategory: "Solvers",
+        names: &["spsolve", "chol", "lu", "solve"],
+    },
+    CategoryRow {
+        toolbox: "sparse",
+        subcategory: "Discrete Laplacians",
+        names: &[
+            "laplacian_1d",
+            "laplacian_2d",
+            "laplacian_3d",
+            "laplacian_eps_2d",
+            "laplacian_eps_3d",
+            "pin_dirichlet",
+        ],
+    },
+    CategoryRow {
+        toolbox: "sparse",
+        subcategory: "Index helpers",
+        names: &["ij2k", "k2ij", "ijk2k", "k2ijk"],
+    },
     // ── dsp ──────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "dsp", subcategory: "FIR design",
-        names: &["fir_lowpass", "fir_highpass", "fir_bandpass", "fir_notch",
-                 "fir_lowpass_kaiser", "fir_highpass_kaiser", "fir_bandpass_kaiser",
-                 "firpm", "firpmq", "window"] },
-    CategoryRow { toolbox: "dsp", subcategory: "IIR design",
-        names: &["butterworth_lowpass", "butterworth_highpass"] },
-    CategoryRow { toolbox: "dsp", subcategory: "Filtering",
-        names: &["freqz", "filter", "filtfilt", "convolve", "xcorr", "xcov", "upfirdn"] },
-    CategoryRow { toolbox: "dsp", subcategory: "Streaming",
-        names: &["state_init", "filter_stream"] },
-    CategoryRow { toolbox: "dsp", subcategory: "Fixed-point",
-        names: &["qfmt", "quantize", "qadd", "qmul", "qconv", "snr"] },
-    CategoryRow { toolbox: "dsp", subcategory: "Utility",
-        names: &["mag2db"] },
-
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "FIR design",
+        names: &[
+            "fir_lowpass",
+            "fir_highpass",
+            "fir_bandpass",
+            "fir_notch",
+            "fir_lowpass_kaiser",
+            "fir_highpass_kaiser",
+            "fir_bandpass_kaiser",
+            "firpm",
+            "firpmq",
+            "window",
+        ],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "IIR design",
+        names: &["butterworth_lowpass", "butterworth_highpass"],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "Filtering",
+        names: &[
+            "freqz", "filter", "filtfilt", "convolve", "xcorr", "xcov", "upfirdn",
+        ],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "Streaming",
+        names: &["state_init", "filter_stream"],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "Fixed-point",
+        names: &["qfmt", "quantize", "qadd", "qmul", "qconv", "snr"],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "Utility",
+        names: &["mag2db"],
+    },
     // ── spectral ─────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "spectral", subcategory: "FFT",
-        names: &["fft", "ifft", "fftshift", "fftfreq", "spectrum"] },
-    CategoryRow { toolbox: "spectral", subcategory: "Power spectral density",
-        names: &["pwelch", "pwelch_stream_init", "pwelch_stream"] },
-    CategoryRow { toolbox: "spectral", subcategory: "Short-time Fourier",
-        names: &["stft", "spectrogram", "waterfall", "stft_stream_init", "stft_stream",
-                 "waterfall_stream_init", "waterfall_stream"] },
-    CategoryRow { toolbox: "spectral", subcategory: "Continuous wavelet",
-        names: &["cwt", "scalogram", "cwt_stream_init", "cwt_stream"] },
-
+    CategoryRow {
+        toolbox: "spectral",
+        subcategory: "FFT",
+        names: &["fft", "ifft", "fftshift", "fftfreq", "spectrum"],
+    },
+    CategoryRow {
+        toolbox: "spectral",
+        subcategory: "Power spectral density",
+        names: &["pwelch", "pwelch_stream_init", "pwelch_stream"],
+    },
+    CategoryRow {
+        toolbox: "spectral",
+        subcategory: "Short-time Fourier",
+        names: &[
+            "stft",
+            "spectrogram",
+            "waterfall",
+            "stft_stream_init",
+            "stft_stream",
+            "waterfall_stream_init",
+            "waterfall_stream",
+        ],
+    },
+    CategoryRow {
+        toolbox: "spectral",
+        subcategory: "Continuous wavelet",
+        names: &["cwt", "scalogram", "cwt_stream_init", "cwt_stream"],
+    },
     // ── controls ─────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "controls", subcategory: "Models",
-        names: &["tf", "tfdata", "ss", "pole", "zero"] },
-    CategoryRow { toolbox: "controls", subcategory: "Analysis",
-        names: &["ctrb", "obsv", "bode", "nyquist", "step", "freqresp", "rlocus", "margin"] },
-    CategoryRow { toolbox: "controls", subcategory: "Design",
-        names: &["lqr", "place", "care", "dare", "lyap", "gram"] },
-    CategoryRow { toolbox: "controls", subcategory: "Simulation",
-        names: &["rk4"] },
-
+    CategoryRow {
+        toolbox: "controls",
+        subcategory: "Models",
+        names: &["tf", "tfdata", "ss", "pole", "zero"],
+    },
+    CategoryRow {
+        toolbox: "controls",
+        subcategory: "Analysis",
+        names: &[
+            "ctrb", "obsv", "bode", "nyquist", "step", "freqresp", "rlocus", "margin",
+        ],
+    },
+    CategoryRow {
+        toolbox: "controls",
+        subcategory: "Design",
+        names: &["lqr", "place", "care", "dare", "lyap", "gram"],
+    },
+    CategoryRow {
+        toolbox: "controls",
+        subcategory: "Simulation",
+        names: &["rk4"],
+    },
     // ── rf ───────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "rf", subcategory: "Networks",
-        names: &["sparameters", "nports", "freqs", "parameter_type", "interp_freq"] },
-    CategoryRow { toolbox: "rf", subcategory: "Indexing",
-        names: &["sij", "s11", "s12", "s21", "s22"] },
-    CategoryRow { toolbox: "rf", subcategory: "Conversions",
-        names: &["s2z", "z2s", "s2y", "y2s", "s2t", "t2s", "s2abcd", "abcd2s"] },
-    CategoryRow { toolbox: "rf", subcategory: "Network operations",
-        names: &["cascade", "deembed", "newref"] },
-    CategoryRow { toolbox: "rf", subcategory: "Smith chart",
-        names: &["smith", "marker", "smith_circle"] },
-    CategoryRow { toolbox: "rf", subcategory: "Network plots",
-        names: &["rfplot"] },
-    CategoryRow { toolbox: "rf", subcategory: "Analysis",
-        names: &["vswr", "return_loss", "insertion_loss", "gammain", "gammaout"] },
-    CategoryRow { toolbox: "rf", subcategory: "Stability & gain",
-        names: &["stabilityk", "stabilitymu", "gammams", "gammaml",
-                 "gainmax", "stability_circles", "gain_circles"] },
-    CategoryRow { toolbox: "rf", subcategory: "Noise",
-        names: &["noise_freqs", "nfmin", "gamma_opt", "rn", "has_noise"] },
-    CategoryRow { toolbox: "rf", subcategory: "Time domain & mixed-mode",
-        names: &["s2td", "s2smm", "smm2s"] },
-
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Networks",
+        names: &[
+            "sparameters",
+            "nports",
+            "freqs",
+            "parameter_type",
+            "interp_freq",
+        ],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Indexing",
+        names: &["sij", "s11", "s12", "s21", "s22"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Conversions",
+        names: &["s2z", "z2s", "s2y", "y2s", "s2t", "t2s", "s2abcd", "abcd2s"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Network operations",
+        names: &["cascade", "deembed", "newref"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Smith chart",
+        names: &["smith", "marker", "smith_circle"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Network plots",
+        names: &["rfplot"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Analysis",
+        names: &[
+            "vswr",
+            "return_loss",
+            "insertion_loss",
+            "gammain",
+            "gammaout",
+        ],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Stability & gain",
+        names: &[
+            "stabilityk",
+            "stabilitymu",
+            "gammams",
+            "gammaml",
+            "gainmax",
+            "stability_circles",
+            "gain_circles",
+        ],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Noise",
+        names: &["noise_freqs", "nfmin", "gamma_opt", "rn", "has_noise"],
+    },
+    CategoryRow {
+        toolbox: "rf",
+        subcategory: "Time domain & mixed-mode",
+        names: &["s2td", "s2smm", "smm2s"],
+    },
     // ── pde ──────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "pde", subcategory: "Vector calculus (2-D)",
-        names: &["gradient", "divergence", "curl"] },
-    CategoryRow { toolbox: "pde", subcategory: "Vector calculus (3-D)",
-        names: &["gradient3", "divergence3", "curl3"] },
-    CategoryRow { toolbox: "pde", subcategory: "FDTD (3-D)",
-        names: &["fdtd3d", "fdtd_info", "fdtd_media", "fdtd_pec", "fdtd_cpml", "gaussian_pulse",
-                 "fdtd_source", "fdtd_probe", "fdtd_run", "fdtd_step", "fdtd_record",
-                 "fdtd_slice"] },
-
+    CategoryRow {
+        toolbox: "pde",
+        subcategory: "Vector calculus (2-D)",
+        names: &["gradient", "divergence", "curl"],
+    },
+    CategoryRow {
+        toolbox: "pde",
+        subcategory: "Vector calculus (3-D)",
+        names: &["gradient3", "divergence3", "curl3"],
+    },
+    CategoryRow {
+        toolbox: "pde",
+        subcategory: "FDTD (3-D)",
+        names: &[
+            "fdtd3d",
+            "fdtd_info",
+            "fdtd_media",
+            "fdtd_pec",
+            "fdtd_cpml",
+            "gaussian_pulse",
+            "fdtd_source",
+            "fdtd_probe",
+            "fdtd_run",
+            "fdtd_step",
+            "fdtd_record",
+            "fdtd_slice",
+        ],
+    },
     // ── plot ─────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "plot", subcategory: "Line & scatter",
-        names: &["plot", "stem", "bar", "scatter", "hline", "yline", "plotdb"] },
-    CategoryRow { toolbox: "plot", subcategory: "Heatmaps & images",
-        names: &["heatmap", "image", "imagesc"] },
-    CategoryRow { toolbox: "plot", subcategory: "Surface (3-D)",
-        names: &["surf"] },
-    CategoryRow { toolbox: "plot", subcategory: "Logarithmic & polar",
-        names: &["loglog", "semilogx", "semilogy", "polar"] },
-    CategoryRow { toolbox: "plot", subcategory: "Contours & vector fields",
-        names: &["contour", "contourf", "quiver", "streamplot"] },
-    CategoryRow { toolbox: "plot", subcategory: "Geometry masks",
-        names: &["rect_mask", "disk_mask", "polygon_mask"] },
-    CategoryRow { toolbox: "plot", subcategory: "Animation",
-        names: &["frame", "saveanim"] },
-    CategoryRow { toolbox: "plot", subcategory: "Export",
-        names: &["savefig"] },
-    CategoryRow { toolbox: "plot", subcategory: "Figure controls",
-        names: &["figure", "clf", "close", "hold", "grid", "axis", "set_default_axis",
-                 "xlabel", "ylabel", "title", "xlim", "ylim", "subplot", "legend"] },
-    CategoryRow { toolbox: "plot", subcategory: "Live plotting",
-        names: &["figure_live", "plot_update", "plot_update_heatmap",
-                 "plot_labels", "plot_limits", "figure_draw", "figure_close"] },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Line & scatter",
+        names: &["plot", "stem", "bar", "scatter", "hline", "yline", "plotdb"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Heatmaps & images",
+        names: &["heatmap", "image", "imagesc"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Surface (3-D)",
+        names: &["surf"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Logarithmic & polar",
+        names: &["loglog", "semilogx", "semilogy", "polar"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Contours & vector fields",
+        names: &["contour", "contourf", "quiver", "streamplot"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Geometry masks",
+        names: &["rect_mask", "disk_mask", "polygon_mask"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Animation",
+        names: &["frame", "saveanim"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Export",
+        names: &["savefig"],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Figure controls",
+        names: &[
+            "figure",
+            "clf",
+            "close",
+            "hold",
+            "grid",
+            "axis",
+            "set_default_axis",
+            "xlabel",
+            "ylabel",
+            "title",
+            "xlim",
+            "ylim",
+            "subplot",
+            "legend",
+        ],
+    },
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "Live plotting",
+        names: &[
+            "figure_live",
+            "plot_update",
+            "plot_update_heatmap",
+            "plot_labels",
+            "plot_limits",
+            "figure_draw",
+            "figure_close",
+        ],
+    },
     // The `rustlab-viewer` binary (separate crate) is the external interactive
     // backend. The `viewer` builtin is the in-REPL command that routes plots to
     // it. `rustlab run --plot viewer` does the same from a script. See `help
     // viewer` for the full workflow and `rustlab-viewer --help` for socket and
     // named-session flags.
-    CategoryRow { toolbox: "plot", subcategory: "External viewer (rustlab-viewer)",
-        names: &["viewer", "remote"] },
-
+    CategoryRow {
+        toolbox: "plot",
+        subcategory: "External viewer (rustlab-viewer)",
+        names: &["viewer", "remote"],
+    },
     // ── audio ────────────────────────────────────────────────────────────
-    CategoryRow { toolbox: "audio", subcategory: "I/O",
-        names: &["audio_in", "audio_out", "audio_read", "audio_write"] },
+    CategoryRow {
+        toolbox: "audio",
+        subcategory: "I/O",
+        names: &["audio_in", "audio_out", "audio_read", "audio_write"],
+    },
 ];
 
 /// Toolbox display order. Drives the order of section headers in
 /// `print_help_list` and the `rustlab docs` listing, and the order of
 /// toolboxes in `print_help_detail` when the topic matches a toolbox name.
 pub static TOOLBOXES: &[&str] = &[
-    "language", "math", "linalg", "stats", "sparse", "dsp",
-    "spectral", "controls", "rf", "pde", "plot", "audio",
+    "language", "math", "linalg", "stats", "sparse", "dsp", "spectral", "controls", "rf", "pde",
+    "plot", "audio",
 ];
 
 /// Return the toolbox name that owns `entry_name`, or `"uncategorized"` if
@@ -1591,7 +1989,11 @@ pub fn print_help_detail(topic: &str) -> bool {
         let cat = category_of(e.name);
         let sub = subcategory_of(e.name);
         if cat != "uncategorized" {
-            let crumb = if sub.is_empty() { cat.to_string() } else { format!("{} / {}", cat, sub) };
+            let crumb = if sub.is_empty() {
+                cat.to_string()
+            } else {
+                format!("{} / {}", cat, sub)
+            };
             println!("  {}", color::dim(&crumb));
         }
         println!();
@@ -1631,7 +2033,11 @@ pub fn print_help_detail(topic: &str) -> bool {
     if !sub_rows.is_empty() {
         println!();
         for row in sub_rows {
-            println!("  {} / {}", color::bold_yellow(row.toolbox), color::dim(row.subcategory));
+            println!(
+                "  {} / {}",
+                color::bold_yellow(row.toolbox),
+                color::dim(row.subcategory)
+            );
             for &n in row.names {
                 if let Some(e) = HELP.iter().find(|e| e.name == n) {
                     println!("      {:<22}  {}", color::cyan(e.name), e.brief);
@@ -1866,7 +2272,10 @@ mod help_coverage_tests {
     fn toolboxes_and_rows_agree() {
         let row_boxes: HashSet<&str> = CATEGORIES.iter().map(|r| r.toolbox).collect();
         let listed: HashSet<&str> = TOOLBOXES.iter().copied().collect();
-        let unused: Vec<&&str> = TOOLBOXES.iter().filter(|t| !row_boxes.contains(*t)).collect();
+        let unused: Vec<&&str> = TOOLBOXES
+            .iter()
+            .filter(|t| !row_boxes.contains(*t))
+            .collect();
         let undeclared: Vec<&&str> = row_boxes.iter().filter(|t| !listed.contains(*t)).collect();
         assert!(unused.is_empty(), "toolboxes with no rows: {:?}", unused);
         assert!(
@@ -2034,7 +2443,6 @@ pub struct ReplArgs {
     #[arg(long, conflicts_with = "cache")]
     pub no_cache: bool,
 }
-
 
 type ReplEditor = Editor<ReplHelper, DefaultHistory>;
 
@@ -2297,9 +2705,9 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
                                 println!("{}", color::dim("history cleared"));
                             }
                         }
-                        HistoryArg::Bad(a) => eprintln!(
-                            "history: {a}: expected a positive count or 'clear'"
-                        ),
+                        HistoryArg::Bad(a) => {
+                            eprintln!("history: {a}: expected a positive count or 'clear'")
+                        }
                     });
                     continue;
                 }

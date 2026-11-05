@@ -273,13 +273,25 @@ t = v'                     # conjugate transpose (for real data, same values)
 All operators broadcast scalars onto vectors and matrices automatically.
 `v .^ 2` squares every element; `2 .^ v` raises 2 to each element of v.
 
-### Logical Operators (`&&`, `||`)
+### Logical arrays and `&&` / `||`
 
-Short-circuit logical and / or, matlab convention. Both operands must be
-scalars (Bool, Scalar, or Complex); use `any(...)` / `all(...)` to
-collapse a matrix or vector first. Non-zero scalars are truthy.
+An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array.
+A scalar comparison stays `true` or `false`. `islogical` is true for both;
+a numeric 0/1 array is not logical. `logical(x)` converts (exact 0 is false,
+`NaN` is true). `true(m, n)` and `false(m, n)` build an array. `A(mask)`
+keeps the elements where the mask is true. `!` is element-wise not.
+`and`, `or`, and `xor` are element-wise. `!=` is not-equal (`~=` is not
+a token). There is no `&` or `|` token.
+
+`&&` and `||` stay short-circuit, and both operands must be scalars (bool,
+a 1-element logical, a number, or a complex). Use `any(...)` / `all(...)`
+to collapse a wider array first. Non-zero scalars are truthy. `double(mask)`
+or `mask + 0` is the numeric 0/1 form. `sum(mask)` counts the trues.
 
 ```
+mask = [1, 2, 3] > 1     % logical 0 1 1
+[10, 20, 30](mask)       % 20 30
+
 % RHS only evaluated when LHS isn't decisive — guard divide-by-zero:
 safe = (x != 0) && (1.0 / x > 0)
 
@@ -410,7 +422,7 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 396 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 401 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|
@@ -539,7 +551,7 @@ toolbox.
 
 The `--json` form prints a JSON array of
 `{name, toolbox, subcategory, brief, detail}` records, one per builtin
-(396 entries). `detail` holds the signature and a usage example. Useful
+(401 entries). `detail` holds the signature and a usage example. Useful
 for editor extensions, autocomplete plugins, and AI tooling that wants a
 single authoritative index.
 
@@ -746,6 +758,7 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 | `examples/math/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
 | `examples/language/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
 | `examples/language/vectorized_style.rlab` | Array style for scripts: slices, `arrayfun`/`parmap`, masks, reductions, and the checks that match a small loop |
+| `examples/language/logical_arrays.rlab` | Logical arrays: comparisons, `logical` / `islogical`, masks, `find`, `and` / `or` / `xor` |
 | `examples/math/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
 | `examples/stats/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
 | `examples/linalg/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |

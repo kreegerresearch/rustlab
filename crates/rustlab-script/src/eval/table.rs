@@ -9,10 +9,10 @@
 //! multi-variable `T{rows, vars}` (a comma-separated list), timetables,
 //! joins, `sortrows`, `summary`, `addvars` / `removevars` / `renamevars`,
 //! nested tables, categoricals, datetimes, units, and `readtable` /
-//! `writetable` / `table2array`. rustlab has no logical arrays, so a 0/1
-//! numeric vector stays numeric; only a scalar `true` / `false` is a
-//! logical column (one row). A rustlab vector is one column. A matrix
-//! becomes one column per matrix column.
+//! `writetable` / `table2array`. A logical array is a logical column
+//! (one column when it is a vector; one column per matrix column when
+//! it is wider). A numeric 0/1 vector stays numeric. A rustlab vector
+//! is one column. A matrix becomes one column per matrix column.
 
 use super::value::Value;
 use num_complex::Complex;
@@ -124,29 +124,22 @@ impl TableColumn {
 
     fn take_rows(&self, rows: &[usize]) -> TableColumn {
         match self {
-            TableColumn::Number(v) => {
-                TableColumn::Number(rows.iter().map(|&r| v[r]).collect())
-            }
-            TableColumn::Logical(v) => {
-                TableColumn::Logical(rows.iter().map(|&r| v[r]).collect())
-            }
-            TableColumn::Text(v) => {
-                TableColumn::Text(rows.iter().map(|&r| v[r].clone()).collect())
-            }
+            TableColumn::Number(v) => TableColumn::Number(rows.iter().map(|&r| v[r]).collect()),
+            TableColumn::Logical(v) => TableColumn::Logical(rows.iter().map(|&r| v[r]).collect()),
+            TableColumn::Text(v) => TableColumn::Text(rows.iter().map(|&r| v[r].clone()).collect()),
         }
     }
 
     /// Whole column as a script value. A length-1 logical column is a
-    /// `Bool`. A longer logical column is a 0/1 vector — rustlab has no
-    /// logical array to put it in.
+    /// `Bool`. A longer logical column is a `1×n` logical row.
     pub fn to_value(&self) -> Value {
         match self {
             TableColumn::Number(v) => Value::Vector(ndarray::Array1::from_vec(v.clone()).into()),
             TableColumn::Text(v) => Value::StringArray(v.clone()),
             TableColumn::Logical(v) if v.len() == 1 => Value::Bool(v[0]),
-            TableColumn::Logical(v) => Value::Vector(ndarray::Array1::from_iter(
-                v.iter().map(|&b| Complex::new(if b { 1.0 } else { 0.0 }, 0.0)),
-            ).into()),
+            TableColumn::Logical(v) => rustlab_core::LogicalArray::row(v.clone())
+                .map(Value::Logical)
+                .unwrap_or(Value::Bool(false)),
         }
     }
 
@@ -176,9 +169,9 @@ impl TableColumn {
                 if rows.len() == 1 {
                     Value::Bool(v[rows[0]])
                 } else {
-                    Value::Vector(ndarray::Array1::from_iter(rows.iter().map(|&r| {
-                        Complex::new(if v[r] { 1.0 } else { 0.0 }, 0.0)
-                    })).into())
+                    rustlab_core::LogicalArray::row(rows.iter().map(|&r| v[r]).collect())
+                        .map(Value::Logical)
+                        .unwrap_or(Value::Bool(false))
                 }
             }
         }
@@ -360,11 +353,7 @@ impl Table {
             .map(|r| self.columns.iter().map(|c| cell_text(c, r).0).collect())
             .collect();
         let aligns: Vec<bool> = self.columns.iter().map(cell_align_right).collect();
-        let mut widths: Vec<usize> = self
-            .names
-            .iter()
-            .map(|n| n.chars().count())
-            .collect();
+        let mut widths: Vec<usize> = self.names.iter().map(|n| n.chars().count()).collect();
         for row in &cells {
             for (i, cell) in row.iter().enumerate() {
                 widths[i] = widths[i].max(cell.chars().count());
@@ -421,11 +410,7 @@ impl fmt::Display for Table {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.ascii())?;
         if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Notebook {
-            write!(
-                f,
-                "\n{TABLE_HTML_BEGIN}{}{TABLE_HTML_END}",
-                self.html()
-            )?;
+            write!(f, "\n{TABLE_HTML_BEGIN}{}{TABLE_HTML_END}", self.html())?;
         }
         Ok(())
     }
@@ -433,7 +418,10 @@ impl fmt::Display for Table {
 
 /// Build a table from evaluated arguments. `var_names`, when set, replaces
 /// every generated name and must have one entry per column.
-pub fn build_table(inputs: Vec<TableInput>, var_names: Option<Vec<String>>) -> Result<Table, String> {
+pub fn build_table(
+    inputs: Vec<TableInput>,
+    var_names: Option<Vec<String>>,
+) -> Result<Table, String> {
     let mut named: Vec<(String, TableColumn)> = Vec::new();
     let mut height: Option<usize> = None;
     let mut next_var = 1usize;
@@ -502,8 +490,7 @@ pub fn names_from_value(v: Value) -> Result<Vec<String>, String> {
 fn check_var_name(name: &str) -> Result<(), String> {
     if name == "Properties" {
         return Err(
-            "table: 'Properties' is reserved (it is the metadata field, not a column)"
-                .to_string(),
+            "table: 'Properties' is reserved (it is the metadata field, not a column)".to_string(),
         );
     }
     let mut chars = name.chars();
@@ -529,10 +516,12 @@ fn widen_index(v: Value) -> Value {
 fn expand_value(v: Value) -> Result<Vec<TableColumn>, String> {
     match v {
         Value::Matrix(m) => matrix_columns(&m),
-        Value::IntArray { data, rows, cols, .. } => {
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
             if cols == 0 {
                 return Err(
-                    "table: a matrix with no columns cannot be a table variable".to_string(),
+                    "table: a matrix with no columns cannot be a table variable".to_string()
                 );
             }
             let mut out = Vec::with_capacity(cols);
@@ -546,19 +535,41 @@ fn expand_value(v: Value) -> Result<Vec<TableColumn>, String> {
             Ok(out)
         }
         Value::Bool(b) => Ok(vec![TableColumn::Logical(vec![b])]),
+        Value::Logical(a) => logical_columns(&a),
         Value::Str(s) => Ok(vec![TableColumn::Text(vec![s])]),
         Value::StringArray(s) => Ok(vec![TableColumn::Text(s)]),
         Value::Vector(v) => Ok(vec![TableColumn::Number(v.iter().copied().collect())]),
         Value::Scalar(n) => Ok(vec![TableColumn::Number(vec![Complex::new(n, 0.0)])]),
         Value::Complex(c) => Ok(vec![TableColumn::Number(vec![c])]),
-        Value::Int { data, .. } => {
-            Ok(vec![TableColumn::Number(vec![Complex::new(data as f64, 0.0)])])
-        }
+        Value::Int { data, .. } => Ok(vec![TableColumn::Number(vec![Complex::new(
+            data as f64,
+            0.0,
+        )])]),
         other => Err(format!(
             "table: cannot make a column from a {}",
             other.type_name()
         )),
     }
+}
+
+/// A logical vector (one row or one column) is one column. A wider
+/// logical matrix is one logical column per matrix column.
+fn logical_columns(a: &rustlab_core::LogicalArray) -> Result<Vec<TableColumn>, String> {
+    if a.cols() == 0 {
+        return Err("table: a matrix with no columns cannot be a table variable".to_string());
+    }
+    if a.rows() <= 1 || a.cols() == 1 {
+        return Ok(vec![TableColumn::Logical(a.to_flags())]);
+    }
+    let mut cols = Vec::with_capacity(a.cols());
+    for c in 0..a.cols() {
+        let mut col = Vec::with_capacity(a.rows());
+        for r in 0..a.rows() {
+            col.push(a.get(r, c).unwrap_or(false));
+        }
+        cols.push(TableColumn::Logical(col));
+    }
+    Ok(cols)
 }
 
 fn matrix_columns(m: &CMatrix) -> Result<Vec<TableColumn>, String> {
@@ -578,6 +589,11 @@ fn matrix_columns(m: &CMatrix) -> Result<Vec<TableColumn>, String> {
 fn column_from_assignment(v: Value) -> Result<TableColumn, String> {
     match v {
         Value::Bool(b) => Ok(TableColumn::Logical(vec![b])),
+        Value::Logical(a) if a.rows() > 1 && a.cols() > 1 => Err(
+            "table: column assignment expects a vector or a single column, not a multi-column matrix"
+                .to_string(),
+        ),
+        Value::Logical(a) => Ok(TableColumn::Logical(a.to_flags())),
         Value::Str(s) => Ok(TableColumn::Text(vec![s])),
         Value::StringArray(s) => Ok(TableColumn::Text(s)),
         Value::Matrix(m) if m.nrows() > 1 && m.ncols() > 1 => Err(
@@ -608,9 +624,7 @@ fn cell_align_right(col: &TableColumn) -> bool {
 fn cell_text(col: &TableColumn, row: usize) -> (String, bool) {
     match col {
         TableColumn::Number(v) => (format_number(v[row]), true),
-        TableColumn::Logical(v) => {
-            (if v[row] { "true" } else { "false" }.to_string(), false)
-        }
+        TableColumn::Logical(v) => (if v[row] { "true" } else { "false" }.to_string(), false),
         TableColumn::Text(v) => (sanitize_sentinel(&v[row]), false),
     }
 }
@@ -685,6 +699,8 @@ mod tests {
         assert!(html.contains("a&amp;b"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
         assert!(is_safe_table_html(&html), "{html}");
-        assert!(!is_safe_table_html("<table class=\"rl-table\"><script></script></table>"));
+        assert!(!is_safe_table_html(
+            "<table class=\"rl-table\"><script></script></table>"
+        ));
     }
 }

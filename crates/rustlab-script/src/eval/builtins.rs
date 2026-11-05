@@ -14,22 +14,19 @@ use rustlab_dsp::{
     cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
     fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d,
-    gradient_1d_coords, gradient_2d, gradient_3d,
-    ifft, pwelch_psd, pwelch_stream, pwelch_stream_init, quantize_scalar, snr_db,
-    stft as stft_math, stft_stream, stft_stream_init, upfirdn, waterfall as waterfall_math,
-    waterfall_current_history, waterfall_current_spectrum, waterfall_state_fs,
-    waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
-    waterfall_stream as waterfall_stream_dsp,
-    waterfall_stream_init as waterfall_stream_init_dsp, IirFilter, QFmtSpec, Sided,
-    WindowFunction,
+    gradient_1d_coords, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
+    pwelch_stream_init, quantize_scalar, snr_db, stft as stft_math, stft_stream, stft_stream_init,
+    upfirdn, waterfall as waterfall_math, waterfall_current_history, waterfall_current_spectrum,
+    waterfall_state_fs, waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
+    waterfall_stream as waterfall_stream_dsp, waterfall_stream_init as waterfall_stream_init_dsp,
+    IirFilter, QFmtSpec, Sided, WindowFunction,
 };
 use rustlab_plot::{
     colormap_rgb, compute_histogram, db_clip, histogram_matrix, imagesc_terminal, plot_db,
     plot_histogram, push_xy_bar, push_xy_line, push_xy_lines, push_xy_scatter, push_xy_stem,
-    render_figure_file,
-    render_figure_terminal, render_heatmap_tui, render_image_tui, surf_terminal,
-    sync_figure_outputs, HeatmapData, HeatmapKind, LineStyle, LiveFigure, LivePlot, SeriesColor,
-    FIGURE,
+    render_figure_file, render_figure_terminal, render_heatmap_tui, render_image_tui,
+    surf_terminal, sync_figure_outputs, HeatmapData, HeatmapKind, LineStyle, LiveFigure, LivePlot,
+    SeriesColor, FIGURE,
 };
 use std::collections::HashMap;
 use std::io::{Read as IoRead, Write as IoWrite};
@@ -133,6 +130,11 @@ impl BuiltinRegistry {
         r.register("isinteger", builtin_isinteger);
         r.register("isa", builtin_isa);
         r.register("double", builtin_double);
+        r.register("logical", builtin_logical);
+        r.register("islogical", builtin_islogical);
+        r.register("and", builtin_and);
+        r.register("or", builtin_or);
+        r.register("xor", builtin_xor);
         r.register("quantize", builtin_quantize);
         r.register("qadd", builtin_qadd);
         r.register("qmul", builtin_qmul);
@@ -555,7 +557,6 @@ fn check_args_range(name: &str, args: &[Value], min: usize, max: usize) -> Resul
     }
 }
 
-
 fn arg_usize(v: &Value) -> Result<usize, ScriptError> {
     v.to_usize().map_err(ScriptError::type_err)
 }
@@ -765,9 +766,13 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Vector(v) => {
             // Fast path: |re| is cheaper than sqrt(re²+im²) for real-only vectors.
             if is_real_vector(v) {
-                Ok(Value::Vector(v.mapv(|c| Complex::new(c.re.abs(), 0.0)).into()))
+                Ok(Value::Vector(
+                    v.mapv(|c| Complex::new(c.re.abs(), 0.0)).into(),
+                ))
             } else {
-                Ok(Value::Vector(v.mapv(|c| Complex::new(c.norm(), 0.0)).into()))
+                Ok(Value::Vector(
+                    v.mapv(|c| Complex::new(c.norm(), 0.0)).into(),
+                ))
             }
         }
         Value::Matrix(m) => {
@@ -797,15 +802,19 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
         // A zero imaginary part is real whatever its sign: `angle(-1)` is π.
         Value::Complex(c) => Ok(Value::Scalar(Value::unsigned_zero_im(*c).arg())),
         Value::Vector(v) => {
-            let result: CVector =
-                Array1::from_iter(v.iter().map(|&c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)));
+            let result: CVector = Array1::from_iter(
+                v.iter()
+                    .map(|&c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)),
+            );
             Ok(Value::Vector(result.into()))
         }
         Value::Matrix(m) => Ok(Value::Matrix(
-            m.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)).into(),
+            m.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0))
+                .into(),
         )),
         Value::Tensor3(t) => Ok(Value::Tensor3(
-            t.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)).into(),
+            t.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0))
+                .into(),
         )),
         other => Err(ScriptError::type_err(format!(
             "angle: unsupported type {}",
@@ -837,7 +846,9 @@ fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("imag", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n == 0.0 { 0.0 } else { 0.0 })),
-        Value::Int { class, overflow, .. } => Ok(Value::Int {
+        Value::Int {
+            class, overflow, ..
+        } => Ok(Value::Int {
             data: 0,
             class: *class,
             overflow: *overflow,
@@ -926,33 +937,64 @@ fn apply_scalar_fn_promoting(
         Value::Complex(c) => Ok(Value::Complex(fc(Value::unsigned_zero_im(*c)))),
         // Real-stored input with no element that needs the complex branch
         // maps in `f64` and stays real-stored.
-        Value::Vector(v) if Shared::real_slice(v).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) => {
+        Value::Vector(v)
+            if Shared::real_slice(v).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) =>
+        {
             let d = Shared::real_slice(v).expect("checked");
-            Ok(Value::real_vector(Array1::from(super::real_ops::map_with(d, super::elementwise::PAR_MAP_MIN_LEN, &f))))
+            Ok(Value::real_vector(Array1::from(super::real_ops::map_with(
+                d,
+                super::elementwise::PAR_MAP_MIN_LEN,
+                &f,
+            ))))
         }
-        Value::Matrix(m) if Shared::real_slice(m).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) => {
+        Value::Matrix(m)
+            if Shared::real_slice(m).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) =>
+        {
             let d = Shared::real_slice(m).expect("checked");
             let s = Shared::shape(m);
             let out = super::real_ops::map_with(d, super::elementwise::PAR_MAP_MIN_LEN, &f);
-            Ok(Value::real_matrix(Array2::from_shape_vec((s[0], s[1]), out).expect("same shape")))
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec((s[0], s[1]), out).expect("same shape"),
+            ))
         }
         // Real input avoids the complex formula. Contiguous arrays map in
         // parallel when long (`par_map`); the values are the same either way.
         Value::Vector(v) => {
             let real = is_real_vector(v);
-            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(Value::unsigned_zero_im(c)) };
-            Ok(Value::Vector(match v.as_slice() {
-                Some(s) => CVector::from(super::elementwise::par_map(s, &map)),
-                None => v.mapv(map),
-            }.into()))
+            let map = |c: Complex<f64>| {
+                if real {
+                    elem(c.re)
+                } else {
+                    fc(Value::unsigned_zero_im(c))
+                }
+            };
+            Ok(Value::Vector(
+                match v.as_slice() {
+                    Some(s) => CVector::from(super::elementwise::par_map(s, &map)),
+                    None => v.mapv(map),
+                }
+                .into(),
+            ))
         }
         Value::Matrix(m) => {
             let real = m.iter().all(|c| c.im == 0.0);
-            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(Value::unsigned_zero_im(c)) };
-            Ok(Value::Matrix(match m.as_slice() {
-                Some(s) => Array2::from_shape_vec(m.dim(), super::elementwise::par_map(s, &map)).expect("same shape"),
-                None => m.mapv(map),
-            }.into()))
+            let map = |c: Complex<f64>| {
+                if real {
+                    elem(c.re)
+                } else {
+                    fc(Value::unsigned_zero_im(c))
+                }
+            };
+            Ok(Value::Matrix(
+                match m.as_slice() {
+                    Some(s) => {
+                        Array2::from_shape_vec(m.dim(), super::elementwise::par_map(s, &map))
+                            .expect("same shape")
+                    }
+                    None => m.mapv(map),
+                }
+                .into(),
+            ))
         }
         other => Err(ScriptError::type_err(format!(
             "{}: unsupported type {}",
@@ -1234,10 +1276,7 @@ fn builtin_meshgrid(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── Geometry / shape rasterization masks ────────────────────────────────────
 
-fn mask_xy<'a>(
-    name: &str,
-    args: &'a [Value],
-) -> Result<(&'a CMatrix, &'a CMatrix), ScriptError> {
+fn mask_xy<'a>(name: &str, args: &'a [Value]) -> Result<(&'a CMatrix, &'a CMatrix), ScriptError> {
     let x = match &args[0] {
         Value::Matrix(m) => m,
         other => {
@@ -1318,8 +1357,8 @@ fn builtin_polygon_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
             )));
         }
     };
-    let m = rustlab_dsp::polygon_mask(x, y, verts)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    let m =
+        rustlab_dsp::polygon_mask(x, y, verts).map_err(|e| ScriptError::type_err(e.to_string()))?;
     Ok(Value::Matrix(m.into()))
 }
 
@@ -1358,7 +1397,10 @@ fn builtin_gradient(args: Vec<Value>) -> Result<Value, ScriptError> {
     let f = to_cmatrix_arg(&args[0], "gradient", "F")?;
     let (dx, dy) = unpack_dxdy(&args, "gradient", 1)?;
     let (fx, fy) = gradient_2d(&f, dx, dy)?;
-    Ok(Value::Tuple(vec![Value::Matrix(fx.into()), Value::Matrix(fy.into())]))
+    Ok(Value::Tuple(vec![
+        Value::Matrix(fx.into()),
+        Value::Matrix(fy.into()),
+    ]))
 }
 
 fn gradient_arg_is_1d(v: &Value) -> bool {
@@ -1421,10 +1463,14 @@ fn repack_like(like: &Value, data: Vec<C64>) -> Value {
     match like {
         // A single row, including 1×1, stays a row. A single column stays a column.
         Value::Matrix(m) if m.nrows() <= 1 => Value::Matrix(
-            Array2::from_shape_vec((1, data.len()), data).expect("row shape matches data").into(),
+            Array2::from_shape_vec((1, data.len()), data)
+                .expect("row shape matches data")
+                .into(),
         ),
         Value::Matrix(m) if m.ncols() <= 1 => Value::Matrix(
-            Array2::from_shape_vec((data.len(), 1), data).expect("column shape matches data").into(),
+            Array2::from_shape_vec((data.len(), 1), data)
+                .expect("column shape matches data")
+                .into(),
         ),
         Value::Scalar(_) | Value::Complex(_) if data.len() == 1 => {
             let c = data[0];
@@ -1619,7 +1665,11 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("zeros", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "zeros")?;
-    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let elem = if cls.is_some() {
+        rustlab_core::ELEM_I128
+    } else {
+        rustlab_core::ELEM_F64
+    };
     let (r, c) = shape_2d("zeros", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
@@ -1637,7 +1687,11 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("ones", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "ones")?;
-    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let elem = if cls.is_some() {
+        rustlab_core::ELEM_I128
+    } else {
+        rustlab_core::ELEM_F64
+    };
     let (r, c) = shape_2d("ones", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
@@ -1664,9 +1718,9 @@ fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
         // Octave / MATLAB convention: linspace(a, b, 1) returns [b],
         // not [a] (numpy's choice). rustlab follows Octave for
         // ergonomic parity with curriculum scripts.
-        return Ok(Value::Vector(Array1::from_vec(vec![Complex::new(
-            stop, 0.0,
-        )]).into()));
+        return Ok(Value::Vector(
+            Array1::from_vec(vec![Complex::new(stop, 0.0)]).into(),
+        ));
     }
     let step = (stop - start) / (n - 1) as f64;
     let v: CVector = Array1::from_iter((0..n).map(|i| Complex::new(start + step * i as f64, 0.0)));
@@ -1684,7 +1738,9 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (r, c) = shape_2d("rand", m, n, rustlab_core::ELEM_F64)?;
     crate::eval::rng::with_rng(|rng| {
         let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
-        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
+        Ok(Value::real_matrix(
+            Array2::from_shape_vec((r, c), data).unwrap(),
+        ))
     })
 }
 
@@ -1719,7 +1775,11 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// Unpack (m, n, p) from either 3 scalar args or one 3-element vector.
 fn unpack_tensor3_shape(args: &[Value], name: &str) -> Result<(usize, usize, usize), ScriptError> {
     let (m, n, p) = match args.len() {
-        3 => (count_arg(&args[0])?, count_arg(&args[1])?, count_arg(&args[2])?),
+        3 => (
+            count_arg(&args[0])?,
+            count_arg(&args[1])?,
+            count_arg(&args[2])?,
+        ),
         1 => {
             if let Value::Vector(v) = &args[0] {
                 if v.len() == 3 {
@@ -1752,10 +1812,9 @@ fn builtin_zeros3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_ones3(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (m, n, p) = unpack_tensor3_shape(&args, "ones3")?;
-    Ok(Value::Tensor3(Array3::<C64>::from_elem(
-        (m, n, p),
-        Complex::new(1.0, 0.0),
-    ).into()))
+    Ok(Value::Tensor3(
+        Array3::<C64>::from_elem((m, n, p), Complex::new(1.0, 0.0)).into(),
+    ))
 }
 
 fn builtin_rand3(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -2126,11 +2185,13 @@ fn matrix_axis_extremum_with_index(
     Ok((
         Value::Matrix(
             Array2::from_shape_vec((sr, sc), val_data)
-                .map_err(|e| ScriptError::runtime(e.to_string()))?.into(),
+                .map_err(|e| ScriptError::runtime(e.to_string()))?
+                .into(),
         ),
         Value::Matrix(
             Array2::from_shape_vec((sr, sc), idx_data)
-                .map_err(|e| ScriptError::runtime(e.to_string()))?.into(),
+                .map_err(|e| ScriptError::runtime(e.to_string()))?
+                .into(),
         ),
     ))
 }
@@ -2208,10 +2269,9 @@ fn builtin_extremum_nargout(
                     && reduction_along_singleton(nrows, ncols, dim as usize)
                 {
                     if nargout >= 2 {
-                        let idx = Value::Matrix(Array2::from_elem(
-                            (nrows, ncols),
-                            Complex::new(1.0, 0.0),
-                        ).into());
+                        let idx = Value::Matrix(
+                            Array2::from_elem((nrows, ncols), Complex::new(1.0, 0.0)).into(),
+                        );
                         Ok(Value::Tuple(vec![Value::Matrix(m.clone()), idx]))
                     } else {
                         Ok(Value::Matrix(m.clone()))
@@ -2241,8 +2301,7 @@ fn builtin_extremum_nargout(
                 if dim == 1 {
                     if nargout >= 2 {
                         let n = v.len();
-                        let ones: Vec<C64> =
-                            (0..n).map(|_| Complex::new(1.0, 0.0)).collect();
+                        let ones: Vec<C64> = (0..n).map(|_| Complex::new(1.0, 0.0)).collect();
                         Ok(Value::Tuple(vec![
                             args[0].clone(),
                             Value::Vector(Array1::from_vec(ones).into()),
@@ -2660,7 +2719,11 @@ fn one_observation_values(
         .iter()
         .map(|&ok| {
             let var = if zero_weight || !ok { f64::NAN } else { 0.0 };
-            if as_var { var } else { var.sqrt() }
+            if as_var {
+                var
+            } else {
+                var.sqrt()
+            }
         })
         .collect())
 }
@@ -2814,8 +2877,7 @@ fn parse_reduction_dim(name: &str, args: &[Value]) -> Result<Option<usize>, Scri
     }
     let d = args[1]
         .to_scalar()
-        .map_err(|e| ScriptError::type_err(format!("{}: dim: {}", name, e)))?
-        as i64;
+        .map_err(|e| ScriptError::type_err(format!("{}: dim: {}", name, e)))? as i64;
     if d != 1 && d != 2 {
         return Err(ScriptError::type_err(format!(
             "{}: dim must be 1 or 2, got {}",
@@ -2841,11 +2903,7 @@ fn complex_to_value(s: C64) -> Value {
 /// `nrows×1` (`dim=2`) output matrix. Used by every matrix-axis reducer
 /// (`sum`, `mean`, `prod`, `median`, `std`) so the column/row iteration
 /// + output-shape construction live in exactly one place.
-fn matrix_axis_collect_then(
-    m: &CMatrix,
-    dim: usize,
-    f: impl Fn(&[C64]) -> C64,
-) -> CMatrix {
+fn matrix_axis_collect_then(m: &CMatrix, dim: usize, f: impl Fn(&[C64]) -> C64) -> CMatrix {
     let nrows = m.nrows();
     let ncols = m.ncols();
     match dim {
@@ -3033,7 +3091,9 @@ fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
                     if d.len() >= super::elementwise::PAR_MIN_LEN {
                         use rayon::prelude::*;
                         let chunk = super::elementwise::PAR_CHUNK;
-                        acc.par_chunks_mut(chunk).enumerate().for_each(|(k, a)| add_rows(k * chunk, a));
+                        acc.par_chunks_mut(chunk)
+                            .enumerate()
+                            .for_each(|(k, a)| add_rows(k * chunk, a));
                     } else {
                         add_rows(0, &mut acc);
                     }
@@ -3042,7 +3102,9 @@ fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
                             *a /= nr as f64;
                         }
                     }
-                    Some(Value::real_matrix(Array2::from_shape_vec((1, nc), acc).ok()?))
+                    Some(Value::real_matrix(
+                        Array2::from_shape_vec((1, nc), acc).ok()?,
+                    ))
                 }
                 _ => {
                     // Each row left to right from zero.
@@ -3050,10 +3112,16 @@ fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
                         .chunks_exact(nc)
                         .map(|row| {
                             let s = row.iter().fold(0.0, |a, &x| a + x);
-                            if mean { s / nc as f64 } else { s }
+                            if mean {
+                                s / nc as f64
+                            } else {
+                                s
+                            }
                         })
                         .collect();
-                    Some(Value::real_matrix(Array2::from_shape_vec((nr, 1), out).ok()?))
+                    Some(Value::real_matrix(
+                        Array2::from_shape_vec((nr, 1), out).ok()?,
+                    ))
                 }
             }
         }
@@ -3062,6 +3130,9 @@ fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
 }
 
 fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(Value::Logical(a)) = args.first() {
+        return sum_logical(a, args.get(1));
+    }
     if let Some(v) = real_sum_mean(&args, false) {
         return Ok(v);
     }
@@ -3079,6 +3150,50 @@ fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
     )
 }
 
+/// `sum` of a logical array counts `true` as 1.
+///
+/// A vector (one row, or one column) with no dimension returns a scalar.
+/// A wider matrix sums down columns into a `1×cols` row of doubles.
+/// An explicit dimension along a singleton axis returns the 0/1 doubles
+/// unchanged (`sum(row, 1)`).
+fn sum_logical(a: &rustlab_core::LogicalArray, dim: Option<&Value>) -> Result<Value, ScriptError> {
+    let along = match dim {
+        None => {
+            if a.rows() <= 1 || a.cols() <= 1 {
+                return Ok(Value::Scalar(a.count_true() as f64));
+            }
+            1
+        }
+        Some(v) => {
+            let n = v.to_scalar().map_err(ScriptError::type_err)?;
+            if n != 1.0 && n != 2.0 {
+                return Err(ScriptError::type_err(format!(
+                    "sum: dimension must be 1 or 2, got {n}"
+                )));
+            }
+            n as usize
+        }
+    };
+    if along == 1 && a.rows() <= 1 {
+        return Ok(Value::logical_as_double(a));
+    }
+    if along == 2 && a.cols() <= 1 {
+        return Ok(Value::logical_as_double(a));
+    }
+    if along == 1 {
+        let counts: Vec<f64> = a.column_counts().into_iter().map(|c| c as f64).collect();
+        return Ok(Value::real_matrix(
+            Array2::from_shape_vec((1, a.cols()), counts)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?,
+        ));
+    }
+    let counts: Vec<f64> = a.row_counts().into_iter().map(|c| c as f64).collect();
+    Ok(Value::real_matrix(
+        Array2::from_shape_vec((a.rows(), 1), counts)
+            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+    ))
+}
+
 /// `sum(M, 1)`: add whole rows into a 1×ncols accumulator. Each column is
 /// summed top to bottom, the order a per-column sum uses, but the matrix is
 /// read row by row (contiguous) instead of gathering strided columns.
@@ -3088,7 +3203,9 @@ fn sum_rows(m: &CMatrix) -> CMatrix {
     }
     let mut acc = Array1::<C64>::zeros(m.ncols());
     for row in m.rows() {
-        ndarray::Zip::from(&mut acc).and(&row).for_each(|a, &x| *a += x);
+        ndarray::Zip::from(&mut acc)
+            .and(&row)
+            .for_each(|a, &x| *a += x);
     }
     acc.insert_axis(ndarray::Axis(0))
 }
@@ -3163,7 +3280,8 @@ fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
                 }
                 return Ok(Value::Matrix(
                     Array2::from_shape_vec((nrows, ncols), data)
-                        .map_err(|e| ScriptError::runtime(e.to_string()))?.into(),
+                        .map_err(|e| ScriptError::runtime(e.to_string()))?
+                        .into(),
                 ));
             }
             let dim = dim_arg.unwrap_or(1);
@@ -3240,10 +3358,9 @@ fn builtin_argextremum(
             let ncols = m.ncols();
             if nrows == 1 || ncols == 1 {
                 if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
-                    return Ok(Value::Matrix(Array2::from_elem(
-                        (nrows, ncols),
-                        Complex::new(1.0, 0.0),
-                    ).into()));
+                    return Ok(Value::Matrix(
+                        Array2::from_elem((nrows, ncols), Complex::new(1.0, 0.0)).into(),
+                    ));
                 }
                 let elems: Vec<C64> = m.iter().copied().collect();
                 let (_, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
@@ -3795,10 +3912,12 @@ fn builtin_nextpow2(args: Vec<Value>) -> Result<Value, ScriptError> {
             let p = nextpow2_scalar(c.norm());
             Ok(Value::Scalar(p))
         }
-        Value::Vector(v) => Ok(Value::Vector(Array1::from_iter(v.iter().copied().map(one)).into())),
-        Value::Matrix(m) => Ok(Value::Matrix(Array2::from_shape_fn(m.dim(), |(i, j)| {
-            one(m[[i, j]])
-        }).into())),
+        Value::Vector(v) => Ok(Value::Vector(
+            Array1::from_iter(v.iter().copied().map(one)).into(),
+        )),
+        Value::Matrix(m) => Ok(Value::Matrix(
+            Array2::from_shape_fn(m.dim(), |(i, j)| one(m[[i, j]])).into(),
+        )),
         other => Err(ScriptError::type_err(format!(
             "nextpow2: expected a numeric array, got {}",
             other.type_name()
@@ -3833,8 +3952,11 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         // row vectors this gives the natural length; for general matrices
         // it gives the longest dimension. Use numel(M) for total element
         // count and size(M) for full shape information.
-        Value::Matrix(m) => Ok(Value::Scalar(Shared::shape(m)[0].max(Shared::shape(m)[1]) as f64)),
+        Value::Matrix(m) => Ok(Value::Scalar(
+            Shared::shape(m)[0].max(Shared::shape(m)[1]) as f64
+        )),
         Value::IntArray { rows, cols, .. } => Ok(Value::Scalar((*rows).max(*cols) as f64)),
+        Value::Logical(a) => Ok(Value::Scalar(a.rows().max(a.cols()) as f64)),
         Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
         // Scalar / complex / bool are all 1-element values; matlab's
         // length() on a scalar returns 1, not an error. Removes the
@@ -3862,6 +3984,8 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Tensor3(t) => t.shape().iter().product::<usize>(),
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
         Value::IntArray { data, .. } => data.len(),
+        Value::Bool(_) => 1,
+        Value::Logical(a) => a.len(),
         Value::StringArray(v) => v.len(),
         Value::Table(t) => t.height() * t.width(),
         other => {
@@ -3892,17 +4016,22 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
                 ))),
             };
         }
-        return Ok(Value::Vector(Array1::from_vec(vec![
-            Complex::new(m as f64, 0.0),
-            Complex::new(n as f64, 0.0),
-            Complex::new(p as f64, 0.0),
-        ]).into()));
+        return Ok(Value::Vector(
+            Array1::from_vec(vec![
+                Complex::new(m as f64, 0.0),
+                Complex::new(n as f64, 0.0),
+                Complex::new(p as f64, 0.0),
+            ])
+            .into(),
+        ));
     }
     let (nrows, ncols) = match &args[0] {
         Value::Vector(v) => (1usize, Shared::len(v)),
         Value::Matrix(m) => (Shared::shape(m)[0], Shared::shape(m)[1]),
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => (1, 1),
         Value::IntArray { rows, cols, .. } => (*rows, *cols),
+        Value::Logical(a) => (a.rows(), a.cols()),
+        Value::Bool(_) => (1, 1),
         Value::SparseVector(sv) => (1, sv.len),
         Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         Value::StringArray(v) => (1, v.len()),
@@ -3925,10 +4054,13 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
             ))),
         }
     } else {
-        Ok(Value::Vector(Array1::from_vec(vec![
-            Complex::new(nrows as f64, 0.0),
-            Complex::new(ncols as f64, 0.0),
-        ]).into()))
+        Ok(Value::Vector(
+            Array1::from_vec(vec![
+                Complex::new(nrows as f64, 0.0),
+                Complex::new(ncols as f64, 0.0),
+            ])
+            .into(),
+        ))
     }
 }
 
@@ -3946,6 +4078,7 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
         | Value::SparseMatrix(_)
         | Value::StringArray(_)
         | Value::Bool(_)
+        | Value::Logical(_)
         | Value::Str(_)
         | Value::Table(_) => 2,
         other => {
@@ -4003,6 +4136,7 @@ fn shape_rows_cols(v: &Value) -> Result<(usize, usize), ScriptError> {
         Value::Vector(vec) => Ok((1, vec.len())),
         Value::Matrix(m) => Ok((m.nrows(), m.ncols())),
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } | Value::Bool(_) => Ok((1, 1)),
+        Value::Logical(a) => Ok((a.rows(), a.cols())),
         Value::IntArray { rows, cols, .. } => Ok((*rows, *cols)),
         Value::SparseVector(sv) => Ok((1, sv.len)),
         Value::SparseMatrix(sm) => Ok((sm.rows, sm.cols)),
@@ -4016,17 +4150,15 @@ fn shape_rows_cols(v: &Value) -> Result<(usize, usize), ScriptError> {
 
 fn builtin_height(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("height", &args, 1)?;
-    let (rows, _) = shape_rows_cols(&args[0]).map_err(|e| {
-        ScriptError::type_err(format!("height: {e}"))
-    })?;
+    let (rows, _) =
+        shape_rows_cols(&args[0]).map_err(|e| ScriptError::type_err(format!("height: {e}")))?;
     Ok(Value::Scalar(rows as f64))
 }
 
 fn builtin_width(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("width", &args, 1)?;
-    let (_, cols) = shape_rows_cols(&args[0]).map_err(|e| {
-        ScriptError::type_err(format!("width: {e}"))
-    })?;
+    let (_, cols) =
+        shape_rows_cols(&args[0]).map_err(|e| ScriptError::type_err(format!("width: {e}")))?;
     Ok(Value::Scalar(cols as f64))
 }
 
@@ -4039,7 +4171,9 @@ fn table_edge(name: &str, args: Vec<Value>, from_start: bool) -> Result<Value, S
         )));
     };
     let n = if args.len() == 2 {
-        args[1].to_usize().map_err(|e| ScriptError::type_err(format!("{name}: {e}")))?
+        args[1]
+            .to_usize()
+            .map_err(|e| ScriptError::type_err(format!("{name}: {e}")))?
     } else {
         8
     };
@@ -4212,7 +4346,8 @@ fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
         Sided::Auto
     };
 
-    let (pxx, freqs) = pwelch_psd(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+    let (pxx, freqs) =
+        pwelch_psd(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
 
     let f_plot: Vec<f64> = freqs.iter().copied().collect();
     let pxx_db: Vec<f64> = pxx.iter().map(|&p| 10.0 * p.max(1e-300).log10()).collect();
@@ -4233,11 +4368,12 @@ fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
     finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
-    let pxx_c: CVector =
-        Array1::from_iter(pxx.iter().map(|&p| Complex::new(p, 0.0)));
-    let freqs_c: CVector =
-        Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
-    Ok(Value::Tuple(vec![Value::Vector(pxx_c.into()), Value::Vector(freqs_c.into())]))
+    let pxx_c: CVector = Array1::from_iter(pxx.iter().map(|&p| Complex::new(p, 0.0)));
+    let freqs_c: CVector = Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
+    Ok(Value::Tuple(vec![
+        Value::Vector(pxx_c.into()),
+        Value::Vector(freqs_c.into()),
+    ]))
 }
 
 /// Resolve shared arguments for `stft` / `spectrogram`. Returns
@@ -4246,9 +4382,7 @@ fn resolve_stft_args(
     args: &[Value],
     fn_name: &str,
 ) -> Result<(CVector, f64, Array1<f64>, usize, usize, Sided), ScriptError> {
-    let x = args[0]
-        .to_cvector()
-        .map_err(|e| ScriptError::type_err(e))?;
+    let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let fs = arg_f64(&args[1])?;
     // Default stft segment length: 128.
     let default_len = 128usize.min(x.len().max(1));
@@ -4291,7 +4425,9 @@ fn push_db_heatmap(
 ) -> Result<(), ScriptError> {
     let (nrows, ncols) = (z.nrows(), z.ncols());
     if nrows == 0 || ncols == 0 {
-        return Err(ScriptError::runtime("spectrogram: empty matrix".to_string()));
+        return Err(ScriptError::runtime(
+            "spectrogram: empty matrix".to_string(),
+        ));
     }
     // Full resolution: the SVG backend rasterizes heatmaps to a single embedded
     // PNG <image> sized to the plot area, so even a 64×20000 scalogram stays a
@@ -4334,13 +4470,7 @@ fn push_db_heatmap(
     });
     let range = (vmax - vmin).max(1e-12);
     finish_plot(render_heatmap_tui(
-        &z_flat,
-        nrows,
-        ncols,
-        vmin,
-        range,
-        title,
-        colormap,
+        &z_flat, nrows, ncols, vmin, range, title, colormap,
     ))?;
     sync_figure_outputs();
     Ok(())
@@ -4357,8 +4487,7 @@ fn push_db_heatmap(
 fn builtin_stft(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("stft", &args, 2, 6)?;
     let (x, fs, window, noverlap, nfft, sided) = resolve_stft_args(&args, "stft")?;
-    let (s, f, t) = stft_math(&x, fs, &window, noverlap, nfft, sided)
-        .map_err(ScriptError::Dsp)?;
+    let (s, f, t) = stft_math(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
 
     // Auto-render as a magnitude spectrogram on the current subplot.
     let (z_db, vmin, vmax) = db_clip(&s, 80.0);
@@ -4511,8 +4640,7 @@ fn builtin_cwt(args: Vec<Value>) -> Result<Value, ScriptError> {
         "Frequency (Hz, log scale)",
     )?;
 
-    let freqs_c: CVector =
-        Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
+    let freqs_c: CVector = Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
     let t_c: CVector = Array1::from_iter(t.iter().map(|&v| Complex::new(v, 0.0)));
     Ok(Value::Tuple(vec![
         Value::Matrix(w.into()),
@@ -4552,10 +4680,7 @@ fn builtin_scalogram(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// Extract the `DspStreamKind` Arc from a `Value::DspStreamState` arg,
 /// returning a clean error message if the arg type is wrong.
-fn expect_dsp_state(
-    arg: &Value,
-    fn_name: &str,
-) -> Result<Arc<Mutex<DspStreamKind>>, ScriptError> {
+fn expect_dsp_state(arg: &Value, fn_name: &str) -> Result<Arc<Mutex<DspStreamKind>>, ScriptError> {
     match arg {
         Value::DspStreamState(s) => Ok(Arc::clone(s)),
         other => Err(ScriptError::type_err(format!(
@@ -4588,9 +4713,7 @@ fn builtin_pwelch_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `[Pxx, state] = pwelch_stream(frame, state)`
 fn builtin_pwelch_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("pwelch_stream", &args, 2)?;
-    let frame = args[0]
-        .to_cvector()
-        .map_err(|e| ScriptError::type_err(e))?;
+    let frame = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let state_arc = expect_dsp_state(&args[1], "pwelch_stream")?;
     let pxx = {
         let mut state = state_arc.lock().unwrap();
@@ -4623,8 +4746,7 @@ fn builtin_stft_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     } else {
         Sided::OneSided
     };
-    let state =
-        stft_stream_init(fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+    let state = stft_stream_init(fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
     Ok(Value::DspStreamState(Arc::new(Mutex::new(
         DspStreamKind::Stft(state),
     ))))
@@ -4633,9 +4755,7 @@ fn builtin_stft_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `[S_cols, state] = stft_stream(frame, state)`
 fn builtin_stft_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("stft_stream", &args, 2)?;
-    let frame = args[0]
-        .to_cvector()
-        .map_err(|e| ScriptError::type_err(e))?;
+    let frame = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let state_arc = expect_dsp_state(&args[1], "stft_stream")?;
     let s = {
         let mut state = state_arc.lock().unwrap();
@@ -4706,9 +4826,7 @@ fn builtin_cwt_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `[W, state] = cwt_stream(frame, state)`
 fn builtin_cwt_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("cwt_stream", &args, 2)?;
-    let frame = args[0]
-        .to_cvector()
-        .map_err(|e| ScriptError::type_err(e))?;
+    let frame = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let state_arc = expect_dsp_state(&args[1], "cwt_stream")?;
     let w = {
         let mut state = state_arc.lock().unwrap();
@@ -4843,8 +4961,9 @@ fn builtin_waterfall_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 
             // Frequency axis (Hz), one bin per freq column. Shared by both panels.
             let nyquist = fs / 2.0;
-            let freqs: Vec<f64> =
-                (0..n_freqs).map(|k| k as f64 * nyquist / (n_freqs - 1).max(1) as f64).collect();
+            let freqs: Vec<f64> = (0..n_freqs)
+                .map(|k| k as f64 * nyquist / (n_freqs - 1).max(1) as f64)
+                .collect();
             // Spectrum: smoothed most-recent column. Always populated when
             // new_cols > 0 — the dB columns just pushed seeded the buffer.
             let spectrum = waterfall_current_spectrum(&ws.state)
@@ -4869,11 +4988,7 @@ fn builtin_waterfall_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
                 // downward. With HeatmapOrigin::Upper the texture's row 0
                 // (newest) sits at the top; pin y limits so the top reads
                 // 0 and the bottom reads -time_span.
-                fig.set_panel_limits(
-                    1,
-                    (Some(0.0), Some(nyquist)),
-                    (Some(-time_span), Some(0.0)),
-                );
+                fig.set_panel_limits(1, (Some(0.0), Some(nyquist)), (Some(-time_span), Some(0.0)));
                 ws.labels_set = true;
             }
             fig.update_panel(0, freqs, spectrum);
@@ -5197,8 +5312,9 @@ fn int_extreme(name: &str, args: Vec<Value>, want_max: bool) -> Result<Value, Sc
         IntClass::Int32
     } else {
         let s = args[0].to_str().map_err(ScriptError::type_err)?;
-        IntClass::from_str(&s)
-            .ok_or_else(|| ScriptError::type_err(format!("{name}: unknown integer class \"{s}\"")))?
+        IntClass::from_str(&s).ok_or_else(|| {
+            ScriptError::type_err(format!("{name}: unknown integer class \"{s}\""))
+        })?
     };
     Ok(Value::Int {
         data: if want_max { class.max() } else { class.min() },
@@ -5211,6 +5327,77 @@ fn builtin_intmax(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 fn builtin_intmin(args: Vec<Value>) -> Result<Value, ScriptError> {
     int_extreme("intmin", args, false)
+}
+
+/// `logical(x)` — scalar `bool`, or a logical array. Exact 0 is false;
+/// `NaN` and every other real are true. A nonzero imaginary part errors.
+fn builtin_logical(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("logical", &args, 1)?;
+    Value::to_logical(&args[0]).map_err(ScriptError::type_err)
+}
+
+/// `islogical(x)` — true for a scalar `bool` and for a logical array.
+/// A numeric 0/1 array is not logical.
+fn builtin_islogical(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("islogical", &args, 1)?;
+    Ok(Value::Bool(matches!(
+        args[0],
+        Value::Bool(_) | Value::Logical(_)
+    )))
+}
+
+fn builtin_and(args: Vec<Value>) -> Result<Value, ScriptError> {
+    logical_binop("and", args)
+}
+fn builtin_or(args: Vec<Value>) -> Result<Value, ScriptError> {
+    logical_binop("or", args)
+}
+fn builtin_xor(args: Vec<Value>) -> Result<Value, ScriptError> {
+    logical_binop("xor", args)
+}
+
+/// Element-wise `and` / `or` / `xor`. Scalars stay `bool`. A scalar
+/// broadcasts over an array. Array shapes must match.
+fn logical_binop(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args(name, &args, 2)?;
+    let a = Value::to_logical(&args[0]).map_err(ScriptError::type_err)?;
+    let b = Value::to_logical(&args[1]).map_err(ScriptError::type_err)?;
+    let bit = |x: bool, y: bool| match name {
+        "and" => x && y,
+        "or" => x || y,
+        _ => x != y,
+    };
+    match (a, b) {
+        (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(bit(x, y))),
+        (Value::Bool(s), Value::Logical(a)) => {
+            let filled = rustlab_core::LogicalArray::filled(a.rows(), a.cols(), s)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+            apply_logical(name, &filled, &a)
+        }
+        (Value::Logical(a), Value::Bool(s)) => {
+            let filled = rustlab_core::LogicalArray::filled(a.rows(), a.cols(), s)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+            apply_logical(name, &a, &filled)
+        }
+        (Value::Logical(a), Value::Logical(b)) => apply_logical(name, &a, &b),
+        _ => Err(ScriptError::type_err(format!(
+            "{name}: expected logical or numeric operands"
+        ))),
+    }
+}
+
+fn apply_logical(
+    name: &str,
+    a: &rustlab_core::LogicalArray,
+    b: &rustlab_core::LogicalArray,
+) -> Result<Value, ScriptError> {
+    let out = match name {
+        "and" => a.and(b),
+        "or" => a.or(b),
+        _ => a.xor(b),
+    };
+    out.map(Value::Logical)
+        .map_err(|e| ScriptError::type_err(e.to_string()))
 }
 
 /// `isinteger(x)` — true for an integer-class value.
@@ -5237,6 +5424,7 @@ fn builtin_isa(args: Vec<Value>) -> Result<Value, ScriptError> {
         "numeric" => is_int || is_float,
         "integer" => is_int,
         "float" | "double" => is_float,
+        "logical" => matches!(v, Value::Bool(_) | Value::Logical(_)),
         other => v.type_name() == other,
     };
     Ok(Value::Bool(result))
@@ -5249,6 +5437,7 @@ fn builtin_double(args: Vec<Value>) -> Result<Value, ScriptError> {
     match &args[0] {
         Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
         Value::Bool(b) => Ok(Value::Scalar(if *b { 1.0 } else { 0.0 })),
+        Value::Logical(a) => Ok(Value::logical_as_double(a)),
         Value::IntArray {
             data, rows, cols, ..
         } => {
@@ -5308,9 +5497,10 @@ fn builtin_quantize(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Vector(v) => {
             let re: Vec<f64> = v.iter().map(|c| quantize_scalar(c.re, &spec)).collect();
             let im: Vec<f64> = v.iter().map(|c| quantize_scalar(c.im, &spec)).collect();
-            Ok(Value::Vector(Array1::from_iter(
-                re.iter().zip(im.iter()).map(|(&r, &i)| Complex::new(r, i)),
-            ).into()))
+            Ok(Value::Vector(
+                Array1::from_iter(re.iter().zip(im.iter()).map(|(&r, &i)| Complex::new(r, i)))
+                    .into(),
+            ))
         }
         Value::Matrix(m) => {
             let rows = m.nrows();
@@ -5321,7 +5511,8 @@ fn builtin_quantize(args: Vec<Value>) -> Result<Value, ScriptError> {
                 .collect();
             Ok(Value::Matrix(
                 Array2::from_shape_vec((rows, cols), data)
-                    .map_err(|e| ScriptError::runtime(e.to_string()))?.into(),
+                    .map_err(|e| ScriptError::runtime(e.to_string()))?
+                    .into(),
             ))
         }
         other => Err(ScriptError::type_err(format!(
@@ -5582,7 +5773,11 @@ fn parse_trailing_plot_args(builtin: &str, rem: &[Value]) -> (PlotOpts, String) 
         }
         _ => None,
     };
-    let rem = if leading_spec.is_some() { &rem[1..] } else { rem };
+    let rem = if leading_spec.is_some() {
+        &rem[1..]
+    } else {
+        rem
+    };
 
     let (mut opts, consumed) = parse_plot_opts_for(builtin, rem);
     if opts.color.is_none() {
@@ -6063,7 +6258,14 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                     // one-point series drawn as a line renders nothing at all.
                     push_xy_scatter(x_data, y_data, label.as_str(), &title, opts.color);
                 } else {
-                    push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+                    push_xy_line(
+                        x_data,
+                        y_data,
+                        label.as_str(),
+                        &title,
+                        opts.color,
+                        opts.style,
+                    );
                 }
                 finish_plot(render_figure_terminal())
             } else {
@@ -6104,7 +6306,14 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             if opts.wants_markers() {
                 push_xy_scatter(x_data, y_data, label.as_str(), &title, opts.color);
             } else {
-                push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+                push_xy_line(
+                    x_data,
+                    y_data,
+                    label.as_str(),
+                    &title,
+                    opts.color,
+                    opts.style,
+                );
             }
             finish_plot(render_figure_terminal())
         }
@@ -6221,8 +6430,7 @@ fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
         rustlab_plot::NotebookAnimationFormat::Gif
     } else {
         return Err(ScriptError::runtime(
-            "saveanim: supported output formats are .html / .htm (Plotly) and .gif"
-                .to_string(),
+            "saveanim: supported output formats are .html / .htm (Plotly) and .gif".to_string(),
         ));
     };
     if rustlab_plot::frames_len() == 0 {
@@ -6623,8 +6831,10 @@ fn builtin_loglog(args: Vec<Value>) -> Result<Value, ScriptError> {
     assert_strictly_positive("loglog", "y", &y)?;
     // Plot the REAL data; the axes are log-scaled below (MATLAB behaviour:
     // decade ticks labelled with the real values, no `log10(...)` descriptor).
-    let mut new_args: Vec<Value> =
-        vec![Value::Vector(x.into_owned().into()), Value::Vector(y.into_owned().into())];
+    let mut new_args: Vec<Value> = vec![
+        Value::Vector(x.into_owned().into()),
+        Value::Vector(y.into_owned().into()),
+    ];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
     set_axis_scales(true, true);
@@ -6638,8 +6848,10 @@ fn builtin_semilogx(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = vector_arg(&args, 0, "semilogx", "x")?;
     let y = vector_arg(&args, 1, "semilogx", "y")?;
     assert_strictly_positive("semilogx", "x", &x)?;
-    let mut new_args: Vec<Value> =
-        vec![Value::Vector(x.into_owned().into()), Value::Vector(y.into_owned().into())];
+    let mut new_args: Vec<Value> = vec![
+        Value::Vector(x.into_owned().into()),
+        Value::Vector(y.into_owned().into()),
+    ];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
     set_axis_scales(true, false);
@@ -6653,8 +6865,10 @@ fn builtin_semilogy(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = vector_arg(&args, 0, "semilogy", "x")?;
     let y = vector_arg(&args, 1, "semilogy", "y")?;
     assert_strictly_positive("semilogy", "y", &y)?;
-    let mut new_args: Vec<Value> =
-        vec![Value::Vector(x.into_owned().into()), Value::Vector(y.into_owned().into())];
+    let mut new_args: Vec<Value> = vec![
+        Value::Vector(x.into_owned().into()),
+        Value::Vector(y.into_owned().into()),
+    ];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
     set_axis_scales(false, true);
@@ -6945,13 +7159,7 @@ fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
     });
 
     finish_plot(render_heatmap_tui(
-        &vals,
-        nrows,
-        ncols,
-        min_v,
-        range,
-        &title,
-        &colormap,
+        &vals, nrows, ncols, min_v, range, &title, &colormap,
     ))?;
     sync_figure_outputs();
     Ok(Value::None)
@@ -8138,7 +8346,12 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
             return Err("NPY complex128: data length is not a multiple of 16".to_string());
         }
         let values: Vec<Complex<f64>> = (0..data.len() / 16)
-            .map(|i| Complex::new(rd(&data[i * 16..i * 16 + 8]), rd(&data[i * 16 + 8..i * 16 + 16])))
+            .map(|i| {
+                Complex::new(
+                    rd(&data[i * 16..i * 16 + 8]),
+                    rd(&data[i * 16 + 8..i * 16 + 16]),
+                )
+            })
             .collect();
         array_to_value(values, &shape, fortran)
     } else if is_f8 {
@@ -8149,9 +8362,7 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
             .map(|i| Complex::new(rd(&data[i * 8..i * 8 + 8]), 0.0))
             .collect();
         array_to_value(values, &shape, fortran)
-    } else if let Some((class, width, big)) =
-        npy_descr(header).and_then(npy_int_dtype)
-    {
+    } else if let Some((class, width, big)) = npy_descr(header).and_then(npy_int_dtype) {
         // Integer dtypes (<i1..<i8, <u1..<u8, big-endian, or |-order single
         // byte) → a tagged-width IntArray. Fixes the prior gap where numpy
         // integer arrays could not be loaded at all.
@@ -8307,15 +8518,15 @@ fn load_csv(path: &str) -> Result<Value, String> {
         }
         (_, 1) => {
             // Column vector
-            Ok(Value::Vector(Array1::from_vec(
-                rows.into_iter().map(|r| r[0]).collect(),
-            ).into()))
+            Ok(Value::Vector(
+                Array1::from_vec(rows.into_iter().map(|r| r[0]).collect()).into(),
+            ))
         }
         (1, _) => {
             // Row vector
-            Ok(Value::Vector(Array1::from_vec(
-                rows.into_iter().next().unwrap(),
-            ).into()))
+            Ok(Value::Vector(
+                Array1::from_vec(rows.into_iter().next().unwrap()).into(),
+            ))
         }
         (nrows, ncols) => {
             let flat: Vec<Complex<f64>> = rows.into_iter().flatten().collect();
@@ -8343,8 +8554,8 @@ fn is_touchstone_extension(path: &str) -> bool {
 
 /// Save an sparameters value as Touchstone v1.1.
 fn save_touchstone_value(path: &str, value: &Value) -> Result<(), String> {
-    let (ptype, n_ports, params, freqs, z0) = unpack_sparameters_typed("save", value)
-        .map_err(|e| format!("{e}"))?;
+    let (ptype, n_ports, params, freqs, z0) =
+        unpack_sparameters_typed("save", value).map_err(|e| format!("{e}"))?;
     if ptype != "S" {
         return Err(format!(
             "save: Touchstone files only carry S-parameters (got {ptype}); convert with z2s/y2s/etc. first"
@@ -8630,9 +8841,9 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     // Create diagonal matrix
     let n = v.len();
-    let size = n.checked_add(k.unsigned_abs() as usize).ok_or_else(|| {
-        too_large("diag", &[n, k.unsigned_abs() as usize])
-    })?;
+    let size = n
+        .checked_add(k.unsigned_abs() as usize)
+        .ok_or_else(|| too_large("diag", &[n, k.unsigned_abs() as usize]))?;
     require_elems("diag", &[size, size], rustlab_core::ELEM_C64)?;
     let mut m: CMatrix = Array2::zeros((size, size));
     for (i, &val) in v.iter().enumerate() {
@@ -8803,7 +9014,9 @@ fn reshape_2d_real(src: &Value, m: usize, n: usize) -> Result<Option<Value>, Scr
     } else {
         transpose_f64(&transpose_f64(data, nr, nc), n, m)
     };
-    Ok(Some(Value::real_matrix(Array2::from_shape_vec((m, n), out).expect("m × n elements"))))
+    Ok(Some(Value::real_matrix(
+        Array2::from_shape_vec((m, n), out).expect("m × n elements"),
+    )))
 }
 
 fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptError> {
@@ -8844,7 +9057,9 @@ fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptEr
         par_transpose(&par_transpose(data, nr, nc, false), n, m, false)
     };
     Ok(Some(Value::Matrix(
-        Array2::from_shape_vec((m, n), out).expect("m × n elements").into(),
+        Array2::from_shape_vec((m, n), out)
+            .expect("m × n elements")
+            .into(),
     )))
 }
 
@@ -8959,9 +9174,9 @@ fn builtin_cat(args: Vec<Value>) -> Result<Value, ScriptError> {
                         n
                     )));
                 }
-                total_pages = total_pages.checked_add(vp).ok_or_else(|| {
-                    too_large("cat", &[m, n, total_pages.saturating_add(vp)])
-                })?;
+                total_pages = total_pages
+                    .checked_add(vp)
+                    .ok_or_else(|| too_large("cat", &[m, n, total_pages.saturating_add(vp)]))?;
             }
             require_elems("cat", &[m, n, total_pages], rustlab_core::ELEM_C64)?;
             let mut out = Array3::<C64>::zeros((m, n, total_pages));
@@ -9235,7 +9450,9 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
         for &x in a {
             out.extend(b.iter().map(|&y| x * y));
         }
-        return Ok(Value::real_matrix(Array2::from_shape_vec((a.len(), b.len()), out).expect("a × b")));
+        return Ok(Value::real_matrix(
+            Array2::from_shape_vec((a.len(), b.len()), out).expect("a × b"),
+        ));
     }
     let a = args[0]
         .to_cvector()
@@ -9249,7 +9466,11 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
     require_elems("outer", &[a.len(), b.len()], rustlab_core::ELEM_C64)?;
     let m = Array2::from_shape_fn((a.len(), b.len()), |(i, j)| {
         let z = a[i] * b[j];
-        if real { C64::new(z.re, 0.0) } else { z }
+        if real {
+            C64::new(z.re, 0.0)
+        } else {
+            z
+        }
     });
     Ok(Value::Matrix(m.into()))
 }
@@ -9447,12 +9668,13 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                             sm.rows, sm.cols
                         )));
                     }
-                    let dense = sm.to_dense().map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
+                    let dense = sm
+                        .to_dense()
+                        .map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
                     let _guard = rustlab_plot::InterruptGuard::arm();
                     let mut stop = || rustlab_plot::interrupt_requested();
                     match rustlab_core::spectral_norm::largest_singular_value_complex_cancellable(
-                        &dense,
-                        &mut stop,
+                        &dense, &mut stop,
                     ) {
                         Ok(v) => Ok(Value::Scalar(v)),
                         Err(_) => {
@@ -9939,7 +10161,8 @@ pub(crate) fn sparse_square_mldivide(
             return Ok(pack_sparse_columns(&solved));
         }
     }
-    let factor = factor_sparse_lu(sm, OrderingChoice::Auto).map_err(|e| format!("mldivide: {e}"))?;
+    let factor =
+        factor_sparse_lu(sm, OrderingChoice::Auto).map_err(|e| format!("mldivide: {e}"))?;
     for col in &columns {
         solved.push(solve_with_factor(&factor, col).map_err(|e| format!("mldivide: {e}"))?);
     }
@@ -9985,11 +10208,11 @@ fn pack_sparse_columns(cols: &[CVector]) -> Value {
     let p = cols.len();
     let real = cols.iter().all(|c| c.iter().all(|z| z.im == 0.0));
     if real {
-        Value::real_matrix(ndarray::Array2::from_shape_fn((n, p), |(i, j)| cols[j][i].re))
+        Value::real_matrix(ndarray::Array2::from_shape_fn((n, p), |(i, j)| {
+            cols[j][i].re
+        }))
     } else {
-        Value::Matrix(
-            ndarray::Array2::from_shape_fn((n, p), |(i, j)| cols[j][i]).into(),
-        )
+        Value::Matrix(ndarray::Array2::from_shape_fn((n, p), |(i, j)| cols[j][i]).into())
     }
 }
 
@@ -10345,9 +10568,7 @@ fn eig_resolve_input(name: &str, args: &[Value]) -> Result<CMatrix, ScriptError>
                 }
                 Ok((**m).clone())
             }
-            Value::Scalar(s) => {
-                Ok(Array2::from_shape_fn((1, 1), |_| Complex::new(*s, 0.0)))
-            }
+            Value::Scalar(s) => Ok(Array2::from_shape_fn((1, 1), |_| Complex::new(*s, 0.0))),
             other => Err(ScriptError::type_err(format!(
                 "{}: {} must be a square matrix or scalar, got {}",
                 name,
@@ -10396,8 +10617,13 @@ fn compute_eig_dense(
             name
         )));
     }
-    rustlab_core::dense_eig::eig(m, want_v)
-        .map_err(|e| ScriptError::runtime(format!("{}: {}", name, e.to_string().trim_start_matches("eig: "))))
+    rustlab_core::dense_eig::eig(m, want_v).map_err(|e| {
+        ScriptError::runtime(format!(
+            "{}: {}",
+            name,
+            e.to_string().trim_start_matches("eig: ")
+        ))
+    })
 }
 
 /// Wrap an eigenvalue list as `Value::Matrix`, either an `N×1` column or an
@@ -10412,9 +10638,9 @@ fn eigenvalues_to_value(vals: &[C64], flag: Option<EigDShape>, default_diag: boo
     let n = vals.len();
     let zero = Complex::new(0.0, 0.0);
     if want_diag {
-        Value::Matrix(Array2::from_shape_fn((n, n), |(i, j)| {
-            if i == j { vals[i] } else { zero }
-        }).into())
+        Value::Matrix(
+            Array2::from_shape_fn((n, n), |(i, j)| if i == j { vals[i] } else { zero }).into(),
+        )
     } else {
         Value::Matrix(Array2::from_shape_fn((n, 1), |(i, _)| vals[i]).into())
     }
@@ -10502,8 +10728,9 @@ fn builtin_eigs(args: Vec<Value>) -> Result<Value, ScriptError> {
     let result = match b_opt {
         Some(b) => core_eigs_gen(a, b, n, which, None)
             .map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?,
-        None => core_eigs(a, n, which, None)
-            .map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?,
+        None => {
+            core_eigs(a, n, which, None).map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?
+        }
     };
 
     Ok(Value::Tuple(vec![
@@ -10822,7 +11049,11 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
                 // uint64 above i64::MAX: print every digit. A double cannot.
                 if wide > i64::MAX as i128 {
                     let digits = fmt_integer_digits(wide as u64, prec_set, prec);
-                    let digits = if commas { insert_commas(&digits) } else { digits };
+                    let digits = if commas {
+                        insert_commas(&digits)
+                    } else {
+                        digits
+                    };
                     result.push_str(&fmt_pad(
                         fmt_sign(false, plus, space),
                         &digits,
@@ -10851,7 +11082,11 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
                 let wide = fmt_take_i128(args, &mut arg_idx, &format!("%{spec}"))?;
                 // Negative values wrap like `i64 as u64`. uint64 above
                 // i64::MAX keeps the whole value.
-                let abs = if wide < 0 { wide as i64 as u64 } else { wide as u64 };
+                let abs = if wide < 0 {
+                    wide as i64 as u64
+                } else {
+                    wide as u64
+                };
                 let digits = if spec == 'o' {
                     fmt_octal_digits(abs, prec_set, prec, hash)
                 } else if spec == 'u' {
@@ -11175,8 +11410,11 @@ fn builtin_all(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
             Ok(Value::Bool(m.iter().all(|c| c.re != 0.0 || c.im != 0.0)))
         }
+        Value::Logical(a) if a.rows() <= 1 || a.cols() <= 1 => {
+            Ok(Value::Bool(a.as_slice().iter().all(|&b| b != 0)))
+        }
         other => Err(ScriptError::type_err(format!(
-            "all: expected vector, 1-d matrix, or scalar, got {}",
+            "all: expected vector, 1-d matrix, logical, or scalar, got {}",
             other.type_name()
         ))),
     }
@@ -11191,8 +11429,11 @@ fn builtin_any(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
             Ok(Value::Bool(m.iter().any(|c| c.re != 0.0 || c.im != 0.0)))
         }
+        Value::Logical(a) if a.rows() <= 1 || a.cols() <= 1 => {
+            Ok(Value::Bool(a.as_slice().iter().any(|&b| b != 0)))
+        }
         other => Err(ScriptError::type_err(format!(
-            "any: expected vector, 1-d matrix, or scalar, got {}",
+            "any: expected vector, 1-d matrix, logical, or scalar, got {}",
             other.type_name()
         ))),
     }
@@ -11288,7 +11529,8 @@ fn builtin_roots(args: Vec<Value>) -> Result<Value, ScriptError> {
         comp[[i, i - 1]] = Complex::new(1.0, 0.0);
     }
 
-    let rs = rustlab_core::dense_eig::eigenvalues(&comp).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    let rs = rustlab_core::dense_eig::eigenvalues(&comp)
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
     Ok(Value::Vector(Array1::from_vec(rs).into()))
 }
 
@@ -11553,9 +11795,7 @@ fn faddeev_leverrier_siso(
 
 /// Convert a real polynomial coefficient slice to a complex Value::Vector for roots().
 fn real_poly_to_value(coeffs: &[f64]) -> Value {
-    Value::Vector(Array1::from_iter(
-        coeffs.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into())
+    Value::Vector(Array1::from_iter(coeffs.iter().map(|&x| Complex::new(x, 0.0))).into())
 }
 
 fn builtin_pole(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -11573,12 +11813,10 @@ fn builtin_tfdata(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("tfdata", &args, 1)?;
     match &args[0] {
         Value::TransferFn { num, den } => {
-            let num_v = Value::Vector(Array1::from_iter(
-                num.iter().map(|&x| Complex::new(x, 0.0)),
-            ).into());
-            let den_v = Value::Vector(Array1::from_iter(
-                den.iter().map(|&x| Complex::new(x, 0.0)),
-            ).into());
+            let num_v =
+                Value::Vector(Array1::from_iter(num.iter().map(|&x| Complex::new(x, 0.0))).into());
+            let den_v =
+                Value::Vector(Array1::from_iter(den.iter().map(|&x| Complex::new(x, 0.0))).into());
             Ok(Value::Tuple(vec![num_v, den_v]))
         }
         other => Err(ScriptError::type_err(format!(
@@ -12074,15 +12312,12 @@ fn builtin_bode(args: Vec<Value>) -> Result<Value, ScriptError> {
     finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
-    let w_val = Value::Vector(Array1::from_iter(
-        w_vec.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
-    let mag_val = Value::Vector(Array1::from_iter(
-        mag_db.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
-    let ph_val = Value::Vector(Array1::from_iter(
-        phase_deg.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
+    let w_val =
+        Value::Vector(Array1::from_iter(w_vec.iter().map(|&x| Complex::new(x, 0.0))).into());
+    let mag_val =
+        Value::Vector(Array1::from_iter(mag_db.iter().map(|&x| Complex::new(x, 0.0))).into());
+    let ph_val =
+        Value::Vector(Array1::from_iter(phase_deg.iter().map(|&x| Complex::new(x, 0.0))).into());
     Ok(Value::Tuple(vec![mag_val, ph_val, w_val]))
 }
 
@@ -12272,15 +12507,12 @@ fn builtin_nyquist(args: Vec<Value>) -> Result<Value, ScriptError> {
     finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
-    let re_val = Value::Vector(Array1::from_iter(
-        re_pos.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
-    let im_val = Value::Vector(Array1::from_iter(
-        im_pos.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
-    let w_val = Value::Vector(Array1::from_iter(
-        w_pos.iter().map(|&x| Complex::new(x, 0.0)),
-    ).into());
+    let re_val =
+        Value::Vector(Array1::from_iter(re_pos.iter().map(|&x| Complex::new(x, 0.0))).into());
+    let im_val =
+        Value::Vector(Array1::from_iter(im_pos.iter().map(|&x| Complex::new(x, 0.0))).into());
+    let w_val =
+        Value::Vector(Array1::from_iter(w_pos.iter().map(|&x| Complex::new(x, 0.0))).into());
     Ok(Value::Tuple(vec![re_val, im_val, w_val]))
 }
 
@@ -12356,12 +12588,10 @@ fn builtin_step(args: Vec<Value>) -> Result<Value, ScriptError> {
     finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
-    let y_val = Value::Vector(Array1::from_iter(
-        y_out.iter().map(|&v| Complex::new(v, 0.0)),
-    ).into());
-    let t_val = Value::Vector(Array1::from_iter(
-        t_out.iter().map(|&v| Complex::new(v, 0.0)),
-    ).into());
+    let y_val =
+        Value::Vector(Array1::from_iter(y_out.iter().map(|&v| Complex::new(v, 0.0))).into());
+    let t_val =
+        Value::Vector(Array1::from_iter(t_out.iter().map(|&v| Complex::new(v, 0.0))).into());
     Ok(Value::Tuple(vec![y_val, t_val]))
 }
 
@@ -12837,7 +13067,8 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                 let mut data = real_parts_of(&args[0]).expect("a matrix");
                 softmax_slice_f64(&mut data);
                 return Ok(Value::real_matrix(
-                    Array2::from_shape_vec((nrows, ncols), data).expect("preserves 1-D matrix shape"),
+                    Array2::from_shape_vec((nrows, ncols), data)
+                        .expect("preserves 1-D matrix shape"),
                 ));
             }
             // 2-D matrix: optional dim (default 2 = per-row, ML convention).
@@ -12877,7 +13108,9 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                 }
                 _ => unreachable!(),
             }
-            Ok(Value::real_matrix(Array2::from_shape_vec((nrows, ncols), out).expect("same shape")))
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec((nrows, ncols), out).expect("same shape"),
+            ))
         }
         other => Err(ScriptError::type_err(format!(
             "softmax: argument must be a non-empty vector, matrix, or scalar (got {})",
@@ -13002,7 +13235,8 @@ fn builtin_layernorm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 layernorm_slice_inplace(&mut data, eps);
                 return Ok(Value::Matrix(
                     Array2::from_shape_vec((nrows, ncols), data)
-                        .expect("preserves 1-D matrix shape").into(),
+                        .expect("preserves 1-D matrix shape")
+                        .into(),
                 ));
             }
             // 2-D matrix: optional dim (default 2 = per-row, ML convention)
@@ -13401,8 +13635,9 @@ fn builtin_gram(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `care`; the columns come from the Schur form, so repeated stable
 /// eigenvalues (identical decoupled subsystems) get independent vectors.
 fn hamiltonian_stable_basis(ham: &CMatrix, n: usize, name: &str) -> Result<CMatrix, ScriptError> {
-    let (vals, vecs) = rustlab_core::dense_eig::eig(ham, true)
-        .map_err(|e| ScriptError::type_err(format!("{name}: Hamiltonian eigenvalues failed: {e}")))?;
+    let (vals, vecs) = rustlab_core::dense_eig::eig(ham, true).map_err(|e| {
+        ScriptError::type_err(format!("{name}: Hamiltonian eigenvalues failed: {e}"))
+    })?;
     let vecs = vecs.expect("eig returns vectors when asked");
     let mut stable: Vec<usize> = (0..vals.len()).filter(|&k| vals[k].re < -1e-10).collect();
     if stable.len() < n {
@@ -13415,7 +13650,9 @@ fn hamiltonian_stable_basis(ham: &CMatrix, n: usize, name: &str) -> Result<CMatr
     // Most negative real part first, for a deterministic column order.
     stable.sort_by(|&a, &b| vals[a].re.total_cmp(&vals[b].re));
     let rows = ham.nrows();
-    Ok(Array2::from_shape_fn((rows, n), |(i, c)| vecs[[i, stable[c]]]))
+    Ok(Array2::from_shape_fn((rows, n), |(i, c)| {
+        vecs[[i, stable[c]]]
+    }))
 }
 
 fn solve_care(a: &CMatrix, b: &CMatrix, q: &CMatrix, r: &CMatrix) -> Result<CMatrix, ScriptError> {
@@ -13576,9 +13813,9 @@ fn builtin_place(args: Vec<Value>) -> Result<Value, ScriptError> {
     let mut en: CMatrix = Array2::zeros((1, n));
     en[[0, n - 1]] = Complex::new(1.0, 0.0);
     let k_mat = mat_mul_cx(&mat_mul_cx(&en, &ctrb_inv), &pa);
-    Ok(Value::Vector(Array1::from_iter(
-        (0..n).map(|j| k_mat[[0, j]]),
-    ).into()))
+    Ok(Value::Vector(
+        Array1::from_iter((0..n).map(|j| k_mat[[0, j]])).into(),
+    ))
 }
 
 /// freqresp(A, B, C, D, w) — H(jω) = C*(jω*I-A)^{-1}*B + D evaluated at each ω in w.
@@ -13657,9 +13894,8 @@ fn builtin_svd(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
         u = take_columns(&u, k);
         v = take_columns(&v, k);
     }
-    let sigma_vec = Value::Vector(Array1::from_iter(
-        sigma.iter().map(|&s| Complex::new(s, 0.0)),
-    ).into());
+    let sigma_vec =
+        Value::Vector(Array1::from_iter(sigma.iter().map(|&s| Complex::new(s, 0.0))).into());
     if nargout < 2 {
         return Ok(sigma_vec);
     }
@@ -14301,9 +14537,7 @@ fn builtin_plot_update_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
     fig.lock()
         .unwrap()
         .as_mut()
-        .ok_or_else(|| {
-            ScriptError::runtime("plot_update_heatmap: figure is closed".to_string())
-        })?
+        .ok_or_else(|| ScriptError::runtime("plot_update_heatmap: figure is closed".to_string()))?
         .update_panel_heatmap(
             panel,
             &real,
@@ -14663,7 +14897,9 @@ fn builtin_full(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Vector(v.into()))
         }
         Value::SparseMatrix(sm) => {
-            let m = sm.to_dense().map_err(|_| too_large("full", &[sm.rows, sm.cols]))?;
+            let m = sm
+                .to_dense()
+                .map_err(|_| too_large("full", &[sm.rows, sm.cols]))?;
             Ok(Value::Matrix(m.into()))
         }
         other => Ok(other), // identity for dense
@@ -14709,6 +14945,9 @@ fn builtin_find_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Scrip
         return builtin_find(args);
     }
     check_args("find", &args, 1)?;
+    if let Value::Logical(a) = &args[0] {
+        return find_logical(a, nargout);
+    }
     match &args[0] {
         Value::Vector(v) => {
             let mut idx: Vec<C64> = Vec::new();
@@ -14773,8 +15012,49 @@ fn builtin_find_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Scrip
     }
 }
 
+fn find_logical(a: &rustlab_core::LogicalArray, nargout: usize) -> Result<Value, ScriptError> {
+    let reals = |xs: Vec<f64>| Value::real_vector(Array1::from_vec(xs));
+    let trues = |n: usize| {
+        rustlab_core::LogicalArray::row(vec![true; n])
+            .map(Value::Logical)
+            .map_err(|e| ScriptError::runtime(e.to_string()))
+    };
+    let vector_like = a.rows() <= 1 || a.cols() <= 1;
+    if nargout >= 2 && (!vector_like || nargout >= 3) {
+        let mut rows = Vec::new();
+        let mut cols = Vec::new();
+        for c in 0..a.cols() {
+            for r in 0..a.rows() {
+                if a.get(r, c) == Some(true) {
+                    rows.push((r + 1) as f64);
+                    cols.push((c + 1) as f64);
+                }
+            }
+        }
+        let n = rows.len();
+        let row_v = reals(rows);
+        let col_v = reals(cols);
+        if nargout >= 3 {
+            Ok(Value::Tuple(vec![row_v, col_v, trues(n)?]))
+        } else {
+            Ok(Value::Tuple(vec![row_v, col_v]))
+        }
+    } else {
+        let pos = a.true_positions_column_major();
+        let idx = reals(pos.iter().map(|k| (k + 1) as f64).collect());
+        if nargout >= 2 {
+            Ok(Value::Tuple(vec![idx, trues(pos.len())?]))
+        } else {
+            Ok(idx)
+        }
+    }
+}
+
 fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("find", &args, 1)?;
+    if let Value::Logical(a) = &args[0] {
+        return find_logical(a, 1);
+    }
     match &args[0] {
         Value::Vector(v) => {
             let indices: Vec<C64> = v
@@ -14835,7 +15115,9 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Scalar(n) => {
             // Scalar: 1-element "vector"; index 1 if nonzero, empty otherwise.
             if *n != 0.0 {
-                Ok(Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]).into()))
+                Ok(Value::Vector(
+                    Array1::from_vec(vec![Complex::new(1.0, 0.0)]).into(),
+                ))
             } else {
                 Ok(Value::Vector(Array1::from_vec(vec![]).into()))
             }
@@ -15030,9 +15312,7 @@ fn factor_sparse_cholesky(
 
     let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
-        let csc: SparseCsc<f64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
+        let csc: SparseCsc<f64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
         let chol = match resolved {
             OrderingChoice::Identity => {
                 SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
@@ -15043,9 +15323,7 @@ fn factor_sparse_cholesky(
         };
         Ok(SparseFactor::CholReal(Arc::new(chol)))
     } else {
-        let csc: SparseCsc<C64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
+        let csc: SparseCsc<C64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
         let chol = match resolved {
             OrderingChoice::Identity => {
                 SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
@@ -15069,9 +15347,7 @@ fn factor_sparse_lu(sm: &SparseMat, ordering: OrderingChoice) -> Result<SparseFa
 
     let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
-        let csc: SparseCsc<f64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
+        let csc: SparseCsc<f64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
         let lu = match resolved {
             OrderingChoice::Identity => {
                 SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
@@ -15082,9 +15358,7 @@ fn factor_sparse_lu(sm: &SparseMat, ordering: OrderingChoice) -> Result<SparseFa
         };
         Ok(SparseFactor::LuReal(Arc::new(lu)))
     } else {
-        let csc: SparseCsc<C64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
+        let csc: SparseCsc<C64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
         let lu = match resolved {
             OrderingChoice::Identity => {
                 SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
@@ -15115,7 +15389,9 @@ fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, Stri
             }
             let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
             let x = chol.solve(&b_real).map_err(|e| e.to_string())?;
-            Ok(Array1::from_iter(x.into_iter().map(|v| Complex::new(v, 0.0))))
+            Ok(Array1::from_iter(
+                x.into_iter().map(|v| Complex::new(v, 0.0)),
+            ))
         }
         SparseFactor::CholComplex(chol) => {
             let b_vec: Vec<C64> = b.iter().copied().collect();
@@ -15128,7 +15404,9 @@ fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, Stri
             }
             let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
             let x = lu.solve(&b_real).map_err(|e| e.to_string())?;
-            Ok(Array1::from_iter(x.into_iter().map(|v| Complex::new(v, 0.0))))
+            Ok(Array1::from_iter(
+                x.into_iter().map(|v| Complex::new(v, 0.0)),
+            ))
         }
         SparseFactor::LuComplex(lu) => {
             let b_vec: Vec<C64> = b.iter().copied().collect();
@@ -15151,11 +15429,7 @@ fn try_sparse_cholesky(
 
 /// Sparse LU with partial pivoting. Same real-vs-complex auto-routing
 /// as the Cholesky path. Pivoting threshold is the standard 0.1 (Trefethen).
-fn try_sparse_lu(
-    sm: &SparseMat,
-    b: &CVector,
-    ordering: OrderingChoice,
-) -> Result<CVector, String> {
+fn try_sparse_lu(sm: &SparseMat, b: &CVector, ordering: OrderingChoice) -> Result<CVector, String> {
     let factor = factor_sparse_lu(sm, ordering)?;
     solve_with_factor(&factor, b)
 }
@@ -15176,7 +15450,8 @@ fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> 
     }
     if nargout > 1 {
         return Err(ScriptError::type_err(
-            "chol: a sparse matrix returns a factor handle. Use chol(full(A)) for the dense factor".to_string(),
+            "chol: a sparse matrix returns a factor handle. Use chol(full(A)) for the dense factor"
+                .to_string(),
         ));
     }
     let sm = match &args[0] {
@@ -15267,8 +15542,8 @@ fn builtin_lu_sparse(args: Vec<Value>) -> Result<Value, ScriptError> {
     } else {
         OrderingChoice::Auto
     };
-    let factor = factor_sparse_lu(sm, ordering)
-        .map_err(|e| ScriptError::type_err(format!("lu: {e}")))?;
+    let factor =
+        factor_sparse_lu(sm, ordering).map_err(|e| ScriptError::type_err(format!("lu: {e}")))?;
     Ok(Value::SparseFactor(factor))
 }
 
@@ -15288,8 +15563,8 @@ fn builtin_solve(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let x = solve_with_factor(factor, &b)
-        .map_err(|e| ScriptError::type_err(format!("solve: {e}")))?;
+    let x =
+        solve_with_factor(factor, &b).map_err(|e| ScriptError::type_err(format!("solve: {e}")))?;
     Ok(spsolve_pack(x))
 }
 
@@ -15495,7 +15770,10 @@ fn builtin_spdiags(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// Common arg-parsing helper for the laplacian_* family. Extracts an
 /// optional trailing string argument as a `BoundaryCondition`, defaulting
 /// to Dirichlet.
-fn parse_bc_arg(name: &str, value: Option<&Value>) -> Result<rustlab_dsp::BoundaryCondition, ScriptError> {
+fn parse_bc_arg(
+    name: &str,
+    value: Option<&Value>,
+) -> Result<rustlab_dsp::BoundaryCondition, ScriptError> {
     match value {
         None => Ok(rustlab_dsp::BoundaryCondition::Dirichlet),
         Some(Value::Str(s)) => rustlab_dsp::BoundaryCondition::from_str(s.as_str())
@@ -15659,10 +15937,7 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
 /// `values` is a scalar (same value at every pin) or a vector aligned
 /// with the mask's nonzero cells / the index list. Both outputs must be
 /// bound: the modified `b` is half the point.
-fn builtin_pin_dirichlet_nargout(
-    args: Vec<Value>,
-    nargout: usize,
-) -> Result<Value, ScriptError> {
+fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("pin_dirichlet", &args, 4)?;
     if nargout < 2 {
         return Err(ScriptError::type_err(
@@ -15864,10 +16139,7 @@ fn builtin_laplacian_eps_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let (spacing, bc) = parse_spacing_and_bc("laplacian_eps_2d", &args, 1, 2)?;
     laplacian_value(rustlab_dsp::laplacian::laplacian_eps_2d(
-        eps_map,
-        spacing[0],
-        spacing[1],
-        bc,
+        eps_map, spacing[0], spacing[1], bc,
     ))
 }
 
@@ -16206,17 +16478,18 @@ fn builtin_sparameters(args: Vec<Value>) -> Result<Value, ScriptError> {
             // Phase 6: attach noise-parameter fields if the file carried them.
             if let Some(noise) = data.noise {
                 if let Value::Struct(ref mut fields) = v {
-                    let nfreqs_c: CVector = Array1::from_iter(
-                        noise.frequencies.iter().map(|&f| Complex::new(f, 0.0)),
-                    );
-                    let nfmin_c: CVector = Array1::from_iter(
-                        noise.nf_min_db.iter().map(|&v| Complex::new(v, 0.0)),
-                    );
+                    let nfreqs_c: CVector =
+                        Array1::from_iter(noise.frequencies.iter().map(|&f| Complex::new(f, 0.0)));
+                    let nfmin_c: CVector =
+                        Array1::from_iter(noise.nf_min_db.iter().map(|&v| Complex::new(v, 0.0)));
                     let gopt_c: CVector = Array1::from(noise.gamma_opt);
                     let rn_c: CVector = Array1::from_iter(
                         noise.rn_normalised.iter().map(|&v| Complex::new(v, 0.0)),
                     );
-                    fields.insert("noise_frequencies".to_string(), Value::Vector(nfreqs_c.into()));
+                    fields.insert(
+                        "noise_frequencies".to_string(),
+                        Value::Vector(nfreqs_c.into()),
+                    );
                     fields.insert("nf_min".to_string(), Value::Vector(nfmin_c.into()));
                     fields.insert("gamma_opt".to_string(), Value::Vector(gopt_c.into()));
                     fields.insert("rn".to_string(), Value::Vector(rn_c.into()));
@@ -16295,7 +16568,9 @@ fn builtin_sij(args: Vec<Value>) -> Result<Value, ScriptError> {
             "sij: port indices (i={i_one}, j={j_one}) out of range 1..={n}"
         )));
     }
-    Ok(Value::Vector(sij_slice(parameters, i_one - 1, j_one - 1).into()))
+    Ok(Value::Vector(
+        sij_slice(parameters, i_one - 1, j_one - 1).into(),
+    ))
 }
 
 fn sij_sugar(name: &str, args: Vec<Value>, i: usize, j: usize) -> Result<Value, ScriptError> {
@@ -16664,8 +16939,7 @@ fn builtin_s2td(args: Vec<Value>) -> Result<Value, ScriptError> {
     // spectrum[N..big_n-N+1] stays 0+0j (Nyquist + zero padding).
 
     let spectrum_v: CVector = Array1::from(spectrum);
-    let time_complex =
-        rustlab_dsp::ifft(&spectrum_v).map_err(ScriptError::Dsp)?;
+    let time_complex = rustlab_dsp::ifft(&spectrum_v).map_err(ScriptError::Dsp)?;
 
     // Real part — the imaginary part should be near zero by construction.
     let mut h_real: Vec<f64> = time_complex.iter().map(|c| c.re).collect();
@@ -16684,7 +16958,10 @@ fn builtin_s2td(args: Vec<Value>) -> Result<Value, ScriptError> {
     let dt = 1.0 / (big_n as f64 * df);
     let t: Vec<f64> = (0..big_n).map(|k| k as f64 * dt).collect();
 
-    Ok(Value::Tuple(vec![real_vector_value(t), real_vector_value(h_real)]))
+    Ok(Value::Tuple(vec![
+        real_vector_value(t),
+        real_vector_value(h_real),
+    ]))
 }
 
 /// `interp_freq(s, freqs_new)` — linearly interpolate an sparameters network
@@ -16966,7 +17243,12 @@ fn complex_vector_value(v: Vec<C64>) -> Value {
 
 /// Extract a port index (1-based) from `args[idx]` and return the 0-based form,
 /// validated against `n_ports`.
-fn port_index(args: &[Value], idx: usize, name: &str, n_ports: usize) -> Result<usize, ScriptError> {
+fn port_index(
+    args: &[Value],
+    idx: usize,
+    name: &str,
+    n_ports: usize,
+) -> Result<usize, ScriptError> {
     let p = args[idx]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("{name}: port index: {e}")))?;
@@ -17000,9 +17282,9 @@ fn builtin_return_loss(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("return_loss", &args, 2)?;
     let (_, n_ports, params, _, _) = unpack_sparameters_typed("return_loss", &args[0])?;
     let port_zero = port_index(&args, 1, "return_loss", n_ports)?;
-    Ok(real_vector_value(
-        super::sparam_analysis::return_loss_db(params, port_zero),
-    ))
+    Ok(real_vector_value(super::sparam_analysis::return_loss_db(
+        params, port_zero,
+    )))
 }
 
 fn builtin_insertion_loss(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -17035,8 +17317,7 @@ fn builtin_gammain(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammain", &args[0])?;
     require_2port_analysis("gammain", n_ports)?;
     let gl = coerce_gamma_arg("gammain", &args[1])?;
-    let g = super::sparam_analysis::gamma_in(params, &gl)
-        .map_err(|e| ScriptError::runtime(e))?;
+    let g = super::sparam_analysis::gamma_in(params, &gl).map_err(|e| ScriptError::runtime(e))?;
     Ok(complex_vector_value(g))
 }
 
@@ -17045,8 +17326,7 @@ fn builtin_gammaout(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammaout", &args[0])?;
     require_2port_analysis("gammaout", n_ports)?;
     let gs = coerce_gamma_arg("gammaout", &args[1])?;
-    let g = super::sparam_analysis::gamma_out(params, &gs)
-        .map_err(|e| ScriptError::runtime(e))?;
+    let g = super::sparam_analysis::gamma_out(params, &gs).map_err(|e| ScriptError::runtime(e))?;
     Ok(complex_vector_value(g))
 }
 
@@ -17066,7 +17346,10 @@ fn builtin_stabilitymu(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (_, n_ports, params, _, _) = unpack_sparameters_typed("stabilitymu", &args[0])?;
     require_2port_analysis("stabilitymu", n_ports)?;
     let (mu1, mu2) = super::sparam_analysis::stability_mu(params);
-    Ok(Value::Tuple(vec![real_vector_value(mu1), real_vector_value(mu2)]))
+    Ok(Value::Tuple(vec![
+        real_vector_value(mu1),
+        real_vector_value(mu2),
+    ]))
 }
 
 fn builtin_gammams(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -17129,8 +17412,7 @@ fn build_circles_struct(
 
 fn builtin_stability_circles(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("stability_circles", &args, 2)?;
-    let (_, n_ports, params, freqs, _) =
-        unpack_sparameters_typed("stability_circles", &args[0])?;
+    let (_, n_ports, params, freqs, _) = unpack_sparameters_typed("stability_circles", &args[0])?;
     require_2port_analysis("stability_circles", n_ports)?;
     let kind = args[1]
         .to_str()
@@ -17340,10 +17622,7 @@ fn transform_trace(t: RfTransform, sij: &CVector, freqs_hz: &[f64]) -> Vec<f64> 
                 }
             })
             .collect(),
-        RfTransform::Phase => sij
-            .iter()
-            .map(|c| c.arg().to_degrees())
-            .collect(),
+        RfTransform::Phase => sij.iter().map(|c| c.arg().to_degrees()).collect(),
         RfTransform::Unwrap => {
             let mut phi: Vec<f64> = sij.iter().map(|c| c.arg()).collect();
             unwrap_phase_rad(&mut phi);
@@ -17452,13 +17731,7 @@ fn builtin_rfplot(args: Vec<Value>) -> Result<Value, ScriptError> {
         } else {
             // N-port (or 1-port): single S11 dB trace.
             let trace = sij_slice(params, 0, 0);
-            push_rf_trace(
-                &freqs_hz,
-                &trace,
-                RfTransform::Db,
-                "S11",
-                "|S11| (dB)",
-            )?;
+            push_rf_trace(&freqs_hz, &trace, RfTransform::Db, "S11", "|S11| (dB)")?;
         }
         finish_plot(render_figure_terminal())?;
         sync_figure_outputs();
@@ -17548,7 +17821,9 @@ mod real_builtin_tests {
     #[test]
     fn real_softmax_matches_the_complex_kernel_bit_for_bit() {
         for n in [1usize, 2, 7, 129, 1000] {
-            let xs: Vec<f64> = (0..n).map(|i| ((i * 37 % 101) as f64 - 50.0) * 0.37).collect();
+            let xs: Vec<f64> = (0..n)
+                .map(|i| ((i * 37 % 101) as f64 - 50.0) * 0.37)
+                .collect();
             let mut r = xs.clone();
             softmax_slice_f64(&mut r);
             let mut c: Vec<C64> = xs.iter().map(|&x| C64::new(x, 0.0)).collect();

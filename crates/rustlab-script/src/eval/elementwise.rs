@@ -1021,6 +1021,12 @@ mod tests {
             Value::Matrix(m) => m.iter().copied().collect(),
             Value::Scalar(x) => vec![C64::new(*x, 0.0)],
             Value::Complex(c) => vec![*c],
+            Value::Bool(b) => vec![C64::new(if *b { 1.0 } else { 0.0 }, 0.0)],
+            Value::Logical(a) => a
+                .as_slice()
+                .iter()
+                .map(|&b| C64::new(if b != 0 { 1.0 } else { 0.0 }, 0.0))
+                .collect(),
             other => panic!("unexpected {other:?}"),
         };
         elems.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()

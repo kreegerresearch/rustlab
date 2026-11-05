@@ -1,37 +1,37 @@
-pub mod builtins;
 pub(crate) mod builtin_cancel;
-pub(crate) mod fdtd;
-mod xcorr;
+pub mod builtins;
 pub(crate) mod elementwise;
+pub mod fast_hash;
+pub(crate) mod fdtd;
 pub(crate) mod interp1;
+pub mod line_io;
 pub(crate) mod linsys;
 pub(crate) mod order_stats;
-pub(crate) mod real_index;
-pub(crate) mod real_ops;
-pub mod line_io;
 pub mod output;
-pub mod table;
 pub mod parmap;
 pub mod profile;
+pub(crate) mod real_index;
+pub(crate) mod real_ops;
 pub mod rng;
-pub mod fast_hash;
 pub mod shared;
 pub(crate) mod subscript;
 pub mod sparam_analysis;
 pub mod sparam_conv;
+pub mod table;
 pub mod toml_io;
 pub mod touchstone;
 pub mod value;
+mod xcorr;
 
 use crate::ast::{BinOp, CacheStmt, Expr, Stmt, StmtKind};
 use crate::cache_registry::CacheRegistry;
 use crate::error::ScriptError;
-use shared::Shared;
 pub use builtins::BuiltinRegistry;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 pub use profile::FnStats;
-use rustlab_core::C64;
+use rustlab_core::{LogicalArray, C64};
+use shared::Shared;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -416,7 +416,6 @@ impl Evaluator {
         val: Value,
         suppress: &bool,
     ) -> Result<(), ScriptError> {
-
         if matches!(self.env.get(name.as_str()), Some(Value::Table(_))) {
             return Err(ScriptError::runtime(
                 "table index assignment is not supported (T(rows, vars) = ...). \
@@ -476,6 +475,7 @@ impl Evaluator {
                     let s = Shared::shape(m);
                     Some((s[0], s[1]))
                 }
+                Some(Value::Logical(a)) => Some((a.rows(), a.cols())),
                 Some(Value::SparseMatrix(sm)) => Some((sm.rows, sm.cols)),
                 _ => None,
             };
@@ -491,6 +491,7 @@ impl Evaluator {
             } else {
                 let container_len = match self.env.get(name.as_str()) {
                     Some(Value::Vector(v)) => Shared::len(v),
+                    Some(Value::Logical(a)) => a.len(),
                     Some(Value::SparseVector(sv)) => sv.len,
                     _ => 0,
                 };
@@ -507,6 +508,7 @@ impl Evaluator {
             let container_len = match self.env.get(name.as_str()) {
                 Some(Value::Vector(v)) => Shared::len(v),
                 Some(Value::Matrix(m)) if indices.len() == 1 => Shared::len(m),
+                Some(Value::Logical(a)) => a.len(),
                 Some(Value::SparseVector(sv)) => sv.len,
                 Some(Value::SparseMatrix(sm)) if indices.len() == 1 => sm.rows * sm.cols,
                 _ => 0,
@@ -536,7 +538,7 @@ impl Evaluator {
             if matches!(self.env.get(name.as_str()), Some(Value::Matrix(_)))
                 && matches!(
                     &idx_vals[0],
-                    Value::All | Value::Vector(_) | Value::Matrix(_)
+                    Value::All | Value::Vector(_) | Value::Matrix(_) | Value::Logical(_)
                 )
             {
                 return self.assign_matrix_linear(name, &idx_vals[0], &val, *suppress);
@@ -548,10 +550,9 @@ impl Evaluator {
             // would reject the Vector index.
             let idx_is_multi = matches!(
                 &idx_vals[0],
-                Value::All | Value::Vector(_) | Value::Matrix(_)
+                Value::All | Value::Vector(_) | Value::Matrix(_) | Value::Logical(_)
             );
-            let env_is_vector =
-                matches!(self.env.get(name.as_str()), Some(Value::Vector(_)));
+            let env_is_vector = matches!(self.env.get(name.as_str()), Some(Value::Vector(_)));
             if idx_is_multi && env_is_vector {
                 let vec_len = match self.env.get(name.as_str()) {
                     Some(Value::Vector(v)) => v.len(),
@@ -601,8 +602,7 @@ impl Evaluator {
             }
             let idx = idx_vals[0]
                 .to_scalar()
-                .map_err(|e| ScriptError::type_err(e))?
-                as usize;
+                .map_err(|e| ScriptError::type_err(e))? as usize;
             if idx < 1 {
                 return Err(ScriptError::runtime(
                     "index assignment: index must be >= 1".to_string(),
@@ -613,12 +613,14 @@ impl Evaluator {
                 matches!(self.env.get(name.as_str()), Some(Value::SparseVector(_)));
             if is_sparse_vec_assign {
                 let assign_val = match &val {
-                    Value::Scalar(n)  => Complex::new(*n, 0.0),
+                    Value::Scalar(n) => Complex::new(*n, 0.0),
                     Value::Complex(c) => *c,
-                    other => return Err(ScriptError::runtime(format!(
-                        "index assignment: right-hand side must be scalar or complex, got {}",
-                        other.type_name()
-                    ))),
+                    other => {
+                        return Err(ScriptError::runtime(format!(
+                            "index assignment: right-hand side must be scalar or complex, got {}",
+                            other.type_name()
+                        )))
+                    }
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::SparseVector(sv)) => {
@@ -696,9 +698,9 @@ impl Evaluator {
                     Value::Complex(c) => *c,
                     other => {
                         return Err(ScriptError::runtime(format!(
-                    "index assignment: right-hand side must be scalar or complex, got {}",
-                    other.type_name()
-                )))
+                            "index assignment: right-hand side must be scalar or complex, got {}",
+                            other.type_name()
+                        )))
                     }
                 };
                 match self.env.get_mut(name.as_str()) {
@@ -756,9 +758,9 @@ impl Evaluator {
                     Value::Complex(c) => *c,
                     other => {
                         return Err(ScriptError::runtime(format!(
-                    "index assignment: right-hand side must be scalar or complex, got {}",
-                    other.type_name()
-                )))
+                            "index assignment: right-hand side must be scalar or complex, got {}",
+                            other.type_name()
+                        )))
                     }
                 };
                 let vec = match self.env.get_mut(name.as_str()) {
@@ -775,8 +777,10 @@ impl Evaluator {
                     _ => {
                         // Create new vector of length idx, filled with zeros
                         let new_vec = vec![Complex::new(0.0, 0.0); idx];
-                        self.env
-                            .insert(name.clone(), Value::Vector(Array1::from_vec(new_vec).into()));
+                        self.env.insert(
+                            name.clone(),
+                            Value::Vector(Array1::from_vec(new_vec).into()),
+                        );
                         match self.env.get_mut(name.as_str()) {
                             Some(Value::Vector(v)) => v,
                             _ => unreachable!(),
@@ -809,12 +813,10 @@ impl Evaluator {
             if single_element {
                 let row = idx_vals[0]
                     .to_scalar()
-                    .map_err(|e| ScriptError::type_err(e))?
-                    as usize;
+                    .map_err(|e| ScriptError::type_err(e))? as usize;
                 let col = idx_vals[1]
                     .to_scalar()
-                    .map_err(|e| ScriptError::type_err(e))?
-                    as usize;
+                    .map_err(|e| ScriptError::type_err(e))? as usize;
                 if row < 1 || col < 1 {
                     return Err(ScriptError::runtime(
                         "index assignment: indices must be >= 1".to_string(),
@@ -1087,7 +1089,9 @@ impl Evaluator {
                     }
                     _ => return None,
                 }
-                let Some(Value::Matrix(m)) = self.env.get_mut(name) else { unreachable!() };
+                let Some(Value::Matrix(m)) = self.env.get_mut(name) else {
+                    unreachable!()
+                };
                 let dst = Shared::make_mut_real(m)?.as_slice_mut()?;
                 let run = Value::run_of(&cols);
                 let mut k = 0;
@@ -1095,7 +1099,9 @@ impl Evaluator {
                     let row = &mut dst[r * nc..(r + 1) * nc];
                     match (run, src) {
                         (Some((c0, w)), Src::Fill(x)) => row[c0..c0 + w].fill(x),
-                        (Some((c0, w)), Src::Data(d)) => row[c0..c0 + w].copy_from_slice(&d[k..k + w]),
+                        (Some((c0, w)), Src::Data(d)) => {
+                            row[c0..c0 + w].copy_from_slice(&d[k..k + w])
+                        }
                         (Some((c0, w)), Src::Re(d)) => {
                             for (t, z) in row[c0..c0 + w].iter_mut().zip(&d[k..k + w]) {
                                 *t = z.re;
@@ -1115,8 +1121,12 @@ impl Evaluator {
                 let s = Shared::shape(m);
                 let (nr, nc) = (s[0], s[1]);
                 let positions = match i {
-                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => Value::resolve_index_dim(i, nr * nc).ok()?,
-                    Value::All | Value::Vector(_) | Value::Matrix(_) => matrix_linear_positions(i, nr, nc).ok()?,
+                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => {
+                        Value::resolve_index_dim(i, nr * nc).ok()?
+                    }
+                    Value::All | Value::Vector(_) | Value::Matrix(_) => {
+                        matrix_linear_positions(i, nr, nc).ok()?
+                    }
                     _ => return None,
                 };
                 if positions.iter().any(|&p| p >= nr * nc) {
@@ -1128,7 +1138,9 @@ impl Evaluator {
                 let src = match (src, val) {
                     (Src::Data(_) | Src::Re(_), Value::Matrix(rhs)) => {
                         let rs = Shared::shape(rhs);
-                        col_major = (0..rs[1]).flat_map(|c| (0..rs[0]).map(move |r| src.at(r * rs[1] + c))).collect();
+                        col_major = (0..rs[1])
+                            .flat_map(|c| (0..rs[0]).map(move |r| src.at(r * rs[1] + c)))
+                            .collect();
                         Src::Data(&col_major)
                     }
                     (src, _) => src,
@@ -1136,7 +1148,9 @@ impl Evaluator {
                 if !matches!(src, Src::Fill(_)) && src.len() != positions.len() {
                     return None;
                 }
-                let Some(Value::Matrix(m)) = self.env.get_mut(name) else { unreachable!() };
+                let Some(Value::Matrix(m)) = self.env.get_mut(name) else {
+                    unreachable!()
+                };
                 let dst = Shared::make_mut_real(m)?.as_slice_mut()?;
                 for (k, &p) in positions.iter().enumerate() {
                     let (row, col) = (p % nr, p / nr);
@@ -1147,16 +1161,22 @@ impl Evaluator {
             (Value::Vector(v), [i]) => {
                 let len = Shared::len(v);
                 let positions = match i {
-                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => Value::resolve_index_dim(i, len).ok()?,
+                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => {
+                        Value::resolve_index_dim(i, len).ok()?
+                    }
                     Value::All | Value::Vector(_) | Value::Matrix(_) => {
                         Value::resolve_index_dim_public(i, len).ok()?
                     }
                     _ => return None,
                 };
-                if !matches!(src, Src::Fill(_)) && (!matches!(val, Value::Vector(_)) || src.len() != positions.len()) {
+                if !matches!(src, Src::Fill(_))
+                    && (!matches!(val, Value::Vector(_)) || src.len() != positions.len())
+                {
                     return None;
                 }
-                let Some(Value::Vector(v)) = self.env.get_mut(name) else { unreachable!() };
+                let Some(Value::Vector(v)) = self.env.get_mut(name) else {
+                    unreachable!()
+                };
                 let dst = Shared::make_mut_real(v)?.as_slice_mut()?;
                 for (k, &p) in positions.iter().enumerate() {
                     dst[p] = src.at(k);
@@ -1173,8 +1193,16 @@ impl Evaluator {
     /// row order): each target row is one slice copy or fill. Returns false
     /// without writing otherwise, for the general path (which also reports
     /// shape errors).
-    fn region_write_runs(&mut self, name: &str, rows: &[usize], cols: &[usize], val: &Value) -> bool {
-        let Some((c0, nc)) = Value::run_of(cols) else { return false };
+    fn region_write_runs(
+        &mut self,
+        name: &str,
+        rows: &[usize],
+        cols: &[usize],
+        val: &Value,
+    ) -> bool {
+        let Some((c0, nc)) = Value::run_of(cols) else {
+            return false;
+        };
         let n = rows.len() * nc;
         let (fill, src) = match val {
             Value::Scalar(x) => (Some(Complex::new(*x, 0.0)), None),
@@ -1186,9 +1214,13 @@ impl Evaluator {
         if fill.is_none() && src.is_none() {
             return false;
         }
-        let Some(Value::Matrix(m)) = self.env.get_mut(name) else { return false };
+        let Some(Value::Matrix(m)) = self.env.get_mut(name) else {
+            return false;
+        };
         let stride = Shared::shape(m)[1];
-        let Some(dst) = Shared::make_mut(m).as_slice_mut() else { return false };
+        let Some(dst) = Shared::make_mut(m).as_slice_mut() else {
+            return false;
+        };
         for (i, &r) in rows.iter().enumerate() {
             let row = &mut dst[r * stride + c0..r * stride + c0 + nc];
             match (fill, src) {
@@ -1274,8 +1306,7 @@ impl Evaluator {
                 }
                 match self.env.get_mut(object) {
                     Some(Value::Table(t)) => {
-                        t.assign_column(&field, val)
-                            .map_err(ScriptError::runtime)?;
+                        t.assign_column(&field, val).map_err(ScriptError::runtime)?;
                     }
                     Some(Value::Struct(fields)) => {
                         fields.insert(field.clone(), val);
@@ -2160,7 +2191,11 @@ impl Evaluator {
                     let idx_vals = self.eval_table_subscripts(&table, args)?;
                     return table.select(&idx_vals).map_err(ScriptError::runtime);
                 }
-                if matches!(
+                if (name == "true" || name == "false")
+                    && matches!(self.env.get(name.as_str()), Some(Value::Bool(_)))
+                {
+                    self.eval_logical_constant(name, args)
+                } else if matches!(
                     self.env.get(name.as_str()),
                     Some(Value::Vector(_))
                         | Some(Value::Matrix(_))
@@ -2173,6 +2208,7 @@ impl Evaluator {
                         | Some(Value::Scalar(_))
                         | Some(Value::Complex(_))
                         | Some(Value::Bool(_))
+                        | Some(Value::Logical(_))
                         | Some(Value::Int { .. })
                         | Some(Value::IntArray { .. })
                 ) {
@@ -2298,7 +2334,13 @@ impl Evaluator {
                     && e.is_finite()
                     && e.abs() < EXACT
                 {
-                    let in_range = |v: f64| if inc > 0.0 { v <= e + eps } else { v >= e - eps };
+                    let in_range = |v: f64| {
+                        if inc > 0.0 {
+                            v <= e + eps
+                        } else {
+                            v >= e - eps
+                        }
+                    };
                     let mut n = capacity;
                     while n > 0 && !in_range(s + (n - 1) as f64 * inc) {
                         n -= 1;
@@ -2647,9 +2689,8 @@ impl Evaluator {
                         ));
                     }
                     let names_val = self.eval_expr(&args[i + 1])?;
-                    override_names = Some(
-                        table::names_from_value(names_val).map_err(ScriptError::type_err)?,
-                    );
+                    override_names =
+                        Some(table::names_from_value(names_val).map_err(ScriptError::type_err)?);
                     i += 2;
                     continue;
                 }
@@ -2683,13 +2724,8 @@ impl Evaluator {
             self.env.remove("end");
             Ok(vec![row_val, col_val])
         } else {
-            let n = if args.len() == 1 {
-                table.height()
-            } else {
-                0
-            };
-            self.env
-                .insert("end".to_string(), Value::Scalar(n as f64));
+            let n = if args.len() == 1 { table.height() } else { 0 };
+            self.env.insert("end".to_string(), Value::Scalar(n as f64));
             let vals = args
                 .iter()
                 .map(|a| self.eval_expr(a))
@@ -3025,7 +3061,11 @@ impl Evaluator {
     /// Values that are referenced are cloned in full. There is no
     /// copy-on-write, so a lambda that mentions a large matrix copies
     /// that matrix once.
-    fn capture_lambda_env(&self, params: &[String], body: &Expr) -> fast_hash::FxHashMap<String, Value> {
+    fn capture_lambda_env(
+        &self,
+        params: &[String],
+        body: &Expr,
+    ) -> fast_hash::FxHashMap<String, Value> {
         let analysis = crate::free_vars::analyze_lambda(params, body);
         if analysis.dynamic_feval || self.captured_handle_is_feval(&analysis.names) {
             return self.env.clone();
@@ -3038,7 +3078,10 @@ impl Evaluator {
         // along; they are the same kind of constant and cost nothing
         // next to a matrix.
         const CONSTS: &[&str] = line_io::BUILTIN_CONSTS;
-        let mut captured = fast_hash::FxHashMap::with_capacity_and_hasher(names.len() + CONSTS.len(), Default::default());
+        let mut captured = fast_hash::FxHashMap::with_capacity_and_hasher(
+            names.len() + CONSTS.len(),
+            Default::default(),
+        );
         for name in names {
             if let Some(v) = self.env.get(&name) {
                 captured.insert(name, v.clone());
@@ -3373,6 +3416,41 @@ impl Evaluator {
         result
     }
 
+    /// `true` / `false` still hold a scalar bool. `true(m)` and `true(m, n)`
+    /// build a logical array when the name has not been shadowed. `true(n)`
+    /// is `n×n`, matching `zeros(n)`. `true()` is the scalar.
+    fn eval_logical_constant(&mut self, name: &str, args: &[Expr]) -> Result<Value, ScriptError> {
+        let bit = name == "true";
+        if args.is_empty() {
+            return Ok(Value::Bool(bit));
+        }
+        if args.len() > 2 {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected 0, 1, or 2 size arguments, got {}",
+                args.len()
+            )));
+        }
+        let mut dims = Vec::with_capacity(args.len());
+        for a in args {
+            let v = self.eval_expr(a)?;
+            let n = v.to_scalar().map_err(ScriptError::type_err)?;
+            if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: size {n} is not a nonnegative integer"
+                )));
+            }
+            dims.push(n as usize);
+        }
+        let (rows, cols) = if dims.len() == 1 {
+            (dims[0], dims[0])
+        } else {
+            (dims[0], dims[1])
+        };
+        LogicalArray::filled(rows, cols, bit)
+            .map(Value::Logical)
+            .map_err(|e| ScriptError::runtime(e.to_string()))
+    }
+
     /// `name(args)` where `name` holds an indexable value (the indexing
     /// branch of `Expr::Call`). Kept out of `eval_expr` so its locals do not
     /// enlarge every recursive `eval_expr` frame.
@@ -3385,14 +3463,13 @@ impl Evaluator {
         // subscripts are evaluated, and the variable is borrowed
         // for the selection itself.
         let promoted: Option<Value> = match &self.env[name] {
-            Value::Scalar(x) => {
-                Some(Value::Vector(Array1::from_elem(1, Complex::new(*x, 0.0)).into()))
-            }
+            Value::Scalar(x) => Some(Value::Vector(
+                Array1::from_elem(1, Complex::new(*x, 0.0)).into(),
+            )),
             Value::Complex(c) => Some(Value::Vector(Array1::from_elem(1, *c).into())),
-            Value::Bool(b) => Some(Value::Vector(Array1::from_elem(
-                1,
-                Complex::new(if *b { 1.0 } else { 0.0 }, 0.0),
-            ).into())),
+            Value::Bool(b) => Some(Value::Vector(
+                Array1::from_elem(1, Complex::new(if *b { 1.0 } else { 0.0 }, 0.0)).into(),
+            )),
             // A scalar integer becomes a 1×1 integer array so the
             // indexing path (which handles IntArray) accepts it.
             Value::Int {
@@ -3468,7 +3545,9 @@ impl Evaluator {
             Some(v) => v,
             None => &self.env[name],
         };
-        let result = container.index_ref(idx_vals).map_err(|e| ScriptError::runtime(e));
+        let result = container
+            .index_ref(idx_vals)
+            .map_err(|e| ScriptError::runtime(e));
         self.profiler.exit_op(frame, 0, 0);
         result
     }
@@ -3480,7 +3559,12 @@ impl Evaluator {
     /// evaluated (expressions do not assign), so the order is unobservable:
     /// non-variable operands are evaluated first, then variables borrowed.
     #[inline(never)]
-    fn eval_arith_binop(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
+    fn eval_arith_binop(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Result<Value, ScriptError> {
         if op == BinOp::Mul && (is_transpose_expr(lhs) || is_transpose_expr(rhs)) {
             return self.eval_transposed_matmul(lhs, rhs);
         }
@@ -3494,7 +3578,9 @@ impl Evaluator {
         // arm applies to two real scalars. With profiling on, the general
         // path runs so the operator rows are recorded.
         if !frame_names {
-            if let (PreOperand::Owned(Value::Scalar(a)), PreOperand::Owned(Value::Scalar(b))) = (&l, &r) {
+            if let (PreOperand::Owned(Value::Scalar(a)), PreOperand::Owned(Value::Scalar(b))) =
+                (&l, &r)
+            {
                 let (a, b) = (*a, *b);
                 let fast = match op {
                     BinOp::Add => Some(a + b),
@@ -3514,7 +3600,12 @@ impl Evaluator {
 
     /// The general part of [`eval_arith_binop`](Self::eval_arith_binop),
     /// once both operands are evaluated.
-    fn finish_binop(&mut self, op: BinOp, l: PreOperand, r: PreOperand) -> Result<Value, ScriptError> {
+    fn finish_binop(
+        &mut self,
+        op: BinOp,
+        l: PreOperand,
+        r: PreOperand,
+    ) -> Result<Value, ScriptError> {
         use elementwise::Operand;
         let frame_names = self.profiler.is_enabled();
         let result = match (l, r) {
@@ -3526,7 +3617,11 @@ impl Evaluator {
                 } else {
                     None
                 };
-                let in_bytes = if frame.is_some() { Self::value_bytes(&l) + Self::value_bytes(&r) } else { 0 };
+                let in_bytes = if frame.is_some() {
+                    Self::value_bytes(&l) + Self::value_bytes(&r)
+                } else {
+                    0
+                };
                 let result = Value::binop(op, l, r).map_err(ScriptError::type_err);
                 self.exit_op_result(frame, in_bytes, &result);
                 return result;
@@ -3541,7 +3636,8 @@ impl Evaluator {
                     PreOperand::Var(name) => Operand::Borrowed(&self.env[name]),
                 };
                 let frame = if frame_names {
-                    self.profiler.enter_op(profile_op_name(op, l.get(), r.get()))
+                    self.profiler
+                        .enter_op(profile_op_name(op, l.get(), r.get()))
                 } else {
                     None
                 };
@@ -3589,7 +3685,11 @@ impl Evaluator {
                     ))
                 })?;
                 let result = Value::real_matrix(product);
-                let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
+                let out_bytes = if frame.is_some() {
+                    Self::value_bytes(&result)
+                } else {
+                    0
+                };
                 self.profiler.exit_op(frame, in_bytes, out_bytes);
                 return Ok(result);
             }
@@ -3597,14 +3697,19 @@ impl Evaluator {
         if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
             if a.ncols() == b.nrows() {
                 let frame = self.profiler.enter_op("[matmul]");
-                let product = rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b).map_err(|_| {
-                    ScriptError::type_err(rustlab_core::variable_too_large(
-                        "*",
-                        &[a.nrows(), b.ncols()],
-                    ))
-                })?;
+                let product =
+                    rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b).map_err(|_| {
+                        ScriptError::type_err(rustlab_core::variable_too_large(
+                            "*",
+                            &[a.nrows(), b.ncols()],
+                        ))
+                    })?;
                 let result = Value::Matrix(product.into());
-                let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
+                let out_bytes = if frame.is_some() {
+                    Self::value_bytes(&result)
+                } else {
+                    0
+                };
                 self.profiler.exit_op(frame, in_bytes, out_bytes);
                 return Ok(result);
             }
@@ -3618,14 +3723,23 @@ impl Evaluator {
     /// is evaluated (or named, to borrow) but not yet transposed.
     fn matmul_side<'e>(&mut self, e: &'e Expr) -> Result<MatmulSide<'e>, ScriptError> {
         Ok(match e {
-            Expr::Transpose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: true },
-            Expr::NonConjTranspose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: false },
+            Expr::Transpose(inner) => MatmulSide::T {
+                inner: self.binop_operand(inner)?,
+                conj: true,
+            },
+            Expr::NonConjTranspose(inner) => MatmulSide::T {
+                inner: self.binop_operand(inner)?,
+                conj: false,
+            },
             _ => MatmulSide::Plain(self.binop_operand(e)?),
         })
     }
 
     /// Write out a pending transpose, as `eval_transpose` would.
-    fn materialize_side<'e>(&mut self, side: MatmulSide<'e>) -> Result<PreOperand<'e>, ScriptError> {
+    fn materialize_side<'e>(
+        &mut self,
+        side: MatmulSide<'e>,
+    ) -> Result<PreOperand<'e>, ScriptError> {
         let (inner, conj) = match side {
             MatmulSide::Plain(p) => return Ok(p),
             MatmulSide::T { inner, conj } => (inner, conj),
@@ -3636,9 +3750,21 @@ impl Evaluator {
                 PreOperand::Owned(v) => v,
                 PreOperand::Var(name) => &self.env[*name],
             };
-            let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
-            let in_bytes = if frame.is_some() { Self::value_bytes(v) } else { 0 };
-            let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+            let result = if conj {
+                v.transpose_ref()
+            } else {
+                v.non_conj_transpose_ref()
+            };
+            let in_bytes = if frame.is_some() {
+                Self::value_bytes(v)
+            } else {
+                0
+            };
+            let out_bytes = if frame.is_some() {
+                result.as_ref().map_or(0, Self::value_bytes)
+            } else {
+                0
+            };
             (in_bytes, out_bytes, result)
         };
         self.profiler.exit_op(frame, in_bytes, out_bytes);
@@ -3676,9 +3802,21 @@ impl Evaluator {
                 (None, Expr::Var(name)) => &self.env[name],
                 (None, _) => unreachable!("only a variable is borrowed"),
             };
-            let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
-            let in_bytes = if frame.is_some() { Self::value_bytes(v) } else { 0 };
-            let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+            let result = if conj {
+                v.transpose_ref()
+            } else {
+                v.non_conj_transpose_ref()
+            };
+            let in_bytes = if frame.is_some() {
+                Self::value_bytes(v)
+            } else {
+                0
+            };
+            let out_bytes = if frame.is_some() {
+                result.as_ref().map_or(0, Self::value_bytes)
+            } else {
+                0
+            };
             (in_bytes, out_bytes, result)
         };
         self.profiler.exit_op(frame, in_bytes, out_bytes);
@@ -3705,6 +3843,15 @@ impl Evaluator {
                 let col_val = self.eval_expr(&args[1])?;
                 self.env.remove("end");
                 vec![row_val, col_val]
+            } else if let Value::Logical(a) = &container {
+                self.env
+                    .insert("end".to_string(), Value::Scalar(a.rows() as f64));
+                let row_val = self.eval_expr(&args[0])?;
+                self.env
+                    .insert("end".to_string(), Value::Scalar(a.cols() as f64));
+                let col_val = self.eval_expr(&args[1])?;
+                self.env.remove("end");
+                vec![row_val, col_val]
             } else {
                 let end_val = match &container {
                     Value::Vector(v) => v.len(),
@@ -3723,6 +3870,7 @@ impl Evaluator {
             let end_val = match &container {
                 Value::Vector(v) => v.len(),
                 Value::Matrix(m) => m.nrows() * m.ncols(),
+                Value::Logical(a) => a.len(),
                 _ => 0,
             };
             self.env
@@ -3840,8 +3988,17 @@ impl Evaluator {
     }
 
     /// Close an operator frame with `in_bytes` and the stored size of `result`.
-    fn exit_op_result(&mut self, frame: profile::OpFrame, in_bytes: u64, result: &Result<Value, ScriptError>) {
-        let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+    fn exit_op_result(
+        &mut self,
+        frame: profile::OpFrame,
+        in_bytes: u64,
+        result: &Result<Value, ScriptError>,
+    ) {
+        let out_bytes = if frame.is_some() {
+            result.as_ref().map_or(0, Self::value_bytes)
+        } else {
+            0
+        };
         self.profiler.exit_op(frame, in_bytes, out_bytes);
     }
 
@@ -4496,6 +4653,19 @@ fn matrix_linear_positions(idx: &Value, nr: usize, nc: usize) -> Result<Vec<usiz
             }
             v.iter().map(|c| one_based_index(c.re)).collect()
         }
+        Value::Logical(a) => {
+            if a.rows() == nr && a.cols() == nc {
+                return Ok(a.true_positions_column_major());
+            }
+            if (a.rows() <= 1 || a.cols() <= 1) && a.len() == total {
+                return Ok(a.true_indices_storage_order());
+            }
+            Err(ScriptError::runtime(format!(
+                "index assignment: logical mask is {}x{}, expected {nr}x{nc} or a vector of length {total}",
+                a.rows(),
+                a.cols()
+            )))
+        }
         Value::Matrix(m) => {
             let same_shape_logical = m.nrows() == nr
                 && m.ncols() == nc
@@ -4570,10 +4740,12 @@ fn rhs_for_linear_assign(val: &Value, n: usize) -> Result<Vec<C64>, ScriptError>
             }
             data
         }
-        other => return Err(ScriptError::runtime(format!(
+        other => {
+            return Err(ScriptError::runtime(format!(
             "index assignment: right-hand side must be scalar, complex, vector, or matrix; got {}",
             other.type_name()
-        ))),
+        )))
+        }
     };
     if flat.len() != n {
         return Err(ScriptError::runtime(format!(
@@ -4851,6 +5023,7 @@ impl IndexShape {
             Value::Vector(v) => Some((1, Shared::len(v))),
             Value::SparseVector(sv) => Some((1, sv.len)),
             Value::IntArray { rows, cols, .. } => Some((*rows, *cols)),
+            Value::Logical(a) => Some((a.rows(), a.cols())),
             _ => None,
         };
         let len = match v {
@@ -4867,12 +5040,16 @@ impl IndexShape {
             Value::Str(s) => Some(s.chars().count()),
             Value::StringArray(v) => Some(v.len()),
             Value::IntArray { data, .. } => Some(data.len()),
+            Value::Logical(a) => Some(a.len()),
             _ => None,
         };
         IndexShape {
             tensor,
             rows_cols,
-            matrix_like: matches!(v, Value::SparseMatrix(_) | Value::Matrix(_)),
+            matrix_like: matches!(
+                v,
+                Value::SparseMatrix(_) | Value::Matrix(_) | Value::Logical(_)
+            ),
             len,
         }
     }
@@ -4889,7 +5066,10 @@ enum PreOperand<'e> {
 enum MatmulSide<'e> {
     Plain(PreOperand<'e>),
     /// `inner'` (`conj`) or `inner.'`, not yet transposed.
-    T { inner: PreOperand<'e>, conj: bool },
+    T {
+        inner: PreOperand<'e>,
+        conj: bool,
+    },
 }
 
 impl MatmulSide<'_> {
@@ -4908,7 +5088,10 @@ impl MatmulSide<'_> {
 
     /// The real matrix this operand stands for, transposed or not, when it
     /// is a real-stored matrix.
-    fn real_view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<ndarray::ArrayView2<'a, f64>> {
+    fn real_view<'a>(
+        &'a self,
+        env: &'a fast_hash::FxHashMap<String, Value>,
+    ) -> Option<ndarray::ArrayView2<'a, f64>> {
         let get = |p: &'a PreOperand| match p {
             PreOperand::Owned(v) => v,
             PreOperand::Var(name) => &env[*name],
@@ -4927,7 +5110,10 @@ impl MatmulSide<'_> {
 
     /// The matrix this operand stands for, as a view plus whether its
     /// elements are to be conjugated, when it is a matrix.
-    fn view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<(ndarray::ArrayView2<'a, C64>, bool)> {
+    fn view<'a>(
+        &'a self,
+        env: &'a fast_hash::FxHashMap<String, Value>,
+    ) -> Option<(ndarray::ArrayView2<'a, C64>, bool)> {
         let get = |p: &'a PreOperand| match p {
             PreOperand::Owned(v) => v,
             PreOperand::Var(name) => &env[*name],
