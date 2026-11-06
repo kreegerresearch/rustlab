@@ -56,7 +56,7 @@ end
 
 # Ring buffer: store each frame in its own slot for O(frame) writes
 # On read, concatenate tail + head to get contiguous time-domain data.
-ring  = zeros(fft_size);
+ring  = zeros(1, fft_size);
 wpos  = 0;        # next slot index (0-based, wraps at slots)
 count = 0;
 

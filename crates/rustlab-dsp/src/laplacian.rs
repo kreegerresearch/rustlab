@@ -24,14 +24,15 @@
 //!
 //! Helpers `ij2k`, `k2ij`, `ijk2k`, `k2ijk` round-trip these indices.
 //!
-//! The `laplacian_eps_2d` builder solves the variable-coefficient case
-//! `∇·(ε∇V)` via a flux-conservative discretization with harmonic-mean
-//! half-cell coefficients — the standard formulation for Poisson in a
-//! piecewise-uniform dielectric.
+//! The `laplacian_eps_2d` and `laplacian_eps_3d` builders solve the
+//! variable-coefficient case `∇·(ε∇V)` via a flux-conservative
+//! discretization with harmonic-mean half-cell coefficients — the
+//! standard formulation for Poisson in a piecewise-uniform dielectric.
 
 use crate::error::DspError;
+use ndarray::Array3;
 use num_complex::Complex;
-use rustlab_core::{CMatrix, SparseMat, C64};
+use rustlab_core::{CMatrix, CTensor3, SparseMat, C64};
 
 /// Boundary-condition selector for `laplacian_*` builders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,18 @@ fn check_min(name: &str, label: &str, n: usize, min: usize) -> Result<(), DspErr
 
 fn c(v: f64) -> C64 {
     Complex::new(v, 0.0)
+}
+
+/// Harmonic mean `2ab / (a + b)` of two complex face neighbours. Returns 0
+/// when the sum underflows (consistent with "no flux through a vacuum
+/// face"). Shared by the 2-D and 3-D variable-coefficient builders.
+fn hmean(a: C64, b: C64) -> C64 {
+    let sum = a + b;
+    if sum.norm() < 1e-300 {
+        Complex::new(0.0, 0.0)
+    } else {
+        (Complex::new(2.0, 0.0) * a * b) / sum
+    }
 }
 
 /// Helper for the row-by-row Laplacian builders: collect up to `MAX`
@@ -161,7 +174,9 @@ pub fn laplacian_2d_bc(
     check_pos("laplacian_2d", "dy", dy)?;
     let inv_dx2 = 1.0 / (dx * dx);
     let inv_dy2 = 1.0 / (dy * dy);
-    let n = nx * ny;
+    let n = rustlab_core::checked_elems(&[nx, ny], rustlab_core::ELEM_F64).map_err(|_| {
+        DspError::InvalidParameter(rustlab_core::variable_too_large("laplacian_2d", &[nx, ny]))
+    })?;
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
     let mut buf: [(usize, C64); 5] = [(0, c(0.0)); 5];
 
@@ -424,18 +439,6 @@ pub fn laplacian_eps_2d(
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
     let mut buf: [(usize, C64); 5] = [(0, c(0.0)); 5];
 
-    // Harmonic mean of two complex values, treating the harmonic mean of
-    // an arithmetic sum as the complex equivalent. Returns 0 if either
-    // value is zero (consistent with "no flux through a vacuum face").
-    fn hmean(a: C64, b: C64) -> C64 {
-        let sum = a + b;
-        if sum.norm() < 1e-300 {
-            Complex::new(0.0, 0.0)
-        } else {
-            (Complex::new(2.0, 0.0) * a * b) / sum
-        }
-    }
-
     let eps_at = |i: usize, j: usize| eps_map[[i, j]];
 
     for j in 0..nx {
@@ -542,6 +545,191 @@ pub fn laplacian_eps_2d(
             len += 1;
 
             flush_row::<5>(&mut entries, k, &mut buf, len);
+        }
+    }
+
+    Ok(SparseMat::from_sorted_entries(n, n, entries))
+}
+
+/// Variable-coefficient Laplacian `∇·(ε∇V)` on a 3-D uniform grid.
+///
+/// The 3-D form of [`laplacian_eps_2d`]: each of the six faces of a cell
+/// carries the harmonic mean `2·εa·εb / (εa + εb)` of the two cells that
+/// share it, scaled by `1/h²` for that axis. `eps_map` is shape
+/// `(ny, nx, nz)` — the `Tensor3` convention, axis 0 = y, axis 1 = x,
+/// axis 2 = z — real or complex. Flat index and strides are those of
+/// [`laplacian_3d`]: `k = (kk*nx + j)*ny + i`.
+///
+/// Boundary semantics match the 2-D builder:
+/// - Dirichlet: the ghost cell is 0, so the boundary face drops its
+///   off-diagonal and still subtracts the face coefficient (the cell's
+///   own ε) from the diagonal.
+/// - Neumann: the boundary face is skipped (zero flux).
+/// - Periodic: wrap to the opposite-side cell.
+///
+/// A uniform `eps_map ≡ c` gives `c * laplacian_3d(...)` entrywise.
+pub fn laplacian_eps_3d(
+    eps_map: &CTensor3,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    bc: BoundaryCondition,
+) -> Result<SparseMat, DspError> {
+    let (ny, nx, nz) = eps_map.dim();
+    laplacian_eps_3d_with(ny, nx, nz, |i, j, kk| eps_map[[i, j, kk]], dx, dy, dz, bc)
+}
+
+/// [`laplacian_eps_3d`] for a real `eps_map`. The result is bit for bit
+/// the operator built from the same values stored as complex.
+pub fn laplacian_eps_3d_real(
+    eps_map: &Array3<f64>,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    bc: BoundaryCondition,
+) -> Result<SparseMat, DspError> {
+    let (ny, nx, nz) = eps_map.dim();
+    laplacian_eps_3d_with(
+        ny,
+        nx,
+        nz,
+        |i, j, kk| c(eps_map[[i, j, kk]]),
+        dx,
+        dy,
+        dz,
+        bc,
+    )
+}
+
+/// One face of a cell in the variable-coefficient stencil.
+enum Face {
+    /// A neighbouring cell (interior or periodic wrap): column and its ε.
+    Cell(usize, C64),
+    /// Dirichlet ghost cell outside the grid (value 0).
+    Ghost,
+    /// Neumann boundary: no flux, nothing emitted.
+    Closed,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn laplacian_eps_3d_with(
+    ny: usize,
+    nx: usize,
+    nz: usize,
+    eps_at: impl Fn(usize, usize, usize) -> C64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    bc: BoundaryCondition,
+) -> Result<SparseMat, DspError> {
+    const NAME: &str = "laplacian_eps_3d";
+    check_min(NAME, "ny (eps_map rows)", ny, 2)?;
+    check_min(NAME, "nx (eps_map cols)", nx, 2)?;
+    check_min(NAME, "nz (eps_map pages)", nz, 2)?;
+    check_pos(NAME, "dx", dx)?;
+    check_pos(NAME, "dy", dy)?;
+    check_pos(NAME, "dz", dz)?;
+    let n = rustlab_core::checked_elems(&[ny, nx, nz], rustlab_core::ELEM_F64).map_err(|_| {
+        DspError::InvalidParameter(rustlab_core::variable_too_large(NAME, &[ny, nx, nz]))
+    })?;
+    let inv_dx2 = 1.0 / (dx * dx);
+    let inv_dy2 = 1.0 / (dy * dy);
+    let inv_dz2 = 1.0 / (dz * dz);
+    let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(7 * n);
+    let mut buf: [(usize, C64); 7] = [(0, c(0.0)); 7];
+
+    let stride_y = 1;
+    let stride_x = ny;
+    let stride_z = nx * ny;
+
+    // A face on the grid edge; `wrap_*` is the opposite-side cell used
+    // only by the periodic case.
+    let boundary = |wrap_col: usize, wrap_eps: C64| match bc {
+        BoundaryCondition::Dirichlet => Face::Ghost,
+        BoundaryCondition::Neumann => Face::Closed,
+        BoundaryCondition::Periodic => Face::Cell(wrap_col, wrap_eps),
+    };
+
+    for kk in 0..nz {
+        for j in 0..nx {
+            for i in 0..ny {
+                let k = (kk * nx + j) * ny + i;
+                let me = eps_at(i, j, kk);
+                let mut diag = c(0.0);
+                let mut len = 0usize;
+
+                let faces = [
+                    // y-direction (i)
+                    (
+                        if i > 0 {
+                            Face::Cell(k - stride_y, eps_at(i - 1, j, kk))
+                        } else {
+                            boundary(k + (ny - 1) * stride_y, eps_at(ny - 1, j, kk))
+                        },
+                        inv_dy2,
+                    ),
+                    (
+                        if i + 1 < ny {
+                            Face::Cell(k + stride_y, eps_at(i + 1, j, kk))
+                        } else {
+                            boundary(k - (ny - 1) * stride_y, eps_at(0, j, kk))
+                        },
+                        inv_dy2,
+                    ),
+                    // x-direction (j)
+                    (
+                        if j > 0 {
+                            Face::Cell(k - stride_x, eps_at(i, j - 1, kk))
+                        } else {
+                            boundary(k + (nx - 1) * stride_x, eps_at(i, nx - 1, kk))
+                        },
+                        inv_dx2,
+                    ),
+                    (
+                        if j + 1 < nx {
+                            Face::Cell(k + stride_x, eps_at(i, j + 1, kk))
+                        } else {
+                            boundary(k - (nx - 1) * stride_x, eps_at(i, 0, kk))
+                        },
+                        inv_dx2,
+                    ),
+                    // z-direction (kk)
+                    (
+                        if kk > 0 {
+                            Face::Cell(k - stride_z, eps_at(i, j, kk - 1))
+                        } else {
+                            boundary(k + (nz - 1) * stride_z, eps_at(i, j, nz - 1))
+                        },
+                        inv_dz2,
+                    ),
+                    (
+                        if kk + 1 < nz {
+                            Face::Cell(k + stride_z, eps_at(i, j, kk + 1))
+                        } else {
+                            boundary(k - (nz - 1) * stride_z, eps_at(i, j, 0))
+                        },
+                        inv_dz2,
+                    ),
+                ];
+
+                for (face, inv_h2) in faces {
+                    match face {
+                        Face::Cell(col, eps_nb) => {
+                            let coeff = hmean(me, eps_nb) * c(inv_h2);
+                            buf[len] = (col, coeff);
+                            len += 1;
+                            diag -= coeff;
+                        }
+                        Face::Ghost => diag -= hmean(me, me) * c(inv_h2),
+                        Face::Closed => {}
+                    }
+                }
+
+                buf[len] = (k, diag);
+                len += 1;
+
+                flush_row::<7>(&mut entries, k, &mut buf, len);
+            }
         }
     }
 
@@ -767,6 +955,268 @@ mod tests {
         assert_eq!(l.rows, ny * nx);
         assert_eq!(l.cols, ny * nx);
         assert!(l.nnz() > 0);
+    }
+
+    // ─── 3-D eps-Laplacian ────────────────────────────────────────
+
+    const ALL_BC: [BoundaryCondition; 3] = [
+        BoundaryCondition::Dirichlet,
+        BoundaryCondition::Neumann,
+        BoundaryCondition::Periodic,
+    ];
+
+    fn dense_c(s: &SparseMat) -> Array2<C64> {
+        let mut m = Array2::zeros((s.rows, s.cols));
+        for &(r, c, v) in &s.entries {
+            m[[r, c]] += v;
+        }
+        m
+    }
+
+    /// Deterministic values in [0, 1) so the tests do not need an RNG crate.
+    fn lcg(seed: &mut u64) -> f64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*seed >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// A positive, strongly varying real ε map (range [0.5, 20.5)).
+    fn varied_eps(ny: usize, nx: usize, nz: usize, seed: u64) -> CTensor3 {
+        let mut s = seed;
+        Array3::from_shape_fn((ny, nx, nz), |_| c(0.5 + 20.0 * lcg(&mut s)))
+    }
+
+    #[test]
+    fn lap_eps_3d_uniform_eps_is_scaled_lap_3d() {
+        // ε ≡ c gives c * laplacian_3d entrywise, for every bc, anisotropic
+        // spacing, and sizes including the n = 2 periodic duplicate case.
+        let shapes = [(2, 2, 2), (3, 4, 5), (5, 3, 2)];
+        let consts = [c(3.7), Complex::new(2.0, -0.3)];
+        for &(ny, nx, nz) in &shapes {
+            for &cst in &consts {
+                for bc in ALL_BC {
+                    let eps = Array3::from_elem((ny, nx, nz), cst);
+                    let le = laplacian_eps_3d(&eps, 0.1, 0.25, 0.04, bc).unwrap();
+                    let l = laplacian_3d(nx, ny, nz, 0.1, 0.25, 0.04, bc).unwrap();
+                    let (me, m) = (dense_c(&le), dense_c(&l));
+                    let scale = m.iter().map(|v| v.norm()).fold(0.0, f64::max) * cst.norm();
+                    for (a, b) in me.iter().zip(m.iter()) {
+                        assert!(
+                            (a - cst * b).norm() <= 1e-12 * scale,
+                            "{bc:?} {ny}x{nx}x{nz} c={cst}: {a} vs {}",
+                            cst * b
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_constants_in_null_space() {
+        // Neumann and periodic: L * 1 = 0 for any ε (zero net flux).
+        let eps = varied_eps(4, 5, 3, 7);
+        for bc in [BoundaryCondition::Neumann, BoundaryCondition::Periodic] {
+            let l = laplacian_eps_3d(&eps, 0.5, 1.0, 0.2, bc).unwrap();
+            let v = l.spmv(&ndarray::Array1::from_elem(60, c(1.0))).unwrap();
+            let scale = l.entries.iter().map(|e| e.2.norm()).fold(0.0, f64::max);
+            for r in v.iter() {
+                assert!(r.norm() < 1e-12 * scale, "{bc:?}: residual {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_dirichlet_constant_not_in_null_space() {
+        // The grounded ghost cells make the Dirichlet operator nonsingular,
+        // so a constant leaks flux at every boundary cell.
+        let eps = varied_eps(3, 3, 3, 3);
+        let l = laplacian_eps_3d(&eps, 1.0, 1.0, 1.0, BoundaryCondition::Dirichlet).unwrap();
+        let v = l.spmv(&ndarray::Array1::from_elem(27, c(1.0))).unwrap();
+        // Only the centre cell (k = 13) has no boundary face.
+        for (k, r) in v.iter().enumerate() {
+            if k == 13 {
+                assert!(r.norm() < 1e-12);
+            } else {
+                assert!(r.re < -0.1, "row {k}: {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_symmetric() {
+        // Each face coefficient is shared by its two cells, so the operator
+        // is symmetric (complex-symmetric, not Hermitian, for complex ε).
+        let mut s = 11u64;
+        let lossy = Array3::from_shape_fn((3, 4, 3), |_| {
+            Complex::new(1.0 + 9.0 * lcg(&mut s), -lcg(&mut s))
+        });
+        for eps in [varied_eps(3, 4, 3, 5), lossy] {
+            for bc in ALL_BC {
+                let m = dense_c(&laplacian_eps_3d(&eps, 0.3, 0.7, 0.11, bc).unwrap());
+                for r in 0..m.nrows() {
+                    for cc in 0..m.ncols() {
+                        assert_eq!(m[[r, cc]], m[[cc, r]], "{bc:?} ({r},{cc})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_negative_semidefinite() {
+        // Real positive ε: off-diagonals are positive and the diagonal is
+        // minus their sum (Neumann/periodic) or below it (Dirichlet), so by
+        // Gershgorin every eigenvalue is ≤ 0. Check the dominance directly
+        // and the quadratic form xᵀLx ≤ 0 on deterministic vectors.
+        let eps = varied_eps(4, 3, 5, 9);
+        let n = 60;
+        for bc in ALL_BC {
+            let l = laplacian_eps_3d(&eps, 0.2, 0.3, 0.05, bc).unwrap();
+            let m = dense(&l);
+            for r in 0..n {
+                let off: f64 = (0..n).filter(|&cc| cc != r).map(|cc| m[[r, cc]]).sum();
+                assert!((0..n).all(|cc| cc == r || m[[r, cc]] >= 0.0));
+                assert!(m[[r, r]] + off <= 1e-9 * off, "{bc:?} row {r}");
+            }
+            let mut s = 21u64;
+            for _ in 0..20 {
+                let x: Vec<f64> = (0..n).map(|_| lcg(&mut s) - 0.5).collect();
+                let q: f64 = (0..n)
+                    .map(|r| x[r] * (0..n).map(|cc| m[[r, cc]] * x[cc]).sum::<f64>())
+                    .sum();
+                assert!(q <= 1e-9, "{bc:?}: xᵀLx = {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_hand_computed_two_layer() {
+        // 2×2×2, ε = 1 on page kk = 0 and ε = 4 on page kk = 1,
+        // dx = 1, dy = 2, dz = 0.5 → 1/dx² = 1, 1/dy² = 0.25, 1/dz² = 4.
+        // Interface face: hmean(1, 4) = 1.6, times 4 = 6.4.
+        let mut eps = Array3::from_elem((2, 2, 2), c(1.0));
+        for i in 0..2 {
+            for j in 0..2 {
+                eps[[i, j, 1]] = c(4.0);
+            }
+        }
+        let l = laplacian_eps_3d(&eps, 1.0, 2.0, 0.5, BoundaryCondition::Dirichlet).unwrap();
+        let m = dense(&l);
+        // Row 0 = (i 0, j 0, kk 0): y+ → k 1 (0.25), x+ → k 2 (1),
+        // z+ → k 4 (6.4); ghosts y (0.25), x (1), z (1·4 = 4).
+        // Diagonal −(0.25 + 0.25 + 1 + 1 + 6.4 + 4) = −12.9.
+        assert!(close(m[[0, 0]], -12.9, 1e-14));
+        assert!(close(m[[0, 1]], 0.25, 1e-14));
+        assert!(close(m[[0, 2]], 1.0, 1e-14));
+        assert!(close(m[[0, 4]], 6.4, 1e-14));
+        // Row 4 = (0, 0, 1): y 4·0.25 = 1 each, x 4 each, z− 6.4, z ghost 16.
+        // Diagonal −(1 + 1 + 4 + 4 + 6.4 + 16) = −32.4.
+        assert!(close(m[[4, 4]], -32.4, 1e-14));
+        assert!(close(m[[4, 5]], 1.0, 1e-14));
+        assert!(close(m[[4, 6]], 4.0, 1e-14));
+        assert!(close(m[[4, 0]], 6.4, 1e-14));
+        // Every row of a 2×2×2 Dirichlet grid has three neighbours.
+        for r in 0..8 {
+            assert_eq!(l.entries.iter().filter(|e| e.0 == r).count(), 4, "row {r}");
+        }
+        assert_eq!(
+            l.ordering_hint, None,
+            "the builtin stamps the hint, not the builder"
+        );
+    }
+
+    #[test]
+    fn lap_eps_3d_interface_face_is_harmonic_mean() {
+        // A z-interface between ε = 2 and ε = 50: the face coefficient is
+        // 2·2·50/52 / dz², the same on both sides of the face. The
+        // arithmetic mean (26) would be ~13.5× too large.
+        let (ny, nx, nz) = (3, 3, 4);
+        let eps = Array3::from_shape_fn((ny, nx, nz), |(_, _, kk)| {
+            c(if kk < 2 { 2.0 } else { 50.0 })
+        });
+        let dz = 0.1;
+        let m = dense(&laplacian_eps_3d(&eps, 1.0, 1.0, dz, BoundaryCondition::Neumann).unwrap());
+        let want = 2.0 * 2.0 * 50.0 / 52.0 / (dz * dz);
+        let sz = nx * ny;
+        for i in 0..ny {
+            for j in 0..nx {
+                let below = (nx + j) * ny + i; // kk = 1
+                assert!(close(m[[below, below + sz]], want, 1e-14));
+                assert!(close(m[[below + sz, below]], want, 1e-14));
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_real_storage_bit_equal() {
+        let mut s = 5u64;
+        let r = Array3::from_shape_fn((3, 4, 2), |_| 0.25 + 7.0 * lcg(&mut s));
+        let cplx = r.mapv(c);
+        for bc in ALL_BC {
+            let a = laplacian_eps_3d_real(&r, 0.3, 0.7, 0.11, bc).unwrap();
+            let b = laplacian_eps_3d(&cplx, 0.3, 0.7, 0.11, bc).unwrap();
+            assert_eq!(a.entries.len(), b.entries.len());
+            for (x, y) in a.entries.iter().zip(b.entries.iter()) {
+                assert_eq!((x.0, x.1), (y.0, y.1));
+                assert_eq!(x.2.re.to_bits(), y.2.re.to_bits());
+                assert_eq!(x.2.im.to_bits(), y.2.im.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_z_invariant_matches_lap_eps_2d() {
+        // ε independent of z, Neumann: on a field constant in z the z faces
+        // carry no flux, so each page of L3·(v ⊗ 1) equals L2·v from the
+        // 2-D builder with the same ε slice.
+        let (ny, nx, nz) = (4, 5, 3);
+        let mut s = 13u64;
+        let eps2 = Array2::from_shape_fn((ny, nx), |_| c(1.0 + 9.0 * lcg(&mut s)));
+        let eps3 = Array3::from_shape_fn((ny, nx, nz), |(i, j, _)| eps2[[i, j]]);
+        let v2 = ndarray::Array1::from_shape_fn(nx * ny, |_| c(lcg(&mut s) - 0.5));
+        let v3 = ndarray::Array1::from_shape_fn(nx * ny * nz, |k| v2[k % (nx * ny)]);
+        let l2 = laplacian_eps_2d(&eps2, 0.3, 0.2, BoundaryCondition::Neumann).unwrap();
+        let l3 = laplacian_eps_3d(&eps3, 0.3, 0.2, 0.7, BoundaryCondition::Neumann).unwrap();
+        let (r2, r3) = (l2.spmv(&v2).unwrap(), l3.spmv(&v3).unwrap());
+        for k in 0..nx * ny * nz {
+            assert!((r3[k] - r2[k % (nx * ny)]).norm() < 1e-10, "k = {k}");
+        }
+    }
+
+    #[test]
+    fn lap_eps_3d_zero_eps_face_drops_entry() {
+        // A face between two ε = 0 cells has coefficient 0; the entry is
+        // not stored (from_sorted_entries drops exact zeros).
+        let mut eps = Array3::from_elem((2, 2, 2), c(1.0));
+        eps[[0, 0, 0]] = c(0.0);
+        eps[[1, 0, 0]] = c(0.0);
+        let l = laplacian_eps_3d(&eps, 1.0, 1.0, 1.0, BoundaryCondition::Neumann).unwrap();
+        assert!(!l.entries.iter().any(|e| (e.0, e.1) == (0, 1)));
+        // ε = 0 next to ε = 1: hmean = 0, so cell 0 is fully isolated.
+        assert!(!l.entries.iter().any(|e| e.0 == 0));
+    }
+
+    #[test]
+    fn lap_eps_3d_rejects_bad_shapes_and_spacing() {
+        let ok = Array3::from_elem((2, 2, 2), c(1.0));
+        for shape in [(1, 3, 3), (3, 1, 3), (3, 3, 1), (0, 2, 2)] {
+            let eps = Array3::from_elem(shape, c(1.0));
+            let e = laplacian_eps_3d(&eps, 1.0, 1.0, 1.0, BoundaryCondition::Dirichlet)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.contains("laplacian_eps_3d") && e.contains(">= 2"),
+                "{shape:?}: {e}"
+            );
+        }
+        for (dx, dy, dz) in [(0.0, 1.0, 1.0), (1.0, -1.0, 1.0), (1.0, 1.0, f64::NAN)] {
+            let e = laplacian_eps_3d(&ok, dx, dy, dz, BoundaryCondition::Dirichlet)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("positive and finite"), "{e}");
+        }
     }
 
     // ─── Phase 4 (em_performance): direct-sorted vs legacy COO ────

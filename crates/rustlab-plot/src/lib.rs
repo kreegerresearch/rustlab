@@ -52,7 +52,10 @@ pub use html::{
     sync_html_file,
 };
 pub use live::LiveFigure;
-pub use plot_abort::{clear_plot_interrupt, note_plot_aborted, take_plot_interrupt};
+pub use plot_abort::{
+    clear_plot_interrupt, interrupt_requested, note_plot_aborted, request_interrupt,
+    take_plot_interrupt, InterruptGuard,
+};
 /// Socket-path helpers, re-exported so callers can *name* the socket in
 /// diagnostics without depending on rustlab-proto directly. The path is what
 /// you need to see when a connection fails — especially over an SSH forward,

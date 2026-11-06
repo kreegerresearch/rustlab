@@ -1,0 +1,98 @@
+# PEC cavity: ring the lowest mode and compare its frequency
+# Demonstrates: fdtd_pec (faces), fdtd_media, fdtd_source (hard, stacked),
+#               fdtd_probe, fdtd_run, fft with a Hann window
+#
+# The cavity is a 24 x 20 x 10 mm box inside a grid one cell larger on every
+# side. Its six faces are set with fdtd_pec, so the box is closed metal and
+# the outer shell of the grid stays at zero. Face index f on an axis is the
+# node plane at (f-1)*d, so faces 2 and 26 on x are 24 cells apart.
+#
+# A hard Gaussian on a stack of Ez edges through the whole height drives only
+# the modes that are uniform in z. The lowest is TM110:
+#   f = c0/2 * sqrt((1/Lx)^2 + (1/Ly)^2)
+# The Yee grid rings slightly lower; its dispersion relation gives
+#   sin(w dt/2) = c dt * sqrt(sin(kx dx/2)^2/dx^2 + sin(ky dy/2)^2/dy^2)
+
+d = 1.0e-3;                             # 1 mm cells
+cx = 24; cy = 20; cz = 10;              # cavity size in cells
+nx = cx + 2; ny = cy + 2; nz = cz + 2;
+Lx = cx * d; Ly = cy * d;
+c0 = 299792458;
+
+function [f, ez, dt] = ring(nx, ny, nz, d, eps_r, nsteps)
+  sim = fdtd3d(nx, ny, nz, d, d, d);
+  if eps_r != 1
+    fdtd_media(sim, eps_r);
+  end
+  # Six faces 1 cell in from the outer walls.
+  fdtd_pec(sim, "x", 2, true);
+  fdtd_pec(sim, "x", nx, true);
+  fdtd_pec(sim, "y", 2, true);
+  fdtd_pec(sim, "y", ny, true);
+  fdtd_pec(sim, "z", 2, true);
+  fdtd_pec(sim, "z", nz, true);
+  dt = fdtd_info(sim).dt;
+  # Hard Gaussian on every Ez edge of one column (k = 2..nz-1 lie inside),
+  # off centre so the source does not sit on a node of the next modes.
+  tau = 14 * dt;
+  nw = round(8 * tau / dt);
+  g = gaussian_pulse((1:nw) * dt, 4 * tau, tau);
+  fdtd_source(sim, "ez", 9, 10, 2:(nz - 1), "hard", g);
+  id = fdtd_probe(sim, "ez", 14, 17, round(nz / 2));
+  out = fdtd_run(sim, nsteps);
+  ez = out.probe(:, id);
+  # Hann window, zero padding, and a parabola through the peak bin.
+  # Skip the hard source's own interval: the ring-down starts after it.
+  x = ez(nw + 1:end);
+  x = x .* window("hann", length(x));
+  nfft = 8 * 2^nextpow2(length(x));
+  X = abs(fft(x, nfft));
+  fr = (0:nfft - 1) / (nfft * dt);
+  band = find((fr > 2e9) .* (fr < 13e9));
+  at = argmax(X(band));
+  b = band(at);
+  delta = 0.5 * (X(b - 1) - X(b + 1)) / (X(b - 1) - 2 * X(b) + X(b + 1));
+  f = (b - 1 + delta) / (nfft * dt);
+end
+
+nsteps = 8000;
+[f_vac, ez_vac, dt] = ring(nx, ny, nz, d, 1, nsteps);
+
+f_an = c0 / 2 * sqrt(1 / Lx^2 + 1 / Ly^2);
+s = c0 * dt * sqrt(sin(pi / (2 * cx))^2 / d^2 + sin(pi / (2 * cy))^2 / d^2);
+f_yee = 2 * asin(s) / (2 * pi * dt);
+
+fprintf("TM110 analytic   %.4f GHz\n", f_an / 1e9);
+fprintf("TM110 Yee        %.4f GHz\n", f_yee / 1e9);
+fprintf("measured         %.4f GHz  (%+.3f%% vs analytic, %+.3f%% vs Yee)\n", ...
+        f_vac / 1e9, 100 * (f_vac / f_an - 1), 100 * (f_vac / f_yee - 1));
+if abs(f_vac / f_an - 1) > 0.02 || abs(f_vac / f_yee - 1) > 0.005
+  error("cavity: the TM110 peak is outside the 2% / 0.5% checks");
+end
+
+# Fill the whole grid with eps_r = 4: the mode drops by 1/sqrt(4).
+[f_eps, ez_eps] = ring(nx, ny, nz, d, 4, nsteps);
+fprintf("eps_r = 4        %.4f GHz  (ratio %.4f, expected 0.5)\n", ...
+        f_eps / 1e9, f_eps / f_vac);
+if abs(f_eps / f_vac - 0.5) > 0.005
+  error("cavity: the dielectric shift is outside 1% of 1/sqrt(4)");
+end
+
+m = 600;                                # the first 1.1 ns of 8000 steps
+t = (1:m) * dt;
+subplot(2, 1, 1);
+plot(t * 1e9, ez_vac(1:m), t * 1e9, ez_eps(1:m));
+xlabel("t (ns)");
+ylabel("Ez (V/m)");
+title("Probe in the cavity, first 600 steps");
+legend("vacuum", "eps_r = 4");
+subplot(2, 1, 2);
+nfft = 2^nextpow2(nsteps) * 4;
+fr = (0:nfft / 2 - 1) / (nfft * dt);
+Xv = abs(fft(ez_vac .* window("hann", nsteps), nfft));
+Xe = abs(fft(ez_eps .* window("hann", nsteps), nfft));
+plot(fr / 1e9, Xv(1:nfft / 2) / max(Xv), fr / 1e9, Xe(1:nfft / 2) / max(Xe));
+xlim([0, 20]);
+xlabel("f (GHz)");
+ylabel("|FFT| (normalised)");
+title("Spectrum: TM110 at the first peak");

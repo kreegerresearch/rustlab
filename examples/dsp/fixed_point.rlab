@@ -27,7 +27,7 @@ print(length(h_float));
 #    dominate.  White noise exercises the full passband uniformly.
 #    Scale to 0.3 sigma so samples stay inside the Q1.14 range (-2 to ~2).
 seed(7);                 % deterministic SNR sweep across bitwidths
-x    = randn(n) * 0.3;
+x    = randn(1, n) * 0.3;
 
 # Float reference output
 y_ref = real(convolve(x, real(h_float)));

@@ -29,9 +29,9 @@ function row = mandelbrot_band(k, cr_lo, cr_hi, y_lo, y_hi, max_iter)
   nx = 800; ny = 600;
   cr = linspace(cr_lo, cr_hi, nx);
   ci = linspace(y_lo, y_hi, ny)(k);
-  zr = zeros(nx);
-  zi = zeros(nx);
-  counts = zeros(nx);
+  zr = zeros(1, nx);
+  zi = zeros(1, nx);
+  counts = zeros(1, nx);
   for iter = 1:max_iter
     zr2 = zr .* zr;
     zi2 = zi .* zi;
@@ -40,7 +40,7 @@ function row = mandelbrot_band(k, cr_lo, cr_hi, y_lo, y_hi, max_iter)
     zi = 2 * zr .* zi + ci;
     zr = zr2 - zi2 + cr;
   end
-  row = counts;
+  row = counts(:);
 end
 
 function row = mandelbrot_row(k)

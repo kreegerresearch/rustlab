@@ -30,7 +30,7 @@ v_again = reshape(M, 1, 12)           # 1×12 → returned as vector
 print(v_again)
 
 # Partition a 256-sample frame into an 8×32 spectrogram-style layout
-frame = randn(256)
+frame = randn(1, 256)
 gram  = reshape(frame, 8, 32)
 imagesc(gram)
 
@@ -55,7 +55,7 @@ print(K2)
 
 # Upsample a 2×2 matrix 3× in each dimension using kron with a 3×3 block of ones
 small  = [1, 2; 3, 4]
-block3 = outer(ones(3), ones(3))       # 3×3 all-ones matrix
+block3 = outer(ones(1, 3), ones(1, 3))       # 3×3 all-ones matrix
 big    = kron(small, block3)           # each element of small → scaled 3×3 block
 print(size(big))                       # → [6, 6]
 

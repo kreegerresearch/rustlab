@@ -142,6 +142,223 @@ rustlab run examples/language/vectors.rlab
 
 ---
 
+## `examples/language/logical_arrays.rlab`
+
+Headless checks for logical arrays. Nothing is plotted. A comparison of two arrays is logical, a scalar comparison stays `bool`, `islogical` rejects numeric 0/1, a mask subscript and `find` select the trues, `and` / `or` / `xor` and `!` run element-wise, `true(2, 2)` is a full logical matrix, and a logical table column stays logical. A mismatch calls `error`, so a bad run exits 1. Stdout ends with `logical_arrays: all checks passed`.
+
+```
+rustlab run examples/language/logical_arrays.rlab --plot none
+```
+
+---
+
+## `examples/language/vectorized_style.rlab`
+
+Headless checks for the six practices in [`docs/agent-guide.md`](agent-guide.md#script-style-for-agents). Nothing is plotted. Each vectorized result is compared with a tiny loop (or, for the recurrence, with the closed form) and with a literal where one is known. A mismatch calls `error`, so a bad run exits 1.
+
+```rustlab
+# Vectorized style for .rlab.
+#
+# The six practices in docs/agent-guide.md ("Script style for agents").
+# A vectorized form is checked against a tiny looped reference. The
+# recurrence in section 5 is the loop that stays, checked against the
+# closed form.
+#
+#   rustlab run examples/language/vectorized_style.rlab --plot none
+
+function check(label, got, ref)
+  delta = got - ref;
+  peak = max(abs(delta(:)));
+  if peak > 1e-9
+    error(sprintf("%s differs by %g", label, peak));
+  end
+end
+
+function check_num(label, got, ref)
+  peak = abs(got - ref);
+  if peak > 1e-9
+    error(sprintf("%s differs by %g", label, peak));
+  end
+end
+
+function check_flag(label, cond, expect)
+  if cond
+    got = 1;
+  else
+    got = 0;
+  end
+  if got != expect
+    error(label);
+  end
+end
+
+# 1. Array ops and a colon slice, against a nested loop.
+x = -2:0.5:2;
+y = x .^ 2 + 3 .* x - 1;
+for k = 1:length(x)
+  y_loop(k) = x(k)^2 + 3 * x(k) - 1;
+end
+check("elem", y, y_loop);
+
+M = [1, 2, 3, 4; 5, 6, 7, 8; 9, 10, 11, 12];
+cols = 2:4;
+block = M(1:2, cols);
+scale = [10, 100, 1000];
+scaled = block .* scale;
+G = zeros(2, 3);
+for i = 1:2
+  for j = 1:3
+    G(i, j) = M(i, cols(j)) * scale(j);
+  end
+end
+check("slice", scaled, G);
+check_num("slice-corner", scaled(1, 1), 20);
+check_num("slice-far", scaled(2, 3), 8000);
+
+# 2. A vectorized call, arrayfun, and parmap agree.
+t = linspace(0, 1, 16);
+f = @(u) sin(u) .* exp(-0.1 .* u);
+y_vec = f(t);
+y_map = arrayfun(@(u) sin(u) * exp(-0.1 * u), t);
+y_par = parmap(@(u) sin(u) * exp(-0.1 * u), t);
+check("arrayfun", y_map, y_vec);
+check("parmap", y_par, y_vec);
+check_num("f(0)", y_vec(1), 0);
+
+# 3. A mask and find, against a scan.
+v = -3:5;
+pos = v(v > 0);
+picked = v(find(v > 0));
+n_pos = 0;
+for k = 1:length(v)
+  if v(k) > 0
+    n_pos = n_pos + 1;
+    scanned(n_pos) = v(k);
+  end
+end
+check("mask", pos, picked);
+check("scan", pos, scanned);
+check_num("mask-length", length(pos), 5);
+check_num("mask-start", pos(1), 1);
+
+# 4. Reductions, against hand-rolled accumulators.
+w = 1:8;
+s = 0;
+for k = 1:length(w)
+  s = s + w(k);
+end
+check_num("sum", sum(w), s);
+check_num("sum-literal", sum(w), 36);
+check_num("mean", mean(w), s / length(w));
+check_num("mean-literal", mean(w), 4.5);
+
+for k = 1:length(w)
+  if k == 1
+    c_loop(k) = w(k);
+  else
+    c_loop(k) = c_loop(k - 1) + w(k);
+  end
+end
+c = cumsum(w);
+check("cumsum", c, c_loop);
+check_num("cumsum-end", c(end), 36);
+
+for k = 1:length(w) - 1
+  d_loop(k) = w(k + 1) - w(k);
+end
+d = diff(w);
+check("diff", d, d_loop);
+if any(d != 1)
+  error("diff steps");
+end
+
+lo = w(1);
+hi = w(1);
+for k = 2:length(w)
+  if w(k) < lo
+    lo = w(k);
+  end
+  if w(k) > hi
+    hi = w(k);
+  end
+end
+check_num("min", min(w), lo);
+check_num("max", max(w), hi);
+check_num("min-literal", min(w), 1);
+check_num("max-literal", max(w), 8);
+
+flags = [-1, 0, 2, 4];
+every = 1;
+some = 0;
+for k = 1:length(flags)
+  if flags(k) == 0
+    every = 0;
+  end
+  if flags(k) != 0
+    some = 1;
+  end
+end
+check_flag("all-mixed", all(flags), every);
+check_flag("any-mixed", any(flags), some);
+check_flag("all-literal", all(flags), 0);
+check_flag("any-literal", any(flags), 1);
+check_flag("all-pos", all([1, 2, 3]), 1);
+check_flag("any-zero", any([0, 0]), 0);
+
+z = [1, 2, 3, 4];
+area = 0;
+for k = 1:length(z) - 1
+  area = area + 0.5 * (z(k) + z(k + 1));
+end
+check_num("trapz", trapz(z), area);
+check_num("trapz-literal", trapz(z), 7.5);
+tx = [0, 1, 3];
+ty = [0, 2, 2];
+check_num("trapz-x", trapz(tx, ty), 5);
+
+# 5. The step reads the previous output, so the loop stays.
+a = 0.8;
+n = 6;
+x_step = linspace(1, 1, n);
+# y_rec(k) depends on y_rec(k-1), so this recurrence stays a loop.
+y_rec(1) = 0;
+for k = 2:n
+  y_rec(k) = a * y_rec(k - 1) + (1 - a) * x_step(k);
+end
+closed = 1 - a .^ (0:n - 1);
+check("iir", y_rec, closed);
+
+# 6. Named slices, checked against the same math written inline and against 306.
+A = [1, 2, 3, 4; 5, 6, 7, 8; 9, 10, 11, 12; 13, 14, 15, 16];
+inner = A(2:end - 1, 2:end - 1);
+sq = inner .* inner;
+total = sum(sum(sq));
+nested = sum(sum(A(2:end - 1, 2:end - 1) .* A(2:end - 1, 2:end - 1)));
+check_num("named", total, nested);
+check_num("named-literal", total, 306);
+
+fprintf("vectorized_style: all checks passed\n");
+```
+
+**What each section locks in:**
+
+1. **Element-wise `+`, `.*`, `.^` and a colon slice.** `x .^ 2 + 3 .* x - 1` matches the scalar loop on `x = -2:0.5:2`, including the negative bases. `M(1:2, 2:4) .* [10, 100, 1000]` matches the double loop and the corners `20` and `8000`.
+2. **`f(t)`, `arrayfun`, and `parmap`.** The same `sin(u) * exp(-0.1 * u)` per element. `f` applies it to the whole vector with `.*`. `t(1)` is `0`, so the first sample is `0`.
+3. **`v(v > 0)` and `v(find(v > 0))`.** Both match a scan that appends the positive samples of `-3:5`. There are five of them, and the first is `1`.
+4. **`sum`, `mean`, `cumsum`, `diff`, `min`, `max`, `all`, `any`, `trapz`.** The looped goldens cover the running sum, the cumulative sum, adjacent differences, min/max, `all`/`any`, and unit-spacing `trapz`. Literals: `sum(1:8) = 36`, `mean = 4.5`, `diff` is all ones, `min = 1`, `max = 8`, `trapz([1, 2, 3, 4]) = 7.5`, and `trapz([0, 1, 3], [0, 2, 2]) = 5`.
+5. **A loop that stays.** `y_rec(k) = a*y_rec(k-1) + (1-a)*x_step(k)` with `y_rec(1) = 0` and `x_step` all ones. The name is not `y`, because section 1 already bound that vector. The one-line comment says why the loop stays. The closed form is `1 - a.^(0:n-1)`.
+6. **Named intermediates.** `inner = A(2:end-1, 2:end-1)` then `sum(sum(inner .* inner))` equals the inlined expression and equals `306`.
+
+**Run it:**
+
+```sh
+rustlab run examples/language/vectorized_style.rlab --plot none
+```
+
+Stdout ends with `vectorized_style: all checks passed`. Exit status 0.
+
+---
+
 ## `examples/dsp/lowpass.rlab`
 
 **Full script:**
@@ -847,6 +1064,20 @@ rustlab run examples/pde/vector_calc.rlab
 
 ---
 
+## `examples/linalg/ind2sub.rlab`
+
+Checks `ind2sub` / `sub2ind` against the column-major index used by `M(k)` and `find`.
+
+The 3×3 case is the MathWorks example: linear indexes `[3, 4, 5, 6]` are rows `[3, 1, 2, 3]` and columns `[1, 2, 2, 2]`, and `sub2ind` brings them back. One output of `ind2sub` is the linear index itself. On a `2×2×2` cube, three outputs are the full subscripts and two outputs fold the page into the column (`[1, 1, 2, 2, 3, 3, 4, 4]`). A scalar subscript is repeated (`sub2ind([3, 4], [1, 2, 3], 2)` is `[4, 5, 6]`). `find` on `[0, 2; 3, 0]` round-trips through both functions.
+
+**Run it:**
+
+```sh
+rustlab run examples/linalg/ind2sub.rlab --plot none
+```
+
+---
+
 ## `examples/linalg/tensor3.rlab`
 
 **Full script:**
@@ -1100,7 +1331,7 @@ print(err)       # → very small (< 1e-10)
 
 1. **`laplacian_2d(nx, ny, dx, dy)`** returns an `(nx·ny) × (nx·ny)` sparse matrix. Sign convention: `L` approximates `+∇²`, so Poisson `∇²V = -ρ/ε₀` solves as `V = spsolve(L, -rho/eps0)`.
 
-2. **Column-major ordering** is the single most important detail. `V(i, j) → k = (j-1)*ny + i` matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention (modulo the `'` to make it a column vector for `spsolve`). Use `ij2k(i, j, ny)` and `k2ij(k, ny)` when you need the index sugar — note the third argument is **`ny`**, not `nx`.
+2. **Column-major ordering** is the single most important detail. `V(i, j) → k = (j-1)*ny + i` matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention (modulo the `'` to make it a column vector for `spsolve`). Use `ij2k(i, j, ny)` and `k2ij(k, ny)` when you need the index sugar — note the third argument is **`ny`**, not `nx`. `sub2ind([ny, nx], i, j)` is the same index when you already have a size vector.
 
 3. **Boundary conditions.** Homogeneous-Dirichlet: the stencil skips cross-boundary off-diagonal entries and leaves the diagonal at `-2/dx² - 2/dy²`, which is equivalent to assuming `V = 0` outside the grid. For non-zero Dirichlet values, encode them in the right-hand side.
 

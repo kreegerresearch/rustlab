@@ -321,7 +321,7 @@ ordering is best for me". The script-layer ordering arg `"auto"`
 consults the hint; explicit `"identity"` / `"amd"` overrides it.
 
 **Builders that set the hint:** `laplacian_1d`, `laplacian_2d`,
-`laplacian_3d`, `laplacian_eps_2d`. Anywhere we know the result has
+`laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`. Anywhere we know the result has
 a regular grid pattern.
 
 **Operations that preserve the hint:** `scale`, `transpose`, negation

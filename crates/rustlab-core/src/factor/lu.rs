@@ -102,8 +102,9 @@ pub fn lu(a: &Array2<C64>) -> Lu {
 }
 
 /// Solve `A X = B` with a factorization of `A`. `B` has `m` rows.
-/// A singular factor produces a basic solution (zero for a zero pivot)
-/// rather than `Inf`.
+/// A zero pivot divides: a nonzero residual becomes `Inf`, and `0/0` is
+/// `NaN`. A structural zero times that value is skipped, so it does not
+/// turn an earlier equation into `NaN`.
 pub fn solve(f: &Lu, b: &Array2<C64>) -> Array2<C64> {
     let (m, k) = f.l.dim();
     let n = f.u.ncols();
@@ -125,13 +126,26 @@ pub fn solve(f: &Lu, b: &Array2<C64>) -> Array2<C64> {
     for col in 0..p {
         for i in (0..k).rev() {
             let diag = f.u[[i, i]];
-            if diag.norm() == 0.0 || !diag.re.is_finite() || !diag.im.is_finite() {
-                x[[i, col]] = C64::new(0.0, 0.0);
-                continue;
-            }
             let mut s = y[[i, col]];
             for j in (i + 1)..n {
-                s -= f.u[[i, j]] * x[[j, col]];
+                let u = f.u[[i, j]];
+                // `0 * Inf` is `NaN`. A structural zero does not contribute.
+                if u.norm() == 0.0 {
+                    continue;
+                }
+                s -= u * x[[j, col]];
+            }
+            if diag.norm() == 0.0 || !diag.re.is_finite() || !diag.im.is_finite() {
+                x[[i, col]] = if s.im == 0.0 {
+                    if s.re == 0.0 {
+                        C64::new(f64::NAN, 0.0)
+                    } else {
+                        C64::new(s.re.signum() * f64::INFINITY, 0.0)
+                    }
+                } else {
+                    s / diag
+                };
+                continue;
             }
             x[[i, col]] = s / diag;
         }

@@ -254,6 +254,9 @@ pub fn render_latex(
 \usepackage{{lmodern}}
 \usepackage{{geometry}}
 \geometry{{margin=1in}}
+% Only used when a line would otherwise stick out of the margin. A
+% heading sets it again; this covers body text and table cells.
+\setlength{{\emergencystretch}}{{3em}}
 \usepackage{{graphicx}}
 \usepackage{{amsmath,amssymb}}
 \usepackage{{newunicodechar}}
@@ -379,14 +382,18 @@ pub fn render_latex(
 \usepackage{{tcolorbox}}
 \tcbuselibrary{{breakable,skins}}
 \usepackage{{fancyvrb}}
+\usepackage{{fvextra}}
 \usepackage{{sectsty}}
 \usepackage{{float}}
 \usepackage{{booktabs}}
 \usepackage{{tabularx}}
+\usepackage{{xltabular}}
 \usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
 \hypersetup{{colorlinks=true,linkcolor=rllink,urlcolor=rllink}}
-\DefineVerbatimEnvironment{{rlverb}}{{Verbatim}}{{fontsize=\small}}
+% breaklines wraps at spaces; breakanywhere wraps a token that is still
+% wider than the panel (a printed line with no spaces).
+\DefineVerbatimEnvironment{{rlverb}}{{Verbatim}}{{fontsize=\small,breaklines,breakanywhere}}
 \tcbset{{
   rlbase/.style={{
     breakable,
@@ -427,9 +434,11 @@ pub fn render_latex(
   left=2.5mm, right=2.5mm, top=1.5mm, bottom=1.5mm,
   before skip=0.9em, after skip=0.9em,
 }}
-\sectionfont{{\color{{rlh1}}\normalfont\Large\bfseries}}
-\subsectionfont{{\color{{rlh2}}\normalfont\large\bfseries}}
-\subsubsectionfont{{\color{{rlh3}}\normalfont\normalsize\bfseries}}
+% emergencystretch lets a heading that is only a few points too wide
+% break at a zero-width point instead of running into the margin.
+\sectionfont{{\color{{rlh1}}\normalfont\Large\bfseries\setlength{{\emergencystretch}}{{3em}}}}
+\subsectionfont{{\color{{rlh2}}\normalfont\large\bfseries\setlength{{\emergencystretch}}{{3em}}}}
+\subsubsectionfont{{\color{{rlh3}}\normalfont\normalsize\bfseries\setlength{{\emergencystretch}}{{3em}}}}
 \setcounter{{secnumdepth}}{{-1}}
 \title{{{title}}}
 \date{{}}
@@ -448,38 +457,57 @@ pub fn render_latex(
     )
 }
 
+/// Body-row stripe: foreground at 6% over the page.
+const TABLE_STRIPE_MIX: f64 = 0.06;
+/// Header wash, inside the 10–12% band.
+const TABLE_HEADER_MIX: f64 = 0.11;
+/// Rule color, inside the 25–35% band.
+const TABLE_RULE_MIX: f64 = 0.30;
+/// `article` paper. The preamble does not set `\pagecolor`.
+const PDF_PAPER: &str = "#ffffff";
+
 fn latex_palette(theme: &ThemeColors) -> String {
+    // Blended once here. pdflatex has no alpha, so the tint is an opaque hex.
+    let header = blend_over_paper(theme.text, TABLE_HEADER_MIX);
+    let stripe = blend_over_paper(theme.text, TABLE_STRIPE_MIX);
+    let rule = blend_over_paper(theme.text, TABLE_RULE_MIX);
     let colors = [
-        ("rltext", theme.text),
-        ("rldim", theme.text_dim),
-        ("rlh1", theme.accent_primary),
-        ("rlh2", theme.accent_secondary),
-        ("rlh3", theme.accent_tertiary),
-        ("rlrule", theme.accent_primary),
-        ("rllink", theme.accent_secondary),
-        ("rlkw", theme.syn_keyword),
-        ("rlfn", theme.syn_function),
-        ("rlnum", theme.syn_number),
-        ("rlstr", theme.syn_string),
-        ("rlcom", theme.syn_comment),
-        ("rlop", theme.syn_operator),
-        ("rlcodebg", theme.code_bg),
-        ("rloutbg", theme.output_bg),
-        ("rlpanel", theme.bg_secondary),
-        ("rlcodepill", theme.inline_code_bg),
-        ("rlthead", theme.inline_code_bg),
-        ("rlborder", theme.border),
-        ("rlerrbg", theme.error_bg),
-        ("rlerrfg", theme.error_text),
+        ("rltext", theme.text.to_string()),
+        ("rldim", theme.text_dim.to_string()),
+        ("rlh1", theme.accent_primary.to_string()),
+        ("rlh2", theme.accent_secondary.to_string()),
+        ("rlh3", theme.accent_tertiary.to_string()),
+        ("rlrule", theme.accent_primary.to_string()),
+        ("rllink", theme.accent_secondary.to_string()),
+        ("rlkw", theme.syn_keyword.to_string()),
+        ("rlfn", theme.syn_function.to_string()),
+        ("rlnum", theme.syn_number.to_string()),
+        ("rlstr", theme.syn_string.to_string()),
+        ("rlcom", theme.syn_comment.to_string()),
+        ("rlop", theme.syn_operator.to_string()),
+        ("rlcodebg", theme.code_bg.to_string()),
+        ("rloutbg", theme.output_bg.to_string()),
+        ("rlpanel", theme.bg_secondary.to_string()),
+        ("rlthead", header),
+        ("rltstripe", stripe),
+        ("rltrule", rule),
+        ("rlborder", theme.border.to_string()),
+        ("rlerrbg", theme.error_bg.to_string()),
+        ("rlerrfg", theme.error_text.to_string()),
     ];
     let mut out = String::new();
     for (name, hex) in colors {
         out.push_str(&format!(
             "\\definecolor{{{name}}}{{HTML}}{{{}}}\n",
-            html_hex(hex)
+            html_hex(&hex)
         ));
     }
     out
+}
+
+fn blend_over_paper(foreground: &str, amount: f64) -> String {
+    rustlab_plot::theme::blend_srgb(foreground, PDF_PAPER, amount)
+        .unwrap_or_else(|| panic!("theme foreground {foreground} is not #RRGGBB"))
 }
 
 fn callout_frame(kind: &crate::parse::CalloutKind) -> &'static str {
@@ -612,6 +640,7 @@ fn markdown_to_latex_in(
     let mut out = String::new();
     let mut table_cell_idx: usize = 0;
     let mut table_in_head = false;
+    let mut table_body_row: usize = 0;
     let mut heading: Option<HeadingCap> = None;
     let mut image: Option<(String, String)> = None;
     let mut link_live: Vec<bool> = Vec::new();
@@ -702,19 +731,37 @@ fn markdown_to_latex_in(
                 Tag::List(None) => emit(&mut heading, &mut out, "\\begin{itemize}\n"),
                 Tag::Item => emit(&mut heading, &mut out, "\\item "),
                 Tag::Table(alignments) => {
+                    // `\hspace{0pt}` is the first item of the cell so a long
+                    // first word can break. xltabular is tabularx that splits
+                    // across pages between rows. `\par\noindent` keeps the
+                    // `\linewidth` table from being shifted by `\parindent`
+                    // (17pt at 11pt), which otherwise runs the rules and the
+                    // last column into the right margin.
                     let cols: String = alignments
                         .iter()
                         .map(|a| match a {
                             pulldown_cmark::Alignment::Left | pulldown_cmark::Alignment::None => {
-                                ">{\\raggedright\\arraybackslash}X"
+                                ">{\\raggedright\\arraybackslash\\hspace{0pt}}X"
                             }
-                            pulldown_cmark::Alignment::Center => ">{\\centering\\arraybackslash}X",
-                            pulldown_cmark::Alignment::Right => ">{\\raggedleft\\arraybackslash}X",
+                            pulldown_cmark::Alignment::Center => {
+                                ">{\\centering\\arraybackslash\\hspace{0pt}}X"
+                            }
+                            pulldown_cmark::Alignment::Right => {
+                                ">{\\raggedleft\\arraybackslash\\hspace{0pt}}X"
+                            }
                         })
                         .collect();
-                    let mut spec = String::from("\\begin{tabularx}{\\linewidth}{");
+                    // `\arrayrulecolor` paints every `\specialrule` with the
+                    // blended foreground. A gap above and below each rule
+                    // keeps the row fill from covering the stroke and keeps
+                    // the stroke off the glyphs, without stretching the row
+                    // enough to collide with the next line.
+                    table_body_row = 0;
+                    let mut spec = String::from(
+                        "\\par\\noindent\n\\arrayrulecolor{rltrule}\n\\begin{xltabular}{\\linewidth}{",
+                    );
                     spec.push_str(&cols);
-                    spec.push_str("}\n\\toprule\n");
+                    spec.push_str("}\n\\specialrule{0.4pt}{0pt}{0.35ex}\n");
                     emit(&mut heading, &mut out, &spec);
                 }
                 Tag::TableHead => {
@@ -724,6 +771,22 @@ fn markdown_to_latex_in(
                 }
                 Tag::TableRow => {
                     table_cell_idx = 0;
+                    if !table_in_head {
+                        if table_body_row > 0 {
+                            emit(
+                                &mut heading,
+                                &mut out,
+                                "\\specialrule{0.2pt}{0.2ex}{0.2ex}\n",
+                            );
+                        }
+                        // Even body rows (2nd, 4th, …) take the stripe.
+                        // The color is in the row, so a page break does not
+                        // restart the alternation.
+                        if table_body_row % 2 == 1 {
+                            emit(&mut heading, &mut out, "\\rowcolor{rltstripe}");
+                        }
+                        table_body_row += 1;
+                    }
                 }
                 Tag::TableCell => {
                     if table_cell_idx > 0 {
@@ -789,10 +852,20 @@ fn markdown_to_latex_in(
                 TagEnd::List(false) => emit(&mut heading, &mut out, "\\end{itemize}\n\n"),
                 TagEnd::Item => emit(&mut heading, &mut out, "\n"),
                 TagEnd::Table => {
-                    emit(&mut heading, &mut out, "\\bottomrule\n\\end{tabularx}\n\n");
+                    emit(
+                        &mut heading,
+                        &mut out,
+                        "\\specialrule{0.4pt}{0.4ex}{0.25ex}\n\\end{xltabular}\n\\arrayrulecolor{black}\n\\par\n\n",
+                    );
                 }
                 TagEnd::TableHead => {
-                    emit(&mut heading, &mut out, " \\\\\n\\midrule\n");
+                    // The header rule is inside the head, so a page break
+                    // repeats the wash and the rule with the header text.
+                    emit(
+                        &mut heading,
+                        &mut out,
+                        " \\\\\n\\specialrule{0.4pt}{0.35ex}{0.45ex}\n\\endhead\n",
+                    );
                     table_in_head = false;
                 }
                 TagEnd::TableRow => {
@@ -824,12 +897,12 @@ fn markdown_to_latex_in(
                 }
             }
             Event::Code(code) => {
-                let esc = escape_latex(&code);
-                let mut pill = String::from("\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{");
-                pill.push_str(&esc);
-                pill.push_str("}}}{\\texttt{");
-                pill.push_str(&esc);
-                pill.push_str("}}");
+                // `\colorbox` is one unbreakable box. In a cell it paints over
+                // the next cell; at the end of a line it runs through the
+                // margin even when the span is shorter than the text width.
+                // Zero-width breaks keep a span that fits on one line, and
+                // the bookmark text stays the plain typewriter form.
+                let pill = latex_breakable_texttt(&code);
                 if let Some(h) = heading.as_mut() {
                     h.plain.push_str(&code);
                     h.saw = true;
@@ -1017,7 +1090,7 @@ fn emit_colored_spans(source: &str, spans: &[rustlab_script::highlight::HlSpan])
                 push_colored_lines(&mut body, "rlcom", true, &escaped);
             }
             HlKind::Operator => push_colored_lines(&mut body, "rlop", false, &escaped),
-            HlKind::Text => body.push_str(&escaped),
+            HlKind::Text => push_broken_lines(&mut body, &escaped),
         }
     }
     // Not `flushleft`: that trivlist clears `\everypar`, which drops
@@ -1065,7 +1138,7 @@ fn push_colored_lines(body: &mut String, color: &str, italic: bool, escaped: &st
         }
         body.push_str(color);
         body.push_str("}{");
-        body.push_str(line);
+        body.push_str(&break_long_escaped(line));
         if italic {
             body.push_str("}}");
         } else {
@@ -1078,6 +1151,77 @@ fn push_colored_lines(body: &mut String, color: &str, italic: bool, escaped: &st
 /// delivered through `Event::InlineMath` / `Event::DisplayMath` with
 /// `Options::ENABLE_MATH`, so anything reaching us in a `Text` event is
 /// literal prose).
+/// Typewriter text with zero-width break points so a long token wraps
+/// inside an `X` column or a source line instead of painting past it.
+fn latex_breakable_texttt(raw: &str) -> String {
+    let body = break_after_escape(&escape_latex(raw), 6);
+    let bookmark = escape_latex(raw);
+    format!("\\texorpdfstring{{\\texttt{{{body}}}}}{{\\texttt{{{bookmark}}}}}")
+}
+
+fn push_broken_lines(body: &mut String, escaped: &str) {
+    for (i, line) in escaped.split('\n').enumerate() {
+        if i > 0 {
+            body.push('\n');
+        }
+        body.push_str(&break_long_escaped(line));
+    }
+}
+
+/// Break points after punctuation, including in a short token. A source
+/// line is many short coloured spans (`"m",` `"y",` …); the line only
+/// wraps if those spans can break, not only when one span is long.
+fn break_long_escaped(escaped: &str) -> String {
+    break_after_escape(escaped, 8)
+}
+
+/// Insert `\hspace{0pt}` after punctuation and every `every` characters.
+/// A TeX command (`\_`, `\textbackslash{}`, …) is copied whole so the
+/// break never lands inside it.
+fn break_after_escape(escaped: &str, every: usize) -> String {
+    let mut out = String::with_capacity(escaped.len() + 16);
+    let mut chars = escaped.chars().peekable();
+    let mut run = 0usize;
+    while let Some(c) = chars.next() {
+        let mut broke_on = c;
+        if c == '\\' {
+            out.push(c);
+            if chars.peek().is_some_and(|n| n.is_ascii_alphabetic()) {
+                while chars.peek().is_some_and(|n| n.is_ascii_alphabetic()) {
+                    out.push(chars.next().unwrap());
+                }
+                if chars.peek() == Some(&'{') {
+                    out.push(chars.next().unwrap());
+                    if chars.peek() == Some(&'}') {
+                        out.push(chars.next().unwrap());
+                    }
+                }
+                broke_on = '_';
+            } else if let Some(n) = chars.next() {
+                out.push(n);
+                broke_on = n;
+            }
+        } else {
+            out.push(c);
+        }
+        if broke_on == ' ' {
+            run = 0;
+            continue;
+        }
+        run += 1;
+        let at_punct = matches!(
+            broke_on,
+            '_' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '/' | '+' | '-'
+                | '=' | '*'
+        );
+        if at_punct || run >= every {
+            out.push_str("\\hspace{0pt}");
+            run = 0;
+        }
+    }
+    out
+}
+
 fn escape_latex(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -1343,8 +1487,14 @@ mod tests {
         assert!(toml.contains("\\textcolor{rlstr}{\"hi\"}"), "{toml}");
         assert!(toml.contains("\\textcolor{rlnum}{1}"), "{toml}");
         assert!(toml.contains("\\textcolor{rlkw}{true}"), "{toml}");
-        assert!(toml.contains("\\textcolor{rlnum}{1979-05-27}"), "{toml}");
-        assert!(toml.contains("\\textcolor{rlop}{[[}"), "{toml}");
+        assert!(
+            toml.contains("\\textcolor{rlnum}{1979-\\hspace{0pt}05-\\hspace{0pt}27}"),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("\\textcolor{rlop}{[\\hspace{0pt}[\\hspace{0pt}}"),
+            "{toml}"
+        );
         assert!(toml.contains("\\textcolor{rlkw}{users}"), "{toml}");
         assert!(!toml.contains("minted"), "{toml}");
 
@@ -1357,9 +1507,12 @@ mod tests {
         assert!(yaml.contains("\\textcolor{rlnum}{2}"), "{yaml}");
         assert!(yaml.contains("\\textcolor{rlkw}{null}"), "{yaml}");
         assert!(yaml.contains("\\textcolor{rlop}{\\&id}"), "{yaml}");
-        assert!(yaml.contains("\\textcolor{rlop}{-}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlop}{-\\hspace{0pt}}"), "{yaml}");
         assert!(yaml.contains("\\textcolor{rlop}{|}"), "{yaml}");
-        assert!(yaml.contains("\\textcolor{rlkw}{---}"), "{yaml}");
+        assert!(
+            yaml.contains("\\textcolor{rlkw}{-\\hspace{0pt}-\\hspace{0pt}-\\hspace{0pt}}"),
+            "{yaml}"
+        );
         assert!(yaml.contains("\\textcolor{rlstr}{hi}"), "{yaml}");
     }
 
@@ -1544,15 +1697,144 @@ mod tests {
     fn md_to_latex_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
         let out = markdown_to_latex(md, &crate::render::LinkMode::single_file());
-        assert!(out.contains("\\begin{tabularx}{\\linewidth}"));
-        assert!(out.contains(">{\\raggedright\\arraybackslash}X"));
-        assert!(out.contains("\\toprule"));
-        assert!(out.contains("\\midrule"));
-        assert!(out.contains("\\bottomrule"));
-        assert!(out.contains("\\end{tabularx}"));
+        assert!(out.contains(
+            "\\par\\noindent\n\\arrayrulecolor{rltrule}\n\\begin{xltabular}{\\linewidth}"
+        ));
+        assert!(out.contains(">{\\raggedright\\arraybackslash\\hspace{0pt}}X"));
+        assert!(out.contains("\\specialrule{0.4pt}{0.35ex}{0.45ex}"));
+        assert!(out.contains("\\specialrule{0.2pt}{0.2ex}{0.2ex}"));
+        assert!(out.contains("\\endhead"));
+        assert!(out.contains("\\specialrule{0.4pt}{0.4ex}{0.25ex}"));
+        assert!(out.contains("\\end{xltabular}"));
+        assert!(out.contains("\\rowcolor{rltstripe}"));
         assert!(out.contains(" & "));
         assert!(out.contains("\\rowcolor{rlthead}"));
         assert!(out.contains("\\textcolor{rlh1}{\\textbf{"));
+    }
+
+    /// PDF pages are Latte ink on white paper, including when a dark theme
+    /// was requested. Header fill, body stripes, and rules are blends of
+    /// that painted foreground over the paper — 11%, 6%, and 30% — and a
+    /// long table keeps the header rule inside `\endhead` so a page break
+    /// repeats it while stripes stay on even body rows.
+    #[test]
+    fn pdf_tables_emit_theme_rules_and_alternating_stripes() {
+        let rows = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+        let mut md = String::from("| Left | Right |\n|---|---|\n");
+        for (i, name) in rows.iter().enumerate() {
+            md.push_str(&format!("| {name} | c{i} |\n"));
+        }
+        let mut stripes = Vec::new();
+        for (label, theme) in [("light", light()), ("dark", dark())] {
+            let tex = render_latex(
+                "Tables",
+                &[Rendered::Markdown(md.clone())],
+                std::path::Path::new("/tmp/test_plots"),
+                "plots/test",
+                theme,
+                &crate::render::LinkMode::single_file(),
+            );
+            let fg = defined_html_color(&tex, "rltext").unwrap_or_else(|| {
+                panic!("{label}: preamble has no rltext foreground:\n{tex}")
+            });
+            // White article paper. There is no `\pagecolor`.
+            let stripe = blend_hex(&fg, "ffffff", 0.06);
+            let header = blend_hex(&fg, "ffffff", 0.11);
+            let rule = blend_hex(&fg, "ffffff", 0.30);
+            assert_eq!(fg, "4c4f69", "{label}: PDF body ink is Latte");
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltstripe}}{{HTML}}{{{stripe}}}")),
+                "{label}: stripe should be {stripe}, a 6% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rlthead}}{{HTML}}{{{header}}}")),
+                "{label}: header fill should be {header}, an 11% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                tex.contains(&format!("\\definecolor{{rltrule}}{{HTML}}{{{rule}}}")),
+                "{label}: rules should be {rule}, a 30% blend of {fg} over white\n{tex}"
+            );
+            assert!(
+                !tex.contains("\\definecolor{rlthead}{HTML}{ccd0da}"),
+                "{label}: header fill must not stay the fixed inline-code gray"
+            );
+            assert!(
+                tex.contains("\\arrayrulecolor{rltrule}"),
+                "{label}: rules must use the blended rule color\n{tex}"
+            );
+            let endhead = tex.find("\\endhead").expect("endhead");
+            let head = &tex[..endhead];
+            assert!(
+                head.contains("\\rowcolor{rlthead}"),
+                "{label}: header row is filled\n{head}"
+            );
+            assert!(
+                head.contains("\\specialrule{0.4pt}{0.35ex}{0.45ex}"),
+                "{label}: thin rule under the header, repeated via endhead\n{head}"
+            );
+            let body = &tex[endhead..];
+            let mut pos = 0;
+            for (i, name) in rows.iter().enumerate() {
+                let rel = body[pos..].find(name).unwrap_or_else(|| {
+                    panic!("{label}: missing {name} in table body:\n{body}")
+                });
+                let at = pos + rel;
+                let between = &body[pos..at];
+                if i % 2 == 1 {
+                    assert!(
+                        between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be a striped body row:\n{between}"
+                    );
+                } else {
+                    assert!(
+                        !between.contains("\\rowcolor{rltstripe}"),
+                        "{label}: {name} should be an unstriped body row:\n{between}"
+                    );
+                }
+                if i > 0 {
+                    assert!(
+                        between.contains("\\specialrule{0.2pt}{0.2ex}{0.2ex}"),
+                        "{label}: hairline missing before {name}:\n{between}"
+                    );
+                }
+                pos = at + name.len();
+            }
+            let tail = &body[pos..];
+            assert!(
+                tail.contains("\\specialrule{0.4pt}{0.4ex}{0.25ex}"),
+                "{label}: bottom rule missing:\n{tail}"
+            );
+            assert!(
+                !tail.contains("\\rowcolor{rltstripe}"),
+                "{label}: stripe after the last row:\n{tail}"
+            );
+            stripes.push(stripe);
+        }
+        assert_eq!(
+            stripes[0], stripes[1],
+            "a dark theme request still paints Latte on white, so the stripe matches"
+        );
+    }
+
+    fn blend_hex(fg: &str, bg: &str, t: f64) -> String {
+        fn channel(f: u8, b: u8, t: f64) -> u8 {
+            (f64::from(b) + (f64::from(f) - f64::from(b)) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        }
+        let byte = |s: &str, i: usize| u8::from_str_radix(&s[i..i + 2], 16).unwrap();
+        format!(
+            "{:02x}{:02x}{:02x}",
+            channel(byte(fg, 0), byte(bg, 0), t),
+            channel(byte(fg, 2), byte(bg, 2), t),
+            channel(byte(fg, 4), byte(bg, 4), t)
+        )
+    }
+
+    fn defined_html_color(tex: &str, name: &str) -> Option<String> {
+        let key = format!("\\definecolor{{{name}}}{{HTML}}{{");
+        let i = tex.find(&key)?;
+        Some(tex[i + key.len()..].chars().take(6).collect())
     }
 
     #[test]
@@ -1813,7 +2095,7 @@ mod tests {
             &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\textcolor{rlnum}{42}"), "{tex}");
-        assert!(tex.contains("\\textcolor{rlop}{=}"), "{tex}");
+        assert!(tex.contains("\\textcolor{rlop}{=\\hspace{0pt}}"), "{tex}");
         assert!(tex.contains("\\definecolor{rlkw}{HTML}{"), "{tex}");
         // Source cells are colored text, not verbatim. Markdown fences
         // elsewhere still use verbatim.
@@ -2490,7 +2772,10 @@ mod tests {
             &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\begin{rlcallout}{rlerrfg}{a\\_b \\& 100\\%}"));
-        assert!(tex.contains("\\colorbox{rlcodepill}"));
+        assert!(
+            tex.contains("\\texttt{x\\_\\hspace{0pt}1}"),
+            "inline code wraps at the underscore instead of an unbreakable pill: {tex}"
+        );
         assert!(
             tex.contains("\\end {rlverb}"),
             "verb end in output must be neutralized"

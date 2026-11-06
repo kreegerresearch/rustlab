@@ -25,6 +25,8 @@
 # Not this file:
 #   ~/.rustlab_history     — REPL command history (readline)
 #   .rustlab/cache.db      — per-project persistent function cache
+#                          (created only when [cache] enabled = true
+#                          or the command passes --cache)
 #
 # v1 is user-global only. Project-local .rustlab/config.toml and
 # startup.rlab are out of scope.
@@ -74,6 +76,15 @@ theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, l
 # command passes `--git-diff`. Git reads the repository's config; enable
 # it only for a repository you trust. `--diff REF` does not enable this.
 # git_diff = false
+
+[cache]
+# SQLite function-result cache. Off by default: `cache enable` in a
+# script or notebook does not create or open .rustlab/cache.db (or any
+# other store path) until this is true, or the command passes --cache.
+# --no-cache on rustlab run / repl and rustlab-notebook render / watch
+# forces it off even when this key is true. The in-memory notebook
+# prefix cache is separate and is not controlled here.
+enabled = false
 
 [repl]
 # rustyline history cap (most recent N lines written back to

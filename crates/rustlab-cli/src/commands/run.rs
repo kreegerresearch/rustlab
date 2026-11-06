@@ -51,6 +51,34 @@ pub struct RunArgs {
     /// Falls back to `[viewer] name` in ~/.rustlabrc when omitted.
     #[arg(long, value_name = "NAME")]
     pub viewer_name: Option<String>,
+
+    /// Let `cache enable` open or create the SQLite function cache.
+    /// Overrides `[cache] enabled = false`. Off unless this flag or the
+    /// rc key is set.
+    #[arg(long, conflicts_with = "no_cache")]
+    pub cache: bool,
+
+    /// Do not open the SQLite function cache, even when `[cache] enabled`
+    /// is true. `cache enable` in the script then does not touch the disk.
+    #[arg(long, conflicts_with = "cache")]
+    pub no_cache: bool,
+}
+
+/// `--cache` forces the SQLite store on, `--no-cache` forces it off,
+/// and neither flag follows `[cache] enabled` (default false).
+pub(crate) fn persistent_cache_choice(
+    cache: bool,
+    no_cache: bool,
+    settings: &rustlab_config::UserSettings,
+) -> bool {
+    let cli = if no_cache {
+        Some(false)
+    } else if cache {
+        Some(true)
+    } else {
+        None
+    };
+    rustlab_script::resolve_persistent_cache(cli, settings.cache_enabled())
 }
 
 pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result<()> {
@@ -73,6 +101,12 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
     if let Some(dir) = script.parent() {
         std::env::set_current_dir(dir).with_context(|| format!("failed to chdir to {:?}", dir))?;
     }
+
+    rustlab_script::set_host_persistent_cache(Some(persistent_cache_choice(
+        args.cache,
+        args.no_cache,
+        settings,
+    )));
 
     let plot_mode = args.plot.unwrap_or_else(|| {
         if settings.viewer_auto_connect() {

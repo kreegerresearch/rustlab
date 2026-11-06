@@ -68,7 +68,7 @@ transmitted symbols, already mapped to BPSK ($0 \to +1$, $1 \to -1$).
 ```rustlab
 function [P0, P1, C0, C1] = trellis(G)
   n = size(G, 1);
-  P0 = zeros(64); P1 = zeros(64);
+  P0 = zeros(1, 64); P1 = zeros(1, 64);
   C0 = zeros(64, n); C1 = zeros(64, n);
   for ns = 0:63
     u = floor(ns / 32);
@@ -114,7 +114,7 @@ metric, so the decoder simply relies on the symbols around it.
 function u = viterbi(Y, P0, P1, C0, C1)
   # Y: n x L soft values (+1 means code bit 0), 0 where nothing was received.
   L = size(Y, 2);
-  pm = -1e9 * ones(64);
+  pm = -1e9 * ones(1, 64);
   pm(1) = 0;                       # the encoder starts in state 0
   B0 = C0 * Y;
   B1 = C1 * Y;
@@ -135,7 +135,7 @@ function u = viterbi(Y, P0, P1, C0, C1)
 end
 
 seed(7);
-u = randi([0, 1], 1000);
+u = randi([0, 1], 1, 1000);
 x = 1 - 2 * conv_encode(u, G2);
 noiseless_errors = sum(viterbi(x, P0, P1, C0, C1) != u)
 ```
@@ -159,12 +159,12 @@ earn that back.
 clf
 seed(3);
 subplot(2, 1, 1)
-histogram(1 + sqrt(1 / (2 * 10^(0 / 10))) * randn(20000), 80)
+histogram(1 + sqrt(1 / (2 * 10^(0 / 10))) * randn(1, 20000), 80)
 title("Received soft values for a +1 symbol, Es/N0 = 0 dB")
 xlim([-2.5, 4.5])
 xlabel("y")
 subplot(2, 1, 2)
-histogram(1 + sqrt(1 / (2 * 10^(6 / 10))) * randn(20000), 80)
+histogram(1 + sqrt(1 / (2 * 10^(6 / 10))) * randn(1, 20000), 80)
 title("Received soft values for a +1 symbol, Es/N0 = 6 dB")
 xlim([-2.5, 4.5])
 xlabel("y")
@@ -210,7 +210,7 @@ end
 
 # One frame through the channel: returns the number of bit errors.
 function e = frame_errors(N, ebn0_db, T, hard)
-  u = randi([0, 1], N);
+  u = randi([0, 1], 1, N);
   x = 1 - 2 * conv_encode(u, T.G);
   M = puncture_mask(T.P, size(x, 2));
   sigma = sqrt(1 / (2 * T.rate * 10^(ebn0_db / 10)));
@@ -223,8 +223,8 @@ end
 
 # Uncoded BPSK: one symbol per bit, decided by sign.
 function e = uncoded_errors(N, ebn0_db)
-  u = randi([0, 1], N);
-  y = 1 - 2 * u + sqrt(1 / (2 * 10^(ebn0_db / 10))) * randn(N);
+  u = randi([0, 1], 1, N);
+  y = 1 - 2 * u + sqrt(1 / (2 * 10^(ebn0_db / 10))) * randn(1, N);
   e = sum((y < 0) != u);
 end
 
@@ -496,7 +496,7 @@ frame at 2 dB on the rate-1/2 code:
 ```rustlab
 seed(5);
 Nb = 10000;
-u = randi([0, 1], Nb);
+u = randi([0, 1], 1, Nb);
 x = 1 - 2 * conv_encode(u, G2);
 sigma = sqrt(1 / (2 * 0.5 * 10^(2 / 10)));
 Y = x + sigma * randn(size(x, 1), size(x, 2));

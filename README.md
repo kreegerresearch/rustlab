@@ -13,6 +13,10 @@ to read.
 
 ## Install (macOS and Linux)
 
+Rust **1.89** or newer is required (`rustc --version`). The bundled
+SQLite in rusqlite 0.41 does not build on an older compiler.
+`rustup default stable` is enough when stable is at least 1.89.
+
 ### Option 1 — into `~/.local/bin` (recommended)
 
 ```sh
@@ -116,7 +120,7 @@ rustlab window --type kaiser --length 64 --beta 8.6 --plot
 
 ### The `.rlab` language extension
 
-**rustlab is its own language** — a domain-specific language for DSP and matrix modeling. It is not a flavour of R, and it does not always follow octave/matlab convention either (the `j`-only imaginary unit, the `viewer on` / `viewer off` REPL controls, the in-process notebook subsystem, the `frame()` / `saveanim()` animation API, and many others are rustlab-native).
+**rustlab is its own language** — a domain-specific language for DSP and matrix modeling. It is not a flavour of R, and it does not always follow octave/matlab convention either (the `j`-only imaginary unit, the `viewer on` / `viewer off` REPL controls, the separate `rustlab-notebook` renderer, the `frame()` / `saveanim()` animation API, and many others are rustlab-native).
 
 rustlab modelling files use the `.rlab` extension. Until a native rustlab GitHub Linguist definition is published, **MATLAB syntax highlighting is used as a temporary visual proxy** — and only as a proxy. Do not infer that any matlab idiom is supported in rustlab just because the highlighter colours it.
 
@@ -269,13 +273,25 @@ t = v'                     # conjugate transpose (for real data, same values)
 All operators broadcast scalars onto vectors and matrices automatically.
 `v .^ 2` squares every element; `2 .^ v` raises 2 to each element of v.
 
-### Logical Operators (`&&`, `||`)
+### Logical arrays and `&&` / `||`
 
-Short-circuit logical and / or, matlab convention. Both operands must be
-scalars (Bool, Scalar, or Complex); use `any(...)` / `all(...)` to
-collapse a matrix or vector first. Non-zero scalars are truthy.
+An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array.
+A scalar comparison stays `true` or `false`. `islogical` is true for both;
+a numeric 0/1 array is not logical. `logical(x)` converts (exact 0 is false,
+`NaN` is true). `true(m, n)` and `false(m, n)` build an array. `A(mask)`
+keeps the elements where the mask is true. `!` is element-wise not.
+`and`, `or`, and `xor` are element-wise. `!=` is not-equal (`~=` is not
+a token). There is no `&` or `|` token.
+
+`&&` and `||` stay short-circuit, and both operands must be scalars (bool,
+a 1-element logical, a number, or a complex). Use `any(...)` / `all(...)`
+to collapse a wider array first. Non-zero scalars are truthy. `double(mask)`
+or `mask + 0` is the numeric 0/1 form. `sum(mask)` counts the trues.
 
 ```
+mask = [1, 2, 3] > 1     % logical 0 1 1
+[10, 20, 30](mask)       % 20 30
+
 % RHS only evaluated when LHS isn't decisive — guard divide-by-zero:
 safe = (x != 0) && (1.0 / x > 0)
 
@@ -406,12 +422,12 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 401 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|
 | **Math** | `abs`, `angle`, `real`, `imag`, `conj`, `sin`, `cos`, `exp`, `log`, `sqrt`, `atan2`, `floor`, `round`, `mod` |
-| **Array** | `zeros`, `ones`, `eye`, `linspace`, `logspace`, `rand`, `randn`, `randi`, `len`, `size`, `reshape`, `diag`, `meshgrid` |
+| **Array** | `zeros`, `ones`, `eye`, `linspace`, `logspace`, `rand`, `randn`, `randi`, `len`, `size`, `reshape`, `diag`, `meshgrid`, `ind2sub`, `sub2ind` |
 | **Statistics** | `sum`, `prod`, `cumsum`, `mean`, `median`, `std`, `min`, `max`, `sort`, `trapz`, `histogram`, `all`, `any` |
 | **Linear algebra** | `dot`, `cross`, `outer`, `kron`, `norm`, `inv`, `det`, `trace`, `eig`, `svd`, `linsolve`, `expm`, `rank`, `roots` |
 | **DSP — FIR** | `fir_lowpass`, `fir_highpass`, `fir_bandpass`, `fir_lowpass_kaiser`, `firpm`, `firpmq`, `fir_notch`, `window` |
@@ -426,8 +442,9 @@ rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/qui
 | **Streaming** | `state_init`, `filter_stream`, `audio_in`, `audio_out`, `audio_read`, `audio_write` |
 | **Structs** | `struct`, `isstruct`, `fieldnames`, `isfield`, `rmfield` |
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
-| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
+| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
 | **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
+| **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, `gaussian_pulse`, `fdtd_source`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces, CPML absorber) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |
 | **Special** | `laguerre`, `legendre`, `factor`, `rk4`, `lyap`, `gram`, `freqresp` |
 | **Profiling** | `profile`, `profile_report` |
@@ -534,7 +551,7 @@ toolbox.
 
 The `--json` form prints a JSON array of
 `{name, toolbox, subcategory, brief, detail}` records, one per builtin
-(369 entries). `detail` holds the signature and a usage example. Useful
+(401 entries). `detail` holds the signature and a usage example. Useful
 for editor extensions, autocomplete plugins, and AI tooling that wants a
 single authoritative index.
 
@@ -740,6 +757,8 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 |------|-------------|
 | `examples/math/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
 | `examples/language/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
+| `examples/language/vectorized_style.rlab` | Array style for scripts: slices, `arrayfun`/`parmap`, masks, reductions, and the checks that match a small loop |
+| `examples/language/logical_arrays.rlab` | Logical arrays: comparisons, `logical` / `islogical`, masks, `find`, `and` / `or` / `xor` |
 | `examples/math/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
 | `examples/stats/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
 | `examples/linalg/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |

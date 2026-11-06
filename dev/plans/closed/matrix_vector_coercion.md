@@ -7,7 +7,7 @@ N-element vectors works for arithmetic and element-wise operators
 (treating a 1×N or N×1 matrix as a single line series) is not yet
 wired up; track separately if a user hits it.
 
-`randn(1, 500)` returns a 1×500 `Matrix`, while `randn(500)` returns a 500-element `Vector`. These are semantically the same (a 1-D sequence of values), but downstream functions like `plot` treat them differently — `plot` on a matrix plots columns, so a 1×N matrix shows only the last column (1 data point).
+`randn(1, 500)` returns a 1×500 `Matrix`. Since 0.3.26, `randn(500)` is a 500×500 matrix, not a length-500 vector; a length-500 draw is `randn(1, 500)`. Downstream functions like `plot` still treat a 1×N matrix and a vector differently — `plot` on a matrix plots columns, so a 1×N matrix shows only the last column (1 data point).
 
 ## Problem
 

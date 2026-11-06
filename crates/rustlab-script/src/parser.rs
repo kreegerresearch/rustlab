@@ -1589,7 +1589,7 @@ impl Parser {
         Ok(lhs)
     }
 
-    // term = unary (('*' | '/' | '\' | '.*' | './') unary)*
+    // term = unary (('*' | '/' | '\' | '.*' | './' | '.\\') unary)*
     fn parse_term(&mut self) -> Result<Expr, ScriptError> {
         let mut lhs = self.parse_unary()?;
         loop {
@@ -1630,11 +1630,16 @@ impl Parser {
                         rhs: Box::new(r),
                     };
                 }
-                Token::DotSlash => {
+                Token::DotSlash | Token::DotBackslash => {
+                    let op = if matches!(self.peek_token(), Token::DotBackslash) {
+                        BinOp::ElemLeftDiv
+                    } else {
+                        BinOp::ElemDiv
+                    };
                     self.advance();
                     let r = self.parse_unary()?;
                     lhs = Expr::BinOp {
-                        op: BinOp::ElemDiv,
+                        op,
                         lhs: Box::new(lhs),
                         rhs: Box::new(r),
                     };
@@ -1743,7 +1748,8 @@ impl Parser {
                         }
                     };
                     if self.peek_token() == &Token::LParen {
-                        // Method-call sugar: obj.method(args) → method(obj, args)
+                        // obj.name(args): a struct field's index, or
+                        // method-call sugar for name(obj, args).
                         self.advance(); // consume '('
                         self.skip_newlines();
                         let mut args = vec![expr];
@@ -1752,7 +1758,7 @@ impl Parser {
                         }
                         self.skip_newlines();
                         self.expect(&Token::RParen)?;
-                        expr = Expr::Call { name: field, args };
+                        expr = Expr::DotCall { name: field, args };
                     } else {
                         expr = Expr::Field {
                             object: Box::new(expr),

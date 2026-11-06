@@ -137,7 +137,9 @@ impl Value {
                 if let (Some((r0, k)), Some((0, w))) = (Value::run_of(&rows), col_run) {
                     if w == nc && rows.len() > 1 {
                         let out = d[r0 * nc..(r0 + k) * nc].to_vec();
-                        return Some(Value::real_matrix(Array2::from_shape_vec((k, nc), out).ok()?));
+                        return Some(Value::real_matrix(
+                            Array2::from_shape_vec((k, nc), out).ok()?,
+                        ));
                     }
                 }
                 if rows.len() == 1 {
@@ -155,42 +157,83 @@ impl Value {
                     // parallel.
                     use rayon::prelude::*;
                     let mut out = vec![0.0; n];
-                    out.par_chunks_mut(w).zip(rows.par_iter()).for_each(|(dst, &r)| {
-                        dst.copy_from_slice(&d[r * nc + c0..r * nc + c0 + w]);
-                    });
-                    return Some(Value::real_matrix(Array2::from_shape_vec((rows.len(), w), out).ok()?));
+                    out.par_chunks_mut(w)
+                        .zip(rows.par_iter())
+                        .for_each(|(dst, &r)| {
+                            dst.copy_from_slice(&d[r * nc + c0..r * nc + c0 + w]);
+                        });
+                    return Some(Value::real_matrix(
+                        Array2::from_shape_vec((rows.len(), w), out).ok()?,
+                    ));
                 }
                 let mut out = Vec::with_capacity(n);
                 for &r in &rows {
                     gather_row(&mut out, r);
                 }
-                Some(Value::real_matrix(Array2::from_shape_vec((rows.len(), cols.len()), out).ok()?))
+                Some(Value::real_matrix(
+                    Array2::from_shape_vec((rows.len(), cols.len()), out).ok()?,
+                ))
             }
             // `v(i, 1)` / `v(1, j)`: one dimension of a vector is 1.
             (Value::Vector(_), [ri, ci]) => match (ri, ci) {
-                (_, Value::Scalar(c)) if (*c as usize) == 1 => self.real_index(std::slice::from_ref(ri)),
-                (Value::Scalar(r), _) if (*r as usize) == 1 => self.real_index(std::slice::from_ref(ci)),
+                (_, Value::Scalar(c)) if (*c as usize) == 1 => {
+                    self.real_index(std::slice::from_ref(ri))
+                }
+                (Value::Scalar(r), _) if (*r as usize) == 1 => {
+                    self.real_index(std::slice::from_ref(ci))
+                }
                 _ => None,
             },
             (Value::Vector(v), [i]) => {
                 let d = Shared::real_slice(v)?;
+                let gather = |e: Elems| -> Option<Value> {
+                    if let Some((s, n)) = e.run() {
+                        if s + n <= d.len() {
+                            return Some(Value::real_vector(Array1::from(d[s..s + n].to_vec())));
+                        }
+                    }
+                    let p = match e.mask(d.len()) {
+                        Some(p) => p,
+                        None => e.list(d.len()).ok()?,
+                    };
+                    Some(Value::real_vector(p.iter().map(|&k| d[k]).collect()))
+                };
                 match i {
                     Value::All => Some(Value::Vector(v.clone())),
                     Value::Scalar(n) => {
                         let k = Value::one_based_to_zero_pub(*n).ok()?;
                         d.get(k).map(|&x| Value::Scalar(x))
                     }
-                    Value::Vector(iv) => {
-                        let e = Elems::of_vector(iv)?;
-                        if let Some((s, n)) = e.run() {
-                            if s + n <= d.len() {
-                                return Some(Value::real_vector(Array1::from(d[s..s + n].to_vec())));
-                            }
+                    // `v(true)` is the first element. `v(false)` is empty.
+                    // A 1×1 logical is the same subscript. A longer mask
+                    // stays on the arm below.
+                    Value::Bool(b) => {
+                        if *b {
+                            d.first().copied().map(Value::Scalar)
+                        } else {
+                            Some(Value::real_vector(Array1::from(Vec::<f64>::new())))
                         }
-                        let p = match e.mask(d.len()) {
-                            Some(p) => p,
-                            None => e.list(d.len()).ok()?,
-                        };
+                    }
+                    Value::Logical(mask) if mask.len() == 1 => {
+                        let bit = mask.as_slice().first().copied().unwrap_or(0) != 0;
+                        if bit {
+                            d.first().copied().map(Value::Scalar)
+                        } else {
+                            Some(Value::real_vector(Array1::from(Vec::<f64>::new())))
+                        }
+                    }
+                    Value::Vector(iv) => gather(Elems::of_vector(iv)?),
+                    // Same list as a vector index: a 1×n or n×1 matrix.
+                    // A wider matrix stays on the complex path, which errors.
+                    Value::Matrix(im) => {
+                        let s = Shared::shape(im);
+                        if s[0] != 1 && s[1] != 1 {
+                            return None;
+                        }
+                        gather(Elems::of_matrix(im)?)
+                    }
+                    Value::Logical(mask) => {
+                        let p = mask.dimension_mask(d.len()).ok()?;
                         Some(Value::real_vector(p.iter().map(|&k| d[k]).collect()))
                     }
                     _ => None,
@@ -208,6 +251,19 @@ impl Value {
                     Value::Scalar(k) => {
                         let p = Value::one_based_to_zero_pub(*k).ok()?;
                         return (p < total).then(|| Value::Scalar(at(p)));
+                    }
+                    Value::Bool(b) => {
+                        if *b {
+                            return (total > 0).then(|| Value::Scalar(at(0)));
+                        }
+                        return Some(Value::real_vector(Array1::from(Vec::<f64>::new())));
+                    }
+                    Value::Logical(mask) if mask.len() == 1 => {
+                        let bit = mask.as_slice().first().copied().unwrap_or(0) != 0;
+                        if bit {
+                            return (total > 0).then(|| Value::Scalar(at(0)));
+                        }
+                        return Some(Value::real_vector(Array1::from(Vec::<f64>::new())));
                     }
                     Value::All => (0..total).collect(),
                     Value::Vector(iv) => {
@@ -241,6 +297,7 @@ impl Value {
                             return None;
                         }
                     }
+                    Value::Logical(mask) => mask.linear_mask(total).ok()?,
                     _ => return None,
                 };
                 Some(Value::real_vector(p.iter().map(|&k| at(k)).collect()))
@@ -256,7 +313,9 @@ mod tests {
     use crate::eval::shared::set_real_storage;
 
     fn real_m(r: usize, c: usize) -> Value {
-        Value::real_matrix(Array2::from_shape_fn((r, c), |(i, j)| (i * 10 + j) as f64 + 0.5))
+        Value::real_matrix(Array2::from_shape_fn((r, c), |(i, j)| {
+            (i * 10 + j) as f64 + 0.5
+        }))
     }
 
     fn widened(v: &Value) -> Value {
@@ -286,7 +345,9 @@ mod tests {
             rv(&[4.0, 1.0, 2.0]),
             rv(&[1.0, 0.0, 1.0, 1.0]),
             rv(&[1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
-            Value::Vector(Shared::new([2.0, 3.0].iter().map(|&x| C64::new(x, 0.0)).collect())),
+            Value::Vector(Shared::new(
+                [2.0, 3.0].iter().map(|&x| C64::new(x, 0.0)).collect(),
+            )),
             Value::real_matrix(Array2::from_shape_vec((1, 2), vec![5.0, 7.0]).unwrap()),
             Value::real_matrix(Array2::from_shape_fn((4, 5), |(i, j)| ((i + j) % 2) as f64)),
             rv(&[0.0, 2.0]),
@@ -305,7 +366,9 @@ mod tests {
                 let want = widened(target).index_ref(f.clone());
                 if let Some(got) = target.real_index(&f) {
                     covered += 1;
-                    let want = want.unwrap_or_else(|e| panic!("{f:?}: complex path errors ({e}) but real path answered"));
+                    let want = want.unwrap_or_else(|e| {
+                        panic!("{f:?}: complex path errors ({e}) but real path answered")
+                    });
                     let same = match (&got, &want) {
                         (Value::Scalar(a), Value::Scalar(b)) => a.to_bits() == b.to_bits(),
                         (Value::Vector(a), Value::Vector(b)) => **a == **b,

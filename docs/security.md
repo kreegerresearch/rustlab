@@ -143,6 +143,9 @@ dropped when that cap trips.
 - Dangerous URL schemes (`javascript:`, `data:`, `vbscript:`, `blob:`)
   are stripped from links; images keep `data:image/*` only. The scheme
   test ignores ASCII whitespace and control characters, as browsers do.
+  `render --index` uses that same test and refuses the href instead of
+  rewriting it, so a static page is not written with a live `javascript:`
+  link in the top bar.
 - Math restored into HTML is HTML-escaped before KaTeX delimiters are
   applied (breaks script/tag breakout inside `$…$`). Code output and
   plot text (titles, labels) are escaped by their emitters.
@@ -185,7 +188,10 @@ dropped when that cap trips.
 While executing notebook code (and when expanding embeds), every path
 passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`,
 `whos`, `sparameters` (a Touchstone path), `cache enable` (including the
-default `.rustlab/cache.db`), `cache add file`, and `![[embed]]` must
+default `.rustlab/cache.db`, and only after the host opted in with
+`--cache` or `[cache] enabled = true` — otherwise the statement returns
+before any path is checked or any file is created), `cache add file`,
+and `![[embed]]` must
 resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with

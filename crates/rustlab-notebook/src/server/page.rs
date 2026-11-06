@@ -60,7 +60,8 @@ pub fn inject_chrome_nonced(
         }
         None => format!("{with_head}{body_extra}"),
     };
-    hoist_comments_toggle(&page)
+    let page = hoist_comments_toggle(&page);
+    crate::server::drawer::install_nav_drawer(&page, nonce)
 }
 
 /// Move the header Comments checkbox into the ⋯ panel.

@@ -62,7 +62,7 @@ pub fn stft(
         )));
     }
 
-    let n_eff = next_power_of_two(nfft);
+    let n_eff = next_power_of_two(nfft)?;
     let hop = m - noverlap;
 
     let onesided = match sided {
@@ -110,9 +110,8 @@ pub fn stft(
     };
 
     // Time axis: segment-centre times.
-    let t = Array1::from_iter(
-        (0..n_frames).map(|k| (k * hop) as f64 / fs + (m as f64) / (2.0 * fs)),
-    );
+    let t =
+        Array1::from_iter((0..n_frames).map(|k| (k * hop) as f64 / fs + (m as f64) / (2.0 * fs)));
 
     Ok((s, f, t))
 }

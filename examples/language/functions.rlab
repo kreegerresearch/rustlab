@@ -18,7 +18,7 @@ function y = normalize(v)
   y = v / max(abs(v))
 end
 
-sig = randn(64);
+sig = randn(1, 64);
 norm_sig = normalize(sig);
 
 # ── Struct creation and field access ─────────────────────────────────────────

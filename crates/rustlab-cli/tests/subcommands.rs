@@ -380,3 +380,43 @@ fn run_runtime_error_reports_line_number_on_stderr() {
         "expected out-of-bounds message on stderr; actual stderr:\n{stderr}"
     );
 }
+
+#[test]
+fn notebook_subcommand_points_at_rustlab_notebook() {
+    // Not an alias: the old `rustlab notebook …` surface exits 2 and
+    // names the separate binary. It must not be clap's bare
+    // "unrecognized subcommand", and it must not run a render.
+    for args in [
+        &["notebook"][..],
+        &["notebook", "render", "note.md"][..],
+        &["notebook", "--help"][..],
+    ] {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} stderr:\n{}",
+            stderr_str(&out)
+        );
+        let err = stderr_str(&out);
+        assert!(
+            err.contains("rustlab-notebook"),
+            "{args:?} missing the binary name:\n{err}"
+        );
+        assert!(
+            err.contains("was removed"),
+            "{args:?} missing the removal hint:\n{err}"
+        );
+        assert!(
+            !err.contains("unrecognized subcommand"),
+            "{args:?} still looks like clap's default:\n{err}"
+        );
+    }
+    let help = run(&["--help"]);
+    assert!(help.status.success());
+    let text = stdout_str(&help);
+    assert!(
+        !text.lines().any(|l| l.trim().starts_with("notebook")),
+        "hidden hint command must not appear in `rustlab --help`:\n{text}"
+    );
+}

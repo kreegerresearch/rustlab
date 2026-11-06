@@ -161,6 +161,14 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    /// `obj.name(rest)`, with `args = [obj, rest...]`. When `obj` is a
+    /// struct variable (or a `S.a.b` chain) holding field `name`, this
+    /// indexes that field with `rest` (`out.probe(:, 1)`). Otherwise it is
+    /// method-call sugar and evaluates exactly like `Call { name, args }`.
+    DotCall {
+        name: String,
+        args: Vec<Expr>,
+    },
     /// `[rows]` literal — rows separated by `;`, elements by `,`
     Matrix(Vec<Vec<Expr>>),
     /// `{expr, expr, ...}` — cell/string array literal
@@ -214,9 +222,11 @@ pub enum BinOp {
     /// `A\b` — left division. Same precedence as `*` and `/`.
     LeftDiv,
     Pow,
-    /// Element-wise: .*  ./  .^
+    /// Element-wise: .*  ./  .\  .^
     ElemMul,
     ElemDiv,
+    /// `A .\ B` is element-wise `B ./ A`.
+    ElemLeftDiv,
     ElemPow,
     /// Comparison operators
     Eq,

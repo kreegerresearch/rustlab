@@ -132,7 +132,7 @@ pub fn pwelch_stream_init(
             "pwelch_stream_init: window has zero energy".into(),
         ));
     }
-    let n_eff = next_power_of_two(nfft);
+    let n_eff = next_power_of_two(nfft)?;
     Ok(PwelchState {
         seg: SegmentBuffer::new(m, noverlap)?,
         window: window.iter().copied().collect(),
@@ -249,7 +249,7 @@ pub fn stft_stream_init(
             "stft_stream_init: fs {fs} must be > 0"
         )));
     }
-    let n_eff = next_power_of_two(nfft);
+    let n_eff = next_power_of_two(nfft)?;
     // Streaming requires a fixed row count, so we resolve `Auto` to
     // one-sided at init time. Pass `TwoSided` explicitly if you need
     // every bin.

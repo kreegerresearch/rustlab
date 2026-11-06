@@ -10,4 +10,8 @@ pub enum CoreError {
     InvalidParameter(String),
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    /// The element count or the byte length is not a legal variable.
+    /// Callers attach the function name and the shape; see [`crate::variable_too_large`].
+    #[error("requested array exceeds the maximum possible variable size")]
+    VariableTooLarge,
 }

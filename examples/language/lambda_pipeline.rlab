@@ -8,7 +8,7 @@ fs = 1000.0
 t  = linspace(0, (N-1)/fs, N)
 
 # ── Signal: two tones + noise ─────────────────────────────────────────────────
-x = sin(2 * pi * 50 .* t) + 0.4 * sin(2 * pi * 200 .* t) + 0.1 * randn(N)
+x = sin(2 * pi * 50 .* t) + 0.4 * sin(2 * pi * 200 .* t) + 0.1 * randn(1, N)
 
 # ── Step 1: build window and normalise functions as lambdas ───────────────────
 hann     = @(n) 0.5 - 0.5 .* cos(2 .* pi .* linspace(0, 1, n))

@@ -47,7 +47,7 @@ t    = (0:(n-1)) / fs;
 f0   = 100;
 f1   = 5000;
 phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
-x = sin(phase) + 0.02*randn(n);
+x = sin(phase) + 0.02*randn(1, n);
 plot(t(1:500), x(1:500))
 title("First 50 ms of the chirp")
 xlabel("Time (s)"); ylabel("Amplitude")
@@ -110,12 +110,12 @@ seg_dur  = 1.0;
 freqs    = [200, 1500, 3500];
 n_seg    = round(fs * seg_dur);
 n        = n_seg * length(freqs);
-x = zeros(n);
+x = zeros(1, n);
 for k = 1:length(freqs)
     t_seg = (0:(n_seg - 1)) / fs;
     x((k - 1) * n_seg + 1 : k * n_seg) = sin(2*pi*freqs(k)*t_seg);
 end
-x = x + 0.02*randn(n);
+x = x + 0.02*randn(1, n);
 [W, f, twf] = waterfall(x, fs, window("hann", 256), 192, 1024);
 imagesc(W, "viridis")
 title("Stepwise tones: 200 → 1500 → 3500 Hz")

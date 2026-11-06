@@ -264,7 +264,10 @@ impl LivePlot for ViewerFigure {
             value_max: vmax,
             origin,
         };
-        let rgba = crate::file::render_heatmap_cells_to_rgba(&hm);
+        let rgba = match crate::file::render_heatmap_cells_to_rgba(&hm) {
+            Ok(rgba) => rgba,
+            Err(_) => return,
+        };
         if rgba.is_empty() {
             return;
         }
@@ -784,7 +787,7 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                         // read plot-coord directly) match the visible
                         // cell rows. Reuse the central renderer so it
                         // also picks up `value_min` / `value_max`.
-                        let rgba = crate::file::render_heatmap_cells_to_rgba(hm);
+                        let rgba = crate::file::render_heatmap_cells_to_rgba(hm)?;
                         (width, height, rgba)
                     }
                 }

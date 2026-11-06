@@ -83,6 +83,7 @@ rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (always ligh
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
 rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native in-place rewrite
 rustlab-notebook render analysis.md -o out.html  # explicit output path
+rustlab-notebook render analysis.md --strict     # exit 1 if a code cell errors (default: exit 0)
 rustlab-notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
 
@@ -676,12 +677,22 @@ A cell shows a plot when it calls `savefig`, or when it changes the live figure 
 
 In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the
-theme accent color. The source alone is a `<details>` (`rustlab`
+theme accent color. A cell that failed uses the error color for that
+rule (`.rl-cell-error`) and keeps the red `<pre class="error">` body.
+The source alone is a `<details>` (`rustlab`
 summary). It starts open unless a cell `<!-- code: collapsed -->`,
 the notebook frontmatter `code: collapsed`, or `~/.rustlabrc`
 `[notebook] code = "collapsed"` says otherwise (most specific wins;
-see [Directives](#directives)). Collapsing it leaves that summary and
-the accent rule, and leaves printed output, errors, and plots visible.
+see [Directives](#directives)). A failed cell opens anyway, so the
+source that produced the error is on screen. Collapsing a cell that
+did not fail leaves that summary and
+the accent rule, and leaves printed output and plots visible.
+When at least one code cell failed, the top bar shows a chip,
+`1 error` or `N errors`, that links to the first failure
+(`#rl-error-1`). Failed cells are anchored `id="rl-error-1"`,
+`id="rl-error-2"`, and so on, in document order. A page with no cell
+errors has no chip. Batch HTML and `notebook watch` use the same
+markup; watch updates the chip when a re-render changes the top bar.
 On `notebook watch`, a disclosure the reader has opened or closed
 keeps that choice across live updates; a cell they have not touched
 picks up a changed directive or frontmatter on the next render.
@@ -714,6 +725,18 @@ tags (`javascript`, `sh`) are unchanged, and an indented code block
 is not a fence. There is no client-side highlighter and no CDN.
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
+`--strict` still only changes the process exit code (1 when any code
+cell failed); the notebook is written either way. There is no
+fail-fast flag.
+
+Markdown (`--format markdown`) writes a cell error as an Obsidian
+`> [!CAUTION]` callout containing the message, plus an HTML comment
+`<!-- rustlab:error cell=N -->`. `N` is the 1-based rustlab code cell
+(mermaid and widgets do not count). Both sit in the output region, so
+they are rendered output only: `strip_render_artifacts` removes them,
+and nothing is written back into the authoring notebook as a `%%`
+comment. A ` ```text ` fence is still used for printed stdout, not for
+the error. LaTeX and PDF keep their `rlerror` boxes.
 
 ### Variable persistence
 
@@ -722,7 +745,7 @@ in one block, analyze it in the next:
 
 ````markdown
 ```rustlab
-x = sin(2*pi*0.15*(0:1023)) + 0.3*randn(1024);
+x = sin(2*pi*0.15*(0:1023)) + 0.3*randn(1, 1024);
 ```
 
 ```rustlab
@@ -752,9 +775,16 @@ stray `$` signs in prose. No `\$` escaping is needed in HTML output.
 
 ### Tables
 
-Markdown tables render as styled HTML tables or a LaTeX `tabularx` that
-fits `\linewidth` (booktabs rules, wrapping `X` columns), so a wide grid
-stays inside the PDF page margins:
+Markdown tables render as styled HTML tables or a LaTeX `xltabular`
+(a `tabularx` that breaks between rows) fitted to `\linewidth`. A thin
+rule sits under the header, a hairline separates body rows, and a rule
+closes the bottom. Alternating body rows and the header pick up a tint
+of the theme's text color: 6% for a stripe, 11% for the header, 30% for
+the rules, each mixed into the page color (white paper in PDF, the theme
+background in HTML and `notebook watch`). PDF stays Catppuccin Latte on
+white paper, so those tints are blends of `#4c4f69` over white. Wrapping
+`X` columns and breakable inline code keep a wide grid inside the PDF
+page margins, including a table taller than one page:
 
 ```markdown
 | Window      | Main Lobe Width | First Sidelobe |
@@ -1001,7 +1031,7 @@ the narrative.
 % Load data and define constants — reader doesn't need to see this
 fs = 16000;
 N = 1024;
-x = randn(N);
+x = randn(1, N);
 ```
 
 The signal has been sampled at 16 kHz. Now we compute the spectrum:
@@ -1022,6 +1052,8 @@ from the hidden block (if any) still appears. `<!-- hide -->` wins over
 Sets the initial state of that cell's source disclosure. `collapsed`
 omits the HTML `open` attribute; `open` forces it. The value is
 case-insensitive. Output, errors, and plots stay visible either way.
+A cell that errored opens its source disclosure even when this
+directive, the frontmatter, or the rc file would collapse it.
 
 The most specific setting wins:
 
@@ -1080,7 +1112,7 @@ the page.
 <!-- details: Show sweep results -->
 ```rustlab
 for k = 1:8
-    plot(freqz(fir_lowpass(32*k, 3000, 16000)))
+    plot(freqz(fir_lowpass(32*k, 3000, 16000, "hamming")))
 end
 ```
 ````
@@ -1423,9 +1455,10 @@ handle on the column's left edge drags that width, from 10rem up to
 40% of the viewport. Arrow keys move it by 16px, Home and End jump to
 the ends, and a double-click restores 14rem. The width is kept in
 `localStorage` for that browser (`rl-cm-col-px`). Collapse leaves a
-2.5rem strip of the numbered markers (`rl-cm-collapsed`). A directory
+2.5rem strip of the numbered markers (`rl-cm-collapsed`). A static directory
 page with the file browser and the contents sidebar keeps that column
-and shrinks the prose to make room. Cards are one full-width column. A small
+and shrinks the prose to make room. `notebook watch` does not reserve
+those columns, so the comment margin sits beside a wider article. Cards are one full-width column. A small
 script stacks them: the first card whose marker is on a line sits
 level with that line, and the others on that line stack under it. A
 later card starts at its own marker, or below the previous card when
@@ -1655,7 +1688,7 @@ The page also has:
   falls back to open.
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
-- Navigation sidebar from headings
+- Navigation sidebar from headings (`--no-toc` omits it on a single HTML file)
 - Syntax-highlighted `` ```rustlab `` cells. Colors come from the same
   lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
   numbers, operators, call-like names) and follow the Catppuccin theme.
@@ -1749,7 +1782,8 @@ rustlab-notebook render analysis.md -f latex
 
 The `.tex` file uses `article` class with `lmodern`, `amsmath`,
 `booktabs`, `graphicx`, `xcolor` (with the `table` option), `tcolorbox`,
-`fancyvrb`, `sectsty`, `float`, and `hyperref`. Formulas render
+`fancyvrb`, `fvextra`, `xltabular`, `sectsty`, `float`, and `hyperref`.
+Formulas render
 natively. Plot SVGs are converted to PDF by a fixed-argv Inkscape call
 before the engine runs (no TeX shell-escape); the `.tex` includes them
 with `\includegraphics` (no `svg` package). rustlab writes a `.pdf`
@@ -1760,7 +1794,9 @@ reports the tail of Inkscape's stderr.
 
 LaTeX and PDF are always Catppuccin Latte on white paper, whatever
 `-t` or `~/.rustlabrc` says. `-t` themes HTML and `notebook watch`
-only. There is no dark `pagecolor`. Body text is `#4c4f69`. Headings
+only. There is no dark `pagecolor`. Body text is `#4c4f69`. Table rules
+and zebra stripes are blends of that text color over the white paper
+(30% rules, 11% header, 6% body stripes). Headings
 are unnumbered: H1 `#7113ec`, H2 `#094dd3`, H3 `#12747a`. The title
 block has no date. Those heading colors are Latte's mauve, blue, and
 teal darkened so each clears 4.5:1 on white paper and on the Latte
@@ -1844,7 +1880,7 @@ Unlike file formats, JSON:
     {
       "kind": "code",
       "language": "rustlab",
-      "source": "x = randn(500); plot(x)",
+      "source": "x = randn(1, 500); plot(x)",
       "source_hash": "blake3:649cb9a0a241d775",
       "text_output": "",
       "error": null,
@@ -2051,37 +2087,50 @@ parent directory to enable cross-notebook navigation.
 
 ### Page navigation
 
-Every notebook page carries two navigations, which answer different
-questions and are always both present:
+Every notebook page carries two navigations. The top bar moves between notebooks. The sidebar moves within one.
 
-- The **sidebar** moves *within* a notebook: an in-page TOC built from the
-  H1/H2/H3 headings, in document order. Omitted only when a notebook has
-  no headings at all, in which case the content column centres in the
-  full viewport instead of the space beside the sidebar.
-- The **topbar** moves *between* notebooks: `← Previous`, `Index`, and
-  `Next →` alongside the current page title. A **Previous · Index · Next**
-  bar is also appended at the foot of the page, where it is useful after a
-  long read.
+- The **sidebar** is an in-page TOC built from the H1/H2/H3 headings, in document order. It is omitted when a notebook has no headings, and when a single HTML file is rendered with `--no-toc`. Either way the content column uses the full width (`body.no-toc`).
+- The **topbar** is `← Previous`, the parent link, and `Next →`, alongside the current page title. A directory render labels that parent link Index and points it at `index.html`. A single HTML file has no parent link unless you pass `--index`:
 
-Directory HTML (`render` of a folder, and `watch` of a folder) adds a
-third: a **file browser** fixed on the left of the index page and of
-every notebook page. It groups notebooks by their real folders, and each
-row shows only the file name (`filters.md`), inside its folder.
-The whole browser and each folder are `<details>` disclosures. The root
-disclosure starts open; closing it shrinks the column. Every folder
-starts closed, except the folders that contain the notebook on this
-page, so that file stays visible. The index has no current notebook, so
-every folder starts closed there. Clicking a folder summary opens or
-closes only that folder. The open notebook is marked. Listing rules match the index (`README.md` included;
-no `index.md`, `_` partials, or dotfiles), and the row order matches
+  ```sh
+  rustlab-notebook render amplifier_analysis.md -t dark --no-toc --no-comments \
+    --index /notebooks/ Notebooks
+  ```
+
+  The first value is the href. The optional second value is the label (default Index). The same link is repeated in the footer. `--index` and `--no-toc` apply only to one HTML notebook. A directory, or any other format, exits with an error and writes nothing. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected the same way. `--no-comments` is the existing flag; HTML comments stay on unless you pass it. A static HTML page shows comments read-only. `notebook watch --annotate` is what can edit them.
+
+A **Previous · parent · Next** bar is also appended at the foot of a page that has those links, which is useful after a long read.
+
+Directory HTML (`render` of a folder) adds a third: a **file browser**
+fixed on the left of the index page and of every notebook page. It groups
+notebooks by their real folders, and each row shows only the file name
+(`filters.md`), inside its folder. The whole browser and each folder are
+`<details>` disclosures. The root disclosure starts open; closing it
+shrinks the column. Every folder starts closed, except the folders that
+contain the notebook on this page, so that file stays visible. The index
+has no current notebook, so every folder starts closed there. Clicking a
+folder summary opens or closes only that folder. The open notebook is
+marked. Listing rules match the index (`README.md` included; no
+`index.md`, `_` partials, or dotfiles), and the row order matches
 frontmatter `order` then path, with `README.md` first among unordered
-files in its folder. Single-file `render` / `watch` has no
-file browser. LaTeX and PDF do not.
+files in its folder. Single-file `render` has no file browser. LaTeX and
+PDF do not.
+
+`notebook watch` uses the same tree and the same outline, but they do
+not reserve a column. **Contents** (or `\`) opens one drawer that slides
+over the page. Escape, a click outside the drawer, or choosing a file or
+a heading closes it. A folder summary only opens or closes that folder.
+On a wide window the open drawer does not cover headings or a plot's
+title and axis labels: those shift clear of the panel. Under 768px the
+open drawer covers the page until it is dismissed. A single-file watch
+has the outline and no file tree. The comment margin is unchanged.
+`?contents=open` starts the page with the drawer open.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same
-chrome, minus the cross-notebook links, the file browser, and the footer
-bar — there's no sibling set to navigate. The page layout is otherwise
-identical to a collection page.
+chrome, minus the file browser and, unless `--index` is set, the
+cross-notebook links and the footer bar. `--no-toc` drops the heading
+sidebar on that file. The page layout is otherwise identical to a
+collection page.
 
 TOC entries link headings by their anchor: the explicit `{#anchor}` when
 one is written, the generated slug (`## Section Two` → `#section-two`)
@@ -2152,7 +2201,13 @@ See `docs/functions.md` → Cell Arrays for full reference.
 ## Persistent function cache
 
 The `cache` statement opts a notebook into a SQLite-backed function
-result cache. Place it at the top of a notebook:
+result cache. The file is not created unless the host opts in:
+`rustlab-notebook render --cache`, `rustlab-notebook watch --cache`,
+or `[cache] enabled = true` in the user rc. `--no-cache` overrides a
+true rc key. With the default (off), `cache enable` prints
+`cache: disabled` and the notebook runs uncached; nothing under
+`.rustlab/` is created. Place the statement at the top of a notebook
+and render with `--cache`:
 
 ````markdown
 ```rustlab
@@ -2222,10 +2277,12 @@ function cache speeds up across sessions.
 
 ### Storage
 
-`cache enable` with no path opens `.rustlab/cache.db` relative to the
-notebook's working directory. The workspace `.gitignore` excludes
-`.rustlab/` by default. To ship a notebook with a warm cache, use a
-named store and commit it explicitly:
+With the host opted in, `cache enable` with no path opens
+`.rustlab/cache.db` relative to the notebook's working directory. The
+workspace `.gitignore` excludes `.rustlab/` by default. To ship a
+notebook with a warm cache, use a named store and commit it explicitly
+(the render or watch that fills it still needs `--cache` or
+`[cache] enabled = true`):
 
 ````markdown
 ```rustlab

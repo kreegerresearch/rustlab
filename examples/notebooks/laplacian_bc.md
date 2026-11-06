@@ -62,7 +62,7 @@ satisfy zero-flux trivially.
 A_n = laplacian_2d(nx, ny, dx, dy, "neumann");
 ones_vec = ones(ny * nx, 1);
 test_n = full(A_n) * ones_vec;
-print(norm(test_n))      % → ~3e-12 (machine precision)
+print(norm(test_n, "fro"))      % → ~3e-12 (machine precision)
 ```
 
 The residual is at floating-point noise — confirming the null space.
@@ -79,7 +79,7 @@ operator):
 ```rustlab
 A_p = laplacian_2d(nx, ny, dx, dy, "periodic");
 test_p = full(A_p) * ones(ny * nx, 1);
-print(norm(test_p))      % → ~3e-12
+print(norm(test_p, "fro"))      % → ~3e-12
 ```
 
 The use case is problems with translational symmetry: Bloch states in

@@ -30,7 +30,7 @@ downstream lessons can rely on.
 Fs = 48000;
 N  = 1024;
 seed(7);
-x = sin(2*pi*3000*(0:N-1)/Fs) + 0.4*randn(N);
+x = sin(2*pi*3000*(0:N-1)/Fs) + 0.4*randn(1, N);
 ```
 
 Lessons that embed this file gain `Fs`, `N`, and `x` for use in

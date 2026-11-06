@@ -32,6 +32,24 @@ fn run_in_dir(src: &str) -> (tempfile::TempDir, Evaluator) {
 // ── enable / off ────────────────────────────────────────────────────
 
 #[test]
+fn enable_refused_by_host_does_not_create_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested").join("cache.db");
+    let src = format!("cache enable \"{}\"\n", path.display());
+    let mut ev = Evaluator::new();
+    ev.set_persistent_cache_permitted(false);
+    run(&mut ev, &src).expect("script");
+    assert!(
+        !ev.cache_active(),
+        "refused enable must leave the cache off"
+    );
+    assert!(
+        !dir.path().join("nested").exists(),
+        "refused enable must not create the store's parent directory"
+    );
+}
+
+#[test]
 fn enable_default_path_creates_project_db() {
     let (dir, ev) = run_in_dir("cache enable\n");
     assert!(ev.cache_active(), "cache should be active after enable");

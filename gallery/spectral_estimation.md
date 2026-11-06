@@ -18,7 +18,7 @@ These frequencies are intentionally close together to test resolution.
 seed(42)
 N = 1024;
 n = 0:N-1;
-x = sin(2*pi*0.15*n) + 0.8*sin(2*pi*0.18*n) + 0.3*randn(N);
+x = sin(2*pi*0.15*n) + 0.8*sin(2*pi*0.18*n) + 0.3*randn(1, N);
 plot(x(1:200))
 title("Test Signal (first 200 samples)")
 xlabel("Sample")

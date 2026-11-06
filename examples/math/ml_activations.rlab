@@ -49,13 +49,13 @@ print(top3_p)
 
 # ── layernorm ─────────────────────────────────────────────────────────────────
 # Subtracts mean, divides by population std.  Output has zero mean, unit variance.
-raw = randn(16)
+raw = randn(1, 16)
 ln  = layernorm(raw)
 print(mean(real(ln)))                  # → ≈ 0.0
 print(std(real(ln)))                   # → ≈ 1.0  (sample std; layernorm targets population std = 1)
 
 # layernorm then softmax — a common transformer sub-block pattern
-logits2 = randn(8) * 3.0
+logits2 = randn(1, 8) * 3.0
 normed  = layernorm(logits2)
 p2      = softmax(normed)
 print(sum(p2))                         # → 1.0

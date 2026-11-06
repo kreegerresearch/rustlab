@@ -255,11 +255,11 @@ pub fn render_figure_state_to_rgb_buffer(
 /// Honours `value_min` / `value_max` on the `HeatmapData` as the colour-
 /// mapping endpoints when both are `Some`; falls back to auto-scaling
 /// otherwise. Out-of-range cells saturate to the colormap extremes.
-pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> {
+pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Result<Vec<u8>, PlotError> {
     let nrows = hm.z.len();
     let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
     if nrows == 0 || ncols == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let (min_v, max_v) = match (hm.value_min, hm.value_max) {
         (Some(a), Some(b)) if a < b => (a, b),
@@ -291,7 +291,10 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
     let raw_range = max_v - min_v;
     let degenerate = raw_range == 0.0;
     let range = if degenerate { 1.0 } else { raw_range };
-    let mut rgba = vec![0u8; nrows * ncols * 4];
+    let n_bytes = rustlab_core::checked_elems(&[nrows, ncols, 4], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large("plot", &[nrows, ncols, 4]))
+    })?;
+    let mut rgba = vec![0u8; n_bytes];
     for r in 0..nrows {
         // Lower (default): flip vertically so source row 0 ends up at
         // the BOTTOM pixel row of the texture (which becomes plot-y = 0
@@ -331,7 +334,7 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
             rgba[off + 3] = 255;
         }
     }
-    rgba
+    Ok(rgba)
 }
 
 /// Render a single subplot panel into an RGBA pixel buffer (row-major, 4 bytes
@@ -345,7 +348,13 @@ pub fn render_panel_to_rgba(
     height: u32,
 ) -> Result<Vec<u8>, PlotError> {
     let palette = ThemePalette::from(theme);
-    let mut rgb = vec![0u8; (width * height * 3) as usize];
+    let rgb_len = rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 3],
+        ))
+    })?;
+    let mut rgb = vec![0u8; rgb_len];
     {
         let root =
             BitMapBackend::with_buffer(&mut rgb, (width, height)).into_drawing_area();
@@ -365,7 +374,13 @@ pub fn render_panel_to_rgba(
         }
         root.present().map_err(err)?;
     }
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    let rgba_len = rustlab_core::checked_elems(&[width as usize, height as usize, 4], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 4],
+        ))
+    })?;
+    let mut rgba = Vec::with_capacity(rgba_len);
     for px in rgb.chunks_exact(3) {
         rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
     }
@@ -433,40 +448,14 @@ where
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
 
-    // Log-scaled axes (semilogx/semilogy/loglog): position data by log10 while
-    // keeping the stored data real. We render a transformed copy whose series
-    // (and limits) are log10'd, then label ticks with the real decade values.
+    // Log-scaled axes (semilogx/semilogy/loglog): draw a log10 copy of the
+    // series and of any scripted limits, then label ticks with the real
+    // decade values. Plotly keeps native log axes and does not use this view.
     let x_log = sp.x_scale == AxisScale::Log;
     let y_log = sp.y_scale == AxisScale::Log;
     let log_owned;
     let sp: &SubplotState = if x_log || y_log {
-        let mut c = sp.clone();
-        for s in &mut c.series {
-            if x_log {
-                for v in &mut s.x_data {
-                    *v = v.log10();
-                }
-            }
-            if y_log {
-                for v in &mut s.y_data {
-                    *v = v.log10();
-                }
-            }
-        }
-        let logify = |o: &mut Option<f64>| {
-            if let Some(v) = o.as_mut() {
-                *v = v.log10();
-            }
-        };
-        if x_log {
-            logify(&mut c.xlim.0);
-            logify(&mut c.xlim.1);
-        }
-        if y_log {
-            logify(&mut c.ylim.0);
-            logify(&mut c.ylim.1);
-        }
-        log_owned = c;
+        log_owned = sp.log_scaled_view();
         &log_owned
     } else {
         sp
@@ -1621,32 +1610,15 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
-    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
-    if arrows.is_empty() {
-        return Ok(());
-    }
+    let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Quiver {
+        u: &qd.u,
+        v: &qd.v,
+        x: &qd.x,
+        y: &qd.y,
+        scale: qd.scale,
+    });
     let color = qd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
-    let style = ShapeStyle {
-        color: color.to_rgba(),
-        filled: false,
-        stroke_width: 1,
-    };
-    for a in arrows {
-        chart
-            .draw_series(std::iter::once(PathElement::new(
-                vec![a.shaft.0, a.shaft.1],
-                style,
-            )))
-            .map_err(err)?;
-        chart
-            .draw_series(std::iter::once(PathElement::new(
-                vec![a.head[0], a.head[1], a.head[2]],
-                style,
-            )))
-            .map_err(err)?;
-    }
-    Ok(())
+    draw_overlay_strokes(chart, &strokes, color)
 }
 
 fn render_streamlines_to_backend<DB>(
@@ -1660,46 +1632,43 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
-    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    let seeds = match &sd.seeds {
-        Some(s) => s.clone(),
-        None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
-    };
-    if seeds.is_empty() {
-        return Ok(());
-    }
-    let step = crate::streamline::default_step(&sd.x, &sd.y);
-    let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
+    let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Stream {
+        u: &sd.u,
+        v: &sd.v,
+        x: &sd.x,
+        y: &sd.y,
+        density: sd.density,
+        seeds: sd.seeds.as_deref(),
+    });
     let color = sd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
+    draw_overlay_strokes(chart, &strokes, color)
+}
+
+fn draw_overlay_strokes<DB>(
+    chart: &mut ChartContext<
+        DB,
+        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
+    >,
+    strokes: &[Vec<(f64, f64)>],
+    color: plotters::style::RGBColor,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     let style = ShapeStyle {
         color: color.to_rgba(),
         filled: false,
         stroke_width: 1,
     };
-    for (sx, sy) in seeds {
-        let pts = crate::streamline::integrate(
-            &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
-        );
-        if pts.len() < 2 {
+    for stroke in strokes {
+        if stroke.len() < 2 {
             continue;
         }
         chart
-            .draw_series(std::iter::once(PathElement::new(pts.clone(), style)))
+            .draw_series(std::iter::once(PathElement::new(stroke.clone(), style)))
             .map_err(err)?;
-        if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
-            chart
-                .draw_series(std::iter::once(PathElement::new(
-                    vec![a.shaft.0, a.shaft.1],
-                    style,
-                )))
-                .map_err(err)?;
-            chart
-                .draw_series(std::iter::once(PathElement::new(
-                    vec![a.head[0], a.head[1], a.head[2]],
-                    style,
-                )))
-                .map_err(err)?;
-        }
     }
     Ok(())
 }
@@ -2010,7 +1979,7 @@ mod tests {
             value_max: None,
             origin: HeatmapOrigin::Upper, // no flip: source row r → pixel row r
         };
-        let rgba = render_heatmap_cells_to_rgba(&hm);
+        let rgba = render_heatmap_cells_to_rgba(&hm).unwrap();
         let alpha = |row: usize, col: usize| rgba[(row * 2 + col) * 4 + 3];
         assert_eq!(alpha(0, 1), 0, "NaN cell must be transparent");
         assert_eq!(alpha(1, 1), 255, "Inf cell must be opaque (saturated)");
@@ -2084,8 +2053,8 @@ mod tests {
             value_max: Some(1.0),
             origin,
         };
-        let lower = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Lower));
-        let upper = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Upper));
+        let lower = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Lower)).unwrap();
+        let upper = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Upper)).unwrap();
         let ncols = 2;
 
         // Lower: source row 0 (value 0) at the bottom = pixel row 1.
@@ -2212,6 +2181,60 @@ mod tests {
             );
         }
         assert!(!svg.contains("log10"), "log10 descriptor should be gone");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scripted_xlim_survives_log_axes_on_terminal_and_svg() {
+        // semilogx + xlim([10, 100]) on data that spans 1..1000.
+        // The terminal draws in log space, so the scripted window is
+        // log10(10)..log10(100). SVG keeps real decade labels for that
+        // window and does not show the samples outside it.
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(
+            vec![1.0, 10.0, 100.0, 1000.0],
+            vec![1.0, 2.0, 3.0, 4.0],
+            "",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            let sp = fig.current_mut();
+            sp.x_scale = crate::figure::AxisScale::Log;
+            sp.xlim = (Some(10.0), Some(100.0));
+        });
+
+        let (x0, x1) = FIGURE.with(|fig| {
+            let fig = fig.borrow();
+            let sp = fig.current().clone();
+            let view = sp.log_scaled_view();
+            assert_eq!(sp.series[0].x_data, vec![1.0, 10.0, 100.0, 1000.0]);
+            assert_eq!(sp.xlim, (Some(10.0), Some(100.0)));
+            let (x0, x1, _, _) = crate::figure::compute_axis_bounds(&view).expect("bounds");
+            (x0, x1)
+        });
+        assert!((x0 - 1.0).abs() < 1e-12, "terminal log-space xmin {x0}");
+        assert!((x1 - 2.0).abs() < 1e-12, "terminal log-space xmax {x1}");
+
+        let path = tmp_path("_logx_xlim.svg");
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let texts: Vec<String> = svg
+            .split("</text>")
+            .filter_map(|seg| seg.rsplit_once('>').map(|(_, t)| t.trim().to_string()))
+            .collect();
+        for real in ["10", "100"] {
+            assert!(
+                texts.iter().any(|t| t == real),
+                "svg missing real decade tick {real} for xlim([10, 100]); texts={texts:?}"
+            );
+        }
+        assert!(
+            !texts.iter().any(|t| t == "1000" || t.contains("1e10")),
+            "svg axis ignored xlim or forgot to log it; texts={texts:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

@@ -69,6 +69,13 @@ impl Operand<'_> {
 /// `l op r`, taking the fast path when one applies.
 pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> {
     use BinOp::*;
+    // `A .\ B` is `B ./ A` on the same kernel. Swapping the operand
+    // wrappers does not clone either array.
+    let (op, l, r) = if op == ElemLeftDiv {
+        (ElemDiv, r, l)
+    } else {
+        (op, l, r)
+    };
     let (l, r) = match super::real_ops::binop(op, l, r) {
         Ok(v) => return Ok(v),
         Err(lr) => lr,
@@ -83,7 +90,7 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
             Ok(with_op!(op, scalar, f => map_array(l, rule, move |a| f(a, s))))
         }
         (Value::Scalar(_) | Value::Complex(_), Value::Vector(_) | Value::Matrix(_))
-            if is_scalar_op(op) && is_contiguous(r.get()) =>
+            if is_scalar_op(op) && op != Div && is_contiguous(r.get()) =>
         {
             let s = scalar_of(l.get());
             let rule = Value::scalar_rule_applies(op, s);
@@ -114,9 +121,14 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // Matrix product: same check and kernel as `binop`, without copying
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
-        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => Ok(
-            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()),
-        ),
+        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => {
+            // Size check lives in `matmul` (once per call). The elementwise
+            // kernels above are unchanged.
+            let product = rustlab_core::matmul::matmul(&a.view(), &b.view()).map_err(|_| {
+                rustlab_core::variable_too_large("*", &[Shared::shape(a)[0], Shared::shape(b)[1]])
+            })?;
+            Ok(Value::Matrix(product.into()))
+        }
         _ => Value::binop(op, l.into_owned(), r.into_owned()),
     }
 }
@@ -1009,6 +1021,12 @@ mod tests {
             Value::Matrix(m) => m.iter().copied().collect(),
             Value::Scalar(x) => vec![C64::new(*x, 0.0)],
             Value::Complex(c) => vec![*c],
+            Value::Bool(b) => vec![C64::new(if *b { 1.0 } else { 0.0 }, 0.0)],
+            Value::Logical(a) => a
+                .as_slice()
+                .iter()
+                .map(|&b| C64::new(if b != 0 { 1.0 } else { 0.0 }, 0.0))
+                .collect(),
             other => panic!("unexpected {other:?}"),
         };
         elems.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()
@@ -1057,7 +1075,7 @@ mod tests {
         }
     }
 
-    const OPS: [BinOp; 10] = [
+    const OPS: [BinOp; 11] = [
         BinOp::Add,
         BinOp::Sub,
         BinOp::Mul,
@@ -1065,6 +1083,7 @@ mod tests {
         BinOp::Pow,
         BinOp::ElemMul,
         BinOp::ElemDiv,
+        BinOp::ElemLeftDiv,
         BinOp::ElemPow,
         BinOp::Lt,
         BinOp::Eq,
@@ -1121,7 +1140,14 @@ mod tests {
         let cols = n / rows;
         let ma = mat_of(rows, cols, &real_a[..rows * cols]);
         let mc = mat_of(rows, cols, &cplx[..rows * cols]);
-        for op in [BinOp::Add, BinOp::Sub, BinOp::ElemMul, BinOp::ElemDiv, BinOp::ElemPow] {
+        for op in [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::ElemMul,
+            BinOp::ElemDiv,
+            BinOp::ElemLeftDiv,
+            BinOp::ElemPow,
+        ] {
             check(op, &va, &vb);
             check(op, &va, &vc);
             check(op, &ma, &mc);

@@ -1,0 +1,74 @@
+# Logical arrays.
+#
+# Comparisons of arrays are logical, not numeric 0/1. A scalar comparison
+# stays true/false. Masks index, and find returns the true positions.
+#
+#   rustlab run examples/language/logical_arrays.rlab --plot none
+
+L = [true, false, true];
+if !islogical(L)
+  error("array literal is not logical");
+end
+if class(L) != "logical"
+  error("class of a logical array");
+end
+if islogical([1, 0, 1])
+  error("numeric 0/1 must not be logical");
+end
+if !islogical(1 == 1)
+  error("scalar comparison");
+end
+if class(1 == 1) != "bool"
+  error("scalar comparison class");
+end
+
+mask = [1, 2, 3] == [1, 0, 3];
+if !islogical(mask)
+  error("array comparison");
+end
+if sum(mask) != 2
+  error("sum counts trues");
+end
+if sum(double(mask)) != 2
+  error("double promotes logical");
+end
+
+v = [10, 20, 30, 40];
+picked = v(v > 20);
+if sum(picked) != 70
+  error("mask index");
+end
+
+idx = find([0, 1, 0, 1]);
+if sum(idx) != 6
+  error("find");
+end
+
+a = and([true, false, true], [false, false, true]);
+b = or([true, false], [false, false]);
+c = xor([true, false], [true, true]);
+if sum(double(a)) != 1 || sum(double(b)) != 1 || sum(double(c)) != 1
+  error("and/or/xor");
+end
+if !0 != true
+  error("not of zero");
+end
+
+full = true(2, 2);
+if sum(sum(double(full))) != 4
+  error("true(n)");
+end
+if any(false(1, 0))
+  error("any of empty");
+end
+if !all(false(1, 0))
+  error("all of empty");
+end
+
+flag = [true, false, true];
+T = table(flag);
+if !islogical(T.flag)
+  error("table column");
+end
+
+fprintf("logical_arrays: all checks passed\n");

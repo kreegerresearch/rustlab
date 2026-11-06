@@ -15,8 +15,29 @@
 //! a future optimisation; v1 recomputes it per call.
 
 use num_complex::Complex;
-use rustlab_core::C64;
+use rustlab_core::{checked_elems, variable_too_large, CoreError, C64, ELEM_C64};
 use std::f64::consts::PI;
+
+/// FFT length `next_power_of_two(2n − 1)`, or an error when `2n` overflows
+/// or the chirp buffers would exceed the maximum variable size.
+pub(super) fn bluestein_len(n: usize) -> Result<usize, CoreError> {
+    let two_n = (n as u128)
+        .checked_mul(2)
+        .ok_or(CoreError::VariableTooLarge)?;
+    if two_n <= 1 {
+        return Ok(1);
+    }
+    let base_u = two_n - 1;
+    if base_u > usize::MAX as u128 {
+        return Err(CoreError::VariableTooLarge);
+    }
+    let base = base_u as usize;
+    let m = base
+        .checked_next_power_of_two()
+        .ok_or(CoreError::VariableTooLarge)?;
+    checked_elems(&[m], ELEM_C64)?;
+    Ok(m)
+}
 
 /// n-point DFT (or inverse DFT with 1/n scaling) of `x` for any length.
 ///
@@ -24,12 +45,13 @@ use std::f64::consts::PI;
 /// 2n-periodic in `k²`, and the reduced value is < 2n ≤ 2⁵³, so the phase
 /// argument stays exact in f64 for any realistic n (naive `(k*k) as f64`
 /// loses precision once k² exceeds 2⁵³).
-pub(super) fn bluestein(x: &[C64], inverse: bool) -> Vec<C64> {
+pub(super) fn bluestein(x: &[C64], inverse: bool) -> Result<Vec<C64>, CoreError> {
     let n = x.len();
     if n <= 1 {
-        return x.to_vec();
+        return Ok(x.to_vec());
     }
-    let m = (2 * n - 1).next_power_of_two();
+    let m = bluestein_len(n)
+        .map_err(|_| CoreError::InvalidParameter(variable_too_large("fft", &[n])))?;
     let sign: f64 = if inverse { 1.0 } else { -1.0 };
 
     // w[t] = e^{sign·iπt²/n} for t in 0..n.
@@ -71,5 +93,5 @@ pub(super) fn bluestein(x: &[C64], inverse: bool) -> Vec<C64> {
             *v = Complex::new(v.re * scale, v.im * scale);
         }
     }
-    out
+    Ok(out)
 }

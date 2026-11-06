@@ -152,7 +152,7 @@ save("out2_diag_col_k.csv", [sx(1), sx(2), reshape(X, 1, sx(1) * sx(2))])
 # norm (vector L2)
 save("out2_norm_vec.csv", norm([3.0, 4.0]))
 
-# norm (matrix Frobenius)
+# norm (matrix, default 2-norm)
 save("out2_norm_mat.csv", norm([1.0, 2.0; 3.0, 4.0]))
 
 # det

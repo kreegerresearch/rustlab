@@ -10,7 +10,7 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 84 runnable scripts and 40 rendered notebooks to copy patterns from.
+5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from. When you write `.rlab`, follow [Script style for agents](#script-style-for-agents) below.
 
 ---
 
@@ -67,7 +67,7 @@ Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustla
 The authoritative, machine-readable source is the binary itself:
 
 ```sh
-rustlab docs                  # all 369 builtins grouped by toolbox
+rustlab docs                  # all 401 builtins grouped by toolbox
 rustlab docs eig              # full detail for one builtin (signature + example)
 rustlab docs dsp              # one toolbox
 rustlab docs --search welch   # substring match over names and briefs
@@ -76,7 +76,7 @@ rustlab docs --json           # complete JSON index — best single call for an 
 
 Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`. There is no `Plotting` toolbox. A builtin name wins over a toolbox spelled the same way, so `rustlab docs plot` and `rustlab docs sparse` show those functions; `rustlab docs Plot` lists the plot toolbox.
 
-`rustlab docs --json` returns an array of 369 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+`rustlab docs --json` returns an array of 401 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
 
 `rustlab --help` lists this binary's subcommands only. Notebooks, themes, and rendering are `rustlab-notebook --help` (detail for a render is `rustlab-notebook render --help`).
 
@@ -90,10 +90,10 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 
 1. **Every number is complex to the script.** `j` and `i` are the imaginary unit: `z = 3.0 + j*4.0`. Element-wise ops, `*`, and the outer product on purely real inputs return exactly-real results (`[1 Inf] * 2` is `[2 Inf]`). Arrays of real numbers are stored as real numbers (8 bytes each), which is invisible to a script; `RUSTLAB_COMPLEX_STORAGE=1` stores every array as complex, for comparing results when something looks wrong. `real(v)`, `imag(v)`, `conj(v)`, `abs(v)`, `angle(v)` decompose complex values.
 2. **Indexing is 1-based, with `end` for the last element:** `v(1)`, `v(end)`, `v(2:4)`, `M(i, j)`, `M(i, :)`, `M(:, j)`. Slices return new values.
-3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major.
+3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major. `[I, J] = ind2sub(size(M), k)` and `k = sub2ind(size(M), I, J)` are that same index (rows first, rank at most 3). One `ind2sub` output is the linear index. An index outside the array is an error. A one-element `sub2ind` subscript is repeated; two non-scalar arrays must be the same size.
 4. **Ranges:** `1:5`, `0:0.5:2`, `10:-1:1` (`start:stop` or `start:step:stop`).
 5. **Literals:** `[1, 2, 3]` row, `[1; 2; 3]` column, `[a, b; c, d]` matrix. `[A, B]` / `[A; B]` concatenate. `{"a", "b"}` is a string array. `1_000_000` underscores are allowed in numbers.
-6. **`*` is matrix multiply; `.*`, `./`, `.^` are element-wise.** Mixing them up is the most common generated-code bug.
+6. **`*` is matrix multiply; `.*`, `./`, `.\`, `.^` are element-wise.** `A .\ B` is `B ./ A`. Mixing them up is the most common generated-code bug.
 7. **`'` is conjugate transpose; `.'` is plain transpose.**
 8. **Statements ending in `;` are silent; without `;` they print.** Comments are `#` or `%`. `...` continues a statement onto the next line.
 9. **Control flow:** `for k = 1:n ... end`, `while cond ... end`, `if / elseif / else / end`, `switch / case / otherwise / end`. **There is no `break` and no `continue`** — design the exit condition into the loop header (`while` with a flag variable if needed).
@@ -102,13 +102,13 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 12. **Multi-output builtins use the same destructuring:** `[V, D] = eig(A)`, `[m, idx] = max(v)`, `[Pxx, f] = pwelch(x, fs)`, `[I, J, V] = find(M)`. There is **no `~` placeholder** to skip an output — bind it to a dummy variable, or use a single-output alternative (`argmax(v)` instead of the index from `max`).
 13. **Indexed assignment grows vectors automatically:** `v(i) = val` extends `v` as needed. Matrix region writes `M(rows, cols) = mat` require exact shape match.
 14. **Structs:** `s.field = val` auto-creates the struct; `struct("x", 1, "y", 2)` constructs directly; `fieldnames`, `isfield`, `rmfield` introspect.
-15. **Booleans:** `true` / `false` are constants; `&&` / `||` short-circuit with scalar operands (non-zero is truthy). Comparison results behave as 0/1 numerics.
+15. **Logical arrays:** `true` / `false` are scalar bools. An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array, not numeric 0/1. `islogical` is true for both; `class` is `"bool"` or `"logical"`. `logical(x)` converts (exact 0 is false, `NaN` is true, nonzero imag errors). `true(m, n)` / `false(m, n)` build an array when the names are not shadowed. `!` is element-wise not. `and` / `or` / `xor` are element-wise. `&&` / `||` stay scalar and short-circuit. `A(mask)` indexes where the mask is true (the mask length matches, except a one-element logical: `true` selects the first element and `false` selects nothing). `L(k)` stays a 1×1 logical. `double(mask)` or `mask + 0` is the 0/1 double. `sum(mask)` counts trues. `!=` is not-equal; `~=` is not a token. There is no `&` or `|` token.
 16. **Compound assignment:** `+=`, `-=`, `*=`, `/=`.
 17. **Constants always in scope:** `pi`, `e`, `Inf`, `NaN`, `i`, `j`.
 18. **`run file.rlab`** (bare statement, no quotes needed) executes another script and merges its variables/functions into the current scope — the script equivalent of an include.
 19. **Tensor3** is the rank-3 type: build with `zeros3(m, n, p)` / `reshape(v, m, n, p)` / `cat(3, A, B)`; slice pages with `T(:, :, k)`. No broadcasting between Matrix and Tensor3, and no `*` between two Tensor3s — use `.*`.
 20. **Sparse matrices** come from `sparse(I, J, V, m, n)`, `speye`, `spdiags`, `laplacian_1d/2d/3d`; solve with `spsolve(A, b)` or factor once with `F = chol(A)` / `F = lu(A)` then `solve(F, b)` many times. Mixed sparse+dense arithmetic promotes to dense.
-21. **Tables** are named columns with one shared row count: `T = table(x, name)`. A bare variable names its column; `"VariableNames", {"a","b"}` renames them (the option is a string literal). A matrix splits into one numeric column per matrix column; a vector stays one column; a string array is one text column; a 0/1 vector stays numeric (only a scalar `true`/`false` is logical, and only for one row). `T.x` reads a column, `T.x = v` replaces or appends one (the length must match), `T(rows, vars)` is a sub-table, `T{rows, var}` returns one column's cells, and `T.Properties.VariableNames` lists the names. `height`, `width`, `size`, `head`, `tail`. There is no `T(rows, vars) =`, no row names, and no joins.
+21. **Tables** are named columns with one shared row count: `T = table(x, name)`. A bare variable names its column; `"VariableNames", {"a","b"}` renames them (the option is a string literal). A matrix splits into one numeric column per matrix column; a vector stays one column; a string array is one text column; a logical vector stays one logical column (a numeric 0/1 vector stays numeric). `T.x` reads a column, `T.x = v` replaces or appends one (the length must match), `T(rows, vars)` is a sub-table, `T{rows, var}` returns one column's cells, and `T.Properties.VariableNames` lists the names. `height`, `width`, `size`, `head`, `tail`. There is no `T(rows, vars) =`, no row names, and no joins.
 
 A minimal end-to-end script:
 
@@ -127,6 +127,133 @@ fprintf("designed %d taps\n", length(h))
 
 ---
 
+## Script style for agents
+
+Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote. The same six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab).
+
+### 1. Prefer array ops and indexing over nested `for` loops
+
+`.*`, `./`, `.^`, `+`, `-`, and a colon slice already walk the array. A scalar broadcasts, so `2 * x` and `2 .* x` both multiply element by element.
+
+```rustlab
+# bad
+n = length(x);
+for k = 1:n
+  y(k) = x(k)^2 + 2*x(k);
+end
+```
+
+```rustlab
+# good
+y = x .^ 2 + 2 .* x;
+block = M(2:end, 1:3);          # rows 2..end, columns 1..3
+scaled = block .* [10, 100, 1000];
+```
+
+### 2. Prefer lambdas with `arrayfun` / `parmap` for per-element work
+
+If `sin`, `exp`, and `.*` already describe the math, call them on the whole array. If the body is a scalar calculation per element, pass a lambda to `arrayfun`, or to `parmap` when the array is long enough that the workers earn their keep. A `parmap` lambda cannot plot, `fprintf`, `savefig`, or call `seed`.
+
+```rustlab
+# bad
+for k = 1:length(t)
+  y(k) = sin(t(k)) * exp(-t(k));
+end
+```
+
+```rustlab
+# good — the math is already element-wise
+f = @(u) sin(u) .* exp(-u);
+y = f(t);
+
+# good — one scalar result per element
+y = arrayfun(@(u) u^2 + 1/u, t);
+y = parmap(@(u) u^2 + 1/u, t);
+```
+
+### 3. Prefer logical / fancy indexing over scanning
+
+A comparison is a logical array, and that array is a subscript. `find` returns the 1-based positions when the indices themselves are what you need. `double(mask)` is the numeric 0/1 form.
+
+```rustlab
+# bad
+n = 0;
+for k = 1:length(v)
+  if v(k) > 0
+    n = n + 1;
+    kept(n) = v(k);
+  end
+end
+```
+
+```rustlab
+# good
+pos = v(v > 0);
+idx = find(v > 0);
+picked = v(idx);
+```
+
+### 4. Prefer reduction builtins over hand-rolled accumulators
+
+`sum`, `mean`, `cumsum`, `diff`, `min`, `max`, `all`, `any`, and `trapz` are the reduction. On a matrix, `sum(M)` is one sum per column; `sum(sum(M))` is the total.
+
+```rustlab
+# bad
+s = 0;
+for k = 1:length(x)
+  s = s + x(k);
+end
+```
+
+```rustlab
+# good
+s = sum(x);
+m = mean(x);
+c = cumsum(x);
+d = diff(x);
+lo = min(x);
+hi = max(x);
+ok = all(x > 0);
+hit = any(x == 0);
+area = trapz(t, x);
+```
+
+### 5. Keep a loop only when the step is inherently sequential
+
+An animation frame that carries state, an IIR or other recursive filter, and an iterative solver each need the previous value. Leave the loop in place and say why in a one-line comment. There is no `break` and no `continue`; put a stop test in the `while` header.
+
+```rustlab
+# bad — the feedback term is gone, so this is a different filter
+y = (1 - a) .* x;
+```
+
+```rustlab
+# good
+y(1) = x(1);
+# y(k) depends on y(k-1), so this recurrence stays a loop.
+for k = 2:length(x)
+  y(k) = a * y(k - 1) + (1 - a) * x(k);
+end
+```
+
+### 6. Name intermediate arrays instead of deep nested index expressions
+
+A subscript stacked on a subscript is hard to check, and it evaluates the slice twice. Name the slice, then the next operation.
+
+```rustlab
+# bad
+s = sum(sum(A(2:end-1, 2:end-1) .* A(2:end-1, 2:end-1)));
+```
+
+```rustlab
+# good
+inner = A(2:end-1, 2:end-1);
+sq = inner .* inner;
+s = sum(sum(sq));
+```
+
+---
+
 ## 5. Pitfalls that bite generated code
 
 Ordered roughly by how often they matter:
@@ -137,7 +264,7 @@ Ordered roughly by how often they matter:
 | No `break`/`continue` in loops | Restructure with a flag in the `while` condition or bounded `for` |
 | No `~` placeholder in destructuring (`[~, i] = ...` is a lex error) | Bind unwanted outputs to a dummy variable, or use `argmin`/`argmax` |
 | `*` vs `.*` on same-shaped matrices | `*` is matrix product; use `.*` for element-wise |
-| `A \ b` treats a vector as a row | A column right-hand side is `b'` or `[1; 2; 3]`. `\` is LU for a square nonsingular matrix and QR least squares otherwise. `/` between two matrices is right division; a scalar `/` stays element-wise |
+| `A \ b` treats a vector as a column | One solution is `n×1`. An explicit one-row matrix stays a row. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot. Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. `/` between two matrices, and a scalar numerator (`2 / M`), is right division. A scalar denominator (`M / 2`) stays element-wise. `A .\ B` is `B ./ A` |
 | `'` conjugates | On complex data use `.'` if you only want a transpose |
 | `fft(v)` is length-preserving (`length(fft(v)) == length(v)`) | Build axes with `fftfreq(length(X), sr)` — always correct; use `fft(v, n)` when you want explicit zero-padding or truncation |
 | `min`/`max`/`sort` on complex data compare by magnitude (real part for `sort`/`median`) | Take `abs()`/`real()` explicitly if you mean it |
@@ -196,6 +323,7 @@ A rustlab notebook is a plain `.md` file. Code in ` ```rustlab ` fences executes
 
 ```sh
 rustlab-notebook render note.md                 # → note.html (self-contained, Plotly + KaTeX)
+rustlab-notebook render note.md --no-toc --no-comments --index /notebooks/ Notebooks
 rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + plots/<stem>/*.svg
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042
@@ -215,9 +343,9 @@ Authoring features an agent should use (full reference: [`docs/notebooks.md`](no
 - **Interactive widgets:** a ` ```rustlab-widget ` fence with TOML body (`name`, `type = "slider"|"number"|"option"`, bounds/choices, `default`, and on a slider `run = "live"` or `"release"`) plus `val = widget("name")` in code. Fences immediately above a rustlab cell render as that cell's control panel; a heading or paragraph in between keeps a full-width bar with a `drives: Figure N` link. A widget change outlines the plots from that render only: the page sends a request id, and a file save or a preempted render does not flash. `notebook watch` is interactive. Batch HTML shows the same controls disabled at the declared default. Markdown, LaTeX, and PDF show label = value.
 - **Git diff in `notebook watch`:** off unless `watch --git-diff` or `[notebook] git_diff = true`. The toolbar is `⋯` and **Source**. The `⋯` menu holds **Comments** and **Show changes**. **Show changes** is disabled until git is on. On, **Compare** offers presets with change counts: uncommitted changes (`?changes=uncommitted`, working copy vs `HEAD`), this branch vs main (`?changes=branch`, working copy vs the merge base), last commit (`?changes=last`), and other (`?changes=custom&base=<ref>&compare=<ref>`; no `compare` means the working copy). Old `?diff=<ref>` (before) / `?base=<ref>` (after) links still resolve. A status chip names what is shown. Changes are gutter bars (green added, blue modified, red removed); prose is compared per heading or paragraph; removed text collapses to one line; changed words are marked inside a modified paragraph, heading or list (whole math/code/link tokens; under half kept shows removed + added); a changed code cell shows its source once, as the diff, with changed tokens underlined. **View → Source** (`?view=source`) shows a unified `.md` diff with line numbers, word marks and hunks named by heading; a notebook too large for the rendered diff opens there. Working copy vs a ref keeps live outputs. Two refs show the `compare` side's text and do not run it. `[` / `]` step through changes, and the menu lists them. `GET /git/refs` lists branches, tags and commits; `GET /git/changes` the per-preset counts. Ignored files are not additions. CRLF-only differences are not edits. A file missing on one side is a notice. No new POST. Git is plumbing-only (now including `git-merge-base`) and refuses a repo that fails the ownership check. See `docs/notebooks.md`, `docs/security.md`, and `dev/plans/notebook_git_diff_ux.md`.
 - **Frontmatter:** `title:` and `order:` control the directory index.
-- **Caching for slow cells:** put `cache enable` in an early block — pure user functions get a persistent SQLite-backed result cache (`.rustlab/cache.db`) that survives re-renders. Functions that call `rand`, plotting, or I/O are excluded automatically.
+- **Caching for slow cells:** put `cache enable` in an early block — pure user functions get a persistent SQLite-backed result cache (`.rustlab/cache.db`) that survives re-renders. The file is created only when the host opts in (`rustlab-notebook render --cache` / `watch --cache`, or `[cache] enabled = true`). The default leaves the notebook uncached and does not touch `.rustlab/`. Functions that call `rand`, plotting, or I/O are excluded automatically.
 
-Verification loop for notebook authoring: edit → `rustlab-notebook render note.md -f html` (watch stderr for block errors) → `rustlab-notebook check note.md`.
+Verification loop for notebook authoring: edit → `rustlab-notebook render note.md -f html` (a failed cell keeps the red error body, paints its left rule in the error color, opens its source, and adds a top-bar `1 error` / `N errors` chip that jumps to `#rl-error-1`; stderr still lists the block errors) → `rustlab-notebook check note.md`. Markdown (`-f markdown`) writes that failure as a `> [!CAUTION]` callout plus `<!-- rustlab:error cell=N -->` in the output region, not back into the authoring source.
 
 The [`gallery/`](../gallery/) directory holds 40 rendered example notebooks (committed Markdown output, browsable on GitHub) — the best source of real authoring patterns. Their sources live in `examples/notebooks/`. `_setup.md` is a partial, not a standalone page.
 
@@ -230,7 +358,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 | Task | Key functions | Example scripts |
 |---|---|---|
 | Elementary math | `exp sqrt abs log sin cos atan2 floor round mod real imag conj angle` | `examples/math/` |
-| Arrays & grids | `linspace zeros ones eye rand randn seed reshape repmat meshgrid size numel` | `examples/language/` |
+| Arrays & grids | `linspace zeros ones eye rand randn seed reshape repmat meshgrid size numel ind2sub sub2ind` | `examples/language/`, `examples/linalg/ind2sub.rlab` |
 | Linear algebra | `inv det rank trace eig svd expm linsolve roots dot cross kron norm` | `examples/linalg/` |
 | Sparse | `sparse speye spdiags spsolve chol lu solve eigs laplacian_1d/2d/3d full nnz find` | `examples/sparse/`, `examples/pde/` |
 | Statistics | `sum mean median std min max argmax sort cumsum trapz hist all any` | `examples/stats/` |
@@ -252,7 +380,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 When asked to produce rustlab code:
 
 1. **Check the capability index first** (`docs/quickref.md` or `rustlab docs --json`). Never invent function names.
-2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots.
+2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
 3. **Run it:** `rustlab run script.rlab --plot none`, capturing stderr.
 4. **A nonzero exit code means the script failed.** Without `--profile`, stderr also has a line starting with `error:`. Fix and re-run.
 5. **Verify artifacts** (the SVG/CSV/NPZ files you expected) exist and are non-trivial in size.

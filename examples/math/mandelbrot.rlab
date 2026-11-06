@@ -12,9 +12,9 @@ function row = mandelbrot_row(k)
     cr = linspace(-2.5, 1.0, nx);
     y_all = linspace(-1.2, 1.2, ny);
     ci = y_all(k);
-    zr = zeros(nx);
-    zi = zeros(nx);
-    counts = zeros(nx);
+    zr = zeros(1, nx);
+    zi = zeros(1, nx);
+    counts = zeros(1, nx);
     for iter = 1:max_iter
         zr2 = zr .* zr;
         zi2 = zi .* zi;
@@ -23,7 +23,7 @@ function row = mandelbrot_row(k)
         zi = 2 * zr .* zi + ci;
         zr = zr2 - zi2 + cr;
     end
-    row = counts;
+    row = counts(:);
 end
 
 # ── Sequential vs parallel ───────────────────────────────────────────
@@ -53,9 +53,9 @@ function row = mandelbrot_zoom(k)
     cr = linspace(-0.9, -0.6, nx);
     y_all = linspace(0.0, 0.3, ny);
     ci = y_all(k);
-    zr = zeros(nx);
-    zi = zeros(nx);
-    counts = zeros(nx);
+    zr = zeros(1, nx);
+    zi = zeros(1, nx);
+    counts = zeros(1, nx);
     for iter = 1:max_iter
         zr2 = zr .* zr;
         zi2 = zi .* zi;
@@ -64,7 +64,7 @@ function row = mandelbrot_zoom(k)
         zi = 2 * zr .* zi + ci;
         zr = zr2 - zi2 + cr;
     end
-    row = counts;
+    row = counts(:);
 end
 
 figure();
@@ -79,9 +79,9 @@ function row = mandelbrot_elephant(k)
     cr = linspace(0.15, 0.4, nx);
     y_all = linspace(-0.15, 0.15, ny);
     ci = y_all(k);
-    zr = zeros(nx);
-    zi = zeros(nx);
-    counts = zeros(nx);
+    zr = zeros(1, nx);
+    zi = zeros(1, nx);
+    counts = zeros(1, nx);
     for iter = 1:max_iter
         zr2 = zr .* zr;
         zi2 = zi .* zi;
@@ -90,7 +90,7 @@ function row = mandelbrot_elephant(k)
         zi = 2 * zr .* zi + ci;
         zr = zr2 - zi2 + cr;
     end
-    row = counts;
+    row = counts(:);
 end
 
 figure();

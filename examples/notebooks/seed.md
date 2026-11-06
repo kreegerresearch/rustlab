@@ -17,9 +17,9 @@ subsequent random draw deterministic across runs.
 
 ```rustlab
 clf;
-x = randn(2000);
+x = randn(1, 2000);
 hist(x, 40);
-title("randn(2000) — different every render")
+title("randn(1, 2000) — different every render")
 ```
 
 Without a `seed()` call this notebook produces a slightly different
@@ -29,9 +29,9 @@ histogram every time `make notebooks` runs.
 
 ```rustlab
 seed(42);
-x = randn(2000);
+x = randn(1, 2000);
 hist(x, 40);
-title("randn(2000) — seed(42), reproducible")
+title("randn(1, 2000) — seed(42), reproducible")
 ```
 
 Re-running this block produces the *same* histogram every time. Combined
@@ -46,7 +46,7 @@ sparse, rank-3:
 ```rustlab
 seed(7);
 M = rand(3, 4);
-v = randi(100, 5);
+v = randi(100, 1, 5);
 disp(M)
 disp(v)
 ```
@@ -61,10 +61,10 @@ after a deterministic warm-up:
 
 ```rustlab
 seed(123);
-calibration = rand(4);       % reproducible: same numbers every render
+calibration = rand(1, 4);       % reproducible: same numbers every render
 disp(calibration)
 seed();
-sample = randn(4);           % freshly random — not displayed, as it would
+sample = randn(1, 4);           % freshly random — not displayed, as it would
                              % churn the committed .md on every render
 ```
 
