@@ -25,7 +25,7 @@ Readability comes first. That same form is what the array kernels run,
 so the clearer script is also the fast one.
 
 ```rustlab
-# each element, visited by hand
+% each element, visited by hand
 S = zeros(size(M));
 for i = 1:size(M, 1)
   for k = 1:size(M, 2)
@@ -35,7 +35,7 @@ end
 ```
 
 ```rustlab
-# the same arithmetic, as an array
+% the same arithmetic, as an array
 S = M .^ 2 + 2 .* M;
 positive = S > 0;
 kept = S(positive);
@@ -55,27 +55,78 @@ earn their keep. A `parmap` lambda cannot plot, `fprintf`,
 `trapz` are the reductions. On a matrix, `sum(M)` is one sum per
 column.
 
-Keep a `for` or `while` when step `k` has to read a value that step
-`k - 1` wrote: a recurrence, a streaming filter, an animation frame
-that carries state. Say why in a one-line comment. There is no `break`
-and no `continue`. Put the stop test in the `while` header.
-
 Those six practices, each with a short bad example and a good one, are
 [Script style for agents](agent-guide.md#script-style-for-agents).
 
+### One loop, or none
+
+The default is one loop, or no loop. A loop that walks every element
+is a slice, a mask, `find`, a reduction, or an outer product.
+
+A `for` with an `if` that keeps some elements is a mask:
+`kept = M(M > 0)`. A `while` that should stop puts that test in the
+header.
+
+There is no `break` and no `continue`. Do not invent a stand-in for
+them. The stop test belongs in the `while` header.
+
+A nested loop that is the physics, the carried state, or the index
+arithmetic stays. Say why in a one-line comment, or name the value the
+loop is updating (`pressure`, `state`, `k`). A row or a column that is
+the exception sits outside the loop. If the body is hard to follow,
+move it into a small local function and call that.
+
+A diagonal, a lookup, or a mapping is often clearer written as that
+mapping than as a mask of the whole array. Do not rewrite a loop into
+array form just to have no loop. A seeded stream, a self-term, or a
+result that has to match a reference one step at a time is a nested
+loop; the comment says which of those it is.
+
+### Shapes of `+`, `.*`, and comparisons
+
+`+` and `.*` use the same pairing, and a comparison uses that pairing
+too.
+
+- A scalar meets every element.
+- An `n×1` column and a length-`n` vector pair element by element, the
+  same length as `v .* v`. `v = 1:3; v' == v` is a `1×3` logical, the
+  same pairs as `v' .* v`.
+- Two matrices repeat a dimension of length 1.
+  `c = [1; 2; 3]; r = ones(1, 3); c == r` is `3×3`, the same shape as
+  `c .* r`.
+- Two vectors have to be the same length. A length-1 vector does not
+  stretch across another vector. It does stretch across a matrix, as
+  `.*` does.
+- A shape that cannot pair is an error.
+
+Real parts are compared. `NaN == x` is false and `NaN != x` is true.
+
 ### Make the script easy to check
 
-- Comments in a `.rlab` file are `#`. Both `#` and `%` start a comment;
-  `%` is the notebook convention, below.
+- `#` and `%` both start a comment, in a `.rlab` file and in a
+  notebook code fence. Prefer `%`, the marker used in `.rlab` and in
+  the notebook body. `#` is accepted. It is not required.
 - Name intermediate arrays. A subscript stacked on a subscript is hard
   to check, and it evaluates the slice twice. Name the slice, then the
   next operation.
 - Call only builtins that exist. [`docs/quickref.md`](quickref.md) is
   the list. `rustlab docs <name>` and [`docs/functions.md`](functions.md)
   have the signature.
+- An example that checks a number ends the intermediate assignments
+  with `;`, so a REPL does not echo them. The check itself is a
+  `print` or an `fprintf`. Leave those lines alone when you only change
+  style. `--quiet-echo` is not a flag you can pass. It is an idea for
+  later, not something the CLI does today.
 - Write files with `savefig` (a plot) and `save` (data). Agents and CI
   run `rustlab run script.rlab --plot none` so a terminal plot cannot
   block the job. `savefig` still writes the file.
+
+A `NaN` in `imagesc` marks a cell that is not data. The viewer raster
+stores that pixel with alpha 0, so it is transparent. SVG and PNG paint
+the cell neutral gray. HTML sends `null`, and Plotly leaves a gap.
+rustlab does not print an "alpha premultiplication" line for this.
+`rustlab-notebook render --strict` fails when a code cell errors. A
+line on stderr, by itself, does not.
 
 ## Notebooks
 
@@ -83,13 +134,12 @@ Light conventions only. One idea per cell. Variables persist from one
 rustlab code fence to the next in the same notebook, so define a grid,
 a sample rate, or a loaded array once and reuse it below.
 
-Comments inside a notebook code fence are `%`:
+The notebook fence is the same language as a `.rlab` file. `#` and `%`
+both start a comment. Prefer `%`:
 
 ```rustlab
 sr = 44100;   % sample rate
 ```
-
-The same line in a `.rlab` file uses `#`.
 
 Start a plot cell with `clf;` so the previous cell's figure does not
 carry into this one. Leave `figure()` and `savefig()` to a side
@@ -110,6 +160,11 @@ Before you call the page done:
 rustlab-notebook render note.md
 rustlab-notebook check note.md
 ```
+
+For a page full of plots, `rustlab run side.rlab --plot none` (and the
+notebook render, which does not open a terminal figure) keeps the job
+from waiting on a keypress. `--plot none` does not change a `NaN`
+mask. It only skips the terminal drawing.
 
 ## See also
 
