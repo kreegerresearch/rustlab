@@ -359,6 +359,27 @@ Stdout ends with `vectorized_style: all checks passed`. Exit status 0.
 
 ---
 
+## `examples/language/seeded_random_loop.rlab`
+
+Headless style example for the other loop that stays: a seeded `rand` stream consumed in order. Nothing is plotted. `seed(322)` then 3000 product-state CHSH trials. Each trial draws four `rand()` values (`θ`, `φ` for each qubit). The body is array code — Bloch rows, expectations `u * n.'`, and the signed correlator table — so the loop is only there to keep the draw order. A `rand` array sliced by component, or a `parmap` that reseeds each worker, would move the sample. The script then reseeds and recomputes the first four trials; a mismatch calls `error`. Product states at these angles stay within `sqrt(2)`; the printed fraction above 2 is 0, and a classical shot-noise count above 2 would be sampling noise, not a Bell violation.
+
+```sh
+rustlab run examples/language/seeded_random_loop.rlab --plot none
+```
+
+Stdout is four lines, for this seed:
+
+```
+1.4068374149272016
+-1.407228768909929
+1.4142135623730951
+0
+```
+
+Exit status 0. Those lines are `max(S)`, `min(S)`, `sqrt(2)`, and `sum(S > 2) / N`.
+
+---
+
 ## `examples/dsp/lowpass.rlab`
 
 **Full script:**

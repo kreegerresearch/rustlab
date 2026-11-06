@@ -129,7 +129,7 @@ fprintf("designed %d taps\n", length(h))
 
 ## Script style for agents
 
-Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote. The same six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab).
+Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote, or when the step has to take the next values from a seeded stream in order. The six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab). The seeded-stream case is [`examples/language/seeded_random_loop.rlab`](../examples/language/seeded_random_loop.rlab).
 
 ### 1. Prefer array ops and indexing over nested `for` loops
 
@@ -235,6 +235,8 @@ for k = 2:length(x)
   y(k) = a * y(k - 1) + (1 - a) * x(k);
 end
 ```
+
+A seeded generator is the same kind of step. Each trial has to draw the next `rand()` values in order. One `rand(...)` array sliced by component changes that order, and `parmap` reseeds each worker, so the sample moves. Leave the loop, keep the array arithmetic inside it, and name the reason in one line. [`examples/language/seeded_random_loop.rlab`](../examples/language/seeded_random_loop.rlab) is that case.
 
 ### 6. Name intermediate arrays instead of deep nested index expressions
 
