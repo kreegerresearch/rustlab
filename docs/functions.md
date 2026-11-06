@@ -4405,12 +4405,22 @@ false(1, 4)    % 1×4 logical, every element false
 ```
 
 ### Comparisons
-`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool. A shape that does not broadcast is an error.
+`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool.
+
+The pairs are the same ones `+` and `.*` use.
+
+- A scalar compares with every element.
+- An `n×1` column and a length-`n` vector compare element by element. The result is a `1×n` logical, the same length as `v .* v`. `v = 1:3; v' == v` is that row, not a `3×3` table.
+- Two matrices repeat a dimension of length 1. `c = [1; 2; 3]; r = ones(1, 3); c == r` is `3×3`, the same shape as `c .* r`.
+- Two vectors have to be the same length. A length-1 vector does not stretch across another vector. It does stretch across a matrix, as `.*` does.
+- A shape that cannot pair is an error (`comparison length mismatch` for two rows, `comparison shape mismatch` otherwise).
 
 ```
 [1, 2, 3] == [1, 0, 3]    % logical 1 0 1
 [1, 2, 3] > 2             % logical 0 0 1
 1 == 1                    % true  (bool)
+v = 1:3; v' == v          % 1×3 logical, same pairs as v' .* v
+c = [1; 2; 3]; c == ones(1, 3)   % 3×3 logical, same shape as c .* ones(1, 3)
 ```
 
 ### `and(a, b)` / `or(a, b)` / `xor(a, b)`
