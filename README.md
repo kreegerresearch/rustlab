@@ -276,7 +276,13 @@ All operators broadcast scalars onto vectors and matrices automatically.
 ### Logical arrays and `&&` / `||`
 
 An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array.
-A scalar comparison stays `true` or `false`. `islogical` is true for both;
+A scalar comparison stays `true` or `false`. The pairs are the same ones
+`+` and `.*` use. An `n×1` column and a length-`n` vector compare element
+by element, so `v = 1:3; v' == v` is a `1×3` logical, the same pairs as
+`v' .* v`. Two matrices repeat a dimension of length 1, so
+`[1; 2; 3] == ones(1, 3)` is `3×3`, the same shape as the product.
+Two vectors have to be the same length. A shape that cannot pair is an
+error. `islogical` is true for both;
 a numeric 0/1 array is not logical. `logical(x)` converts (exact 0 is false,
 `NaN` is true). `true(m, n)` and `false(m, n)` build an array. `A(mask)`
 keeps the elements where the mask is true. `!` is element-wise not.

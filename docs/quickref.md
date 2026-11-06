@@ -40,7 +40,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
-| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
+| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector is element-wise (`v' == v` is `1×n`); other arrays repeat a length-1 dimension; two vectors must be the same length. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
 | `!` | Element-wise not (MATLAB `~`). `!0` is true. `!NaN` is false. An array result is logical |
 | `and(a, b)`, `or(a, b)`, `xor(a, b)` | Element-wise logical ops. Shapes match, or one side is scalar. Two scalars stay `bool`. No `&` or `\|` token |
 | `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero, including a 1-element logical); rhs only evaluated if lhs is not decisive. A wider array is an error — use `any` / `all` |

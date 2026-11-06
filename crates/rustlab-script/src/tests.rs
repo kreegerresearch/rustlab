@@ -18905,6 +18905,85 @@ mod round2_regressions {
         assert_eq!(scalar(&eval("a = sum(sum([1,2;3,4] > 2))"), "a"), 2.0);
     }
 
+    /// Comparisons pair elements the way `+` and `.*` do.
+    ///
+    /// An `n×1` column with a length-`n` vector is element-wise (a `1×n`
+    /// logical), the same pairs as `v' .* v`. Two matrices repeat a
+    /// length-1 dimension, so a `3×1` matrix against a `1×3` matrix is
+    /// `3×3`. Two vectors of different lengths still error, including a
+    /// length-1 vector, which does not stretch across another vector.
+    #[test]
+    fn comparison_pairs_like_plus_and_elemul() {
+        let flags = |ev: &Evaluator, name: &str| -> (usize, usize, Vec<u8>) {
+            match ev.get(name).unwrap() {
+                Value::Logical(a) => (
+                    a.rows(),
+                    a.cols(),
+                    a.as_slice().iter().map(|&b| b).collect(),
+                ),
+                other => panic!("{name}: {other:?}"),
+            }
+        };
+        let shape_of = |ev: &Evaluator, name: &str| -> (usize, usize) {
+            match ev.get(name).unwrap() {
+                Value::Vector(v) => (1, crate::eval::shared::Shared::len(v)),
+                Value::Matrix(m) => {
+                    let s = crate::eval::shared::Shared::shape(m);
+                    (s[0], s[1])
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        };
+
+        // v' == v is the column-element zip, not a 3×3 outer table.
+        let ev = eval("v = 1:3; eq = v' == v; prod = v' .* v; sm = v' + v");
+        assert_eq!(flags(&ev, "eq"), (1, 3, vec![1, 1, 1]));
+        assert_eq!(shape_of(&ev, "prod"), (1, 3));
+        assert_eq!(shape_of(&ev, "sm"), (1, 3));
+
+        // The zip is not the diagonal of an outer compare.
+        let ev = eval("v = [1, 2, 4]; c = [1; 0; 4]; eq = c == v; back = v == c");
+        assert_eq!(flags(&ev, "eq"), (1, 3, vec![1, 0, 1]));
+        assert_eq!(flags(&ev, "back"), (1, 3, vec![1, 0, 1]));
+        let ev = eval("v = [2, 3, 3]; lt = [1; 2; 4] < v");
+        assert_eq!(flags(&ev, "lt"), (1, 3, vec![1, 1, 0]));
+
+        // Two matrices: a length-1 dimension expands, same shape as .*.
+        let ev = eval("col = [1; 2; 3]; row = ones(1, 3); eq = col == row; prod = col .* row");
+        assert_eq!(flags(&ev, "eq"), (3, 3, vec![1, 1, 1, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (3, 3));
+
+        let ev = eval("A = [1, 2, 3; 4, 5, 6]; b = [1; 4]; eq = A == b; prod = A .* b");
+        assert_eq!(flags(&ev, "eq"), (2, 3, vec![1, 0, 0, 1, 0, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (2, 3));
+
+        // A length-1 vector stretches across a matrix, as .* does.
+        let ev = eval("eq = [2] == [1, 2; 2, 0]; prod = [2] .* [1, 2; 2, 0]");
+        assert_eq!(flags(&ev, "eq"), (2, 2, vec![0, 1, 1, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (2, 2));
+
+        let refuse = |src: &str| -> String {
+            let src = format!("{src}\n");
+            let tokens = lexer::tokenize(&src).unwrap();
+            let stmts = parser::parse(tokens).unwrap();
+            let mut ev = Evaluator::new();
+            for stmt in &stmts {
+                if let Err(e) = ev.exec_stmt(stmt) {
+                    return e.to_string();
+                }
+            }
+            panic!("expected an error for: {src}");
+        };
+        let err = refuse("a = ones(2, 3) == ones(3, 2)");
+        assert!(err.contains("comparison shape mismatch"), "{err}");
+        let err = refuse("a = (1:3) == (1:4)");
+        assert!(err.contains("comparison length mismatch"), "{err}");
+        // A length-1 vector does not stretch across another vector.
+        let err = refuse("a = [5] == (1:3)");
+        assert!(err.contains("comparison length mismatch"), "{err}");
+    }
+
+
     // E2 — logical mask indexing (read + assign) on vectors and matrices.
     #[test]
     fn logical_mask_indexing() {
