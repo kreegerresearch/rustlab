@@ -1,12 +1,11 @@
 # Watch layout prototypes
 
-Static mockups for giving the notebook column more room in `notebook watch`.
-The production server, CSS, and client script are unchanged.
-
-Each file is self-contained (inline CSS and JS, no network, no new libraries).
-Open one in a browser. `?state=expanded` and `?state=collapsed` force the
-two screenshot states. The text meter in the top bar is the width of the
-prose column.
+These four HTML files are design mockups. They are not the `notebook watch`
+page, and opening one does not run the server. Each file is self-contained
+(inline CSS and JS, no network, no libraries). `?state=expanded` and
+`?state=collapsed` force the two screenshot states. `shot=1` locks the
+viewport to one screen. The text meter in the mock top bar is the width of
+the prose column in that mock, not a measurement of the live watch page.
 
 The page body is `examples/notebooks/spectral_estimation.md` (prose, code,
 and headings). The waveform and spectra are stand-in figures, not gallery
@@ -14,26 +13,98 @@ SVGs. The two margin notes are sample chrome so the comment column is
 visible; they are not in that notebook. The file tree lists real names
 from `examples/notebooks/`.
 
-Colors and column sizes follow the current mocha watch page: file tree
-`16.5rem`, outline `220px`, comment margin `14rem` (strip `2.75rem` /
-`2.5rem`). Today the tree already collapses, by closing its root
-disclosure. The outline does not, so both open columns reserve **484px**
-on a desktop. These mockups collapse the outline as well.
+## Status
 
-## What each one tries
+**Option B is the production direction, and it has shipped.** `notebook
+watch` in 0.3.41 (PR #121, on main) puts the file tree and the section
+outline in one overlay drawer. The drawer reserves no page width. **Contents**
+in the top bar opens it, and `\` toggles it, except while typing in a field
+or the editor. It closes on a click outside, on Escape, or when a file or a
+heading is chosen. A folder summary only opens or closes that folder.
+Folders still start closed, except the folders that contain the notebook
+on the page. On a wide window, headings and plots shift clear of the open
+drawer so a plot title or axis label is not covered. Under 768px the open
+drawer covers the page until it is dismissed. `?contents=open` starts a
+watch page with the drawer open. Static `notebook render` still uses the
+fixed file browser and the 220px outline.
 
-| | Open | Closed | How you get it back |
+This draft does not implement that layout again. The HTML files stay as
+the design artifacts they were. The screenshots below are of those files,
+not of the watch server.
+
+### What the live watch page also has
+
+The mockups were drawn against an earlier page, so they omit chrome that
+is on `notebook watch` now:
+
+- The top bar still has previous, the parent link, the title, and next.
+  **Contents** sits at its left. A failed code cell adds a `1 error` /
+  `N errors` chip that links to `#rl-error-1` (0.3.55). The failed cell
+  uses `.rl-cell-error` and opens its source.
+- The right toolbar is `⋯` and **Source**. `⋯` holds **Comments** and
+  **Show changes**. Comments on or off is remembered per tab
+  (`rl-comments-visible`). Git comparison stays off unless `watch --git-diff`
+  or `[notebook] git_diff = true`. While it is on, `[` and `]` move
+  between changes when you are not typing.
+- The comment margin is still a 14rem column (a 2.5rem number strip when
+  collapsed, a drawer under the section under 800px). Highlights and the
+  right-click comment menu are unchanged.
+- **Source** is the slide-in source pane. It is an editor only with
+  `--editable`.
+
+### What shipped, and what these files still show
+
+| Mock | Role now |
+|---|---|
+| [B · overlay drawer](b-overlay-drawer.html) | The direction that shipped. The mock is not the implementation. It uses a vertical edge tab, hides on pointer-leave unless **Pin** is on, and toggles with `[`. Production uses the **Contents** button, does not hide on pointer-leave, has no Pin, and toggles with `\`. `[` and `]` are git-diff navigation. |
+| [A · icon rails](a-icon-rails.html) | Not chosen. Both panels would collapse to icon rails, with `[`, `]`, and `\`. |
+| [C · tabbed sidebar](c-tabbed-sidebar.html) | Not chosen. One tabbed column, width remembered in `localStorage` (`rl-proto-c-width`). |
+| [D · focus](d-zen-dock.html) | Not chosen. A focus mode hides the tree, the outline, and the comment column, and docks comments on a right rail. |
+
+### What is not left to build from this draft
+
+The shared overlay drawer is already in `notebook watch`. Do not rebuild it
+from these files.
+
+These ideas were not selected, and this draft does not add them to the
+server:
+
+- A's icon rails.
+- B's edge tab, Pin, and pointer-leave auto-hide.
+- C's single tabbed column and remembered width.
+- D's focus mode, and docking the comment margin so it no longer reserves
+  14rem.
+
+The comment column is still part of the live page. Narrowing or docking it
+was D's proposal, not part of the B decision.
+
+## How the mocks behave
+
+`?state=expanded` and `?state=collapsed` are the screenshot states. The
+meter is the mock prose column.
+
+| | Open | Closed | How you get it back in the mock |
 |---|---|---|---|
-| [A · icon rails](a-icon-rails.html) | Tree and outline side by side, as now | Each becomes a 2.75rem icon rail | Click a rail, or `[` files, `]` sections, `\` both |
-| [B · overlay drawer](b-overlay-drawer.html) | One drawer over the page (files, then sections) | Nothing reserved; a vertical edge tab remains | Edge tab, `[`, or `Esc` to close. Pointer-leave auto-hides unless pinned |
-| [C · tabbed sidebar](c-tabbed-sidebar.html) | One sidebar, Files or Sections | A 2.75rem strip with the two tab icons | Click a tab. Drag the edge; the width is stored in `localStorage` (`rl-proto-c-width`, 200–420px) |
-| [D · focus](d-zen-dock.html) | Tree, outline, and the comment column, as now | All three hide. Comments dock to a right rail (click it to read) | **Focus** / `z`. `Esc` exits |
+| [A · icon rails](a-icon-rails.html) | Tree and outline side by side | Each becomes a 2.75rem icon rail | Click a rail, or `[` files, `]` sections, `\` both |
+| [B · overlay drawer](b-overlay-drawer.html) | One drawer over the page (files, then sections) | Nothing reserved; a vertical edge tab remains | Edge tab, `[`, or `Esc`. Pointer-leave auto-hides unless pinned |
+| [C · tabbed sidebar](c-tabbed-sidebar.html) | One sidebar, Files or Sections | A 2.75rem strip with the two tab icons | Click a tab. Drag the edge; the width is stored in this browser |
+| [D · focus](d-zen-dock.html) | Tree, outline, and the comment column | All three hide. Comments dock to a right rail | **Focus** / `z`. `Esc` exits |
 
-A, B, and C leave the comment margin in the page (the `‹` button still collapses it to a number strip, same idea as today). D is the one that takes the margin out of the flow.
+A, B, and C leave the comment margin in the page (the `‹` button collapses
+it to a number strip). D takes that margin out of the flow. Under 800px,
+D's dock drops to a bottom sheet.
 
-## Width of the prose column
+Colors follow the mocha watch page as it was when the mocks were drawn:
+file tree `16.5rem`, outline `220px`, comment margin `14rem`. At that time
+the tree could already shrink to a 2.75rem strip and the outline could not,
+so both open columns reserved about **484px**. Those numbers are the
+baseline the table below was measured against. They are not the live watch
+layout after 0.3.41.
 
-Measured by the on-page meter. “Open” is the expanded screenshot; “closed” is the collapsed one. Production at the same widths is the same math as A/D open: about **636px** at 1440 and **220px** at 1024.
+## Width of the prose column in the mocks
+
+Measured by each mock's on-page meter when the screenshots were taken.
+"Open" is `?state=expanded`. "Closed" is `?state=collapsed`.
 
 | Prototype | 1440 open | 1440 closed | 1024 open | 1024 closed |
 |---|---:|---:|---:|---:|
@@ -42,25 +113,48 @@ Measured by the on-page meter. “Open” is the expanded screenshot; “closed�
 | C tabbed sidebar | 760 | 760 | 424 | 660 |
 | D focus | 636 | 804 | 220 | 804 |
 
-At 1440 the reading cap (760px, or 820px in focus) is the limit, so closing A’s rails only adds about 124px of text — the rest comes back as margin. The painful width is 1024, where 484px of left chrome plus a 224px comment column leaves a 220px article. Closing both rails there adds about 400px.
+At 1440 the mock reading cap (760px, or 820px in focus) is the limit, so
+closing A's rails only added about 124px of text. The painful mock width
+was 1024, where 484px of left chrome plus a 224px comment column left a
+220px article.
 
-B does not reflow when the drawer opens, which is why its open and closed text widths match. The drawer is `22rem` and covers the left of the article instead of pushing it. C’s open state is already one column (280px, remembered), so at 1440 the prose is at the cap even while a panel is open. The 1024 open state (424px) is the interesting one: wider than today, narrower than a collapsed rail.
+B does not reflow when its drawer opens, which is why its open and closed
+text widths match. The mock drawer is `22rem` and covers the left of the
+article. C's open state is already one column (280px, remembered), so at
+1440 the prose is at the cap even while a panel is open. D is the only mock
+that also drops the comment column.
 
-D’s focus mode is the only layout that also drops the comment column, which is why it passes 800px at both widths.
+## Trade-offs, as decided
 
-## Trade-offs
+**Discoverability.** A's rails stay on screen. C's strip is the same idea
+for one column. B's edge tab is easy to miss, and pointer-leave closes the
+drawer while someone is still reading a filename unless they hit Pin.
+Production avoided that by putting **Contents** in the top bar and closing
+only on an explicit outside click, Escape, or a file or heading choice.
+D hides the most, including previous and next.
 
-**Discoverability.** A’s rails stay on screen, so a collapsed tree still looks like a control. C’s strip is the same idea for one column. B’s edge tab is easy to miss, and auto-hide will close the drawer while someone is still reading a filename unless they hit Pin. D hides the most, including previous / next; the way back is the Focus button, which is the whole point and also easy to lose if the top bar is ever hidden too.
+**Comment margin.** A, B, and C keep the 14rem column, so left chrome is
+only half the squeeze. D docks it. Production followed B and left the
+margin in place, including the right-click menu and the numbered highlights.
 
-**Comment margin.** Keeping the 14rem column (A, B, C) means the left chrome is only half the squeeze. At 1024, comments still cost 224px after the rails collapse. D docks that column: a 2.75rem rail of note numbers, click to open an overlay that does not change the prose width. Under 800px that dock drops to a bottom sheet, which matches today’s narrow-screen comment drawer better than a right rail does.
+**Mobile.** The mock page overlays the tree and the outline under 768px,
+and drops comments under the section under 800px. A's `[` `]` shortcuts
+need a keyboard, and those keys are now git-diff navigation on the live
+page. B's vertical tab is a small touch target. C overlays under 768px so
+a remembered width cannot come back as a column on a phone. D's bottom
+sheet is the phone form of its dock. Production's drawer uses the same
+idea as B on a phone: it covers the page until it is dismissed, and it
+does not reserve width when closed.
 
-**Mobile.** The real page already overlays the tree and the outline under 768px, and drops comments under the section under 800px. A keeps that overlay (small launch buttons) but the `[` `]` shortcuts need a keyboard. B is the overlay pattern already, so it fits a phone; the vertical tab is a small target and auto-hide fights a tap that was just trying to scroll. C should overlay rather than reserve its remembered width under 768px, which this mock does — a saved 420px sidebar must not come back as a column on a phone. D’s focus mode is the reading mode; the bottom-sheet dock is the part that has to be right on a phone, because a right rail sits under the scrollbar and the thumb.
-
-**What I would not combine.** A full-time icon rail plus a focus mode is two ways to hide the same chrome. B’s auto-hide plus C’s remembered width fight each other (a saved width does not matter if the panel never reserves space). The useful pairing is C’s single sidebar for people who navigate, and D’s focus mode for people who are reading a comment thread — focus can sit on top of whichever sidebar we keep.
+**What not to combine.** A rail plus a focus mode is two ways to hide the
+same chrome. A remembered width does not matter for a drawer that never
+reserves space. The decision was the shared overlay, not the C-plus-D
+pairing this note originally suggested.
 
 ## Screenshots
 
-1440×900 and 1024×900, expanded and collapsed. `shot=1` in the query locks the viewport so the capture is one screen.
+1440×900 and 1024×900, expanded and collapsed. These are the mockups, not
+screenshots of `notebook watch`.
 
 ### A · icon rails
 
