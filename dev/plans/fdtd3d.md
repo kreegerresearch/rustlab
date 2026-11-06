@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
-**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML)
-**Current phase:** 4 (lumped port; not started; waits for an explicit yes)
+**Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML); Phase 4 complete (0.3.59, one lumped port)
+**Current phase:** 5 (near-to-far; not started; waits for an explicit yes)
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -472,7 +472,20 @@ The stepper is the Taflove split, not one kernel. The interior E and H updates a
 
 ### Phase 4 — resistor and S11
 
-`examples/pde/fdtd_port.rlab`, notebook `examples/notebooks/fdtd_port.md`. One Ez gap terminated in its own `Z0`, driven by a wide Gaussian, rectangular window on `fdtd_s11`. The notebook calls `smith` and `rfplot` on the returned 1-port network. Check: after the transient, `V/I` is within 1% of `Z0` and `|S11|` stays small across the pulse band (validation item 8).
+**Status:** complete (0.3.59). `examples/pde/fdtd_port.rlab`, notebook `examples/notebooks/fdtd_port.md` (rendered to `gallery/fdtd_port.md`). One Ez gap, `Z0 = 50` Ω, `Δx = 1 mm` and `Δy = 1.5 mm` so a swapped Ampère length fails the gate, wide Gaussian, rectangular window. The notebook calls `smith` and `rfplot`.
+
+**Decision A — Ampère lengths.** The plan's loop multiplies `ΔHy` by `dx` and `ΔHx` by `dy`. The Yee curl is `∂Hy/∂x − ∂Hx/∂y`, so the segment on `Hy` is `dy` and the segment on `Hx` is `dx`: `I = ΔHy·dy − ΔHx·dx`. On a square cell the two writings agree. `ampere_ez_uses_segment_lengths` locks the unequal-cell case. The sign is unchanged: `V·I > 0` while the Gaussian rises.
+
+**Decision B — series source, not an impressed field.** The sketch's `Ez := Ez − Cb·Vg/(N·Δz)` is the existing soft source. It does not put `Vg` in series with `Z0`. The source that matches the same paragraph's series model is `J = Vg/(Z0·Area)` on every edge of the stack (`N` cancels), `E := E − (dt/ε0)·Cb·J`. With that update the lossy step is exact:
+
+```text
+Vⁿ = Ca·Vⁿ⁻¹ + β·(Vg − Z0·Iⁿ)
+s = σ dt / (2 ε0),  Ca = (1−s)/(1+s),  β = 2s/(1+s)
+```
+
+Solving for `Z0` recovers the gap resistance. Raw `V/I` is the impedance of the grid past the gap, and it equals `Z0` only when that grid is matched. Validation item 8's `V/I → Z0` is this recovered resistance, not the raw ratio. The identity residual is under `1e-9`. The recovered resistance is inside 1% (the tests see far less). The example's small PEC box is not a 50 Ω load, so `|S11|` on its chart is that box's reflection and is not small. The 1% gate in the example is the recovered resistance, and `V·I` on the rise is positive. `rustlab run examples/pde/fdtd_port.rlab --plot none` (0.3.59 release) prints a worst relative error of `2.917e-13`, a mean `V·I` of `4.161e-05` W while the Gaussian is rising, and a smallest in-band `|S11|` of 0.912 at 15.898 GHz. That last number is the reflection of the small PEC box, not a match.
+
+**Patch (validation item 10).** The teaching mesh (60×60×20, `dx = dy = 1 mm`, `dz = 0.4 mm`, 4 substrate cells of `εr = 4.4`, 6-cell CPML, `zmin` off, 6000 steps, release) does not show an `|S11|` dip. The plan's edge feed leaves the late gap voltage about 69 dB down (`late/peak = 6.9e-4`), and `|S11|` stays near 1 across 1.2–3.6 GHz (minimum 1.009 at 2.319 GHz, 3.4% from 2.4 GHz, 16 bins). That minimum is not a resonance. A feed inset by `L/3` from the same edge does ring: after the pulse the gap voltage peaks at **2.399 GHz** (0.04% from 2.4 GHz, `late/peak = 0.43`). `|S11|` at the bins around that tone is about 3, not a minimum, so the plan's `|S11|`-minimum gate is not what this mesh produces. `lossless_patch_inset_feed_rings_at_2_4_ghz` locks the ring to 1%. The capstone notebook stays Phase 6. The run is 3.2 s in release (about 130 Mcell/s with media, CPML, and the port).
 
 ### Phase 5 — far-field
 
@@ -975,7 +988,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | **1** (complete, 0.3.47) | Opaque handle, no export-every-step mode. Vacuum Yee, CFL (`courant > 1` errors at setup), `gaussian_pulse`, probes, `fdtd_run` / `fdtd_step` / `fdtd_record` / `fdtd_slice`, Ctrl+C partial struct, notebook cancel. Serial only. Hello example `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`. | 4–6 days | Cavity mode vs dispersion relation; interrupt test (`interrupted` true, probe length matches `steps`); bit-stable repeat of a short run. `rustlab-notebook render --strict` on `fdtd_hello.md` exits 0, and `dev/run-examples.sh` runs `fdtd_hello.rlab`. |
 | **2** (complete, 0.3.48) | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** (complete, 0.3.51) | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
-| **4** | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | 3–4 days | Resistor test to 1% (`V/I` and a small `|S11|`). Lossless patch `|S11|` minimum within 5% of 2.4 GHz on the teaching mesh (unit test; the capstone notebook, including the `tanδ = 0.02` rerun, is Phase 6). `render --strict` and `run-examples` exit 0. |
+| **4** (complete, 0.3.59) | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network. Resistor example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`). | — | Recovered gap resistance within 1% (the discrete series identity; raw `V/I` is the grid impedance). Inset-feed ring at 2.399 GHz, 0.04% from 2.4 GHz. The edge-feed `|S11|` minimum is not a dip (see Phase 4). `render --strict` and `run-examples` exit 0. |
 | **5** | On-the-fly NTFF, `fdtd_farfield` with a settable origin (default grid centre), directivity and realized gain. No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern (grid-centre origin). Patch broadside peak is qualitative. `render --strict` and `run-examples` exit 0. |
 | **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate. Capstone `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`, plus the sweep `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. Both notebooks pass `render --strict`; both scripts pass `run-examples`. The sweep returns one resonance per width. |
 

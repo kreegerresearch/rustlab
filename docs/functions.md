@@ -300,7 +300,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, and point probes. A grid with no `fdtd_media`, `fdtd_pec`, or `fdtd_cpml` call is vacuum. A lumped port and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), and point probes. A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. The far-field transform is a later phase of `dev/plans/fdtd3d.md`.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -329,7 +329,7 @@ sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
@@ -355,7 +355,7 @@ Metal. Each call adds to the metal already set; PEC edges are held at `E = 0` on
 - Volume: `mask` is an `ny × nx × nz` `Tensor3`. Every E edge of each nonzero cell (its 12 edges) is PEC.
 - Face: a zero-thickness sheet on node plane `index` of `axis` (`"x"`: column `j`, `"y"`: row `i`, `"z"`: page `k`, the same letters as `fdtd_slice`). `index` runs from 1 to `n + 1`; plane `f` sits at `(f − 1)·d`, so 1 and `n + 1` are the outer walls (already PEC). `mask2d` is one flag per node in the `fdtd_slice` layout (`"z"`: `ny × nx`, `"y"`: `nx × nz`, `"x"`: `ny × nz`), or a scalar for the whole plane. A tangential E edge in the plane is PEC when both its end nodes are set; a node beyond the last row or column (on the max wall) counts as set.
 
-A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source, and `fdtd_source` refuses an edge that is already PEC.
+A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source or port, and `fdtd_source` / `fdtd_port` refuse an edge that is already PEC.
 ```
 fdtd_pec(sim, "z", 1, 1);                             # ground plane on the bottom wall (already PEC)
 fdtd_pec(sim, "z", 6, rect_mask(X, Y, x0, y0, w, h)); # a patch on top of a 5-cell substrate
@@ -419,10 +419,36 @@ Drive one E edge (`comp` is `"ex"`, `"ey"`, or `"ez"`), or a stack of collinear 
 - `"gaussian"` and `"modulated"` are evaluated at `t = n·dt` on step `n`, on every step.
 - A real vector `waveform` gives sample `n` at step `n`. Past its end a soft source adds nothing and a hard source releases the edge.
 
-Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
+Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source or with a port. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
 ```
 fdtd_source(sim, "ez", 21, 21, 21, "soft", "gaussian", 4*tau, tau);
 fdtd_source(sim, "ez", 10, 10, 2:4, "hard", gaussian_pulse((1:200) * info.dt, 60*info.dt, 20*info.dt));
+```
+
+### `id = fdtd_port(sim, comp, i, j, k, Z0, waveform...)`
+```
+fdtd_port(sim, comp, i, j, k, Z0, "gaussian", t0, tau)
+fdtd_port(sim, comp, i, j, k, Z0, "modulated", t0, tau, f0)
+fdtd_port(sim, comp, i, j, k, Z0, waveform)
+```
+One lumped port: a series voltage `Vg` and a gap resistance `Z0` (ohms, finite and `> 0`) on an E edge, or on a stack of collinear edges. The index along the component's own axis (`j` for `ex`, `i` for `ey`, `k` for `ez`) may be a consecutive ascending range. Returns the 1-based port id, which is `1`. A second call errors and names the deferred S21 phase, including after the grid has already stepped. v1 does not build a full S matrix.
+
+`Z0` is split equally across the `N` edges. Each edge's extra conductivity is `σ = Δ_along / (R_edge · Area)` with `R_edge = Z0 / N`, added to the material conductivity before `Ca` and `Cb` are baked. The source is not an impressed field. Each edge is updated by
+
+```
+E := E - (dt/ε0) · Cb · Vg / (Z0 · Area)
+```
+
+`Cb` is that edge's baked relative coefficient (1 in vacuum). `Vg` is `"gaussian"`, `"modulated"`, or a real vector with sample `n` at step `n` (time `n·dt`); past the end of a vector the port adds nothing. A positive `Vg` makes `V = −Σ E·Δ` positive.
+
+Every step records, after the E update:
+
+- `V`, the gap voltage `−Σ E·Δ` over the stack, at time `n·dt`
+- `I`, the Ampère current around the first edge of the stack, from the H field at `(n − ½)·dt`. For an `ez` edge that is `(Hy − Hy_left)·dy − (Hx − Hx_below)·dx`, the segment lengths of the Yee curl. `fdtd_s11` corrects the half-step; the stored `I` does not.
+
+The port must be added before the first step. An edge on a PEC wall, on `fdtd_pec` metal, or shared with a hard source is an error (either order). `fdtd_record`'s `V` and `I` are `steps × 1` and `Z0` is that resistance.
+```
+id = fdtd_port(sim, "ez", 5, 6, 3:6, 50, "modulated", 4*tau, tau, 2.4e9);
 ```
 
 ### `id = fdtd_probe(sim, comp, i, j, k)`
@@ -455,9 +481,30 @@ The record of every step since the grid was created, without stepping:
 | `dt` | scalar |
 | `steps` | scalar |
 | `probe` | real `steps × nprobes` matrix; column `id` is that probe |
-| `V`, `I` | real `steps × 0` (ports arrive in a later phase) |
-| `Z0` | empty row |
+| `V`, `I` | real `steps × nports` (`nports` is 0 or 1). Column 1 is the lumped port |
+| `Z0` | real row, one resistance per port. Empty when the grid has no port |
 | `interrupted` | `true` when the last run was stopped by Ctrl+C |
+
+### `s = fdtd_s11(sim)` / `fdtd_s11(V, I, dt, Z0)`
+One-port S11 from the port's gap voltage and Ampère current. `fdtd_s11(sim)` reads the one port on that grid (`"port", 1` is accepted and is the only id; any other id errors and names S21). `fdtd_s11(V, I, dt, Z0)` is the same calculation on samples: `V` and `I` are real vectors or `steps × 1` columns of equal length (at least 2), `dt` and `Z0` are finite and positive. A grid with no port is an error.
+
+`"window", "hann"` (the default; `"hanning"` is the same name) or `"window", "rect"` (`"rectangular"` too). Hann is the window builtin. Rectangular leaves a long steady tail untapered.
+
+`I` was sampled `dt/2` earlier than `V`. Its FFT is multiplied by `exp(+j·ω·dt/2)` first. Then
+
+```
+a   = (V + Z0·I) / (2·sqrt(Z0))
+b   = (V - Z0·I) / (2·sqrt(Z0))
+S11 = b ./ a
+```
+
+The return is a 1-port `sparameters` network (`__kind__ = "sparameters"`, `parameter_type = "S"`, `parameters` shaped `(n_freq, 1, 1)`, `num_ports = 1`, `impedance = Z0`). `frequencies` are in Hz, strictly increasing, and every entry is `> 0`: bin `m` of a length-`N` record is `m/(N·dt)` for `m = 1 .. floor(N/2)`, so DC is dropped (`rfplot` uses a logarithmic frequency axis) and an even `N` keeps Nyquist. A bin whose `|a|` is below `1e-12` times the peak `|a|` (the peak includes DC) is `NaN` at that frequency. `smith(s)` and `rfplot(s)` take this value. `s.impedance` is the port `Z0`, not `V/I`.
+```
+s = fdtd_s11(sim, "window", "rect");
+smith(s);
+rfplot(s);
+sij(s, 1, 1)
+```
 
 ### `M = fdtd_slice(sim, comp, axis, index)`
 Copy one plane of a component. `axis` is `"x"`, `"y"`, or `"z"` and `index` is 1-based on that axis.

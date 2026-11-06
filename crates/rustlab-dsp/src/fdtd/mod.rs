@@ -1,11 +1,13 @@
 //! 3-D FDTD (Yee) time stepper.
 //!
-//! Phases 1–3 of `dev/plans/fdtd3d.md`: PEC outer walls, soft and hard
+//! Phases 1–4 of `dev/plans/fdtd3d.md`: PEC outer walls, soft and hard
 //! E-edge sources, point probes, cell-centred `eps_r` / `mu_r` / `sigma`
 //! ([`FdtdSim::set_media`]), interior PEC volumes and faces
-//! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]), and a
-//! convolutional PML inside those walls ([`FdtdSim::set_cpml`]). Serial.
-//! The material bake is in `media.rs`; the absorber is in `cpml.rs`.
+//! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]), a
+//! convolutional PML inside those walls ([`FdtdSim::set_cpml`]), and one
+//! lumped port ([`FdtdSim::add_port`], [`s11`]). Serial.
+//! The material bake is in `media.rs`; the absorber is in `cpml.rs`;
+//! the port source and S11 are in `port.rs`.
 //!
 //! # Layout
 //!
@@ -37,14 +39,19 @@
 //! # Step
 //!
 //! Step `s` (1-based) advances H to `(s − ½)·dt`, records H probes, advances
-//! E to `s·dt`, applies sources with the waveform at `s·dt`, then records E
-//! probes. Soft: `E ← E − Cb·g/Δ` per edge, with `Cb = dt/ε0` in vacuum and
-//! the edge's baked `Cb` in a medium. Hard: `E ← −g/Δ`. `Δ` is the cell size
-//! along the component; on a stack of `N` edges `g` is split as `g/N`. Both
-//! signs make a positive `g` a positive `V = −Σ E·Δ`.
+//! E to `s·dt`, applies sources and the lumped port with the waveform at
+//! `s·dt`, then records E probes and the port's `V` and `I`. Soft:
+//! `E ← E − Cb·g/Δ` per edge, with `Cb = dt/ε0` in vacuum and the edge's
+//! baked `Cb` in a medium. Hard: `E ← −g/Δ`. `Δ` is the cell size along the
+//! component; on a stack of `N` edges `g` is split as `g/N`. A port is a
+//! series `Vg` with gap resistance `Z0`: the resistance is extra edge
+//! conductivity, and each edge subtracts `(dt/ε0)·Cb·Vg/(Z0·Area)` (see
+//! `port`). Both signs make a positive `g` or `Vg` a positive
+//! `V = −Σ E·Δ`.
 
 mod cpml;
 mod media;
+mod port;
 mod pulse;
 mod yee;
 
@@ -53,6 +60,7 @@ mod tests;
 
 pub use cpml::{CpmlParams, Face};
 pub use media::CellMap;
+pub use port::{s11, PortWindow, S11};
 pub use pulse::gaussian_pulse;
 
 use crate::error::DspError;
@@ -175,6 +183,18 @@ struct Probe {
     idx: usize,
 }
 
+/// One lumped port: series `Vg` with resistance `z0` on a collinear E stack.
+///
+/// v1 holds at most one. `nodes[0]` is the edge whose Ampère loop is `I`.
+#[derive(Clone, Debug)]
+struct Port {
+    comp: Component,
+    nodes: Vec<(usize, usize, usize)>,
+    edges: Vec<usize>,
+    z0: f64,
+    waveform: Waveform,
+}
+
 /// Result of [`FdtdSim::run`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunReport {
@@ -207,8 +227,14 @@ pub struct FdtdSim {
     zero_row: Vec<f64>,
     sources: Vec<Source>,
     probes: Vec<Probe>,
+    /// At most one in v1. Empty means the Phase 1–3 kernel, bit for bit.
+    ports: Vec<Port>,
     /// Row-major `steps × probes.len()`.
     record: Vec<f64>,
+    /// Row-major `steps × ports.len()`. Gap voltage after the source.
+    port_v: Vec<f64>,
+    /// Row-major `steps × ports.len()`. Ampère current at the half-step.
+    port_i: Vec<f64>,
     steps: usize,
     interrupted: bool,
     /// `None` until [`FdtdSim::set_media`]: vacuum.
@@ -287,7 +313,10 @@ impl FdtdSim {
             zero_row: vec![0.0; nx],
             sources: Vec::new(),
             probes: Vec::new(),
+            ports: Vec::new(),
             record: Vec::new(),
+            port_v: Vec::new(),
+            port_i: Vec::new(),
             steps: 0,
             interrupted: false,
             media: None,
@@ -330,14 +359,35 @@ impl FdtdSim {
     pub fn interrupted(&self) -> bool {
         self.interrupted
     }
-    /// Field storage, probe record, material maps, baked coefficients, the
-    /// PEC mask and, when a CPML face is on, the absorber arrays, in bytes.
+    /// Field storage, probe record, port V/I, material maps, baked
+    /// coefficients, the PEC mask and, when a CPML face is on, the absorber
+    /// arrays, in bytes.
     pub fn bytes(&self) -> usize {
-        (6 * self.n_cells() + self.record.len()) * ELEM_F64
+        (6 * self.n_cells() + self.record.len() + self.port_v.len() + self.port_i.len()) * ELEM_F64
             + self.media.as_ref().map_or(0, |m| m.bytes())
             + self.baked.bytes()
             + self.pec.as_ref().map_or(0, |p| p.len())
             + self.absorber.bytes(self.cpml_active())
+    }
+
+    /// Ports on the grid. v1 is 0 or 1.
+    pub fn n_ports(&self) -> usize {
+        self.ports.len()
+    }
+
+    /// Gap voltage, row-major `steps × n_ports`.
+    pub fn port_voltage(&self) -> &[f64] {
+        &self.port_v
+    }
+
+    /// Ampère current, row-major `steps × n_ports`. Not half-step corrected.
+    pub fn port_current(&self) -> &[f64] {
+        &self.port_i
+    }
+
+    /// Reference resistance of each port, in ohms, port order.
+    pub fn port_z0(&self) -> Vec<f64> {
+        self.ports.iter().map(|p| p.z0).collect()
     }
 
     /// Thickness per face, `[xmin, xmax, ymin, ymax, zmin, zmax]`. Zeros
@@ -441,6 +491,16 @@ impl FdtdSim {
                 ));
             }
         }
+        for p in &self.ports {
+            if p.comp == comp
+                && kind == SourceKind::Hard
+                && p.edges.iter().any(|e| flat.contains(e))
+            {
+                return Err(DspError::InvalidParameter(
+                    "a hard source and a port cannot share an edge".into(),
+                ));
+            }
+        }
         self.sources.push(Source {
             comp,
             kind,
@@ -448,6 +508,78 @@ impl FdtdSim {
             waveform,
         });
         Ok(())
+    }
+
+    /// Add the one lumped port on 0-based `edges` (each `(i, j, k)`).
+    ///
+    /// v1 accepts a single port. A second call errors and names the deferred
+    /// S21 phase. `Z0` is the total gap resistance, finite and positive.
+    /// The caller checks collinearity. Returns the 0-based port id.
+    pub fn add_port(
+        &mut self,
+        comp: Component,
+        edges: &[(usize, usize, usize)],
+        z0: f64,
+        waveform: Waveform,
+    ) -> Result<usize, DspError> {
+        if !comp.is_electric() {
+            return Err(DspError::InvalidParameter(format!(
+                "a port drives E edges, not {}",
+                comp.name()
+            )));
+        }
+        if edges.is_empty() {
+            return Err(DspError::InvalidParameter("port has no edges".into()));
+        }
+        if !(z0.is_finite() && z0 > 0.0) {
+            return Err(DspError::InvalidParameter(format!(
+                "Z0 must be finite and positive, got {z0}"
+            )));
+        }
+        // A second port is the deferred S21 phase even after the grid has
+        // already stepped. The step check is for the first port only.
+        if !self.ports.is_empty() {
+            return Err(DspError::InvalidParameter(
+                "one port in v1; S21 of a second port is deferred".into(),
+            ));
+        }
+        if self.steps != 0 {
+            return Err(DspError::InvalidParameter(
+                "a port must be added before the first step".into(),
+            ));
+        }
+        let mut flat = Vec::with_capacity(edges.len());
+        for &(i, j, k) in edges {
+            if !self.in_bounds(i, j, k)
+                || self.is_wall_edge(comp, i, j, k)
+                || self.is_pec_edge(comp, i, j, k)
+            {
+                return Err(DspError::InvalidParameter(format!(
+                    "{} edge ({i}, {j}, {k}) is outside the grid or PEC",
+                    comp.name()
+                )));
+            }
+            flat.push(self.idx(i, j, k));
+        }
+        for s in &self.sources {
+            if s.comp == comp
+                && s.kind == SourceKind::Hard
+                && s.edges.iter().any(|e| flat.contains(e))
+            {
+                return Err(DspError::InvalidParameter(
+                    "a hard source and a port cannot share an edge".into(),
+                ));
+            }
+        }
+        self.ports.push(Port {
+            comp,
+            nodes: edges.to_vec(),
+            edges: flat,
+            z0,
+            waveform,
+        });
+        self.rebake();
+        Ok(0)
     }
 
     /// Add a probe at 0-based `(i, j, k)`; returns its 0-based column.
@@ -723,6 +855,15 @@ impl FdtdSim {
                 )));
             }
         }
+        for p in &self.ports {
+            let bit = media::pec_bit(p.comp.axis() as usize);
+            if p.edges.iter().any(|&e| pec[e] & bit != 0) {
+                return Err(DspError::InvalidParameter(format!(
+                    "PEC would cover an edge of an existing {} port",
+                    p.comp.name()
+                )));
+            }
+        }
         if self.pec.is_none() && pec.iter().all(|&b| b == 0) {
             return Ok(());
         }
@@ -731,12 +872,42 @@ impl FdtdSim {
         Ok(())
     }
 
+    fn along_area(&self, comp: Component) -> (f64, f64) {
+        match comp.axis() {
+            Axis::X => (self.dx, self.dy * self.dz),
+            Axis::Y => (self.dy, self.dx * self.dz),
+            Axis::Z => (self.dz, self.dx * self.dy),
+        }
+    }
+
+    /// Port-edge conductivity added on top of the material mean. Empty when
+    /// there is no port, so the vacuum bake stays the Phase 1 kernel.
+    fn port_extra_sigma(&self) -> Vec<(usize, usize, f64)> {
+        let mut out = Vec::new();
+        for p in &self.ports {
+            let (along, area) = self.along_area(p.comp);
+            let sig = port::edge_sigma(p.z0, p.edges.len(), along, area);
+            let c = match p.comp {
+                Component::Ex => 0,
+                Component::Ey => 1,
+                Component::Ez => 2,
+                _ => continue,
+            };
+            for &e in &p.edges {
+                out.push((c, e, sig));
+            }
+        }
+        out
+    }
+
     fn rebake(&mut self) {
+        let extra = self.port_extra_sigma();
         self.baked = media::bake(
             self.grid(),
             self.media.as_ref(),
             self.pec.as_deref(),
             self.dt,
+            &extra,
         );
     }
 
@@ -807,8 +978,16 @@ impl FdtdSim {
             .checked_add(nsteps)
             .ok_or(rustlab_core::CoreError::VariableTooLarge)?;
         checked_elems(&[total, self.probes.len()], ELEM_F64)?;
+        checked_elems(&[total, self.ports.len()], ELEM_F64)?;
         self.record
             .try_reserve_exact(nsteps * self.probes.len())
+            .map_err(|_| rustlab_core::CoreError::VariableTooLarge)?;
+        let port_samples = nsteps * self.ports.len();
+        self.port_v
+            .try_reserve_exact(port_samples)
+            .map_err(|_| rustlab_core::CoreError::VariableTooLarge)?;
+        self.port_i
+            .try_reserve_exact(port_samples)
             .map_err(|_| rustlab_core::CoreError::VariableTooLarge)?;
 
         self.interrupted = false;
@@ -913,11 +1092,97 @@ impl FdtdSim {
         }
         self.steps += 1;
         self.apply_sources();
+        self.apply_port();
         for (p, probe) in self.probes.iter().enumerate() {
             if probe.comp.is_electric() {
                 let v = self.field(probe.comp)[probe.idx];
                 self.record[row0 + p] = v;
             }
+        }
+        self.record_port();
+    }
+
+    /// Series voltage on the port edges, after the E update. A grid with no
+    /// port returns immediately and does not touch the fields.
+    fn apply_port(&mut self) {
+        if self.ports.is_empty() {
+            return;
+        }
+        let step = self.steps;
+        let dt = self.dt;
+        let comp = self.ports[0].comp;
+        let z0 = self.ports[0].z0;
+        let Some(vg) = self.ports[0].waveform.value(step, dt) else {
+            return;
+        };
+        let edges = self.ports[0].edges.clone();
+        let c = match comp {
+            Component::Ex => 0,
+            Component::Ey => 1,
+            Component::Ez => 2,
+            _ => return,
+        };
+        let area = self.along_area(comp).1;
+        let rel: Vec<f64> = match &self.baked.cb {
+            None => vec![1.0; edges.len()],
+            Some(cb) => edges.iter().map(|&e| cb[c][e]).collect(),
+        };
+        let field = match comp {
+            Component::Ex => &mut self.ex,
+            Component::Ey => &mut self.ey,
+            _ => &mut self.ez,
+        };
+        for (&e, r) in edges.iter().zip(rel) {
+            field[e] -= port::series_delta(r, dt, vg, z0, area);
+        }
+    }
+
+    fn record_port(&mut self) {
+        if self.ports.is_empty() {
+            return;
+        }
+        let comp = self.ports[0].comp;
+        let (i, j, k) = self.ports[0].nodes[0];
+        let edges = self.ports[0].edges.clone();
+        let delta = self.cell_along(comp.axis());
+        let sum: f64 = {
+            let f = self.field(comp);
+            edges.iter().map(|&e| f[e]).sum()
+        };
+        let v = -sum * delta;
+        let amp = self.ampere_at(comp, i, j, k);
+        self.port_v.push(v);
+        self.port_i.push(amp);
+    }
+
+    fn ampere_at(&self, comp: Component, i: usize, j: usize, k: usize) -> f64 {
+        let (dx, dy, dz) = (self.dx, self.dy, self.dz);
+        match comp {
+            Component::Ez => port::ampere_ez(
+                self.hy[self.idx(i, j, k)],
+                self.hy[self.idx(i, j - 1, k)],
+                self.hx[self.idx(i, j, k)],
+                self.hx[self.idx(i - 1, j, k)],
+                dx,
+                dy,
+            ),
+            Component::Ex => port::ampere_ex(
+                self.hz[self.idx(i, j, k)],
+                self.hz[self.idx(i - 1, j, k)],
+                self.hy[self.idx(i, j, k)],
+                self.hy[self.idx(i, j, k - 1)],
+                dy,
+                dz,
+            ),
+            Component::Ey => port::ampere_ey(
+                self.hx[self.idx(i, j, k)],
+                self.hx[self.idx(i, j, k - 1)],
+                self.hz[self.idx(i, j, k)],
+                self.hz[self.idx(i, j - 1, k)],
+                dx,
+                dz,
+            ),
+            _ => 0.0,
         }
     }
 

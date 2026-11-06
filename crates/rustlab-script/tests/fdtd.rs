@@ -738,3 +738,192 @@ cpml = late(1);
     println!("script late residual: pec {pec:.3e}, cpml {cpml:.3e}, {db:.1} dB");
     assert!(db < -30.0, "cpml is only {db} dB below pec");
 }
+
+#[test]
+fn fdtd_s11_of_a_resistance_is_a_one_port_network() {
+    let ev = eval(
+        r#"
+n = 256;
+dt = 1e-9;
+Z0 = 50;
+m = 8;
+t = (0:n-1) * dt;
+w = 2 * pi * m / (n * dt);
+V = cos(w * t);
+I = cos(w * (t - dt / 2)) / (3 * Z0);
+s = fdtd_s11(V, I, dt, Z0, "window", "rect");
+kind = parameter_type(s);
+ports = nports(s);
+zref = s.impedance;
+f = s.frequencies;
+tone = sij(s, 1, 1);
+tr = real(tone(m));
+ti = imag(tone(m));
+f1 = real(f(1));
+"#,
+    );
+    assert_eq!(
+        match ev.get("kind") {
+            Some(Value::Str(s)) => s.as_str(),
+            other => panic!("kind: {other:?}"),
+        },
+        "S"
+    );
+    assert_eq!(scalar(&ev, "ports"), 1.0);
+    assert_eq!(scalar(&ev, "zref"), 50.0);
+    assert!(
+        (scalar(&ev, "tr") - 0.5).abs() < 1e-9,
+        "re {}",
+        scalar(&ev, "tr")
+    );
+    assert!(scalar(&ev, "ti").abs() < 1e-9, "im {}", scalar(&ev, "ti"));
+    let df = 1.0 / (256.0 * 1e-9);
+    assert!((scalar(&ev, "f1") - df).abs() < 1e-3);
+}
+
+#[test]
+fn fdtd_port_record_round_trips_through_fdtd_s11() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+tau = 15 * dt;
+id = fdtd_port(sim, "ez", 4, 4, 3:4, 75, "gaussian", 4*tau, tau);
+out = fdtd_run(sim, 48);
+s = fdtd_s11(sim, "port", 1, "window", "rect");
+s2 = fdtd_s11(out.V, out.I, out.dt, out.Z0, "window", "rect");
+a = sij(s, 1, 1);
+b = sij(s2, 1, 1);
+same = max(abs(a - b));
+V = out.V;
+I = out.I;
+z = out.Z0;
+"#,
+    );
+    assert_eq!(scalar(&ev, "id"), 1.0);
+    assert!(scalar(&ev, "same") == 0.0, "sim and samples disagree");
+    assert_eq!(shape(&ev, "V"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "I"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "z"), vec![1.0, 1.0]);
+}
+
+#[test]
+fn fdtd_port_rejects_a_second_port_and_a_shared_hard_edge() {
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ey", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 1, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC outer wall"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "hx", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("E edges"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 0, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("positive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, [1, 3], 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("consecutive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 2);
+fdtd_port(sim, "ez", 3, 4, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    // The second call is refused because a port already exists, before the
+    // step check. Build a fresh grid that has already stepped.
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_run(sim, 1);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("before the first step"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_s11(sim);
+"#,
+    );
+    assert!(msg.contains("no port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_s11(sim, "port", 2);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 8);
+fdtd_s11(sim, "window", "kaiser");
+"#,
+    );
+    assert!(msg.contains("hann"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+mask = zeros3(8, 8, 8);
+mask(3, 3, 3) = 1;
+fdtd_pec(sim, mask);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC"), "{msg}");
+}

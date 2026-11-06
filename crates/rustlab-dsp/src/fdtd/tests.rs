@@ -1593,3 +1593,378 @@ fn cpml_setup_rules() {
     t.set_cpml(1, CpmlParams::default()).unwrap();
     assert_eq!(t.bytes(), base + 12 * n * 8 + 2 * 3 * (5 + 4 + 3) * 8);
 }
+
+/// Recovered gap resistance and the series-update residual.
+///
+/// Raw `(Vg − V) / I` is not `Z0`: the lossy update centres the conduction
+/// current, so
+///
+/// ```text
+/// Vⁿ⁺¹ = Ca Vⁿ + β (Vg − Z0 I)
+/// Ca = (1 − s) / (1 + s),  β = 2s / (1 + s),  s = σ dt / (2 ε0)
+/// ```
+///
+/// with `σ = Δ / (R_edge · Area)`. Solving that for `Z0` is the resistance
+/// the port actually enforces. `dx ≠ dy` so a swapped Ampère length fails it.
+fn series_resistance(edges: &[(usize, usize, usize)], cpml: bool) -> (f64, f64, f64) {
+    let (dx, dy, dz) = (1.0e-3, 2.0e-3, 0.4e-3);
+    let mut sim = FdtdSim::new(12, 10, 10, dx, dy, dz, DEFAULT_COURANT).unwrap();
+    if cpml {
+        sim.set_cpml(2, CpmlParams::default()).unwrap();
+    }
+    let dt = sim.dt();
+    let tau = 80.0 * dt;
+    let t0 = 4.0 * tau;
+    let z0 = 50.0;
+    sim.add_port(
+        Component::Ez,
+        edges,
+        z0,
+        Waveform::Pulse { t0, tau, f0: 0.0 },
+    )
+    .unwrap();
+    sim.run(800, &mut never()).unwrap();
+    let n_edges = edges.len();
+    let sigma = port::edge_sigma(z0, n_edges, dz, dx * dy);
+    let s = sigma * dt / (2.0 * EPS0);
+    let ca = (1.0 - s) / (1.0 + s);
+    let beta = 2.0 * s / (1.0 + s);
+    let v = sim.port_voltage();
+    let i = sim.port_current();
+    let mut worst = 0.0_f64;
+    let mut z_err = 0.0_f64;
+    let mut power = 0.0_f64;
+    let mut power_n = 0.0_f64;
+    let peak_i = i.iter().fold(0.0_f64, |p, x| p.max(x.abs()));
+    for n in 1..v.len() {
+        let t = (n as f64 + 1.0) * dt;
+        let vg = gaussian_pulse(t, t0, tau, 0.0);
+        let pred = ca * v[n - 1] + beta * (vg - z0 * i[n]);
+        let scale = v[n].abs() + vg.abs() + 1e-30;
+        worst = worst.max((pred - v[n]).abs() / scale);
+        if i[n].abs() >= 0.2 * peak_i {
+            let z = (vg - (v[n] - ca * v[n - 1]) / beta) / i[n];
+            z_err = z_err.max((z - z0).abs() / z0);
+        }
+        if t < t0 && i[n].abs() >= 0.2 * peak_i {
+            power += v[n] * i[n];
+            power_n += 1.0;
+        }
+    }
+    (z_err, worst, power / power_n)
+}
+
+#[test]
+fn ampere_ez_uses_segment_lengths() {
+    // ΔHy = 1, ΔHx = 1, dx = 2, dy = 3.
+    // Circulation: I = ΔHy·dy − ΔHx·dx = 1. The plan's dx/dy swap gives −1.
+    assert_eq!(port::ampere_ez(1.0, 0.0, 1.0, 0.0, 2.0, 3.0), 1.0);
+    assert_eq!(port::ampere_ex(1.0, 0.0, 1.0, 0.0, 2.0, 5.0), 3.0);
+    assert_eq!(port::ampere_ey(1.0, 0.0, 1.0, 0.0, 2.0, 5.0), -3.0);
+}
+
+#[test]
+fn port_update_matches_the_series_identity() {
+    let (dx, dy, dz) = (1.0e-3, 2.0e-3, 0.4e-3);
+    let mut sim = FdtdSim::new(10, 8, 8, dx, dy, dz, DEFAULT_COURANT).unwrap();
+    let dt = sim.dt();
+    let tau = 40.0 * dt;
+    let t0 = 4.0 * tau;
+    let z0 = 50.0;
+    sim.add_port(
+        Component::Ez,
+        &[(4, 4, 4)],
+        z0,
+        Waveform::Pulse { t0, tau, f0: 0.0 },
+    )
+    .unwrap();
+    sim.run(400, &mut never()).unwrap();
+    let sigma = dz / (z0 * dx * dy);
+    let s = sigma * dt / (2.0 * EPS0);
+    let ca = (1.0 - s) / (1.0 + s);
+    let beta = 2.0 * s / (1.0 + s);
+    let v = sim.port_voltage();
+    let i = sim.port_current();
+    let mut worst = 0.0_f64;
+    for n in 1..v.len() {
+        let vg = gaussian_pulse((n as f64 + 1.0) * dt, t0, tau, 0.0);
+        let pred = ca * v[n - 1] + beta * (vg - z0 * i[n]);
+        let err = (pred - v[n]).abs() / (v[n].abs() + vg.abs() + 1e-30);
+        worst = worst.max(err);
+    }
+    assert!(
+        worst < 1e-9,
+        "series update identity residual {worst} (s = {s}, beta = {beta})"
+    );
+}
+
+#[test]
+fn port_resistor_matches_z0_to_one_percent() {
+    let (z_err, residual, power) = series_resistance(&[(4, 4, 4)], false);
+    assert!(
+        z_err < 0.01,
+        "recovered resistance is {z_err:.3e} relative to Z0 (1% gate)"
+    );
+    assert!(residual < 1e-9, "series identity residual {residual}");
+    assert!(
+        power > 0.0,
+        "V*I on the rise is {power}, want power into the grid"
+    );
+}
+
+#[test]
+fn port_stack_splits_resistance_and_voltage() {
+    let (one, r1, _) = series_resistance(&[(4, 4, 4)], false);
+    let (two, r2, _) = series_resistance(&[(4, 4, 4), (4, 4, 5)], false);
+    assert!(
+        one < 0.01 && two < 0.01 && r1 < 1e-9 && r2 < 1e-9,
+        "one edge err {one} residual {r1}; two edges err {two} residual {r2}"
+    );
+}
+
+#[test]
+fn port_with_cpml_off_matches_sigma_factor_zero() {
+    let mut params = CpmlParams::default();
+    params.sigma_factor = 0.0;
+    let mut a = FdtdSim::new(12, 10, 10, 1e-3, 1.5e-3, 0.5e-3, DEFAULT_COURANT).unwrap();
+    let mut b = a.clone();
+    let dt = a.dt();
+    let tau = 40.0 * dt;
+    let wave = Waveform::Pulse {
+        t0: 4.0 * tau,
+        tau,
+        f0: 0.0,
+    };
+    a.add_port(Component::Ez, &[(4, 4, 4)], 75.0, wave.clone())
+        .unwrap();
+    b.add_port(Component::Ez, &[(4, 4, 4)], 75.0, wave).unwrap();
+    b.set_cpml(2, params).unwrap();
+    a.run(80, &mut never()).unwrap();
+    b.run(80, &mut never()).unwrap();
+    assert_eq!(a.field_bits(), b.field_bits());
+    assert_eq!(a.port_voltage(), b.port_voltage());
+    assert_eq!(a.port_current(), b.port_current());
+}
+
+#[test]
+fn port_resistor_holds_with_cpml_on() {
+    let (z_err, residual, power) = series_resistance(&[(5, 5, 5)], true);
+    assert!(
+        z_err < 0.01 && residual < 1e-9,
+        "CPML on, resistance error {z_err}, identity residual {residual}"
+    );
+    assert!(power > 0.0, "V*I on the rise is {power}");
+    let mut sim = FdtdSim::new(12, 10, 10, 1e-3, 2e-3, 0.4e-3, DEFAULT_COURANT).unwrap();
+    sim.set_cpml(2, CpmlParams::default()).unwrap();
+    let dt = sim.dt();
+    let tau = 40.0 * dt;
+    sim.add_port(
+        Component::Ez,
+        &[(5, 5, 5)],
+        50.0,
+        Waveform::Pulse {
+            t0: 4.0 * tau,
+            tau,
+            f0: 0.0,
+        },
+    )
+    .unwrap();
+    sim.run(400, &mut never()).unwrap();
+    let s = s11(
+        sim.port_voltage(),
+        sim.port_current(),
+        dt,
+        50.0,
+        PortWindow::Rect,
+    )
+    .unwrap();
+    assert!(s.s11.iter().any(|z| z.is_finite()));
+    assert!(s.frequencies.windows(2).all(|w| w[1] > w[0]));
+    assert!(s.frequencies[0] > 0.0);
+}
+
+#[test]
+fn second_port_names_s21_and_rejects_a_shared_hard_edge() {
+    let mut s = FdtdSim::new(6, 6, 6, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    let w = Waveform::Pulse {
+        t0: 1e-9,
+        tau: 2e-10,
+        f0: 0.0,
+    };
+    s.add_port(Component::Ez, &[(2, 2, 2)], 50.0, w.clone())
+        .unwrap();
+    let e = s
+        .add_port(Component::Ez, &[(3, 3, 3)], 50.0, w.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("S21"), "{e}");
+    let e = s
+        .add_source(Component::Ez, &[(2, 2, 2)], SourceKind::Hard, w.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("hard source and a port"), "{e}");
+    let mut s = FdtdSim::new(6, 6, 6, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    s.add_source(Component::Ex, &[(2, 2, 2)], SourceKind::Hard, w.clone())
+        .unwrap();
+    let e = s
+        .add_port(Component::Ex, &[(2, 2, 2)], 50.0, w)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("hard source and a port"), "{e}");
+}
+
+#[test]
+fn s11_half_step_correction_recovers_real_z0() {
+    let n = 256;
+    let dt = 1.0e-9;
+    let z0 = 50.0;
+    let m = 8usize;
+    let omega = 2.0 * PI * m as f64 / (n as f64 * dt);
+    let mut v = vec![0.0; n];
+    let mut i = vec![0.0; n];
+    for k in 0..n {
+        let t = k as f64 * dt;
+        v[k] = (omega * t).cos();
+        i[k] = (omega * (t - 0.5 * dt)).cos() / z0;
+    }
+    let s = s11(&v, &i, dt, z0, PortWindow::Rect).unwrap();
+    assert_eq!(s.frequencies.len(), n / 2);
+    assert!((s.frequencies[0] - 1.0 / (n as f64 * dt)).abs() < 1e-6);
+    let nyq = 1.0 / (2.0 * dt);
+    assert!((s.frequencies[n / 2 - 1] - nyq).abs() < 1e-6);
+    let tone = s.s11[m - 1];
+    assert!(tone.norm() < 1e-9, "corrected S11 at bin {m} is {tone}");
+    // Other bins of a pure tone are numerical zeros and become NaN.
+    assert!(s.s11[0].is_nan());
+    // The same V and I with no half-step delay. The correction then applies
+    // a phase the data does not have, so S11 leaves 0. |S11| = |tan(θ/2)|
+    // with θ = ω dt/2.
+    let i_aligned: Vec<f64> = v.iter().map(|x| x / z0).collect();
+    let shifted = s11(&v, &i_aligned, dt, z0, PortWindow::Rect).unwrap();
+    let theta = omega * dt / 2.0;
+    let expect = (theta / 2.0).tan();
+    assert!(
+        (shifted.s11[m - 1].norm() - expect).abs() < 1e-6,
+        "in-phase I with the half-step factor: {} (expected magnitude {expect})",
+        shifted.s11[m - 1]
+    );
+}
+
+#[test]
+fn s11_of_a_resistance_is_the_reflection_formula() {
+    let n = 256;
+    let dt = 1.0e-9;
+    let z0 = 50.0;
+    let m = 8usize;
+    let omega = 2.0 * PI * m as f64 / (n as f64 * dt);
+    let mut v = vec![0.0; n];
+    for (r, expect) in [(z0, 0.0), (3.0 * z0, 0.5), (z0 / 3.0, -0.5)] {
+        let mut i = vec![0.0; n];
+        for k in 0..n {
+            let t = k as f64 * dt;
+            v[k] = (omega * t).cos();
+            // Stored I is the half-step sample. The correction brings it
+            // back to the integer time of V before (R − Z0)/(R + Z0).
+            i[k] = (omega * (t - 0.5 * dt)).cos() / r;
+        }
+        let s = s11(&v, &i, dt, z0, PortWindow::Rect).unwrap();
+        let tone = s.s11[m - 1];
+        assert!(
+            (tone.re - expect).abs() < 1e-9 && tone.im.abs() < 1e-9,
+            "R = {r}: S11 = {tone}, expected {expect}"
+        );
+    }
+    assert!(s11(&v, &v[..10], dt, z0, PortWindow::Hann).is_err());
+    assert!(s11(&v[..1], &v[..1], dt, z0, PortWindow::Rect).is_err());
+    assert!(s11(&v, &v, 0.0, z0, PortWindow::Rect).is_err());
+    assert!(s11(&v, &v, dt, 0.0, PortWindow::Rect).is_err());
+}
+
+/// Lossless patch on the teaching mesh. The plan's edge feed does not ring
+/// at the port (late gap voltage about 69 dB down; `|S11|` stays near 1, so
+/// its minimum is not a resonance). A feed inset by `L/3` from the radiating
+/// edge does: after the pulse the gap voltage peaks at the transmission-line
+/// frequency. That is the check this test locks. The `|S11|` minimum on the
+/// edge feed is recorded in `dev/plans/fdtd3d.md` and is not asserted here.
+#[test]
+fn lossless_patch_inset_feed_rings_at_2_4_ghz() {
+    let eps_r = 4.4_f64;
+    let h = 1.6e-3_f64;
+    let f0 = 2.4e9_f64;
+    let width = C0 / (2.0 * f0) * (2.0 / (eps_r + 1.0)).sqrt();
+    let ee = (eps_r + 1.0) / 2.0 + (eps_r - 1.0) / 2.0 / (1.0 + 12.0 * h / width).sqrt();
+    let dl = 0.412 * h * (ee + 0.3) * (width / h + 0.264) / ((ee - 0.258) * (width / h + 0.8));
+    let length = C0 / (2.0 * f0 * ee.sqrt()) - 2.0 * dl;
+
+    let (dx, dy, dz) = (1.0e-3, 1.0e-3, 0.4e-3);
+    let (nx, ny, nz) = (60usize, 60, 20);
+    let nsub = 4usize;
+    let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, DEFAULT_COURANT).unwrap();
+    let mut eps = vec![1.0; nx * ny * nz];
+    for k in 0..nsub {
+        for i in 0..ny {
+            for j in 0..nx {
+                eps[(k * ny + i) * nx + j] = eps_r;
+            }
+        }
+    }
+    sim.set_media(
+        CellMap::Cells(eps),
+        CellMap::Uniform(1.0),
+        CellMap::Uniform(0.0),
+    )
+    .unwrap();
+    sim.set_cpml(6, CpmlParams::default()).unwrap();
+    sim.set_cpml_face(Face::ZMin, 0).unwrap();
+
+    let px = (nx as f64 * dx - length) / 2.0;
+    let py = (ny as f64 * dy - width) / 2.0;
+    let mut nodes = vec![false; ny * nx];
+    for i in 0..ny {
+        for j in 0..nx {
+            let x = j as f64 * dx;
+            let y = i as f64 * dy;
+            if x >= px && x <= px + length && y >= py && y <= py + width {
+                nodes[i * nx + j] = true;
+            }
+        }
+    }
+    // 1-based node plane `nsub + 1` is 0-based face `nsub`.
+    sim.add_pec_face(Axis::Z, nsub, &nodes).unwrap();
+
+    let ix = ((px + length / 3.0) / dx).round() as usize;
+    let iy = ((py + width / 2.0) / dy).round() as usize;
+    let edges: Vec<(usize, usize, usize)> = (0..nsub).map(|k| (iy, ix, k)).collect();
+    let dt = sim.dt();
+    let tau = 1.0 / (2.0 * f0);
+    sim.add_port(
+        Component::Ez,
+        &edges,
+        50.0,
+        Waveform::Pulse {
+            t0: 4.0 * tau,
+            tau,
+            f0,
+        },
+    )
+    .unwrap();
+    sim.run(6000, &mut never()).unwrap();
+    let vrec = sim.port_voltage();
+    let start = ((8.0 * tau) / dt) as usize;
+    assert!(start + 64 < vrec.len(), "record ends during the pulse");
+    let peak = vrec.iter().fold(0.0_f64, |p, x| p.max(x.abs()));
+    let late = vrec[start..].iter().fold(0.0_f64, |p, x| p.max(x.abs()));
+    assert!(
+        late / peak > 0.1,
+        "inset feed should still be ringing after the pulse (late/peak = {})",
+        late / peak
+    );
+    let ring = peak_freq(&vrec[start..], dt, 1.0e9, 4.0e9);
+    let rel = (ring / f0 - 1.0).abs();
+    assert!(
+        rel < 0.01,
+        "late gap voltage peaks at {:.4} GHz, {:.2}% from 2.4 GHz (L = {length:.4} m, W = {width:.4} m)",
+        ring / 1e9,
+        rel * 100.0
+    );
+}
