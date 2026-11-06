@@ -758,6 +758,7 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 | `examples/math/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
 | `examples/language/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
 | `examples/language/vectorized_style.rlab` | Array style for scripts: slices, `arrayfun`/`parmap`, masks, reductions, and the checks that match a small loop |
+| `examples/language/seeded_random_loop.rlab` | A loop that stays: four in-order `rand()` draws per trial, array arithmetic inside, fixed `seed(322)` |
 | `examples/language/logical_arrays.rlab` | Logical arrays: comparisons, `logical` / `islogical`, masks, `find`, `and` / `or` / `xor` |
 | `examples/math/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
 | `examples/stats/stats.rlab` | Statistics: mean, median, std, histogram, trapz |

@@ -8,6 +8,9 @@ should re-validate against those entries when upgrading.
 
 ## 0.3.58
 
+### Added
+- **Seeded random loop example.** `examples/language/seeded_random_loop.rlab` keeps one loop because each trial draws four `rand()` values in order from `seed(322)`. The body is array arithmetic (Bloch components and a factored correlator table). A `rand` array sliced by component, or `parmap` (it reseeds each worker), would move the sample. The script reseeds and checks that the first four samples replay. `rustlab run examples/language/seeded_random_loop.rlab --plot none` prints the max, the min, `sqrt(2)`, and the fraction of trials above 2.
+
 ### Breaking / behavior changes
 - **A single index of a logical array stays a logical array.** `L(1)`, `L(end)`, and `L(i, j)` when both subscripts pick one cell return a 1×1 logical. `class(L(1))` is `"logical"`. In 0.3.56 and 0.3.57 that read was a scalar `bool`, so `class(L(1))` was `"bool"` and the value could not be indexed again. `islogical(L(1))` is still true. `double(L(1))` is `1` or `0`. A script that branched on `class(L(1)) == "bool"` should branch on `"logical"`.
 - **Scalar `true` selects the first element. `false` selects nothing.** `v(true)` and `v(true(1, 1))` are `v(1)`. `v(false)` is an empty vector, not an error. `v(L(k))` uses the bit in that 1×1 logical: true selects `v(1)`, false selects nothing. The same rule applies to a matrix linear index (`M(true)` is the first column-major element) and to one side of a two-dimensional subscript (`M(true, :)` is the first row, `M(false, :)` is `0×n`). Assignment follows the read: `v(true) = 7` writes the first element, and `v(false) = 9` writes nothing. A logical whose length is neither 1 nor the indexed length is still an error. A same-length mask with one true still returns a length-1 vector, not a scalar.
