@@ -538,7 +538,11 @@ impl Evaluator {
             if matches!(self.env.get(name.as_str()), Some(Value::Matrix(_)))
                 && matches!(
                     &idx_vals[0],
-                    Value::All | Value::Vector(_) | Value::Matrix(_) | Value::Logical(_)
+                    Value::All
+                        | Value::Vector(_)
+                        | Value::Matrix(_)
+                        | Value::Logical(_)
+                        | Value::Bool(_)
                 )
             {
                 return self.assign_matrix_linear(name, &idx_vals[0], &val, *suppress);
@@ -550,7 +554,11 @@ impl Evaluator {
             // would reject the Vector index.
             let idx_is_multi = matches!(
                 &idx_vals[0],
-                Value::All | Value::Vector(_) | Value::Matrix(_) | Value::Logical(_)
+                Value::All
+                    | Value::Vector(_)
+                    | Value::Matrix(_)
+                    | Value::Logical(_)
+                    | Value::Bool(_)
             );
             let env_is_vector = matches!(self.env.get(name.as_str()), Some(Value::Vector(_)));
             if idx_is_multi && env_is_vector {
@@ -1124,9 +1132,11 @@ impl Evaluator {
                     Value::Scalar(_) if matches!(val, Value::Scalar(_)) => {
                         Value::resolve_index_dim(i, nr * nc).ok()?
                     }
-                    Value::All | Value::Vector(_) | Value::Matrix(_) => {
-                        matrix_linear_positions(i, nr, nc).ok()?
-                    }
+                    Value::All
+                    | Value::Vector(_)
+                    | Value::Matrix(_)
+                    | Value::Logical(_)
+                    | Value::Bool(_) => matrix_linear_positions(i, nr, nc).ok()?,
                     _ => return None,
                 };
                 if positions.iter().any(|&p| p >= nr * nc) {
@@ -1164,9 +1174,11 @@ impl Evaluator {
                     Value::Scalar(_) if matches!(val, Value::Scalar(_)) => {
                         Value::resolve_index_dim(i, len).ok()?
                     }
-                    Value::All | Value::Vector(_) | Value::Matrix(_) => {
-                        Value::resolve_index_dim_public(i, len).ok()?
-                    }
+                    Value::All
+                    | Value::Vector(_)
+                    | Value::Matrix(_)
+                    | Value::Logical(_)
+                    | Value::Bool(_) => Value::resolve_index_dim_public(i, len).ok()?,
                     _ => return None,
                 };
                 if !matches!(src, Src::Fill(_))
@@ -4631,6 +4643,20 @@ fn logical_mask_positions(v: &[C64], dim_len: usize) -> Option<Vec<usize>> {
     )
 }
 
+/// `true` writes the first linear element. `false` writes nothing.
+/// `true` on an empty matrix is out of bounds, the same as the index `1`.
+fn scalar_logical_assign_positions(bit: bool, total: usize) -> Result<Vec<usize>, ScriptError> {
+    if !bit {
+        return Ok(Vec::new());
+    }
+    if total == 0 {
+        return Err(ScriptError::runtime(
+            "index assignment: index 1 out of bounds (0 elements)".to_string(),
+        ));
+    }
+    Ok(vec![0])
+}
+
 fn matrix_linear_positions(idx: &Value, nr: usize, nc: usize) -> Result<Vec<usize>, ScriptError> {
     let total = nr * nc;
     match idx {
@@ -4653,7 +4679,14 @@ fn matrix_linear_positions(idx: &Value, nr: usize, nc: usize) -> Result<Vec<usiz
             }
             v.iter().map(|c| one_based_index(c.re)).collect()
         }
+        Value::Bool(b) => scalar_logical_assign_positions(*b, total),
         Value::Logical(a) => {
+            // A one-element logical is a scalar subscript (`M(mask(k))`),
+            // not a mask that has to match the matrix.
+            if a.len() == 1 {
+                let bit = a.as_slice().first().copied().unwrap_or(0) != 0;
+                return scalar_logical_assign_positions(bit, total);
+            }
             if a.rows() == nr && a.cols() == nc {
                 return Ok(a.true_positions_column_major());
             }

@@ -2006,7 +2006,7 @@ M(2, 3) = 7      % only element (2, 3) updated
 ```
 
 ### Linear and logical write: `M(idx) = c`
-One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, or a logical mask. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. Writing into a logical array (`L(i) = false`) is not supported.
+One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, a logical mask, or a scalar logical. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). `true` writes the first element. `false` writes nothing. A one-element logical is that same subscript. A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. Writing into a logical array (`L(i) = false`) is not supported.
 
 `zeros(size(v))` is a matrix (a row when `v` is a vector). `g(idx) = c` writes that matrix.
 ```
@@ -4425,11 +4425,13 @@ xor([true, false, true], [true, true, false])     % 0 1 1
 ```
 
 ### Mask indexing
-`A(mask)` keeps the elements where `mask` is true, in column-major order. The logical must have the same number of elements as `A`. It is not a list of positions — a short logical is an error. Along one dimension, `M(rowMask, :)` needs a logical vector whose length is that dimension. A numeric 0/1 mask of the same length still works.
+`A(mask)` keeps the elements where `mask` is true, in column-major order. The logical must have the same number of elements as `A`, except a one-element logical, which is a scalar subscript: `true` selects the first element and `false` selects nothing. A scalar `true` / `false` is that same subscript (`A(true)`, `A(mask(k))`). Any other short logical is an error. It is not a list of positions. Along one dimension, `M(rowMask, :)` needs a logical vector whose length is that dimension, or a one-element logical. A numeric 0/1 mask of the same length still works.
 
 ```
 v = [10, 20, 30, 40]
 v(v > 20)            % 30 40
+v(true)              % 10, the first element
+v(false)             % empty
 M = [1, 2; 3, 4]
 M(M > 2)             % 3 and 4, column-major
 ```
@@ -4439,7 +4441,7 @@ M(M > 2)             % 3 and 4, column-major
 ### `any` / `all` on a logical
 A logical vector, a one-row logical, or a one-column logical reduces to one bool. A wider logical matrix is an error, the same rule as a numeric matrix. `all` of an empty logical is true. `any` of an empty logical is false.
 
-Concatenating only logicals and bools stays logical (`[true, false, true]`). Mixing in a number promotes that row to double 0/1. `L'` transposes a logical and does not conjugate. Indexing one element of a logical returns `bool` (`L(end)`).
+Concatenating only logicals and bools stays logical (`[true, false, true]`). Mixing in a number promotes that row to double 0/1. `L'` transposes a logical and does not conjugate. Indexing one element of a logical stays a 1×1 logical (`L(1)`, `L(end)`, `L(end, end)`). `class` is `"logical"`, not `"bool"`. `double(L(1))` is `1` or `0`.
 
 ---
 

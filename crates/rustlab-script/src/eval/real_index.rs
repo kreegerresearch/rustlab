@@ -204,6 +204,24 @@ impl Value {
                         let k = Value::one_based_to_zero_pub(*n).ok()?;
                         d.get(k).map(|&x| Value::Scalar(x))
                     }
+                    // `v(true)` is the first element. `v(false)` is empty.
+                    // A 1×1 logical is the same subscript. A longer mask
+                    // stays on the arm below.
+                    Value::Bool(b) => {
+                        if *b {
+                            d.first().copied().map(Value::Scalar)
+                        } else {
+                            Some(Value::real_vector(Array1::from(Vec::<f64>::new())))
+                        }
+                    }
+                    Value::Logical(mask) if mask.len() == 1 => {
+                        let bit = mask.as_slice().first().copied().unwrap_or(0) != 0;
+                        if bit {
+                            d.first().copied().map(Value::Scalar)
+                        } else {
+                            Some(Value::real_vector(Array1::from(Vec::<f64>::new())))
+                        }
+                    }
                     Value::Vector(iv) => gather(Elems::of_vector(iv)?),
                     // Same list as a vector index: a 1×n or n×1 matrix.
                     // A wider matrix stays on the complex path, which errors.
@@ -233,6 +251,19 @@ impl Value {
                     Value::Scalar(k) => {
                         let p = Value::one_based_to_zero_pub(*k).ok()?;
                         return (p < total).then(|| Value::Scalar(at(p)));
+                    }
+                    Value::Bool(b) => {
+                        if *b {
+                            return (total > 0).then(|| Value::Scalar(at(0)));
+                        }
+                        return Some(Value::real_vector(Array1::from(Vec::<f64>::new())));
+                    }
+                    Value::Logical(mask) if mask.len() == 1 => {
+                        let bit = mask.as_slice().first().copied().unwrap_or(0) != 0;
+                        if bit {
+                            return (total > 0).then(|| Value::Scalar(at(0)));
+                        }
+                        return Some(Value::real_vector(Array1::from(Vec::<f64>::new())));
                     }
                     Value::All => (0..total).collect(),
                     Value::Vector(iv) => {
