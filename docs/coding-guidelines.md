@@ -82,6 +82,15 @@ array form just to have no loop. A seeded stream, a self-term, or a
 result that has to match a reference one step at a time is a nested
 loop; the comment says which of those it is.
 
+A seeded `rand` stream is that kind of loop.
+[`examples/language/seeded_random_loop.rlab`](../examples/language/seeded_random_loop.rlab)
+draws four `rand()` values per trial under `seed(322)`, in order, and
+checks that a re-seed replays the first four results. The arithmetic
+inside the loop is already array code. One `rand` array sliced by
+component would change the draw order, and `parmap` reseeds each
+worker, so either rewrite would move the printed numbers. The loop
+stays so the stream stays.
+
 ### Shapes of `+`, `.*`, and comparisons
 
 `+` and `.*` use the same pairing, and a comparison uses that pairing
