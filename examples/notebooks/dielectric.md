@@ -107,7 +107,7 @@ clf                                            % text-only cell: clear the
 eps_unit = ones(ny, nx);
 A_eps_unit = laplacian_eps_2d(eps_unit, dx, dy);
 A_lap     = laplacian_2d(nx, ny, dx, dy);
-print(norm(full(A_eps_unit) - full(A_lap)))    % → 0
+print(norm(full(A_eps_unit) - full(A_lap), "fro"))    % → 0
 ```
 
 When the material is uniform, the harmonic mean of two equal values is

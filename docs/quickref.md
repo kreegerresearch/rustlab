@@ -18,11 +18,11 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `2j`, `1.5i`, `3e8j` | Imaginary literal suffix — `z = 1 + 2j` parses directly; printed complex values round-trip as input |
 | `pi`, `e` | Built-in constants |
 | `Inf`, `NaN` | IEEE infinity and Not-a-Number |
-| `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
+| `true`, `false` | Boolean constants — usable in `if` and `while` conditions. `true(m, n)` / `false(m, n)` build a logical array when the name is not shadowed; `true(n)` is `n×n` |
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
-| `v(1)`, `v(end)`, `v(2:4)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector |
-| `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
+| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
+| `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)` and with `ind2sub` / `sub2ind`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
 | `M(i, :) = vec`, `M(:, j) = vec` | Row / column write into a Matrix (since 0.3.4). Symmetric with the matching read forms. |
@@ -40,7 +40,14 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
-| `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero); rhs only evaluated if lhs is not decisive |
+| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
+| `!` | Element-wise not (MATLAB `~`). `!0` is true. `!NaN` is false. An array result is logical |
+| `and(a, b)`, `or(a, b)`, `xor(a, b)` | Element-wise logical ops. Shapes match, or one side is scalar. Two scalars stay `bool`. No `&` or `\|` token |
+| `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero, including a 1-element logical); rhs only evaluated if lhs is not decisive. A wider array is an error — use `any` / `all` |
+| `logical(x)` | Convert to logical. A scalar stays `bool`. Exact 0 is false; any other real, including `NaN`, is true. Nonzero imag is an error |
+| `islogical(x)` | True for `bool` and for a logical array. False for numeric 0/1. `class` is `"bool"` or `"logical"`. `isa(x, "logical")` is true for both |
+| `A(mask)`, `M(rowMask, :)` | Logical mask subscript. The mask length must match the array (or that dimension). A one-element logical, and scalar `true` / `false`, select the first element or nothing. Selects trues in column-major order. A numeric 0/1 mask of the same length still works. `L(k)` stays a 1×1 logical |
+| `find(mask)` | 1-based column-major positions of true elements. `[I, J] = find(M)` on a logical matrix returns subscripts |
 | `+=`, `-=`, `*=`, `/=` | Compound assignment: `x += 1` is equivalent to `x = x + 1` |
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
@@ -70,7 +77,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `feval("name", args...)` | Call function by string name |
 | `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all. Rows are nested calls with inclusive and self time, plus `[top-level]`, `[matmul]` (In/Out/Mbit/s from the operands and the product), and the storage-conversion rows `[widen]` / `[promote]`; `rustlab run --profile=ops` adds operator and indexing rows (operators count operand and result bytes; index rows do not) |
 | `profile_report()` | Print profiling table to stderr immediately |
-| `cache enable [path]` | Persistent function-result cache (~1 ms hit path; survives `notebook render`, REPL restart, CI). Defaults to `.rustlab/cache.db`. Full grammar: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache list [limit=N]`, `cache clear`, `cache prune older="30d" max_size=N`. Use this for slow pure functions whose results outlive a session. See `docs/functions.md` § "Persistent Function Cache". `cache` is a soft keyword: it starts a cache statement only when followed by a subcommand or path, so `cache = 5` and `function [y, cache] = f(x)` still work. |
+| `cache enable [path]` | Persistent function-result cache (~1 ms hit path; survives `notebook render`, REPL restart, CI). Off unless the host opts in: `rustlab run --cache` / `rustlab repl --cache` / `rustlab-notebook render --cache` / `watch --cache`, or `[cache] enabled = true`. `--no-cache` forces it off. With the default, `cache enable` prints `cache: disabled` and does not create `.rustlab/cache.db`. Full grammar: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache list [limit=N]`, `cache clear`, `cache prune older="30d" max_size=N`. See `docs/functions.md` § "Persistent Function Cache". `cache` is a soft keyword: it starts a cache statement only when followed by a subcommand or path, so `cache = 5` and `function [y, cache] = f(x)` still work. |
 | `logspace(a, b, n)` | n log-spaced points from 10^a to 10^b |
 | `rk4(f, x0, t)` | Fixed-step 4th-order Runge-Kutta; f(x,t)→x_dot |
 | `lyap(A, Q)` | Solve Lyapunov equation A*X + X*A' + Q = 0 |
@@ -133,6 +140,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `numel(v)` | Total element count |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
+| `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |
+| `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)` | Subscripts → the same linear index. A one-element subscript is repeated; other subscript arrays must be the same size (no row×column expansion). A trailing size of 1 may be omitted. An extra subscript pads `sz` with 1 and must be 1. Out of range is an error |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
 | `transpose(M)` | Non-conjugate transpose |
@@ -155,6 +164,26 @@ Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, wi
 | `rect_mask(X, Y, x0, y0, w, h)` | Axis-aligned rectangle mask, inclusive on all four sides |
 | `disk_mask(X, Y, xc, yc, r)` | Closed-disk mask `(X-xc)² + (Y-yc)² ≤ r²` |
 | `polygon_mask(X, Y, verts)` | Polygon mask via even-odd ray casting; `verts` is N×2 |
+
+---
+
+## FDTD (3-D)
+
+Yee stepper with PEC walls; vacuum unless `fdtd_media` / `fdtd_pec` add materials or metal. `fdtd_cpml` adds an absorber inside the walls. Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
+
+| Function | Description |
+|---|---|
+| `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99) |
+| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes`, `c0`, `cpml` (1×6 face thicknesses) |
+| `fdtd_media(sim, eps_r [, mu_r [, sigma]])` | Cell-centred materials: real scalars or `ny × nx × nz` Tensor3s; `sigma` in S/m; recomputes `dt` |
+| `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)` | Metal: every edge of each nonzero cell, or a sheet on node plane `index` (`1 .. n+1`, `fdtd_slice` layout) |
+| `fdtd_cpml(sim, n [, key, value...])` / `fdtd_cpml(sim, face, n)` | CPML absorber, `n` cells inside the PEC walls. Faces `xmin`…`zmax`; `0` turns one face off. Defaults: `sigma_factor` 1, `kappa_max` 1, `alpha_max` 0, `order` 3, `alpha_order` 1 |
+| `gaussian_pulse(t, t0, tau [, f0])` | `exp(-((t-t0)/tau)^2) cos(2π f0 (t-t0))`, shape of `t` |
+| `fdtd_source(sim, comp, i, j, k, "soft"\|"hard", waveform...)` | E-edge source: `"gaussian", t0, tau`, `"modulated", t0, tau, f0`, or a sampled vector; a range on the component's axis is a stack |
+| `fdtd_probe(sim, comp, i, j, k)` | Record one component every step; returns the probe column |
+| `fdtd_run(sim, nsteps)` / `fdtd_step(sim [, n])` | Advance; returns the record plus `seconds`, `cell_updates`, `cell_rate`. Ctrl+C returns the partial record with `interrupted = true` |
+| `fdtd_record(sim)` | `t`, `dt`, `steps`, `probe` (`steps × nprobes`), `V`, `I`, `Z0`, `interrupted` |
+| `fdtd_slice(sim, comp, axis, index)` | One plane: `"z"` → `ny × nx`, `"y"` → `nx × nz`, `"x"` → `ny × nz` |
 
 ---
 
@@ -206,12 +235,12 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so the index from `[m, i] = max(v)` always equals `argmax(v)`. (There is no `~` output placeholder — bind to a dummy variable.) |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
 | `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; same axis rules. Complex input is an error. Empty is NaN. |
-| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; `std(M, 0, 2)` is per row. |
+| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One finite observation is 0. `std(Inf)` and `var(Inf)` are NaN. `std(M)` is per column; `std(M, 0, 2)` is per row. |
 | `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same `w` and the same shapes. |
 | `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
 | `median(v)` | Median of real values (average of the two middle elements when the length is even). Complex input is an error. Empty is NaN |
-| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN |
-| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given |
+| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN. `std(Inf)` and `var(Inf)` are NaN |
+| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order, and `-0` equals `+0`. A matrix sorts each column unless `dim` is given |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
 | `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times. Vectors keep orientation; matrices default to dim 1 |
@@ -230,7 +259,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
 | `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
-| `norm(v)`, `norm(v,p)` | Vector p-norm. `norm(A)` is Frobenius (MATLAB's default is the 2-norm). `norm(A, 2)` is spectral, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Sparse matches: `norm(S, 2)` is spectral | 
+| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (largest singular value, same as `norm(A, 2)`), from a capped Lanczos iteration (Ctrl+C stops it). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Empty is 0. `NaN` in, `NaN` out; `Inf` in, `Inf` out unless a `NaN` is present. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
 | `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
@@ -262,7 +291,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
-| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff`. `[r, lags]` returns the lag axis |
+| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff` (a matrix with several columns accepts only `none`). `xcorr([])` is an empty row. `[r, lags]` returns the lag axis. A `maxlag` whose length does not fit is an error |
 | `xcov(...)` | `xcorr` after each signal's mean is removed |
 | `factor(n)` | Prime factorization |
 
@@ -442,7 +471,7 @@ from zero and saturate by default; pass `"wrap"` for 2's-complement wraparound.
 | `intmax(["int8"])` / `intmin(["int8"])` | Largest / smallest value of a class (default `int32`) |
 | `isinteger(x)` | True for an integer-class value |
 | `isa(x, "integer")` | Class or category test (`"numeric"`, `"integer"`, `"float"`, or a class name) |
-| `double(x)` | Convert to double precision |
+| `double(x)` | Convert to double precision. A logical array becomes real 0/1 |
 | `0xFF` `0b1010` `0o17` | Radix literals → smallest fitting unsigned class (`0xFF` → `uint8`) |
 
 Semantics: same-class `int⊗int` stays integer (saturating/wrapping);
@@ -498,16 +527,16 @@ yields a `double`**. Integers flow through other builtins by widening to double
 |---|---|
 | `T = table(a, b, ...)` | Columns share a row count. A bare variable names its column; an expression is `VarN` |
 | `table(..., "VariableNames", {"x","y"})` | Rename every column. The option name is a string literal |
-| `T.x` | Column as a vector, a string array, or (one-row logical) `true`/`false` |
+| `T.x` | Column as a vector, a string array, a scalar `true`/`false`, or a longer logical array |
 | `T.x = v` | Replace or append one column. Length must equal `height(T)` |
-| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a 0/1 mask. Vars: the same, or names |
+| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a logical or 0/1 mask. Vars: the same, or names |
 | `T{rows, var}` | Cells of exactly one variable (scalar, vector, string, or string array) |
 | `T.Properties.VariableNames` | String array of column names. `Properties` is read-only |
 | `height(T)` / `width(T)` | Row count / column count. Also `size(..., 1)` / `size(..., 2)` for a matrix or vector |
 | `size(T)` | `[height, width]`. `ndims` is 2, `numel` is `height*width` |
 | `head(T)` / `head(T, n)` / `tail(T, n)` | First or last rows (default 8), as a table |
 
-A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
+A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A logical vector is one logical column; a wider logical matrix splits per column. A numeric 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
 
 ---
 
@@ -524,7 +553,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
 | `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
-| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1-based permutation with `A(p, :) = L*U` |
+| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1×n row with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |
@@ -532,8 +561,9 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
+| `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
 | `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
-| `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx` |
+| `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx`. For a size vector, use `sub2ind` / `ind2sub` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `k2ijk(k, ny, nx)` | `[i, j, kk] = k2ijk(k, ny, nx)` — inverse of `ijk2k` |
@@ -619,9 +649,9 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
 | `quiver(X, Y, U, V [, scale | "normalized" | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; 95th-percentile auto-scale with per-arrow clamp (outliers cannot blank the plot); `"normalized"` = unit-length arrows; decimate via stride indexing. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
 | `streamplot(X, Y, U, V [, density | seeds | "title" | "c"])` | RK4 streamlines from a default 10×10 seed grid or an explicit Nx2 seeds matrix; midpoint arrowhead per line. Same overlay/backend behaviour as `quiver`. |
-| `loglog(x, y [, opts])` | Log-log axes (x, y > 0). Data is not replaced by log10; ticks are decades |
-| `semilogx(x, y [, opts])` | Logarithmic x, linear y (x > 0). Real data, decade ticks |
-| `semilogy(x, y [, opts])` | Linear x, logarithmic y (y > 0). Real data, decade ticks |
+| `loglog(x, y [, opts])` | Log-log axes (x, y > 0). Data is not replaced by log10; ticks are decades. `xlim`/`ylim` are in those units |
+| `semilogx(x, y [, opts])` | Logarithmic x, linear y (x > 0). Real data, decade ticks. `xlim`/`ylim` are in data units |
+| `semilogy(x, y [, opts])` | Linear x, logarithmic y (y > 0). Real data, decade ticks. `xlim`/`ylim` are in data units |
 | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)` |
 
 ---
@@ -657,14 +687,17 @@ Capture a sequence of figure snapshots inside a loop, then flush them as an HTML
 
 ```rustlab
 figure()
-for k = 1:60
-  Ez = step(k);
-  imagesc(Ez, "viridis"); title(sprintf("frame %d", k))
+[X, Y] = meshgrid(linspace(-2, 2, 40), linspace(-2, 2, 40));
+for k = 1:8
+  c = -1 + 2 * (k - 1) / 7;
+  imagesc(exp(-((X - c).^2 + Y.^2)), "viridis");
+  title(sprintf("frame %d", k))
   frame()
 end
-saveanim("wave.html", 30)        % interactive Plotly
-saveanim("wave.gif", 30)         % portable GIF (embeds in markdown / PDF)
+saveanim("wave.html", 30)        % interactive Plotly; drains the buffer
 ```
+
+`saveanim` drains the buffer, so a second file (for example `wave.gif`) needs the loop captured again. `step` is the controls step response, not a frame source.
 
 MP4 / animated SVG / APNG export is not supported in this release — other path extensions return a clear error.
 
@@ -687,6 +720,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `xlim([lo, hi])` | Fix x-axis range |
 | `ylim([lo, hi])` | Fix y-axis range |
 | `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])` | Lock 1:1 aspect (string) or set both limits (numeric). Required for nyquist plots and any chart where shape matters. |
+| `set_default_axis("xy")` / `set_default_axis("ij")` | Process-wide default for new subplots. `"xy"` puts row 0 at the bottom; `"ij"` (the default) puts row 0 at the top |
 | `subplot(rows, cols, idx)` | Switch to panel idx (1-based, left-to-right then top-to-bottom) |
 | `legend("s1", "s2", ...)` | Label series in order added |
 

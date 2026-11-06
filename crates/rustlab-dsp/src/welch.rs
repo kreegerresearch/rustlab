@@ -97,7 +97,7 @@ pub fn pwelch_psd(
         )));
     }
 
-    let n_eff = next_power_of_two(nfft);
+    let n_eff = next_power_of_two(nfft)?;
 
     let win_pow: f64 = window.iter().map(|w| w * w).sum();
     if !(win_pow > 0.0) {
@@ -171,4 +171,3 @@ pub fn default_segment_len(n: usize) -> usize {
     let l = (2 * n) / 9;
     l.max(1)
 }
-

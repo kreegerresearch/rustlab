@@ -133,9 +133,12 @@ mod bool_tests {
     // ── Error cases ──────────────────────────────────────────────────────────
 
     #[test]
-    fn not_on_scalar_errors() {
-        assert!(Value::Bool(true).not().is_ok());
-        assert!(Value::Scalar(1.0).not().is_err());
+    fn not_on_scalar_is_logical() {
+        assert!(matches!(Value::Bool(true).not().unwrap(), Value::Bool(false)));
+        // A numeric scalar is truthy when nonzero, so `!` is a bool, not an error.
+        assert!(matches!(Value::Scalar(1.0).not().unwrap(), Value::Bool(false)));
+        assert!(matches!(Value::Scalar(0.0).not().unwrap(), Value::Bool(true)));
+        assert!(Value::Str("no".into()).not().is_err());
     }
 
     #[test]
@@ -1244,6 +1247,114 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn vector_indexed_by_row_or_column_matrix() {
+        // `zeros(1, n)` is a matrix. Gathering with it, then reducing
+        // (`max`) turns the target into a vector; the next gather must
+        // use the same row of indices. A column (`idx'`) is the same list.
+        let ev = eval_str(
+            "v = [10, 20, 30, 40, 50];\n\
+             idx = zeros(1, 3);\n\
+             idx(1) = 2; idx(2) = 5; idx(3) = 1;\n\
+             a = v(idx);\n\
+             b = v(idx');\n\
+             pm = -1 * ones(1, 4);\n\
+             pm(1) = 0;\n\
+             P0 = zeros(1, 4);\n\
+             P0(1) = 1; P0(2) = 3; P0(3) = 2; P0(4) = 4;\n\
+             g = pm(P0);\n\
+             pm = max(g, g);\n\
+             h = pm(P0);",
+        );
+        let expect = |name: &str, want: &[f64]| match ev.get(name).unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), want.len(), "{name}");
+                for (i, w) in want.iter().enumerate() {
+                    assert!(close(v[i].re, *w), "{name}({i}) = {}", v[i].re);
+                }
+            }
+            other => panic!("{name}: {other:?}"),
+        };
+        expect("a", &[20.0, 50.0, 10.0]);
+        expect("b", &[20.0, 50.0, 10.0]);
+        expect("h", &[0.0, -1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn row_matrix_is_a_2d_subscript_on_read_and_write() {
+        // `randi(3, 1, 4)` is a 1×4 matrix. MATLAB uses it as a row list.
+        let ev = eval_str(
+            "E = [1, 2, 3, 4, 5; 6, 7, 8, 9, 10; 11, 12, 13, 14, 15];\n\
+             idx = zeros(1, 4);\n\
+             idx(1) = 1; idx(2) = 3; idx(3) = 2; idx(4) = 1;\n\
+             R = E(idx, :);\n\
+             C = E(:, idx');\n\
+             cols = zeros(1, 2); cols(1) = 2; cols(2) = 5;\n\
+             S = E(idx, cols);\n\
+             E(idx, :) = 0;\n\
+             M = ones(3, 4);\n\
+             rows = zeros(1, 2); rows(1) = 1; rows(2) = 3;\n\
+             M(rows, :) = 0;",
+        );
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (4, 5));
+                assert!((m[[0, 0]].re - 1.0).abs() < 1e-12);
+                assert!((m[[1, 0]].re - 11.0).abs() < 1e-12);
+                assert!((m[[2, 4]].re - 10.0).abs() < 1e-12);
+                assert!((m[[3, 1]].re - 2.0).abs() < 1e-12);
+            }
+            other => panic!("R: {other:?}"),
+        }
+        match ev.get("C").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (3, 4)),
+            other => panic!("C: {other:?}"),
+        }
+        match ev.get("S").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (4, 2));
+                assert!((m[[1, 1]].re - 15.0).abs() < 1e-12);
+            }
+            other => panic!("S: {other:?}"),
+        }
+        match ev.get("E").unwrap() {
+            Value::Matrix(m) => {
+                assert!((m[[0, 2]].re).abs() < 1e-12);
+                assert!((m[[1, 0]].re).abs() < 1e-12);
+            }
+            other => panic!("E: {other:?}"),
+        }
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert!((m[[0, 1]].re).abs() < 1e-12);
+                assert!((m[[1, 0]].re - 1.0).abs() < 1e-12);
+                assert!((m[[2, 3]].re).abs() < 1e-12);
+            }
+            other => panic!("M: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_by_one_matrix_is_accepted_as_a_scalar() {
+        // `b*b'` of a row is 1×1. fprintf and `H(t) = ones(1,1)*7` take it.
+        let ev = eval_str(
+            "b = zeros(1, 2);\n\
+             p = b * b';\n\
+             fprintf(\"%f\\n\", p);\n\
+             h = zeros(1, 3);\n\
+             h(2) = ones(1, 1) * 7;\n\
+             x = p + 1;",
+        );
+        let p = ev.get("p").unwrap().to_scalar().expect("1×1 is a scalar");
+        assert!(p.abs() < 1e-12, "{p}");
+        match ev.get("h").unwrap() {
+            Value::Matrix(m) => assert!((m[[0, 1]].re - 7.0).abs() < 1e-12),
+            other => panic!("h: {other:?}"),
+        }
+        let x = ev.get("x").unwrap().to_scalar().unwrap();
+        assert!((x - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn transpose_operator() {
         // Transposing a row vector [1,2,3] produces a 3×1 column Matrix
         let ev = eval_str("v = [1, 2, 3]\nvt = v'");
@@ -1274,8 +1385,6 @@ mod evaluator_tests {
 
 #[cfg(test)]
 mod error_tests {
-    use crate::{lexer, parser, Evaluator};
-
     fn eval_err(src: &str) -> crate::error::ScriptError {
         let src = format!("{}\n", src);
         let tokens = crate::lexer::tokenize(&src).unwrap();
@@ -1301,6 +1410,40 @@ mod error_tests {
     #[test]
     fn index_out_of_bounds() {
         let _err = eval_err("v = 1:3\nv(5)");
+    }
+
+    #[test]
+    fn vector_indexed_by_square_matrix_errors() {
+        let err = eval_err("v = 1:4\nv([1, 2; 3, 4])");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid index type"),
+            "a 2×2 index into a vector should fail, got {msg}"
+        );
+    }
+
+    #[test]
+    fn square_matrix_is_not_a_2d_subscript() {
+        let err = eval_err("E = ones(3, 5); E([1, 2; 3, 1], :)");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid index type"), "{msg}");
+    }
+
+    #[test]
+    fn assigning_a_row_into_one_element_still_errors() {
+        // MATLAB rejects `H(t) = row` when `t` is one index and `row` is
+        // 1×n (the number of elements does not match). A bracket row
+        // `[1, 2, 3]` is a vector and is a different write.
+        let err = eval_err(
+            "h = zeros(1, 4);\n\
+             row = zeros(1, 3); row(1) = 1; row(2) = 2; row(3) = 3;\n\
+             h(2) = row;",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("got matrix"),
+            "a 1×n right-hand side into one element should still fail, got {msg}"
+        );
     }
 
     #[test]
@@ -1410,7 +1553,7 @@ mod error_line_tests {
 #[cfg(test)]
 mod matrix_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -1698,7 +1841,7 @@ mod matrix_tests {
 #[cfg(test)]
 mod io_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -1822,6 +1965,56 @@ save("{path}", v)"#
     }
 
     #[test]
+    fn npz_whos_lists_saved_names() {
+        let path = tmp_path("_whos.npz");
+        eval_str(&format!(r#"save("{path}", "arr", 1:3, "col", [4; 5])"#));
+        crate::eval::output::start_capture();
+        eval_str(&format!(r#"whos("{path}")"#));
+        let out = crate::eval::output::stop_capture();
+        assert!(out.contains("arr"), "whos output:\n{out}");
+        assert!(out.contains("col"), "whos output:\n{out}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn npz_load_and_whos_deflate_archive() {
+        use std::io::{Read, Write};
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        use zip::CompressionMethod;
+
+        let stored = tmp_path("_stored.npz");
+        eval_str(&format!(r#"save("{stored}", "arr", 1:3)"#));
+        let file = std::fs::File::open(&stored).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name("arr.npy").unwrap();
+        let mut npy = Vec::new();
+        entry.read_to_end(&mut npy).unwrap();
+        drop(entry);
+        drop(archive);
+
+        let path = tmp_path("_deflate.npz");
+        let out_file = std::fs::File::create(&path).unwrap();
+        let mut writer = ZipWriter::new(out_file);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.start_file("arr.npy", opts).unwrap();
+        writer.write_all(&npy).unwrap();
+        writer.finish().unwrap();
+
+        let ev = eval_str(&format!(r#"x = load("{path}", "arr")"#));
+        let x = get_vector(&ev, "x");
+        assert!(close(x[0], 1.0, 1e-6), "deflate x[0]={}", x[0]);
+        assert!(close(x[2], 3.0, 1e-6), "deflate x[2]={}", x[2]);
+
+        crate::eval::output::start_capture();
+        eval_str(&format!(r#"whos("{path}")"#));
+        let listed = crate::eval::output::stop_capture();
+        assert!(listed.contains("arr"), "whos output:\n{listed}");
+
+        let _ = std::fs::remove_file(&stored);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_missing_file_errors() {
         let _err = eval_err(r#"load("/no/such/file/rustlab_nonexistent_abc123.npy")"#);
         // Just verifying it errors — the eval_err helper panics if no error is produced
@@ -1833,7 +2026,7 @@ save("{path}", v)"#
 #[cfg(test)]
 mod factor_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -1917,7 +2110,7 @@ mod factor_tests {
 #[cfg(test)]
 mod eig_tests {
     use crate::eval::value::Value;
-    use crate::{lexer, parser, Evaluator};
+    use crate::Evaluator;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -6779,7 +6972,6 @@ mod math_builtins_tests {
 // ───────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod profiling_tests {
-    use crate::eval::value::Value;
     use crate::{lexer, parser, Evaluator};
 
     /// Run source, then return (evaluator, profile_report).
@@ -10630,6 +10822,185 @@ mod sparse_tests {
         assert!(get_scalar(&ev, "err") < 1e-12);
     }
 
+    // ── laplacian_eps_3d ────────────────────────────────────────
+
+    fn eval_result(src: &str) -> Result<Evaluator, crate::error::ScriptError> {
+        let tokens = lexer::tokenize(&format!("{src}\n")).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt)?;
+        }
+        Ok(ev)
+    }
+
+    #[test]
+    fn laplacian_eps_3d_uniform_matches_scaled_laplacian_3d() {
+        // eps_map is (ny, nx, nz) while laplacian_3d takes (nx, ny, nz):
+        // a 3×4×2 map is ny = 3, nx = 4, nz = 2.
+        for bc in ["dirichlet", "neumann", "periodic"] {
+            let ev = eval_str(&format!(
+                "eps = 2.5 * ones3(3, 4, 2)\n\
+                 Le = full(laplacian_eps_3d(eps, 0.1, 0.2, 0.05, \"{bc}\"))\n\
+                 L = full(laplacian_3d(4, 3, 2, 0.1, 0.2, 0.05, \"{bc}\"))\n\
+                 rel = norm(Le - 2.5 * L) / norm(L)"
+            ));
+            assert!(get_scalar(&ev, "rel") < 1e-14, "{bc}");
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_default_forms_and_ordering_hint() {
+        // (eps) and (eps, bc) are unit spacing; the builtin stamps the
+        // Identity ordering hint like the other laplacian_* builders.
+        let ev = eval_str(
+            "eps = ones3(3, 3, 3)\n\
+             L = laplacian_eps_3d(eps)\n\
+             d1 = norm(full(L) - full(laplacian_eps_3d(eps, 1, 1, 1, \"dirichlet\")))\n\
+             Ln = laplacian_eps_3d(eps, \"neumann\")\n\
+             d2 = norm(full(Ln) - full(laplacian_3d(3, 3, 3, \"neumann\")))",
+        );
+        assert_eq!(get_scalar(&ev, "d1"), 0.0);
+        assert!(get_scalar(&ev, "d2") < 1e-14);
+        match ev.get("L").unwrap() {
+            Value::SparseMatrix(s) => {
+                assert_eq!(s.ordering_hint, Some(rustlab_core::OrderingHint::Identity));
+                assert_eq!((s.rows, s.cols), (27, 27));
+            }
+            other => panic!("expected sparse matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_two_layer_capacitor_is_series() {
+        // Lesson 15: a two-layer MIM stack (eps_r 25 over 4) between two
+        // full-plane plates pinned with pin_dirichlet, Neumann side walls.
+        // The plates are the node pages kk = 1 and kk = nz; the interface
+        // sits half a cell above node page m, so d1 = (m - 1/2) dz and
+        // d2 = (nz - m - 1/2) dz. With harmonic-mean faces the discrete
+        // stack is exactly two capacitors in series.
+        let ev = eval_str(
+            "ny = 4; nx = 5; nz = 13;\n\
+             dx = 1e-3; dy = 2e-3; dz = 0.25e-3;\n\
+             eps1 = 25; eps2 = 4; m = 6;\n\
+             eps = eps2 * ones3(ny, nx, nz);\n\
+             for kk = 1:m\n\
+               eps(:, :, kk) = eps1 * ones(ny, nx);\n\
+             end\n\
+             L = laplacian_eps_3d(eps, dx, dy, dz, \"neumann\");\n\
+             N = ny * nx * nz; np = ny * nx;\n\
+             plates = zeros3(ny, nx, nz);\n\
+             plates(:, :, 1) = ones(ny, nx);\n\
+             plates(:, :, nz) = ones(ny, nx);\n\
+             [A, b] = pin_dirichlet(L, zeros(N, 1), plates, [ones(1, np), zeros(1, np)]);\n\
+             V = spsolve(A, b);\n\
+             r = L * V.';\n\
+             vol = dx * dy * dz;\n\
+             Q = -sum(r(1:np)) * vol;\n\
+             Qb = sum(r(N - np + 1:N)) * vol;\n\
+             area = nx * dx * ny * dy;\n\
+             C1 = eps1 * area / ((m - 0.5) * dz);\n\
+             C2 = eps2 * area / ((nz - m - 0.5) * dz);\n\
+             C = 1 / (1 / C1 + 1 / C2);\n\
+             rel = abs(Q - C) / C;\n\
+             cont = abs(Q - Qb) / C;",
+        );
+        assert!(
+            get_scalar(&ev, "rel") < 1e-10,
+            "rel = {}",
+            get_scalar(&ev, "rel")
+        );
+        // Same charge on both plates: flux is continuous across the interface.
+        assert!(get_scalar(&ev, "cont") < 1e-10);
+    }
+
+    #[test]
+    fn laplacian_eps_3d_complex_eps_solves() {
+        // A lossy layer gives complex entries; spsolve still solves.
+        let ev = eval_str(
+            "eps = 2 * ones3(4, 4, 4);\n\
+             eps(:, :, 3) = (4 - 0.4j) * ones(4, 4);\n\
+             eps(:, :, 4) = (4 - 0.4j) * ones(4, 4);\n\
+             A = -1 * laplacian_eps_3d(eps, 0.5, 0.5, 0.25);\n\
+             b = ones(64, 1);\n\
+             V = spsolve(A, b);\n\
+             res = norm(A * V.' - b) / norm(b);\n\
+             im_part = max(abs(imag(V)));",
+        );
+        assert!(get_scalar(&ev, "res") < 1e-10);
+        assert!(get_scalar(&ev, "im_part") > 1e-6);
+    }
+
+    #[test]
+    fn laplacian_eps_3d_real_storage_not_widened() {
+        // A real-stored map is read as stored: no widened copy, and the
+        // operator equals the one built from the complex-stored map bit
+        // for bit.
+        use crate::eval::shared::{conversion_counts, Shared};
+        let r = ndarray::Array3::from_shape_fn((3, 4, 2), |(i, j, k)| {
+            1.0 + i as f64 * 0.37 + j as f64 * 1.9 + k as f64 * 7.1
+        });
+        let cplx = r.mapv(|x| num_complex::Complex::new(x, 0.0));
+        let mut ev = Evaluator::new();
+        ev.set("er", Value::Tensor3(Shared::from_real(r)));
+        ev.set("ec", Value::Tensor3(Shared::new(cplx)));
+        let widen_before = conversion_counts().0.calls;
+        for line in [
+            "La = laplacian_eps_3d(er, 0.3, 0.7, 0.11, \"periodic\");",
+            "Lb = laplacian_eps_3d(ec, 0.3, 0.7, 0.11, \"periodic\");",
+        ] {
+            let stmts = parser::parse(lexer::tokenize(&format!("{line}\n")).unwrap()).unwrap();
+            for s in &stmts {
+                ev.exec_stmt(s).unwrap();
+            }
+        }
+        assert_eq!(
+            conversion_counts().0.calls,
+            widen_before,
+            "eps_map was widened"
+        );
+        let (Value::SparseMatrix(a), Value::SparseMatrix(b)) =
+            (ev.get("La").unwrap(), ev.get("Lb").unwrap())
+        else {
+            panic!("expected sparse matrices");
+        };
+        assert_eq!(a.entries.len(), b.entries.len());
+        for (x, y) in a.entries.iter().zip(b.entries.iter()) {
+            assert_eq!((x.0, x.1), (y.0, y.1));
+            assert_eq!(x.2.re.to_bits(), y.2.re.to_bits());
+            assert_eq!(x.2.im.to_bits(), y.2.im.to_bits());
+        }
+    }
+
+    #[test]
+    fn laplacian_eps_3d_errors() {
+        let err = |src: &str| match eval_result(src) {
+            Ok(_) => panic!("expected an error from {src}"),
+            Err(e) => e.to_string(),
+        };
+        let e = err("L = laplacian_eps_3d(ones(3, 3))");
+        assert!(
+            e.contains("3-D tensor") && e.contains("laplacian_eps_2d"),
+            "{e}"
+        );
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), 1, 1)");
+        assert!(
+            e.contains("expected (eps_map)") && e.contains("got 3 args"),
+            "{e}"
+        );
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 1))");
+        assert!(e.contains("nz (eps_map pages) must be >= 2"), "{e}");
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), 1, 1, 0)");
+        assert!(e.contains("dz must be positive"), "{e}");
+        let e = err("L = laplacian_eps_3d(ones3(3, 3, 3), \"wrap\")");
+        assert!(e.contains("boundary condition"), "{e}");
+        let e = err("L = laplacian_eps_3d(5)");
+        assert!(e.contains("3-D tensor"), "{e}");
+        // The 7-point operator only accepts a field of matching size.
+        let e = err("L = laplacian_eps_3d(ones3(2, 2, 2)); y = L * ones(9, 1)");
+        assert!(!e.is_empty());
+    }
+
     // ── Sparse eigensolver `eigs` ─────────────────────────────────
 
     #[test]
@@ -14161,18 +14532,11 @@ mod parmap_phase2_dispatch {
 
     #[test]
     fn parmap_propagates_errors() {
-        // Division by zero inside one trial — parmap should cancel
-        // and propagate the first error.
-        let src = "y = parmap(@(k) 1/(k - 3), 1:5);\n";
-        let tokens = crate::lexer::tokenize(src).unwrap();
-        let stmts = crate::parser::parse(tokens).unwrap();
-        let mut ev = Evaluator::new();
-        // The lambda body itself doesn't error on division by zero in
-        // rustlab (1/0 produces Inf), so use a different forcing
-        // function — call an undefined name in one trial.
-        let src2 = "function r = bad(k); if k == 3; r = undefined_fn(k); else; r = k; end; end\n\
+        // Division by zero does not fail the lambda (1/0 is Inf), so the
+        // trial calls an undefined name and parmap must propagate that.
+        let src = "function r = bad(k); if k == 3; r = undefined_fn(k); else; r = k; end; end\n\
                     y = parmap(@bad, 1:5);";
-        let tokens = crate::lexer::tokenize(src2).unwrap();
+        let tokens = crate::lexer::tokenize(src).unwrap();
         let stmts = crate::parser::parse(tokens).unwrap();
         let mut ev = Evaluator::new();
         let err = ev.run(&stmts).unwrap_err();
@@ -16228,7 +16592,6 @@ mod sparameters_phase3_tests {
     //! state (axis_equal flag) and the WireSeries forwarding is covered by
     //! the proto round-trip tests in rustlab-proto.
 
-    use crate::eval::value::Value;
     use crate::Evaluator;
     use rustlab_plot::figure::FIGURE;
 
@@ -16499,7 +16862,6 @@ mod sparameters_phase3_tests {
 mod sparameters_phase4_tests {
     //! Phase-4 (rfplot — mag/dB/phase/group-delay vs frequency) tests.
 
-    use crate::eval::value::Value;
     use crate::Evaluator;
     use rustlab_plot::figure::FIGURE;
 
@@ -18445,17 +18807,25 @@ mod round2_regressions {
         assert_eq!(scalar(&eval("r = rank(0)"), "r"), 0.0);
     }
 
-    // E12 — dense matrix p-norms honor p (1, 2, Inf), default stays Frobenius.
+    // Dense matrix p-norms honor p (1, 2, Inf). The default is the 2-norm.
     #[test]
     fn norm_matrix_honors_p() {
         let ev = eval(
             "a = norm([1,-2;-3,4], 1)\nb = norm([1,-2;-3,4], Inf)\n\
-             c = norm([1,-2;-3,4], 2)\nd = norm([1,-2;-3,4])",
+             c = norm([1,-2;-3,4], 2)\nd = norm([1,-2;-3,4])\n\
+             f = norm([1,-2;-3,4], \"fro\")\n\
+             g = norm([3, 0; 0, -4])\nh = norm([3, 0; 0, -4], \"fro\")\n\
+             w = norm([1, 2, 3; 4, 5, 6])\nv = norm([1, 2, 3; 4, 5, 6], 2)",
         );
         assert!((scalar(&ev, "a") - 6.0).abs() < 1e-9);
         assert!((scalar(&ev, "b") - 7.0).abs() < 1e-9);
         assert!((scalar(&ev, "c") - 5.464985704219043).abs() < 1e-6);
-        assert!((scalar(&ev, "d") - 30.0_f64.sqrt()).abs() < 1e-9); // Frobenius
+        assert!((scalar(&ev, "d") - scalar(&ev, "c")).abs() < 1e-12);
+        assert!((scalar(&ev, "f") - 30.0_f64.sqrt()).abs() < 1e-9);
+        // A diagonal's 2-norm is the largest |entry|; Frobenius is larger.
+        assert!((scalar(&ev, "g") - 4.0).abs() < 1e-9);
+        assert!((scalar(&ev, "h") - 5.0).abs() < 1e-9);
+        assert!((scalar(&ev, "w") - scalar(&ev, "v")).abs() < 1e-12);
     }
 
     // E12 follow-up — the strict-p fix regressed `norm(M, "fro")` (used by
@@ -20948,9 +21318,13 @@ mod printf_and_row_matrix_tests {
                s = s + i
              end",
         );
-        assert_eq!(shape(&ev, "cmp"), (1, 3));
-        assert_eq!(cell(&ev, "cmp", 0, 0), 1.0);
-        assert_eq!(cell(&ev, "cmp", 0, 2), 0.0);
+        match ev.get("cmp").unwrap() {
+            Value::Logical(a) => {
+                assert_eq!((a.rows(), a.cols()), (1, 3));
+                assert_eq!(a.to_flags(), vec![true, true, false]);
+            }
+            other => panic!("cmp: expected logical, got {other:?}"),
+        }
         match ev.get("ok").unwrap() {
             Value::Bool(b) => assert!(*b),
             other => panic!("{other:?}"),

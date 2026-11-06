@@ -70,7 +70,7 @@ fn walk(
             walk(lhs, bound, names, dynamic_feval);
             walk(rhs, bound, names, dynamic_feval);
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             // The callee may be a workspace value (indexing, or a stored
             // lambda / handle) rather than a builtin. Copy it when it
             // exists; a missing name still resolves to a user function

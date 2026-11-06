@@ -58,8 +58,9 @@ thread_local! {
     static LINE_READER: RefCell<Option<LineReader>> = RefCell::new(None);
 }
 
-/// Test-only count of lines pulled since the current [`IoGuard`].
-/// Production builds do not keep the counter.
+// Test-only count of lines pulled since the current `IoGuard`.
+// Production builds do not keep the counter. `thread_local!` does not
+// accept a doc comment, so this stays a regular comment.
 #[cfg(test)]
 thread_local! {
     static LINE_READS: Cell<u32> = const { Cell::new(0) };
@@ -351,7 +352,7 @@ fn pure_expr(ev: &Evaluator, expr: &Expr) -> Result<(), String> {
             pure_expr(ev, lhs)?;
             pure_expr(ev, rhs)
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             if name_rejected(name) {
                 return Err(format!("'{name}' is not allowed"));
             }

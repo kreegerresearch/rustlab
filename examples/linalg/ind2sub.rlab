@@ -1,0 +1,57 @@
+# Column-major linear indexes and subscripts.
+#
+# Same order as M(k), reshape, and find. One ind2sub output is the linear
+# index. Fewer outputs fold the trailing sizes into the last subscript.
+#
+#   rustlab run examples/linalg/ind2sub.rlab --plot none
+
+function check(label, got, ref)
+  delta = got - ref;
+  peak = max(abs(delta(:)));
+  if peak > 0
+    error(sprintf("%s differs by %g", label, peak));
+  end
+end
+
+function check_num(label, got, ref)
+  peak = abs(got - ref);
+  if peak > 0
+    error(sprintf("%s differs by %g", label, peak));
+  end
+end
+
+# MathWorks: ind2sub([3 3], [3 4 5 6]) → rows [3 1 2 3], columns [1 2 2 2].
+ind = [3, 4, 5, 6];
+[row, col] = ind2sub([3, 3], ind);
+check("rows", row, [3, 1, 2, 3]);
+check("cols", col, [1, 2, 2, 2]);
+check("round trip", sub2ind([3, 3], row, col), ind);
+check("one output", ind2sub([3, 3], ind), ind);
+check_num("center", sub2ind([3, 3], 2, 2), 5);
+
+# Octave [2, 2, 2] cube, and the two-output form that merges pages into columns.
+k = 1:8;
+[r, c, s] = ind2sub([2, 2, 2], k);
+check("cube rows", r, [1, 2, 1, 2, 1, 2, 1, 2]);
+check("cube cols", c, [1, 1, 2, 2, 1, 1, 2, 2]);
+check("cube pages", s, [1, 1, 1, 1, 2, 2, 2, 2]);
+check("cube back", sub2ind([2, 2, 2], r, c, s), k);
+[rm, cm] = ind2sub([2, 2, 2], k);
+check("merged cols", cm, [1, 1, 2, 2, 3, 3, 4, 4]);
+check("merged back", sub2ind([2, 4], rm, cm), k);
+
+# A scalar subscript is repeated. Trailing size 1 may be omitted.
+check("broadcast", sub2ind([3, 4], [1, 2, 3], 2), [4, 5, 6]);
+check_num("drop trailing 1", sub2ind([3, 4, 1], 2, 3), 8);
+check_num("corner", sub2ind([10, 10, 10], 10, 10, 10), 1000);
+
+# find's linear indexes are the same column-major order.
+M = [0, 2; 3, 0];
+lin = find(M);
+[I, J] = find(M);
+[ri, rj] = ind2sub(size(M), lin);
+check("find rows", ri, I);
+check("find cols", rj, J);
+check("find back", sub2ind(size(M), I, J), lin);
+
+fprintf("ind2sub: all checks passed\n");

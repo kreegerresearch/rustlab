@@ -1,6 +1,7 @@
 pub mod convolution;
 pub mod xcorr;
 pub mod error;
+pub mod fdtd;
 pub mod fft;
 pub mod fir;
 pub mod fixed;
@@ -31,7 +32,8 @@ pub use fir::pm::{firpm, firpmq};
 pub use fixed::{qadd, qconv, qmul, quantize_scalar, quantize_vec, snr_db, QFmtSpec};
 pub use iir::butterworth::{butterworth_highpass, butterworth_lowpass, IirFilter};
 pub use laplacian::{
-    laplacian_1d, laplacian_2d_bc, laplacian_3d, laplacian_eps_2d, BoundaryCondition,
+    laplacian_1d, laplacian_2d_bc, laplacian_3d, laplacian_eps_2d, laplacian_eps_3d,
+    laplacian_eps_3d_real, BoundaryCondition,
 };
 pub use rasterize::{disk_mask, polygon_mask, rect_mask};
 pub use stft::stft;

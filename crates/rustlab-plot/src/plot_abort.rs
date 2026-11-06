@@ -11,14 +11,11 @@
 //! is non-blocking and waits in `poll` (50 ms). The flag is checked
 //! between chunks and on each wake. No extra crates.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 #[cfg(any(feature = "viewer", test))]
 use std::io::{self, Write};
-#[cfg(feature = "viewer")]
-use std::sync::atomic::AtomicUsize;
-#[cfg(feature = "viewer")]
-use std::sync::Mutex;
 
 #[cfg(any(feature = "viewer", test))]
 use crate::PlotError;
@@ -35,9 +32,7 @@ pub(crate) const POLL_MS: i32 = 50;
 /// Set by the signal handler. Any thread may run that handler, so this
 /// cannot be thread-local. Cleared when the plot on a thread finishes.
 static ABORT: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "viewer")]
 static SIGNAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "viewer")]
 static INSTALL: Mutex<()> = Mutex::new(());
 
 thread_local! {
@@ -64,12 +59,17 @@ pub(crate) fn requested() -> bool {
     })
 }
 
-/// Ask this thread's in-progress plot to stop. Tests use this. The
-/// signal handler sets the process-wide flag instead, because it may
-/// run on a different thread.
+/// Ask this thread's in-progress plot or long computation to stop.
+/// Tests use this. The signal handler sets the process-wide flag
+/// instead, because it may run on a different thread.
+pub fn request_interrupt() {
+    LOCAL_ABORT.with(|c| c.set(true));
+}
+
+/// Same as [`request_interrupt`]. In-crate tests call this name.
 #[cfg(test)]
 pub(crate) fn request() {
-    LOCAL_ABORT.with(|c| c.set(true));
+    request_interrupt();
 }
 
 #[cfg(test)]
@@ -126,10 +126,8 @@ pub fn clear_plot_interrupt() {
 }
 
 /// Enables [`requested`] on this thread. Does not install a signal handler.
-#[cfg(any(feature = "viewer", test))]
 pub(crate) struct PollGuard;
 
-#[cfg(any(feature = "viewer", test))]
 impl PollGuard {
     pub(crate) fn arm() -> Self {
         LOCAL_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
@@ -137,7 +135,6 @@ impl PollGuard {
     }
 }
 
-#[cfg(any(feature = "viewer", test))]
 impl Drop for PollGuard {
     fn drop(&mut self) {
         LOCAL_DEPTH.with(|d| {
@@ -152,6 +149,43 @@ impl Drop for PollGuard {
             }
         });
     }
+}
+
+/// Arms Ctrl+C polling for a long computation on this thread.
+///
+/// On a terminal this installs the same handler plots use: the handler
+/// only stores an atomic, and [`interrupt_requested`] sees it between
+/// steps. Drop restores the previous disposition. When stdin is not a
+/// terminal the handler is not installed, but [`request_interrupt`] still
+/// stops the computation. Nested with a plot guard; the outermost drop
+/// restores the signal.
+pub struct InterruptGuard {
+    /// Held so its `Drop` runs with this guard. Not read otherwise.
+    _poll: PollGuard,
+    installed: bool,
+}
+
+impl InterruptGuard {
+    pub fn arm() -> Self {
+        Self {
+            _poll: PollGuard::arm(),
+            installed: install_if_tty(),
+        }
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.installed {
+            restore_if_outer();
+        }
+    }
+}
+
+/// This thread is inside [`InterruptGuard`] or a plot, and Ctrl+C
+/// (or [`request_interrupt`]) asked to stop.
+pub fn interrupt_requested() -> bool {
+    requested()
 }
 
 /// Installs a Ctrl+C handler for the duration of a plot.
@@ -187,12 +221,10 @@ impl Drop for SigintGuard {
     }
 }
 
-#[cfg(feature = "viewer")]
 fn install_lock() -> std::sync::MutexGuard<'static, ()> {
     INSTALL.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-#[cfg(feature = "viewer")]
 fn install_if_tty() -> bool {
     #[cfg(unix)]
     {
@@ -214,7 +246,6 @@ fn install_if_tty() -> bool {
     }
 }
 
-#[cfg(feature = "viewer")]
 fn restore_if_outer() {
     #[cfg(unix)]
     {
@@ -227,7 +258,7 @@ fn restore_if_outer() {
     }
 }
 
-#[cfg(all(unix, feature = "viewer"))]
+#[cfg(unix)]
 fn install_handler() -> bool {
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -245,7 +276,7 @@ fn install_handler() -> bool {
     }
 }
 
-#[cfg(all(unix, feature = "viewer"))]
+#[cfg(unix)]
 fn restore_handler() {
     unsafe {
         if let Some(old) = saved_action()
@@ -258,13 +289,13 @@ fn restore_handler() {
     }
 }
 
-#[cfg(all(unix, feature = "viewer"))]
+#[cfg(unix)]
 fn saved_action() -> &'static Mutex<Option<libc::sigaction>> {
     static PREV: Mutex<Option<libc::sigaction>> = Mutex::new(None);
     &PREV
 }
 
-#[cfg(all(unix, feature = "viewer"))]
+#[cfg(unix)]
 extern "C" fn handle_sigint(_: libc::c_int) {
     // Process-wide: this handler may run on a thread other than the
     // one blocked in the plot. `requested` on the plotting thread sees it.

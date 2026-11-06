@@ -2,9 +2,10 @@
 
 > Rust-native matrix algebra + DSP toolkit with a scriptable language (`.rlab`),
 > an interactive REPL, a Markdown notebook renderer, and terminal/file/HTML plotting.
-> Numerics are complex-by-default, indexing is 1-based, 349 builtins across
+> Numerics are complex-by-default and indexing is 1-based. Builtins cover
 > math, linear algebra (dense + sparse), statistics, FFT/spectral, FIR/IIR filter
 > design, fixed-point, control systems, RF S-parameters, and vector calculus.
+> The live index is `rustlab docs --json` (do not hard-code a builtin count).
 
 Run a script: `rustlab run script.rlab --plot none`   REPL: `rustlab`
 Render a notebook: `rustlab-notebook render note.md`
@@ -19,8 +20,9 @@ interrupt (Ctrl-C or `q` on a live figure).
 ## Docs
 
 - [docs/agent-guide.md](docs/agent-guide.md): START HERE — how to use rustlab as an
-  agent: execution model, the language in 20 rules, pitfalls, plotting/output
-  recipes, notebook authoring, toolbox map, verification workflow
+  agent: execution model, the language in 21 rules, pitfalls, plotting/output
+  recipes, notebook authoring, toolbox map, verification workflow.
+  Writing `.rlab`: [Script style for agents](docs/agent-guide.md#script-style-for-agents)
 - [docs/quickref.md](docs/quickref.md): canonical capability index — every builtin
   with one-line description; if a function is not listed here it does not exist
 - [docs/functions.md](docs/functions.md): full signatures, semantics, and a usage
@@ -38,7 +40,7 @@ interrupt (Ctrl-C or `q` on a live figure).
 
 ## Examples
 
-- [examples/](examples/): 82 runnable .rlab scripts, grouped by toolbox
+- [examples/](examples/): 89 runnable .rlab scripts, grouped by toolbox
   (language, math, linalg, stats, sparse, dsp, spectral, controls, rf, pde,
   plot, audio), plus a helper under notebooks
 - [gallery/](gallery/): 40 rendered notebooks with inline plots, browsable on GitHub

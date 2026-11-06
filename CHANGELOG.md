@@ -6,6 +6,169 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.58
+
+### Breaking / behavior changes
+- **A single index of a logical array stays a logical array.** `L(1)`, `L(end)`, and `L(i, j)` when both subscripts pick one cell return a 1×1 logical. `class(L(1))` is `"logical"`. In 0.3.56 and 0.3.57 that read was a scalar `bool`, so `class(L(1))` was `"bool"` and the value could not be indexed again. `islogical(L(1))` is still true. `double(L(1))` is `1` or `0`. A script that branched on `class(L(1)) == "bool"` should branch on `"logical"`.
+- **Scalar `true` selects the first element. `false` selects nothing.** `v(true)` and `v(true(1, 1))` are `v(1)`. `v(false)` is an empty vector, not an error. `v(L(k))` uses the bit in that 1×1 logical: true selects `v(1)`, false selects nothing. The same rule applies to a matrix linear index (`M(true)` is the first column-major element) and to one side of a two-dimensional subscript (`M(true, :)` is the first row, `M(false, :)` is `0×n`). Assignment follows the read: `v(true) = 7` writes the first element, and `v(false) = 9` writes nothing. A logical whose length is neither 1 nor the indexed length is still an error. A same-length mask with one true still returns a length-1 vector, not a scalar.
+
+## 0.3.57
+
+### Added
+- **`ind2sub` and `sub2ind`.** Column-major, 1-based conversion between a linear index and subscripts, the same order as `A(k)`, `reshape`, and `find`. `[I, J] = ind2sub(sz, IND)` and `IND = sub2ind(sz, I, J)`, plus the rank-3 form. One output of `ind2sub` merges every dimension, so it returns the linear index. Fewer outputs fold the trailing sizes into the last subscript; extra outputs are 1. A one-element `sub2ind` subscript is repeated. A trailing size of 1 may be omitted. An index outside the array is an error — MATLAB and Octave `ind2sub` would return a subscript past the last dimension instead. Example: `examples/linalg/ind2sub.rlab`.
+
+## 0.3.56
+
+### Added
+- **Logical arrays.** A comparison of two arrays (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array, not a numeric 0/1 array. A scalar comparison stays `true` / `false`. `islogical` is true for both; `class` is `"bool"` for the scalar and `"logical"` for the array. `logical(x)` converts: exact `0` and `-0` are false, every other real (including `NaN`) is true, and a nonzero imaginary part is an error. `true(m, n)` and `false(m, n)` build an array when those names still hold the constants (`true(n)` is `n×n`, like `zeros(n)`). Element-wise `and`, `or`, and `xor` return logical. `!` is element-wise not (MATLAB `~`). `&&` and `||` stay scalar and short-circuit. A logical mask indexes with `A(mask)` and `M(rowMask, :)` when the mask length matches; `find` returns the 1-based column-major positions of the trues. `any` and `all` accept a logical vector. A logical column in a table stays logical. Printing a row shows `[1×N logical]` and `1` / `0`, not `1.000000`. Example: `examples/language/logical_arrays.rlab`.
+- **Storage.** A logical element is one byte (`0` or `1`), the same width MATLAB uses. A release scan of 1,000,000 flags (about one third set), best of five: counting trues is 364 µs for bytes and 92 µs for a packed `u64` bit vector; listing the true positions is 1.10 ms and 695 µs. The packed scan is faster. Mask indexing still uses the byte form: each element is one load, and a second representation is not worth a few hundred microseconds on a million elements. The numbers are in the `LogicalArray` rustdoc.
+
+### Breaking / behavior changes
+- **Array comparisons are no longer doubles.** `class([1, 2] > 0)` is `"logical"`, and `islogical([1, 0])` is false. A script that needed the old 0/1 numbers can write `double(mask)` or `mask + 0`. `sum(mask)` still counts the trues, so `sum([1, 2, 3] == [1, 0, 3])` is still `2`. Numeric 0/1 masks still index. `!` on a numeric scalar is now a bool (`!0` is true, `!1` is false) instead of an error. `!=` is not-equal; `~=` is not a token. There is no `&` or `|` token — use `and` / `or`, or `&&` / `||` for scalars. Assigning into a logical array (`L(1) = false`) is not supported. `parmap` still packs scalar bools and numeric arrays; it does not pack a logical array returned from a worker.
+
+## 0.3.55
+
+### Changed
+- **Failed notebook cells are easier to see.** In HTML and `notebook watch`, a code cell that errored paints its left rule in the error color (`.rl-cell-error`), keeps the red `<pre class="error">` body, and opens its source disclosure even when `<!-- code: collapsed -->`, frontmatter `code:`, or `[notebook] code` would collapse it. The top bar shows a `1 error` / `N errors` chip only when something failed; the chip links to `#rl-error-1`, and failed cells are anchored `rl-error-1`, `rl-error-2`, … in document order. Markdown writes the error as a `> [!CAUTION]` callout plus `<!-- rustlab:error cell=N -->` (`N` is the 1-based rustlab code cell) inside the output region. That marker is rendered output: it is not written into the authoring notebook, and `strip_render_artifacts` removes it. `--strict` is unchanged (exit 1 when a cell fails, and the file is still written). LaTeX and PDF still use their `rlerror` boxes.
+
+## 0.3.54
+
+### Added
+- **Script style for agents.** [`docs/agent-guide.md`](docs/agent-guide.md) now has a short section, [Script style for agents](docs/agent-guide.md#script-style-for-agents), with six practices for writing `.rlab`: array ops and slices, `arrayfun` / `parmap` (or one vectorized call), logical and fancy indexing, reduction builtins, a loop only when the step is sequential (with a one-line comment saying why), and named intermediate arrays. Each practice has a bad snippet and a good one. `examples/language/vectorized_style.rlab` runs the good forms and checks them against a small reference, including a couple of tiny looped goldens. `rustlab run examples/language/vectorized_style.rlab --plot none` exits 0. The section is linked from `AGENTS.md` and `llms.txt`.
+
+## 0.3.53
+
+### Changed
+- **Notebook tables have rules and zebra stripes.** PDF tables (`xltabular`) draw a 0.4 pt rule under the header and at the bottom, and a 0.2 pt hairline between body rows. Even body rows and the header are tinted from the painted text color: 6% and 11% over white paper. The rules are the same color at 30%. PDF stays Catppuccin Latte on white (`#4c4f69` over `#ffffff`), so the stripe is `#f4f4f6`, the header `#ebecef`, and the rules `#c9cad2`. A page break repeats the header and its rule; the stripe is part of each row, so the alternation continues. HTML and `notebook watch` use the same percentages via `color-mix` of `--rl-text` into `--rl-bg`, which follows the active theme. Row spacing is unchanged aside from the small gap that keeps a fill off the stroke.
+
+## 0.3.52
+
+### Security
+- **rusqlite 0.31.0 → 0.41.1** (`libsqlite3-sys` 0.28.0 → 0.39.1). The bundled SQLite is 3.54.1, which fixes CVE-2026-11822, CVE-2026-11824, CVE-2026-119373, and the other SQLite fixes in that release.
+- **zip 2.4.2 → 9.3.0** (`default-features = false`, `deflate` only). Fixes GHSA-m665-v7pm-7grj (critical) and RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369, and RUSTSEC-2026-0429. NPZ save still writes stored (uncompressed) entries and still reads deflate archives.
+- **Semver-compatible dependency bumps** that pick up advisory fixes: tokio 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, patched in ≥1.53.3; 1.54.1 also avoids the yanked 1.54.0 release covered by RUSTSEC-2026-0384), anyhow 1.0.102 → 1.0.104 (RUSTSEC-2026-0190), pulldown-cmark 0.13.3 → 0.13.6 (RUSTSEC-2026-0433 / RUSTSEC-2026-0414), rand 0.8.5 → 0.8.8 (RUSTSEC-2026-0097; the direct requirement stays 0.8), crossbeam-epoch 0.9.18 → 0.9.21 (RUSTSEC-2026-0204), event-listener 5.4.1 → 5.4.2 (RUSTSEC-2026-0221), memmap2 0.9.10 → 0.9.12 (RUSTSEC-2026-0186), webbrowser 1.2.0 → 1.2.6 (RUSTSEC-2026-0257). Also updated, with no advisory: proptest 1.11.0 → 1.12.0, thiserror 2.0.18 → 2.0.21 (1.0.69 was already current), serde 1.0.228 → 1.0.229, serde_json 1.0.149 → 1.0.154, blake3 1.8.5 → 1.8.7, clap 4.6.0 → 4.6.7, notify 8.2.0 → 8.2.1, futures-util 0.3.32 → 0.3.34, libc 0.2.183 → 0.2.191.
+
+### Breaking / behavior changes
+- **The SQLite function cache is off unless you opt in.** `cache enable` used to create `.rustlab/cache.db` (or the path you named) as soon as a script or notebook ran it. It now prints `cache: disabled (off by default; pass --cache or set [cache] enabled = true)` and does not create or open a file. The script keeps running, uncached. Turn it on with `rustlab run --cache`, `rustlab repl --cache`, `rustlab-notebook render --cache`, `rustlab-notebook watch --cache`, or `[cache] enabled = true` in `~/.rustlabrc` / `$XDG_CONFIG_HOME/rustlab/config.toml`. `--no-cache` forces it off even when that key is true. `rustlab cache` and `rustlab-notebook cache` still only open a store that already exists; they do not create one. The in-memory notebook prefix cache is unchanged.
+
+### Changed
+- **Minimum supported Rust is 1.89**, required by rusqlite 0.41. CI installs the stable toolchain before `cargo test`.
+- **`plotters` is a normal dependency of `rustlab-plot`.** It had been listed after `[target.'cfg(unix)'.dependencies]`, so Windows builds did not get the SVG/PNG backends.
+
+## 0.3.51
+
+### Added
+- **3-D FDTD, Phase 3 of `dev/plans/fdtd3d.md`: a convolutional PML.** `fdtd_cpml(sim, n)` puts an `n`-cell CPML inside the PEC walls on all six faces. Optional pairs: `sigma_factor` (default 1, so `σ_max = (order+1)·ε0·c0/Δ`), `kappa_max` (1), `alpha_max` (0 S/m), `order` (3), `alpha_order` (1). `fdtd_cpml(sim, face, 0)` turns one face off (`xmin`, `xmax`, `ymin`, `ymax`, `zmin`, `zmax`); that side is a plain PEC wall. The same call with the current thickness turns it back on. `fdtd_cpml(sim, 0)` removes the absorber. It has to run before the first step, it does not change `dt`, and `σ` is not scaled by `ε_r` in the slab. `fdtd_info(sim).cpml` is a length-6 vector of the thicknesses (zeros when the absorber is off), and `.bytes` includes the auxiliaries. Example: `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md`.
+- **Absorption.** On the debug reflection grid the full-window residual against a large reference is **−93.3 dB** (PEC walls on the same grid: **−18.0 dB**). On the hello geometry (40³, 8 cells, release) it is **−87.9 dB** with `alpha_max = 0` and **−92.3 dB** with `alpha_max = 0.033`. The example's late residual, after the direct pulse has passed the probe, is **−8.2 dB** (PEC), **−85.2 dB** (`alpha_max = 0`), **−93.9 dB** (`alpha_max = 0.033`). The gate is −40 dB. `alpha_max = 0` stays the default.
+- **Speed.** The Yee update is the 0.3.50 kernel over the whole grid. A CPML correction runs only afterwards, and only over cells in an enabled slab (`q = −Δψ`, then the extra `c·((κ⁻¹ − 1)·du − q)`). CPML off, and `sigma_factor = 0`, never write that correction, so the fields and records stay bit-identical to 0.3.50. On this machine's 60×60×20 benchmark, best of two runs of best-of-five: CPML off is vacuum 359, PEC 299, dielectric 309, dielectric+μ 253, lossy 255 Mcell/s (vacuum is 101% of this session's 0.3.50 vacuum, 355 Mcell/s; the 85% floor was 302). CPML on (8 cells, six faces) is 139 / 124 / 123 / 108 / 115 Mcell/s. That is slower than the first 0.3.51 kernel's 169 / 161 / 163 / 142 / 149, because this mesh's z slabs cover 16 of 20 planes and the correction is a second pass over them. Auxiliaries stay full arrays (about 6.9 MB on that grid, reported by `fdtd_info.bytes`); slab-packed storage is still later. The release time gate, vacuum, CPML on six faces, 8000 steps, is **4.6 s** (a second run was 5.0 s; under 60 s; the first kernel was 4.0 s).
+
+### Changed
+- **No script-visible change without `fdtd_cpml`.** Fields, records, and `dt` match 0.3.50. `fdtd_info` gains a `cpml` field.
+
+## 0.3.50
+
+### Changed
+- **No script-visible behaviour change.** Dead private imports, an unused test prelude, and two crate dependencies that nothing called (`anyhow` in `rustlab-script`, `serde_json` in `rustlab-plot`) are gone. `docs/functions.md` now documents the integer classes (`int8`…`uint64`, `cast`, `class`, `double`, `intmax`, `intmin`, `isinteger`, `isa`), `nproc`, `waterfall` / `waterfall_stream`, `heatmap`, and `image`, which were already registered. `docs/quickref.md` lists `set_default_axis`.
+
+## 0.3.49
+
+### Fixed
+- **Notebook PDF text no longer collides, especially around tables.** A markdown table was a `tabularx` of width `\linewidth` starting in an indented paragraph, so the rules and the last column ran about 17pt past the right margin. Inline code was an unbreakable `\colorbox`, so a long span such as `rect_mask(X, Y, x0, y0, w, h)` painted over the next cell. A table taller than the page was one unbreakable box and the leftover rows ran through the footer. Printed output and a long source line did not wrap. Tables are now an `xltabular` (it breaks between rows and repeats the header), started with `\noindent`, and inline code wraps at punctuation instead of sitting in an unbreakable pill. `fvextra` wraps verbatim output, including a token with no spaces. HTML and `notebook watch` are unchanged.
+
+## 0.3.48
+
+### Added
+- **3-D FDTD, Phase 2 of `dev/plans/fdtd3d.md`: materials and metal.** `fdtd_media(sim, eps_r [, mu_r [, sigma]])` sets cell-centred relative permittivity, relative permeability, and conductivity (S/m). Each is a real scalar or a real `ny × nx × nz` `Tensor3`; `mu_r` defaults to 1 and `sigma` to 0. E edges take the arithmetic mean of `eps_r` and `sigma` over the cells around them, H edges the mean of `mu_r`. A complex `eps_r` is an error that says to give loss as `sigma = 2πf·eps_r·ε0·tanδ`. `dt` is recomputed from the fastest wave, `c0 / sqrt(min(eps_r)·min(mu_r))`, and never exceeds the vacuum step, so a dielectric with `eps_r·mu_r >= 1` everywhere keeps the vacuum `dt`. `fdtd_pec(sim, mask)` makes every E edge of each nonzero cell of a `Tensor3` mask PEC; `fdtd_pec(sim, axis, index, mask2d)` makes a sheet on node plane `index` (`1 .. n+1`) of `"x"` / `"y"` / `"z"`, with the mask in the `fdtd_slice` layout or a scalar. Both must be called before the first step, PEC calls add up, and PEC may not cover a source edge (and `fdtd_source` refuses a PEC edge). `fdtd_info(sim).bytes` includes the material, coefficient, and PEC arrays. Example: `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md`, a PEC cavity whose TM110 ring-down lands within 0.001% of the Yee dispersion prediction and halves with `eps_r = 4`.
+- **Speed.** A vacuum grid (no `fdtd_media`, no `fdtd_pec`, or `fdtd_media(sim, 1)`) runs the Phase 1 kernel and gives bit-identical fields and records to 0.3.47. On the 60×60×20 benchmark (serial, kernel only, Mcell/s): vacuum 374, PEC box 305, dielectric 290, dielectric + `mu_r` 242, lossy 246.
+
+### Breaking / behavior changes
+- **`obj.name(args)` indexes a field.** When `obj` is a variable or field chain that holds a struct with a field `name`, `obj.name(args)` now indexes that field (`out.probe(:, 1)`, `s.v(end)`), with `end` bound to the field. A table indexes its column `name` (`T.a(2)`) and `T.Properties.VariableNames(1)` indexes the names. Before, every `obj.name(args)` was method sugar for `name(obj, args)`, so these were calls to a function `name`, which usually did not exist. Method sugar is unchanged when `obj` has no such field (`v.max()`, `s.twice()` for a user function), and a bare `f.load()` statement with an `.npz` path in `f` still loads every variable, as `load(f)` does. A script that relied on `s.f(x)` calling a function `f` while `s` also has a field `f` now gets the field; call `f(s, x)` instead.
+
+## 0.3.47
+
+### Added
+- **3-D FDTD, Phase 1 of `dev/plans/fdtd3d.md`.** A native Yee stepper in `rustlab-dsp` (`src/fdtd/`), vacuum with PEC outer walls, serial. `sim = fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` builds an opaque `fdtd3d` handle; `dt` is the CFL limit times `s` (default 0.99), and `s > 1` is an error before any step. `fdtd_info(sim)` reports the grid, `dt`, and step count. `gaussian_pulse(t, t0, tau [, f0])` is the source waveform. `fdtd_source` adds soft (current) or hard (overwrite) sources on E edges, with `"gaussian"`, `"modulated"`, or a sampled vector, and a range on the component's own axis for a stack of edges. `fdtd_probe` records one component per step. `fdtd_run(sim, n)` / `fdtd_step(sim [, n])` advance the grid and return the record (`t`, `dt`, `steps`, `probe`, `V`, `I`, `Z0`, `interrupted`) plus `seconds`, `cell_updates`, and `cell_rate`; split runs are bit-identical to one run. `fdtd_record` and `fdtd_slice` read the record and one field plane. Ctrl+C during a run returns the partial record with `interrupted = true` and prints `interrupted`; saving a notebook in `rustlab-notebook watch` stops a run in progress (`ScriptError::Cancelled`, no result). Example: `examples/pde/fdtd_hello.rlab` and `examples/notebooks/fdtd_hello.md`.
+
+## 0.3.46
+
+### Added
+- **`laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])`.** The 3-D mixed-dielectric Laplacian `∇·(ε∇V)`: a 7-point stencil with the same harmonic-mean face coefficients as `laplacian_eps_2d`, on all six faces. `eps_map` is a `(ny, nx, nz)` `Tensor3` (rows y, columns x, pages z), real or complex. Node ordering, spacing, the `"dirichlet"` / `"neumann"` / `"periodic"` selector, and the `Identity` ordering hint are the ones `laplacian_3d` uses, so `ijk2k`, `pin_dirichlet`, and `spsolve` work unchanged. A uniform `eps_map ≡ c` gives `c * laplacian_3d(nx, ny, nz, ...)` exactly. Each axis needs at least 2 nodes; a 2-D map is an error that points to `laplacian_eps_2d`. A two-layer capacitor between `pin_dirichlet` plates reproduces `1/C = 1/C1 + 1/C2` to rounding when the interface lies on a cell face. Building it at 100³ takes about 1.2× as long as `laplacian_3d`. Requested by `rustlab_em` (`dev/rustlab/requests/laplacian-eps-3d.md`); Phase 0 of `dev/plans/fdtd3d.md`. No FDTD code is in this version.
+
+## 0.3.45
+
+### Changed
+- **Version only.** `rustlab --version` reports 0.3.45. Nothing else a script or a notebook can observe is different from 0.3.44: no new builtin, no parse change, no numeric change. The number marks the 3-D FDTD plan (`dev/plans/fdtd3d.md`), which is not implemented in this version. Downstream notebooks do not need a re-validation sweep for this bump.
+
+## 0.3.44
+
+### Fixed
+- **A vector can be indexed by a row or a column.** `v(idx)` accepts a `1×n` or `n×1` matrix of positions, the same list a vector index is. The result is a vector. `zeros(1, n)` and `ones(1, n)` are matrices, so an index built that way used to work only while the target was still a matrix and then fail with `invalid index type: matrix` after a reduction such as `max` turned it into a vector. A matrix with more than one row and more than one column is still an error. `examples/notebooks/comm/viterbi_fec.md` gathers predecessor states this way.
+- **A row or column is a subscript in 2-D indexing too.** `E(randi(3, 1, 4), :)` and `E(:, idx)` where `idx` is `1×n` or `n×1` select those rows or columns, on read and on assignment. A wider matrix is still an error. The result shape matches the vector-subscript form (`length` of the row list by `length` of the column list).
+- **A 1×1 matrix is a scalar wherever a scalar is accepted.** `fprintf("%f\n", b*b')` of a row, and `H(t) = ones(1, 1) * 7`, work. `to_scalar` is the choke point, and index assignment coerces a 1×1 right-hand side before the scalar write. A `1×n` right-hand side into one element is still an error (MATLAB: the number of elements does not match). `size` of a 1×1 matrix stays `[1, 1]`.
+
+### Added
+- **`rustlab-notebook render --strict`.** Exit status 1 when any code cell errors. The notebook is still written and the summary still counts the errors. Off by default, so a Makefile that renders a notebook with a failing cell keeps exit status 0. Applies to a file, a directory, and `--format json`.
+- **`rustlab notebook …` names the replacement.** It exits 2 and tells you to use `rustlab-notebook`. It is not an alias and it does not appear in `rustlab --help`.
+
+## 0.3.43
+
+### Added
+- **`rustlab-notebook render` can publish one HTML notebook.** `--no-toc` omits the heading sidebar. `--index <href> [label]` adds a parent link in the top bar and the footer (the label defaults to Index). Both flags apply only to a single HTML file; a directory or any other format exits with an error and writes nothing. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected before a file is written. `--no-comments` is unchanged and is what hides highlights and notes on that page. HTML comments stay on by default and are read-only; `notebook watch --annotate` is still the way to edit them.
+
+## 0.3.42
+
+### Fixed
+- **`norm` on a large dense matrix always stops, and Ctrl+C returns to the REPL.** The 2-norm is still the largest singular value (Lanczos on the smaller Gram, no singular vectors). It now caps the iteration count. The old fallback, a full Jacobi of that Gram, ran only after 64 steps missed a 1e-14 residual — which a random matrix around 512×512 does — and that Jacobi took minutes. Measured on this machine: `norm` of a random 512×512 was **256 s** in a debug build before, and **0.27 s** debug / **0.02 s** release after. Past a small side length the Ritz value is the answer instead of that Jacobi. Ctrl+C during the computation uses the same interrupt flag as a plot abort and returns to the `>> ` prompt without an `error:` line (`interrupted` on stderr). `rustlab run` exits 0.
+- **`randn(1000)` was not a 17 s generator.** Release assign is **8.1 ms** before and **7.6 ms** after (a million standard normals; `rand(1000)` is about 7 ms). Debug assign is about **0.38 s**. Printing it was **22 ms** release because `Matrix` display called `nrows()`, which widens every real element into a complex copy; it now reads real storage and the same print is **9.6 ms**. The eight-row preview is unchanged.
+- **`xcorr` and `xcov` no longer panic with `capacity overflow`.** A huge `maxlag` (for example `1e19`, or anything whose `2*maxlag+1` overflows or exceeds the array cap) is a normal rustlab error: `requested … array exceeds the maximum possible variable size`. The same checked-size rule covers a very wide empty matrix whose column-pair width would overflow, `filtfilt`'s reflected length, an FFT length past `2^63` (the old power-of-two loop overflowed or spun), and a CWT pad or streaming window that does not fit.
+
+### Changed
+- **A dense 2-norm that does not meet the residual test after the step cap is the Lanczos Ritz value** (and at least the largest column 2-norm). Sides up to 96 still fall back to an exact Gram Jacobi. Previously a miss on the residual test always built and diagonalized the Gram, which is what made large `norm(A)` run for minutes.
+
+## 0.3.41
+
+### Changed
+- **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
+
+## 0.3.40
+
+### Breaking / behavior changes
+- **Dense `norm(A)` is the 2-norm.** With no second argument it is the largest singular value, the same number as `norm(A, 2)`. `norm(A, "fro")` is the one-pass Frobenius norm, which is what an unqualified `norm(A)` used to return. A vector is unchanged. Sparse `norm(S)` stays Frobenius: the 2-norm densifies the matrix, and a grid with millions of nodes cannot be stored that way. `norm(S, 2)` is still the spectral norm under the 512 cap.
+- **A non-finite matrix 2-norm follows MATLAB.** `norm(A)` and `norm(A, 2)` return `NaN` when any entry is `NaN`, and `Inf` when any entry is `Inf` and none is `NaN`. They used to error. `svd` still errors on a non-finite matrix. An empty matrix is 0.
+
+### Changed
+- **The matrix 2-norm does not compute a full SVD.** It is the square root of the largest eigenvalue of the smaller of `A'A` and `AA'`, from Lanczos on that product. Singular vectors are not built. `norm(A, "fro")`, `norm(A, 1)`, and `norm(A, Inf)` are unchanged.
+
+## 0.3.39
+
+### Breaking / behavior changes
+- **`std(Inf)` and `var(Inf)` are NaN.** A finite scalar is still 0 (`std(7)`). A length-1 `Inf`, and the one-observation axis of a row (`std([1, Inf, 3], 0, 1)`), are NaN in that position. Previously a single `Inf` was 0.
+- **`sort` treats `-0` and `+0` as equal.** A stable sort keeps input order and the sign bit, ascending and descending. Previously `-0` sorted before `+0`.
+- **`xcorr([])` is an empty row.** It no longer errors. A `0×N` matrix returns a `0×N²` matrix. A second sequence that is empty against a non-empty one still errors.
+- **Matrix `xcorr` accepts only scale `"none"`.** `"biased"`, `"unbiased"`, `"normalized"`, and `"coeff"` error when the input has several columns. A vector or a single column still takes every scale.
+
+### Fixed
+- **`[L, U, p] = lu(A, "vector")` is a 1×n row.** `size(p)` is `[1, n]`, matching MATLAB's `whos` line (`1×1000`). `A(p, :) = L*U` is unchanged.
+
+## 0.3.38
+
+### Fixed
+- **A scripted `xlim` / `ylim` on a log axis is honoured in the terminal.** `semilogx` (and `semilogy` / `loglog`) already drew samples in log space and logged the limits for SVG and PNG. The terminal logged the samples and left the limits in real units, so `xlim([1, 1000])` did not frame the chart. Both backends now use `SubplotState::log_scaled_view`, which log10s the series and the limits together. Plotly still uses native log axes. Tick labels stay real decades (`10`, `100`).
+
+### Changed
+- Internal. Plotly colorscale names go through one `plotly_colorscale` helper. Quiver and streamline strokes for HTML and for SVG/PNG come from `overlay_polylines`. The 95th-percentile arrow scale, `"normalized"`, and the viewer path are unchanged. A streamline's HTML figure is one trace (path and midpoint arrow) instead of two traces with the same style.
+
+## 0.3.37
+
+### Changed
+- Internal only. Windowed-sinc FIR builtins, SISO Bode/Nyquist frequency response, and the four `laplacian_*` constructors share helpers. `arg_usize` / `arg_f64` / `arg_str` replace the repeated unprefixed argument conversions. Array sizes stay on `count_arg` with the 0.3.35 allocation checks. Script results and error text are unchanged, including Laplacian `Identity` ordering hints.
+
+## 0.3.36
+
+### Fixed
+- **`help plot_limits` documents the signature the builtin accepts.** The entry is `plot_limits(fig, panel, xlim, ylim)` with `[lo, hi]` vectors. A second help entry described a six-number form (`xmin, xmax, ymin, ymax`) that `plot_limits` rejects. That entry is gone. The vector form is unchanged.
+- **`llms.txt` no longer hard-codes a builtin count.** The count drifted from the registry. The live index is `rustlab docs --json`.
+
 ## 0.3.35
 
 ### Breaking / behavior changes

@@ -10,6 +10,10 @@ mutual recursion's name-fallback, stale-blob persistence).
 
 ## Setup
 
+The SQLite store is off unless this notebook is rendered with
+`--cache` or `[cache] enabled = true`. Without that, `cache enable`
+prints `cache: disabled` and the later cells recompute.
+
 ```rustlab
 cache enable
 cache clear
@@ -91,7 +95,7 @@ cache list
 <!-- rustlab:output-start -->
 ```text
 fn name                entry_id  input_hash     bytes    rl_ver  status
-expensive              a5b667f5    a8bf0bb3        19    0.3.13  loaded
+expensive              a5b667f5    a8bf0bb3        19    0.3.52  loaded
 ```
 
 <!-- rustlab:output-end -->

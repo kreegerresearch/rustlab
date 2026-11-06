@@ -18,6 +18,10 @@ pub const ELEM_C64: usize = 16;
 /// Stored width of the current integer arrays (`i128` backing, every class).
 pub const ELEM_I128: usize = 16;
 
+/// Stored width of one logical element. A logical array is one byte per
+/// element, not a bit pack. See [`crate::LogicalArray`].
+pub const ELEM_U8: usize = 1;
+
 /// `2^64` as `f64`. The first magnitude that does not fit in `u64`.
 ///
 /// `usize::MAX as f64` is this same value, so `n > usize::MAX as f64`
@@ -27,8 +31,9 @@ pub const F64_TWO_POW_64: f64 = 18446744073709551616.0;
 /// Element count of an array with axis lengths `dims` and `elem_size` bytes
 /// per element, or [`CoreError::VariableTooLarge`].
 ///
-/// `elem_size` is the width actually stored: 8 for `f64`, 16 for `C64`,
-/// 16 for an `i128` integer array (an `int8` is not one byte in memory).
+/// `elem_size` is the width actually stored: 1 for a logical array, 8 for
+/// `f64`, 16 for `C64`, 16 for an `i128` integer array (an `int8` is not
+/// one byte in memory).
 /// The fold is `checked_mul` in `u128`, so a wrapped `usize` product is an
 /// error instead of a short buffer.
 pub fn checked_elems(dims: &[usize], elem_size: usize) -> Result<usize, CoreError> {

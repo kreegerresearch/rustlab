@@ -44,7 +44,7 @@ use std::path::PathBuf;
                   committing alongside source, browsable on GitHub\n  \
         json      One notebook as JSON on stdout (single file; --stdin, --pretty)\n\n\
         Fences tagged bash, python, toml, yaml (or yml), or text are highlighted (text is uncolored). A fence with no tag is text.\n\
-        Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
+        Directory render shows a fixed file browser. Directory watch shows that browser and the section outline in a Contents drawer (also `\\`) that does not reserve width. A single file, LaTeX, and PDF do not show a file browser.\n\n\
         Themes:\n  \
         mocha / dark (default)  Catppuccin Mocha\n  \
         macchiato               Catppuccin Macchiato\n  \
@@ -101,7 +101,7 @@ enum Command {
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
-            A directory watch shows a file browser of file names. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has no file browser.")]
+            A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.")]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
         /// files (with --obsidian / --output).
@@ -178,6 +178,14 @@ enum Command {
         /// Ignored by the re-render-on-save watcher.
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
         diff: Option<String>,
+        /// Let `cache enable` open or create the SQLite function cache.
+        /// Overrides `[cache] enabled = false`.
+        #[arg(long, conflicts_with = "no_cache")]
+        cache: bool,
+        /// Do not open the SQLite function cache, even when `[cache] enabled`
+        /// is true.
+        #[arg(long, conflicts_with = "cache")]
+        no_cache: bool,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -266,7 +274,9 @@ enum Command {
             rustlab-notebook render analysis.md -f json            # JSON on stdout (single file)\n  \
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n\n\
+            rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n  \
+            rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n  \
+            rustlab-notebook render analysis.md --strict            # exit 1 if a cell errors\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
@@ -280,7 +290,7 @@ enum Command {
             pdf       Compile LaTeX to PDF (always Latte on white paper; requires pdflatex or tectonic)\n  \
             json      JSON on stdout for one notebook (--stdin, --cwd, --pretty). No --output file.\n\n\
             Fences tagged bash, python, toml, yaml (or yml), or text are highlighted (text is uncolored). A fence with no tag is text.\n\
-            Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
+            Directory render shows a fixed file browser. Directory watch shows that browser and the section outline in a Contents drawer (also `\\`) that does not reserve width. A single file, LaTeX, and PDF do not show a file browser.\n\n\
             Themes:\n  \
             mocha / dark (default)  Catppuccin Mocha\n  \
             macchiato               Catppuccin Macchiato\n  \
@@ -357,6 +367,29 @@ enum Command {
         /// combined with `--no-comments`.
         #[arg(long, value_name = "keep|footnotes|callouts")]
         comments_style: Option<String>,
+        /// Parent link on a single HTML notebook. The first value is the
+        /// href (`/notebooks/` or `https://…`). The optional second value
+        /// is the label (default: Index). Refused for a directory and for
+        /// every format other than HTML. `javascript:`, `data:`,
+        /// `vbscript:`, and `blob:` are rejected and no file is written.
+        #[arg(long, num_args = 1..=2, value_names = ["HREF", "LABEL"])]
+        index: Option<Vec<String>>,
+        /// Exit with status 1 when any code cell errors. The notebook is
+        /// still written, and the summary still reports the error count.
+        /// Off by default, so a render whose cells fail keeps exit status 0.
+        #[arg(long)]
+        strict: bool,
+        /// Omit the heading sidebar. Single HTML notebook only.
+        #[arg(long)]
+        no_toc: bool,
+        /// Let `cache enable` open or create the SQLite function cache.
+        /// Overrides `[cache] enabled = false`.
+        #[arg(long, conflicts_with = "no_cache")]
+        cache: bool,
+        /// Do not open the SQLite function cache, even when `[cache] enabled`
+        /// is true.
+        #[arg(long, conflicts_with = "cache")]
+        no_cache: bool,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -502,6 +535,20 @@ enum CliReportFormat {
     Json,
 }
 
+fn apply_cache_policy(cache: bool, no_cache: bool, settings: &UserSettings) {
+    let cli = if no_cache {
+        Some(false)
+    } else if cache {
+        Some(true)
+    } else {
+        None
+    };
+    rustlab_script::set_host_persistent_cache(Some(rustlab_script::resolve_persistent_cache(
+        cli,
+        settings.cache_enabled(),
+    )));
+}
+
 fn parse_linter_override(s: &str) -> Result<(String, PathBuf), String> {
     let (key, path) = s
         .split_once('=')
@@ -523,6 +570,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Default for validate/check and any path that does not take the flags.
+    // Render and watch override this from `--cache` / `--no-cache`.
+    rustlab_script::set_host_persistent_cache(Some(settings.cache_enabled()));
     match cli.command {
         Command::Watch {
             input,
@@ -541,7 +591,10 @@ fn main() {
             annotate,
             git_diff,
             diff,
+            cache,
+            no_cache,
         } => {
+            apply_cache_policy(cache, no_cache, &settings);
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
@@ -629,10 +682,30 @@ fn main() {
             comments,
             no_comments,
             comments_style,
+            index,
+            no_toc,
+            strict,
+            cache,
+            no_cache,
         } => {
+            apply_cache_policy(cache, no_cache, &settings);
+            rustlab_notebook::set_render_strict(strict);
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
+            let (index_href, index_label) = match index {
+                Some(values) => (values.first().cloned(), values.get(1).cloned()),
+                None => (None, None),
+            };
+            let chrome = rustlab_notebook::SingleHtmlOpts {
+                index_href,
+                index_label,
+                no_toc,
+            };
+            if let Err(e) = chrome.check(input.is_dir(), format == CliFormat::Html) {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
             let comments_on = resolve_comments(comments.as_deref(), no_comments, &settings);
             rustlab_notebook::set_comment_display(comments_on);
             if let Err(e) = resolve_comments_style(
@@ -709,7 +782,7 @@ fn main() {
                 if title.is_some() {
                     eprintln!("warning: --title is only used when rendering a directory; ignored for single-file input");
                 }
-                rustlab_notebook::cmd_render(input, output, format, colors)
+                rustlab_notebook::cmd_render_with(input, output, format, colors, &chrome)
             };
             if let Err(e) = result {
                 eprintln!("error: {e}");
@@ -797,7 +870,7 @@ fn open_cache(path: &std::path::Path, must_exist: bool) -> anyhow::Result<rustla
     use anyhow::Context;
     if must_exist && !path.exists() {
         anyhow::bail!(
-            "no cache file at {} (use `rustlab-notebook render` after `cache enable` in your notebook, or pass --store PATH)",
+            "no cache file at {} (pass --cache, or set [cache] enabled = true, then render a notebook with `cache enable`; or pass --store PATH)",
             path.display(),
         );
     }

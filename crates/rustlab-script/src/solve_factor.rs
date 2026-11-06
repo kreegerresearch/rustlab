@@ -220,7 +220,10 @@ fn right_division_of_a_row() {
 fn scalar_numerator_over_a_matrix_is_right_division() {
     // 2/M solves X*M = 2. A 1×1 left side cannot match a 2-column M.
     let err = eval_err("M = [2, 4; 6, 8]; Y = 2 / M;");
-    assert!(err.contains("rows") || err.contains("dimension") || err.contains("mldivide"), "{err}");
+    assert!(
+        err.contains("rows") || err.contains("dimension") || err.contains("mldivide"),
+        "{err}"
+    );
     // Dividing by a scalar stays a scale.
     let ev = eval("M = [2, 4; 6, 8]; Y = M / 2;");
     let y = mat_re(&ev, "Y");
@@ -519,9 +522,12 @@ fn lu_vector_matches_the_permutation_matrix() {
          [L, U, P] = lu(A);
          [Lv, Uv, p] = lu(A, \"vector\");
          D = A(p, :) - Lv * Uv;
-         E = P * A - L * U;",
+         E = P * A - L * U;
+         sp = size(p);",
     );
     assert_eq!(vec_re(&ev, "p"), vec![2.0, 1.0]);
+    // MATLAB documents p as 1×n (`whos` prints `1x1000`), a row.
+    assert_eq!(vec_re(&ev, "sp"), vec![1.0, 2.0]);
     for row in mat_re(&ev, "D") {
         for v in row {
             close(v, 0.0);

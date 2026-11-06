@@ -423,6 +423,47 @@ pub struct SubplotState {
     pub streamlines: Vec<StreamlineData>,
 }
 impl SubplotState {
+    /// Clone with series samples and explicit `xlim` / `ylim` mapped through
+    /// `log10` on each axis whose scale is [`AxisScale::Log`].
+    ///
+    /// Terminal and SVG/PNG draw in that log space and label decades with the
+    /// real values. Plotly keeps native log axes and must not use this view.
+    /// A non-positive limit becomes NaN, the same as a non-positive sample.
+    pub fn log_scaled_view(&self) -> Self {
+        let x_log = self.x_scale == AxisScale::Log;
+        let y_log = self.y_scale == AxisScale::Log;
+        let mut c = self.clone();
+        if !x_log && !y_log {
+            return c;
+        }
+        for s in &mut c.series {
+            if x_log {
+                for v in &mut s.x_data {
+                    *v = v.log10();
+                }
+            }
+            if y_log {
+                for v in &mut s.y_data {
+                    *v = v.log10();
+                }
+            }
+        }
+        let logify = |slot: &mut Option<f64>| {
+            if let Some(v) = slot.as_mut() {
+                *v = v.log10();
+            }
+        };
+        if x_log {
+            logify(&mut c.xlim.0);
+            logify(&mut c.xlim.1);
+        }
+        if y_log {
+            logify(&mut c.ylim.0);
+            logify(&mut c.ylim.1);
+        }
+        c
+    }
+
     /// Clear the line/scatter series for a fresh 2-D plot, and also drop any
     /// stale 3-D `surface` — otherwise a prior `surf()` keeps shadowing every
     /// later 2-D plot on the same subplot (the backends render `surface` first

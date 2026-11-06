@@ -478,6 +478,8 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
     Ok(Value::Tuple(vec![l, u, p]))
 }
 
+/// 1-based row permutation. MATLAB's `whos` example is `1×n` (a row).
+/// A rustlab vector has `size` `[1, n]`, so `A(p, :) = L*U` indexes that row.
 fn one_based_perm(perm: &[usize]) -> Value {
     Value::real_vector(ndarray::Array1::from_iter(perm.iter().map(|&i| (i + 1) as f64)))
 }

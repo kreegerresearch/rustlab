@@ -298,6 +298,182 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ---
 
+## FDTD (3-D)
+
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, and point probes. A grid with no `fdtd_media`, `fdtd_pec`, or `fdtd_cpml` call is vacuum. A lumped port and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+
+Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
+
+| Component | Position of index `(i, j, k)` |
+|---|---|
+| `ex` | `((j−½)·dx, (i−1)·dy, (k−1)·dz)` |
+| `ey` | `((j−1)·dx, (i−½)·dy, (k−1)·dz)` |
+| `ez` | `((j−1)·dx, (i−1)·dy, (k−½)·dz)` |
+| `hx` | `((j−1)·dx, (i−½)·dy, (k−½)·dz)` |
+| `hy` | `((j−½)·dx, (i−1)·dy, (k−½)·dz)` |
+| `hz` | `((j−½)·dx, (i−½)·dy, (k−1)·dz)` |
+
+Tangential E on the six walls is held at 0.
+
+### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)`
+Create a vacuum grid with `E = H = 0`. `nx`, `ny`, `nz` are integers `>= 2`; `dx`, `dy`, `dz` are metres, finite and positive. The time step is the CFL limit times the Courant number `s`:
+
+```
+dt = s / (c0 * sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
+```
+
+`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
+```
+sim = fdtd3d(40, 40, 40, 1e-3, 1e-3, 1e-3);
+sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
+```
+
+### `info = fdtd_info(sim)`
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
+```
+info = fdtd_info(sim);
+tau = 20 * info.dt;
+```
+
+### `fdtd_media(sim, eps_r)` / `fdtd_media(sim, eps_r, mu_r)` / `fdtd_media(sim, eps_r, mu_r, sigma)`
+Set the materials of every cell. Each argument is a real scalar (the whole grid) or a real `ny × nx × nz` `Tensor3` (one value per cell, the same `(i, j, k)` order as the fields). `mu_r` defaults to 1 and `sigma` to 0.
+
+- `eps_r`: relative permittivity, finite and `> 0`. A complex `eps_r` is an error: give loss as a conductivity, `sigma = 2*pi*f*eps_r*eps0*tan_delta` at the frequency of interest.
+- `mu_r`: relative permeability, finite and `> 0`.
+- `sigma`: electric conductivity in S/m, finite and `>= 0`.
+
+Cell values are averaged onto the edges: an E edge takes the arithmetic mean of `eps_r` and `sigma` over the (up to four) cells that share it, and an H edge the mean of `mu_r` over the two cells on either side. A later call replaces the earlier one. `dt` is recomputed from the fastest wave on the grid, `c0 / sqrt(min(eps_r) · min(mu_r))`, and is never longer than the vacuum step, so ordinary dielectrics (`eps_r·mu_r >= 1` everywhere) leave `dt` unchanged. If some cell has `eps_r·mu_r < 1`, `dt` shrinks: read `fdtd_info(sim).dt` after `fdtd_media` before sampling a waveform vector. Materials must be set before the first step. A grid with `eps_r = mu_r = 1`, `sigma = 0` runs the vacuum kernel and gives bit-identical results to a grid without the call.
+```
+fdtd_media(sim, 4);                                   # fill the box with eps_r = 4
+eps = ones3(ny, nx, nz);  eps(:, :, 1:5) = 4.4;       # a 5-cell FR-4 slab
+fdtd_media(sim, eps, 1, 2*pi*2.4e9*4.4*8.854e-12*0.02);
+```
+
+### `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)`
+Metal. Each call adds to the metal already set; PEC edges are held at `E = 0` on every step.
+
+- Volume: `mask` is an `ny × nx × nz` `Tensor3`. Every E edge of each nonzero cell (its 12 edges) is PEC.
+- Face: a zero-thickness sheet on node plane `index` of `axis` (`"x"`: column `j`, `"y"`: row `i`, `"z"`: page `k`, the same letters as `fdtd_slice`). `index` runs from 1 to `n + 1`; plane `f` sits at `(f − 1)·d`, so 1 and `n + 1` are the outer walls (already PEC). `mask2d` is one flag per node in the `fdtd_slice` layout (`"z"`: `ny × nx`, `"y"`: `nx × nz`, `"x"`: `ny × nz`), or a scalar for the whole plane. A tangential E edge in the plane is PEC when both its end nodes are set; a node beyond the last row or column (on the max wall) counts as set.
+
+A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source, and `fdtd_source` refuses an edge that is already PEC.
+```
+fdtd_pec(sim, "z", 1, 1);                             # ground plane on the bottom wall (already PEC)
+fdtd_pec(sim, "z", 6, rect_mask(X, Y, x0, y0, w, h)); # a patch on top of a 5-cell substrate
+m = zeros3(ny, nx, nz);  m(10:12, 10:12, 4:6) = 1;
+fdtd_pec(sim, m);                                     # a solid 3 × 3 × 3 block
+```
+
+### `fdtd_cpml(sim, n)` / `fdtd_cpml(sim, n, key, value, ...)` / `fdtd_cpml(sim, face, n)`
+Convolutional PML (Roden–Gedney) inside the PEC walls. `n` is the thickness in cells on every face. A later call replaces the earlier one and turns every face back on. `fdtd_cpml(sim, 0)` removes the absorber.
+
+Optional name/value pairs, case-insensitive, each given at most once:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `"sigma_factor"` | 1 | Scales `σ_max = sigma_factor · (order + 1) · ε0 · c0 / Δ`. Finite and `>= 0` |
+| `"kappa_max"` | 1 | `κ` at the wall. Finite and `>= 1` |
+| `"alpha_max"` | 0 | CFS `α` in S/m at the inner interface. Finite and `>= 0` |
+| `"order"` | 3 | Polynomial order `m` of `σ` and `κ`. Finite and `>= 0` |
+| `"alpha_order"` | 1 | Polynomial order of `α`. Finite and `>= 0` |
+
+`σ(ρ) = σ_max · ρ^m`, `κ(ρ) = 1 + (kappa_max − 1) · ρ^m`, `α(ρ) = alpha_max · (1 − ρ)^alpha_order`, with `ρ = 0` at the inner interface and `ρ = 1` at the wall. The curl uses one auxiliary per Cartesian derivative. `dt` does not change.
+
+`fdtd_cpml(sim, face, value)` turns one face on or off. `face` is `xmin`, `xmax`, `ymin`, `ymax`, `zmin`, or `zmax`. `value` is `0` (that side is a plain PEC wall) or the current thickness (turn it back on). Call `fdtd_cpml(sim, n)` first.
+
+| Face | Axis | Indices that sit in the slab |
+|---|---|---|
+| `xmin` | column `j` | `1 .. n` |
+| `xmax` | column `j` | `nx−n+1 .. nx` |
+| `ymin` | row `i` | `1 .. n` |
+| `ymax` | row `i` | `ny−n+1 .. ny` |
+| `zmin` | page `k` | `1 .. n` |
+| `zmax` | page `k` | `nz−n+1 .. nz` |
+
+Each axis needs `n_lo + n_hi < N` so an interior remains. Sources and probes inside the slab are allowed. PEC inside the slab is allowed and still wins. In v1, `σ` uses vacuum `ε0` and that axis's `Δ` and is not scaled by `ε_r` in the slab, and spacing is uniform per axis.
+
+CPML must be set before the first step.
+```
+fdtd_cpml(sim, 8);
+fdtd_cpml(sim, 8, "sigma_factor", 0.5, "alpha_max", 0.033);
+fdtd_cpml(sim, "zmin", 0);          # bottom face stays a PEC wall
+faces = fdtd_info(sim).cpml;       # [8 8 8 8 0 8]
+```
+
+### `y = gaussian_pulse(t, t0, tau)` / `gaussian_pulse(t, t0, tau, f0)`
+`y = exp(-((t − t0)/tau)^2) · cos(2π f0 (t − t0))`. `t` is a real scalar, vector, or matrix in seconds and `y` has its shape. `tau > 0`; `t0` and `f0` are finite, and `f0` defaults to 0 (a baseband pulse). This is a pure function and does not touch a grid; it is the same waveform `fdtd_source` samples for `"gaussian"` and `"modulated"`.
+```
+t = linspace(0, 2e-9, 400);
+plot(t * 1e9, gaussian_pulse(t, 1e-9, 2e-10, 5e9));
+```
+
+### `fdtd_source(sim, comp, i, j, k, kind, waveform...)`
+```
+fdtd_source(sim, comp, i, j, k, "soft", "gaussian", t0, tau)
+fdtd_source(sim, comp, i, j, k, "soft", "modulated", t0, tau, f0)
+fdtd_source(sim, comp, i, j, k, "soft" | "hard", waveform)
+```
+Drive one E edge (`comp` is `"ex"`, `"ey"`, or `"ez"`), or a stack of collinear edges: the index along the component's own axis (`j` for `ex`, `i` for `ey`, `k` for `ez`) may be a consecutive ascending range such as `2:5`. A stack of `N` edges shares one amplitude `g`, divided across them.
+
+- `"soft"` is a current source added after the E update: `E −= (dt/ε0) · g / (N·Δ)` with `Δ` the cell size along the edge. The field keeps its history, so outgoing waves pass through.
+- `"hard"` overwrites the edge: `E = −g / (N·Δ)`. The edge reflects; use it for a ring-down, not as an antenna feed.
+- `"gaussian"` and `"modulated"` are evaluated at `t = n·dt` on step `n`, on every step.
+- A real vector `waveform` gives sample `n` at step `n`. Past its end a soft source adds nothing and a hard source releases the edge.
+
+Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
+```
+fdtd_source(sim, "ez", 21, 21, 21, "soft", "gaussian", 4*tau, tau);
+fdtd_source(sim, "ez", 10, 10, 2:4, "hard", gaussian_pulse((1:200) * info.dt, 60*info.dt, 20*info.dt));
+```
+
+### `id = fdtd_probe(sim, comp, i, j, k)`
+Record one component at one edge every step. Returns the probe's 1-based column in the record's `probe` matrix. E probes are sampled after the E update (time `n·dt`); H probes after the H update (time `(n − ½)·dt`). Probes must be added before the first step.
+```
+id = fdtd_probe(sim, "ez", 21, 27, 21);
+```
+
+### `out = fdtd_run(sim, nsteps)` / `out = fdtd_step(sim)` / `out = fdtd_step(sim, n)`
+Advance the grid. `fdtd_step(sim)` is one leapfrog step; `fdtd_step(sim, n)` and `fdtd_run(sim, n)` are the same kernel, and splitting a run into several calls gives bit-identical fields and records. The return is the `fdtd_record` struct plus:
+
+| Field | Contents |
+|---|---|
+| `seconds` | wall time of this call |
+| `cell_updates` | `nx·ny·nz` × steps completed in this call |
+| `cell_rate` | `cell_updates / seconds` |
+
+Ctrl+C on a terminal stops a run of more than one step after the step in progress, prints `interrupted` to stderr, and returns the struct with `interrupted = true`; the record is as long as the steps that finished, so the script can plot it. Under `rustlab-notebook watch`, saving the notebook while a run is in progress stops it with no result (the render is discarded).
+```
+out = fdtd_run(sim, 400);
+plot(out.t * 1e9, out.probe(:, 1));
+```
+
+### `rec = fdtd_record(sim)`
+The record of every step since the grid was created, without stepping:
+
+| Field | Contents |
+|---|---|
+| `t` | real row, length `steps`; sample `n` is `n·dt` |
+| `dt` | scalar |
+| `steps` | scalar |
+| `probe` | real `steps × nprobes` matrix; column `id` is that probe |
+| `V`, `I` | real `steps × 0` (ports arrive in a later phase) |
+| `Z0` | empty row |
+| `interrupted` | `true` when the last run was stopped by Ctrl+C |
+
+### `M = fdtd_slice(sim, comp, axis, index)`
+Copy one plane of a component. `axis` is `"x"`, `"y"`, or `"z"` and `index` is 1-based on that axis.
+
+| Call | Shape |
+|---|---|
+| `fdtd_slice(sim, comp, "z", k)` | `ny × nx` (y rows, x columns) |
+| `fdtd_slice(sim, comp, "y", i)` | `nx × nz` (x rows, z columns) |
+| `fdtd_slice(sim, comp, "x", j)` | `ny × nz` (y rows, z columns) |
+
+```
+imagesc(fdtd_slice(sim, "ez", "z", 21));
+```
+
+---
+
 ## Statistics
 
 ### `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)`
@@ -346,7 +522,7 @@ median([4.0, 1.0, 3.0, 2.0])   # → 2.5
 ### `std(x)` / `std(x, w)` / `std(x, w, dim)`
 Standard deviation. `w` selects the divisor:
 
-- `0` (the default) divides by `n − 1`. One observation is 0.
+- `0` (the default) divides by `n − 1`. One finite observation is 0. `std(Inf)` and `var(Inf)` are NaN.
 - `1` divides by `n`.
 - A nonnegative weight vector divides by the sum of the weights. The weighted mean is `sum(w .* x) / sum(w)`.
 
@@ -355,13 +531,13 @@ std([1, 2, 3, 4])              # → sqrt(5/3)
 std([1, 2, 3], 1)              # → sqrt(2/3)
 std([1; 3; -9], [1; 1; 0.5])   # → sqrt(20.16)
 ```
-- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN.
+- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN. A single `Inf` (or a length-1 vector of `Inf`) is NaN, not 0. `std(7)` is still 0.
 - Complex data uses `sqrt(Σ w |x − mean|² / Σ w)` (or `n − 1` / `n` when `w` is `0` or `1`).
 - `std(M)` is the sample standard deviation of each column, a `1×ncols` row. `std(M, 0, 2)` is each row, an `nrows×1` column. The second argument is a weight, not a dimension: `std(M, 2)` is an error.
-- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is a vector of zeros (one observation per column).
+- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is one result per column: 0 when that sample is finite, NaN when it is `Inf` or NaN.
 
 ### `var(x)` / `var(x, w)` / `var(x, w, dim)`
-Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule.
+Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule, including `var(Inf)` = NaN.
 ```
 var([1, 2, 3, 4])    # → 5/3
 var([1, 2, 3], 1)    # → 2/3
@@ -374,7 +550,7 @@ imaginary part is non-negligible, otherwise scalar.
 sum([1.0, 2.0, 3.0])   # → 6.0
 sum(ones(1, 4) * j)     # → 0+4i
 ```
-A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
+A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default. `sum` of a logical array counts the `true` elements as a double (`sum([1, 2, 3] == [1, 0, 3])` is `2`). A vector or a one-row / one-column logical reduces to that scalar; a true matrix reduces down each column.
 
 ### `cumsum(v)`
 Cumulative sum of a vector. Returns a vector of the same length where each element is the
@@ -403,7 +579,7 @@ argmax(A, 2)                    # column index of each row's max, nrows×1
 - Always agrees with the index returned by `[m, i] = max(...)` on the same input.
 
 ### `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `sort(A, dim, direction)`
-Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order.
+Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order. `-0` and `+0` compare equal, so that order keeps each sign bit where it was.
 ```
 sort([3.0, 1.0, 2.0])              # → [1.0, 2.0, 3.0]
 sort([3, 1, 2], "descend")         # → [3, 2, 1]
@@ -457,7 +633,7 @@ Returns `true` if all elements are nonzero.
 all([1, 2, 3])     # → true
 all([1, 0, 3])     # → false
 ```
-- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A wider matrix is an error.
+- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix is an error. An empty logical is `true` for `all` and `false` for `any`.
 
 ### `any(v)`
 Returns `true` if any element is nonzero.
@@ -609,6 +785,33 @@ logspace(0, 3, 4)   # → [1, 10, 100, 1000]
 logspace(-2, 2, 5)  # → [0.01, 0.1, 1, 10, 100]
 ```
 Useful for frequency vectors in Bode plots and log-scale analysis.
+
+---
+
+## Integer Types
+
+Tagged-width integers: `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`. A cast rounds half away from zero and saturates by default. Pass `"wrap"` for two's-complement wrap. Same-class arithmetic stays in that class (and saturates). Different integer classes are an error — cast one side. An integer plus a double is a double. Other builtins widen an integer to double (`sqrt(int32(16))` is `4`).
+
+```
+int8(200)            % 127   saturates
+int8(2.5)            % 3     round half away from zero
+int8(200, "wrap")    % -56
+uint8(-5)            % 0
+class(int32(5))      % "int32"
+cast(3.7, "int16")   % 4, as int16
+intmax("int8")       % 127
+intmin("int8")       % -128
+isinteger(int8(3))   % true
+isinteger(3)         % false — a double is not an integer class
+isa(int32(1), "integer")  % true
+double(int16(1000))  % 1000.0
+```
+
+`intmax` and `intmin` default to `int32` when called with no argument. `cast` accepts any integer class name or `"double"`. `isa` also accepts the categories `"numeric"`, `"integer"`, and `"float"`.
+
+`0xFF`, `0b1010`, and `0o17` are unsigned integer literals in the smallest class that fits (`0xFF` is `uint8`).
+
+`zeros(n, "int32")` and `ones(n, "int32")` build an integer array. The class name is any of the eight integer classes.
 
 ---
 
@@ -829,6 +1032,18 @@ x = sin(2*pi*(100*t + 0.5*4900*t.*t / 2));
 spectrogram(x, fs);
 ```
 
+### `waterfall(x, fs)` — frequency waterfall
+
+Same arguments as `stft`. Returns the magnitude spectrogram in dB, transposed and time-reversed so row 1 is the newest segment and column 1 is DC.
+
+```
+[W, f, t] = waterfall(x, fs)
+[W, f, t] = waterfall(x, fs, window, noverlap, nfft, sided)
+W(1, :)    % most recent spectrum
+```
+
+`W` is real, `n_time × n_freqs`. `t` lines up with the rows and decreases (latest segment first). The live two-panel view is `waterfall_stream`, below.
+
 ### `cwt(x, fs)` — Continuous Wavelet Transform (Morlet)
 
 Convolves the signal with scaled, shifted copies of the analytic
@@ -877,7 +1092,7 @@ for a side-by-side comparison.
 
 ### Streaming time-frequency
 
-Frame-by-frame counterparts to `pwelch`, `stft`, and `cwt`. They mirror
+Frame-by-frame counterparts to `pwelch`, `stft`, `waterfall`, and `cwt`. They mirror
 the `state_init` / `filter_stream` pattern: a single `state` handle
 holds the ring buffer plus any running accumulator, threaded through
 each call. Pair with `plot_update_heatmap` (below) and `figure_live`
@@ -898,7 +1113,15 @@ state = stft_stream_init(fs, window, noverlap, nfft [, sided])
 state = cwt_stream_init(fs, n_samples)
 state = cwt_stream_init(fs, n_samples, n_scales | scales_vector)
 [W, state] = cwt_stream(frame, state)
+
+% waterfall — line spectrum on top, downward heatmap below
+state = waterfall_stream_init(fs, window, noverlap, nfft, time_history)
+state = waterfall_stream_init(fs, window, noverlap, nfft, time_history, vmin_db, vmax_db, colormap, smooth_frames, update_every)
+fig = figure_live(2, 1)
+[fig, state] = waterfall_stream(samples, fig, state)
 ```
+
+`waterfall_stream_init` is one-sided. `time_history` is seconds of scroll-back. Defaults: `vmin_db = -100`, `vmax_db = 0`, colormap `"viridis"`, `smooth_frames = 1`, `update_every = 4`. `fig` must be `figure_live(2, 1)`. Panel 1 is the spectrum (averaged over `smooth_frames`); panel 2 is the heatmap with the newest row at the top. Labels are set on the first redraw.
 
 **Returned `state` is the same `Arc<Mutex<...>>` handle that was passed
 in** — re-binding it is script-language sugar, not a copy. State
@@ -957,11 +1180,11 @@ y = convolve(signal, h)
 ### `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` / `xcov(...)`
 Cross-correlation, with the zero lag in the middle. `xcov` subtracts the mean of each signal and then calls the same sums, so a constant input is all zeros.
 
-Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`.
+Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`. A `maxlag` whose result length `2·maxlag+1` overflows or exceeds the array cap is an error (`exceeds the maximum possible variable size`), not a panic.
 
-`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0).
+`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0). A matrix with several columns accepts only `"none"`; the other scales are the two-sequence forms.
 
-A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`.
+A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`. An empty input does not error: `xcorr([])` is an empty row, and `xcorr` of a `0×N` matrix is `0×N²`.
 ```
 r = xcorr([1, 2, 3, 4])          # [4, 11, 20, 30, 20, 11, 4]
 [r, lags] = xcorr([1, 2, 3, 4])  # lags = -3:3, zero lag at r(4)
@@ -1489,6 +1712,49 @@ reshape(1:24, 2, 3, 4)          # → 2×3×4 Tensor3 (column-major walk)
 - If `m == 1` or `n == 1` (and no `p`), returns a vector instead of a matrix.
 - The 4-argument form returns a `Tensor3`. See [Rank-3 Tensors](#rank-3-tensors).
 
+### `ind2sub(sz, IND)` / `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)`
+
+Convert 1-based column-major linear indexes to subscripts. `sz` is a size vector (the same vector `size` returns: rows, then columns, then pages). The linear index is the one `A(k)`, `reshape`, and `find` use:
+
+```
+k = (j - 1) * rows + i                  # 2-D
+k = ((kk - 1) * cols + (j - 1)) * rows + i   # 3-D
+```
+
+```
+[r, c] = ind2sub([3, 3], [3, 4, 5, 6])   # r = [3, 1, 2, 3], c = [1, 2, 2, 2]
+[r, c] = ind2sub([3, 3], [2, 8])         # r = [2, 2], c = [1, 3]
+[r, c, s] = ind2sub([2, 2, 2], 1:8)
+# r = [1, 2, 1, 2, 1, 2, 1, 2]
+# c = [1, 1, 2, 2, 1, 1, 2, 2]
+# s = [1, 1, 1, 1, 2, 2, 2, 2]
+```
+
+- One output merges every dimension, so `ind2sub(sz, IND)` is `IND` when every index is inside the array.
+- Fewer outputs than `sz` has entries fold the trailing sizes into the last subscript. `[r, c] = ind2sub([2, 2, 2], 1:8)` gives columns `[1, 1, 2, 2, 3, 3, 4, 4]` (effective size `[2, 4]`).
+- More outputs than dimensions are filled with 1. `[r, c, s] = ind2sub([3, 3], [2, 8])` gives `s = [1, 1]`.
+- The result has the shape of `IND`. A scalar stays a scalar. An empty array stays empty.
+- rustlab arrays are at most rank 3, so `sz` has at most 3 entries and at most 3 outputs.
+- An index outside `1:prod(sz)` is an error. MATLAB and Octave `ind2sub` do not range-check; they can return a subscript past the last dimension.
+
+### `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)`
+
+Inverse of `ind2sub` for a matching subscript count. Each subscript is 1-based and must lie on that dimension.
+
+```
+sub2ind([3, 3], 2, 2)                 # 5
+sub2ind([3, 3], [1, 2, 3, 1], [2, 2, 2, 3])   # [4, 5, 6, 7]
+sub2ind([3, 4], [1, 2, 3], 2)         # [4, 5, 6]  — the scalar is repeated
+sub2ind([10, 10, 10], 10, 10, 10)     # 1000
+sub2ind([3, 4, 1], 2, 3)              # 8  — a trailing size of 1 may be omitted
+sub2ind([10, 10], 2, 2, 1)            # 12 — an extra subscript pads sz with 1
+```
+
+- Subscript arrays must be the same size. A one-element array (or a scalar) is repeated. A row and a column are not expanded into a grid.
+- A trailing size of 1 may be left off. An extra subscript is legal only when it is 1 (the size is padded with ones). Fewer subscripts do not fold a non-singleton trailing dimension — that is an error, unlike the fewer-output form of `ind2sub`.
+- `[I, J] = find(M)` round-trips: `sub2ind(size(M), I, J)` is `find(M)`, and `ind2sub(size(M), find(M))` is `[I, J]`.
+- A subscript of 0, a negative size, or a non-integer is an error. Empty subscript arrays return an empty array of the same shape.
+
 ### `repmat(A, m, n)`
 Tile matrix `A` m times vertically and n times horizontally.
 ```
@@ -1553,20 +1819,25 @@ cross([1, 0, 0], [0, 1, 0])   # → [0, 0, 1]
 ```
 
 ### `norm(v)` / `norm(v, p)`
-Vector p-norm (default p=2). For a matrix, `norm(A)` and `norm(A, "fro")` are
-the Frobenius norm. MATLAB's default matrix norm is the 2-norm; that
-divergence is recorded. `norm(A, 2)` is the spectral norm (largest singular
-value), `norm(A, 1)` the max absolute column sum, `norm(A, Inf)` the max
-absolute row sum.
+Vector p-norm (default p=2). For a dense matrix, `norm(A)` and `norm(A, 2)`
+are the 2-norm, the largest singular value. The iteration count is capped
+(Lanczos on the smaller of `A'A` and `AA'`, no singular vectors). Ctrl+C
+during that computation returns to the REPL. `norm(A, "fro")` is the Frobenius
+norm, one pass over the entries. `norm(A, 1)` is the max absolute column sum,
+`norm(A, Inf)` the max absolute row sum. An empty matrix is 0. A `NaN` entry
+makes the 2-norm `NaN`. An `Inf` entry makes it `Inf` unless a `NaN` is also
+present.
 ```
-norm([3, 4])         # → 5.0  (L2)
-norm([3, 4], 1)      # → 7.0  (L1)
-norm([3, 4], Inf)    # → 4.0  (max abs)
-norm([3, 0; 0, -4], 2)  # → 4.0  (spectral)
+norm([3, 4])            # → 5.0  (L2)
+norm([3, 4], 1)         # → 7.0  (L1)
+norm([3, 4], Inf)       # → 4.0  (max abs)
+norm([3, 0; 0, -4])     # → 4.0  (2-norm)
+norm([3, 0; 0, -4], "fro")  # → 5.0
+norm([1, -2; -3, 4])    # → 5.464985704219043
 ```
-A sparse matrix follows the same split: `norm(S)` is Frobenius and
-`norm(S, 2)` is spectral (the matrix is densified, and a side longer than
-512 is an error). Any other sparse `p` is an error.
+A sparse matrix keeps the one-pass default: `norm(S)` and `norm(S, "fro")`
+are Frobenius. `norm(S, 2)` is spectral (the matrix is densified, and a side
+longer than 512 is an error). Any other sparse `p` is an error.
 
 ### `cond(A)` / `cond(A, p)`
 Condition number. The default and `p = 2` are `σ_max / σ_min`. `p = 1` and
@@ -1697,7 +1968,7 @@ Moore-Penrose pseudoinverse from the SVD. For an `m×n` matrix, `B` is `n×m` an
 ```
 A = [1, 2, 3; 4, 5, 6]
 B = pinv(A)
-norm(A * B * A - A)    % ~ 0
+norm(A * B * A - A, "fro")    % ~ 0
 ```
 
 ### `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)`
@@ -1725,7 +1996,7 @@ nextpow2(0.1)    % -3
 
 ## Indexed Assignment
 
-Indexed writes mirror the read forms — anywhere `M(rows, cols)` reads a region, `M(rows, cols) = ...` writes it. Indices may be scalars, `:` (all), or vector index sets (including colon ranges like `1:2:6`).
+Indexed writes mirror the read forms — anywhere `M(rows, cols)` reads a region, `M(rows, cols) = ...` writes it. Indices may be scalars, `:` (all), or vector index sets (including colon ranges like `1:2:6`). A `1×n` or `n×1` matrix is that same list, including as one side of `E(rows, cols)` (`E(randi(3, 1, 4), :)`). A read of a vector, `v(idx)`, accepts it too; the result is a vector. A matrix index with more than one row and more than one column is an error. A 1×1 matrix is a scalar in `to_scalar` and in an assignment that accepts a scalar (`H(t) = ones(1, 1)`). A `1×n` matrix into one element is an error.
 
 ### Element write: `M(i, j) = scalar`
 Single-element store into a Matrix (or 2-D SparseMatrix). 1-based indexing.
@@ -1735,7 +2006,7 @@ M(2, 3) = 7      % only element (2, 3) updated
 ```
 
 ### Linear and logical write: `M(idx) = c`
-One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, or a logical mask (a 0/1 vector of the same length, or a 0/1 matrix of the same shape — what `M > 0` returns). A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape.
+One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, a logical mask, or a scalar logical. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). `true` writes the first element. `false` writes nothing. A one-element logical is that same subscript. A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. Writing into a logical array (`L(i) = false`) is not supported.
 
 `zeros(size(v))` is a matrix (a row when `v` is a vector). `g(idx) = c` writes that matrix.
 ```
@@ -1963,7 +2234,7 @@ Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `
 - **`"lu"`** — force the sparse LU path. Useful when you know `A` is not Hermitian and want to skip the SPD pre-check.
 
 **Ordering.** The optional fourth argument selects the fill-reducing column permutation:
-- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, and `laplacian_eps_2d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
+- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, and `laplacian_eps_3d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
 - **`"identity"`** (alias `"natural"`) — natural / identity ordering. Roughly 5× faster than AMD on grid-natural Laplacians. Wrong choice for matrices with irregular sparsity — the lack of fill-reducing reordering will blow up the factor's nnz.
 - **`"amd"`** — basic approximate minimum degree on the symmetric pattern of `A + A^T`. Safe default for unknown patterns.
 
@@ -2002,7 +2273,7 @@ The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for
 
 Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
 
-A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation row (`size(p)` is `[1, n]`, matching MATLAB's `1×n` `whos` line), and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
 
 A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 1×1 matrix (`chol(4)` is `2`). `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. A diagonal entry that is not real fails that pivot. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
@@ -2035,7 +2306,7 @@ x2 = solve(F, [j; 1]);
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
-**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`.
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
 
 **Boundary conditions.** The optional trailing string argument selects:
 - `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
@@ -2110,6 +2381,29 @@ eps_lossy = 4.0 - 0.1 * j * ones(ny, nx);
 L = laplacian_eps_2d(eps_lossy, dx, dy);
 ```
 
+### `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])`
+
+The 3-D form of `laplacian_eps_2d`: `∇·(ε∇V)` on a uniform grid with a 7-point stencil and the same harmonic-mean face coefficients on all six faces of each cell. Returns an `(ny·nx·nz) × (ny·nx·nz)` sparse matrix.
+
+`eps_map` is a `Tensor3` of shape `(ny, nx, nz)` — axis 0 = y (rows), axis 1 = x (cols), axis 2 = z (pages), the same layout as `zeros3` and `meshgrid`-style grids. Node ordering is the `laplacian_3d` one: `V(i, j, kk) → k = ((kk-1)*nx + (j-1))*ny + i`, so `V(:)` / `reshape(V, ny, nx, nz)` and `ijk2k` / `k2ijk` (last two arguments `ny`, `nx`) round-trip. Note that `laplacian_3d` takes its sizes as `(nx, ny, nz)`, while this builder reads them from the tensor.
+
+Each axis needs at least 2 nodes; a 2-D map is an error that points to `laplacian_eps_2d`. Entries may be real or complex (lossy media). The `bc` selector is the same as `laplacian_3d`: `"dirichlet"` (default; ghost cell 0, so a boundary face still subtracts the cell's own ε from the diagonal), `"neumann"` (no boundary flux; constants are in the null space), `"periodic"` (wrap; constants in the null space). A uniform `eps_map ≡ c` gives exactly `c * laplacian_3d(nx, ny, nz, dx, dy, dz, bc)`. With real ε the matrix is symmetric and negative semidefinite. A face between two cells whose ε sums to zero is left out.
+
+The result carries the `Identity` ordering hint, like the other Laplacian builders.
+
+```
+# Two-layer parallel-plate capacitor: plates on the bottom and top pages
+ny = 4; nx = 5; nz = 13; dz = 0.25e-3;
+eps = 4 * ones3(ny, nx, nz);
+eps(:, :, 1:6) = 25;                         # lower dielectric
+L = laplacian_eps_3d(eps, 1e-3, 2e-3, dz, "neumann");
+plates = zeros3(ny, nx, nz);
+plates(:, :, 1) = 1;  plates(:, :, nz) = 1;
+np = ny * nx;
+[A, b] = pin_dirichlet(L, zeros(ny*nx*nz, 1), plates, [ones(1, np), zeros(1, np)]);
+V = reshape(spsolve(A, b), ny, nx, nz);
+```
+
 ### `pin_dirichlet(A, b, mask_or_indices, values)`
 Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with the identity row (diagonal 1, all off-diagonals 0 — the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`) and `b(k)` is set to the pinned value. `spsolve(A, b)` then reproduces the boundary potential exactly while the operator acts everywhere else.
 
@@ -2130,7 +2424,7 @@ V = reshape(spsolve(A, b), ny, nx);
 
 ### `ij2k(i, j, ny)`
 
-Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering.
+Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering. For a size vector rather than separate `ny` / `nx` arguments, use `sub2ind` / `ind2sub`.
 
 ```
 k = ij2k(3, 4, 6)     # → (4-1)*6 + 3 = 21
@@ -2188,7 +2482,7 @@ nonzeros(sparse([1,2], [1,2], [7.0, 9.0], 2, 2))   # → [7.0, 9.0]
 ```
 
 ### `find(S)`
-Locate non-zero entries. For a sparse matrix, returns a tuple `[I, J, V]` of 1-based row indices, column indices, and values. For a sparse vector, returns `[I, V]`.
+Locate non-zero entries. For a sparse matrix, returns a tuple `[I, J, V]` of 1-based row indices, column indices, and values. For a sparse vector, returns `[I, V]`. A logical array uses the same positions: `find(M == 1)` is the 1-based column-major indices of the trues. `[I, J] = find(M)` on a logical matrix returns those subscripts; a third output is a logical row of `true`.
 ```
 [I, J, V] = find(S)      # sparse matrix
 [I, V] = find(sv)        # sparse vector
@@ -2512,6 +2806,29 @@ imagesc(spectrogram_matrix)
 imagesc(M, "jet")
 ```
 
+### `heatmap(M)` / `heatmap(M, "title")` / `heatmap(xlabels, ylabels, M [, "title" [, colormap]])`
+
+Continuous heatmap. Optional string arrays label the columns and the rows. Row 0 is at the top. The terminal colours span the data minimum and maximum.
+
+```
+heatmap(M)
+heatmap(M, "Counts")
+heatmap({"A","B","C"}, {"X","Y"}, [1, 2, 3; 4, 5, 6], "demo")
+heatmap({"A","B","C"}, {"X","Y"}, M, "demo", "viridis")
+```
+
+Colormaps: `"viridis"` (default), `"jet"`, `"hot"`, `"gray"`.
+
+### `image(M)` / `image(M, colormap)` / `image(R, G, B)`
+
+Raw pixels. Values are clamped to `[0, 255]` and are not normalised (that is what `imagesc` does). Row 0 is at the top.
+
+```
+image(M)                 % grayscale
+image(M, "jet")          % one channel through a colormap
+image(R, G, B)           % three real matrices, same shape
+```
+
 ### `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, colormap)`
 Plot a Z-grid as a 3D surface. `Z` is a matrix (rows = Y samples, cols = X samples). `X` and `Y` may be 1-D vectors or 2-D `meshgrid` matrices. Optional colormap: `"viridis"` (default), `"jet"`, `"hot"`, `"gray"`.
 
@@ -2650,7 +2967,7 @@ f = logspace(0, 4, 200);
 semilogx(f, 20 * log10(abs(H)))
 ```
 
-`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`.
+`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`. `xlim` and `ylim` are in the same units as the data. The terminal, SVG, and PNG all frame that window; HTML leaves the log axis to Plotly.
 
 ### `polar(theta, r [, opts])`
 
@@ -3645,7 +3962,9 @@ Load order (first existing file wins):
 
 v1 is user-global only. There is no project `.rustlab/config.toml` yet.
 Do not confuse this file with `~/.rustlab_history` (REPL command history)
-or `.rustlab/cache.db` (per-project function cache).
+or `.rustlab/cache.db` (per-project function cache; created only
+after `[cache] enabled = true` or a `--cache` flag — see
+[Persistent Function Cache](#persistent-function-cache)).
 
 **Precedence** (high → low): explicit CLI flags → in-script / REPL
 commands → user rc → built-in defaults.
@@ -3708,7 +4027,7 @@ v(1)       # first element
 v(end)     # last element
 v(2:4)     # elements 2, 3, 4
 ```
-On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column.
+On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column. `ind2sub(size(M), k)` and `sub2ind(size(M), i, j)` convert between that linear index and subscripts.
 
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.
@@ -4043,9 +4362,92 @@ s2 = rmfield(s, "z")
 
 ---
 
+## Logical arrays
+
+An array comparison is a logical array. A scalar comparison stays the bool `true` or `false`. Both answer `islogical`. `class` is `"bool"` for the scalar and `"logical"` for the array. A numeric 0/1 array is not logical.
+
+`!=` is not-equal. `~=` is not a token. `!` is element-wise not (what MATLAB writes as `~`). There is no `&` or `|` token: `and`, `or`, and `xor` are element-wise, and `&&` / `||` stay scalar and short-circuit. A 1-element logical is truthy in `if`, `while`, `&&`, and `||`. A wider logical is an error there — reduce it with `any` or `all`.
+
+Arithmetic promotes a logical to double 0/1, and so does `double`. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
+
+Storage is one byte per element (`0` or `1`), row-major. A release scan of 1,000,000 flags (about one third set), best of five, counted trues in 364 µs on bytes and 92 µs on a packed bit vector, and listed the true positions in 1.10 ms and 695 µs. The byte form stays: each `get` is one load, and that is how MATLAB stores `logical`.
+
+### `logical(x)`
+Convert to logical. A scalar (including `bool`) stays `bool`. An array becomes a logical array of the same shape. Exact `0` and `-0` are false. Every other real, including `NaN`, is true. A nonzero imaginary part is an error.
+
+```
+logical(0)            % false
+logical(-0)           % false
+logical(0.5)          % true
+logical(NaN)          % true
+logical([0, 2, NaN])  % 1×3 logical
+```
+
+### `islogical(x)`
+True for a scalar bool and for a logical array. False for a numeric 0/1 array.
+
+```
+islogical(1 == 1)         % true
+islogical([1, 2] > 0)     % true
+islogical([1, 0])         % false
+class(true)               % "bool"
+class([true, false])      % "logical"
+isa([true, false], "logical")  % true
+isa([true, false], "bool")     % false
+```
+
+### `true(m, n)` / `false(m, n)`
+When `true` and `false` still hold the built-in constants, a call builds a logical array. `true()` is the scalar. `true(n)` is `n×n`, the same shape rule as `zeros(n)`. `true(m, n)` is `m×n`. A shadowed name is not intercepted.
+
+```
+true(2, 3)     % 2×3 logical, every element true
+false(1, 4)    % 1×4 logical, every element false
+```
+
+### Comparisons
+`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool. A shape that does not broadcast is an error.
+
+```
+[1, 2, 3] == [1, 0, 3]    % logical 1 0 1
+[1, 2, 3] > 2             % logical 0 0 1
+1 == 1                    % true  (bool)
+```
+
+### `and(a, b)` / `or(a, b)` / `xor(a, b)`
+Element-wise logical operations. Shapes must match, or one side may be a scalar (including a scalar bool). Two scalars return `bool`. Arrays return a logical array.
+
+```
+and([true, false, true], [false, false, true])   % 0 0 1
+or([true, false], false)                          % 1 0
+xor([true, false, true], [true, true, false])     % 0 1 1
+![true, false]                                    % 0 1
+!0                                                % true
+```
+
+### Mask indexing
+`A(mask)` keeps the elements where `mask` is true, in column-major order. The logical must have the same number of elements as `A`, except a one-element logical, which is a scalar subscript: `true` selects the first element and `false` selects nothing. A scalar `true` / `false` is that same subscript (`A(true)`, `A(mask(k))`). Any other short logical is an error. It is not a list of positions. Along one dimension, `M(rowMask, :)` needs a logical vector whose length is that dimension, or a one-element logical. A numeric 0/1 mask of the same length still works.
+
+```
+v = [10, 20, 30, 40]
+v(v > 20)            % 30 40
+v(true)              % 10, the first element
+v(false)             % empty
+M = [1, 2; 3, 4]
+M(M > 2)             % 3 and 4, column-major
+```
+
+`find(mask)` returns those positions as 1-based indices. `[I, J] = find(M)` on a logical matrix returns row and column. A vector-like logical with two outputs is `[I, V]` and `V` is a logical row of trues.
+
+### `any` / `all` on a logical
+A logical vector, a one-row logical, or a one-column logical reduces to one bool. A wider logical matrix is an error, the same rule as a numeric matrix. `all` of an empty logical is true. `any` of an empty logical is false.
+
+Concatenating only logicals and bools stays logical (`[true, false, true]`). Mixing in a number promotes that row to double 0/1. `L'` transposes a logical and does not conjugate. Indexing one element of a logical stays a 1×1 logical (`L(1)`, `L(end)`, `L(end, end)`). `class` is `"logical"`, not `"bool"`. `double(L(1))` is `1` or `0`.
+
+---
+
 ## Tables
 
-A table is a list of named columns that all have the same number of rows. Columns may differ in type: a numeric vector, a string or string array, or a one-row logical value. `class(T)` is `"table"`.
+A table is a list of named columns that all have the same number of rows. Columns may differ in type: a numeric vector, a string or string array, or a logical value. `class(T)` is `"table"`.
 
 ### `table(a, b, ...)` / `table(..., "VariableNames", names)`
 Build a table. A bare variable names its column. Any other expression is named `Var1`, `Var2`, … in order. `"VariableNames"` (any capitalization, and it must be a string *literal*) followed by a string or a string array replaces those names. A computed string is data, not the option.
@@ -4059,14 +4461,14 @@ U = table(x, name, "VariableNames", {"level", "label"})
 
 A matrix becomes one numeric column per matrix column. A multi-column matrix named `A` is `A1`, `A2`, …. A single-column matrix keeps its name. A rustlab vector (`[1, 2, 3]`, one row) is **one** column — it is not split the way a MATLAB 1×N matrix is. A string array is one text column, not one column per string.
 
-A scalar `true` or `false` is a logical column of height 1. rustlab has no logical arrays, so a vector of zeros and ones stays numeric.
+A scalar `true` or `false` is a logical column of height 1. A logical vector is one logical column. A wider logical matrix is one logical column per matrix column. A numeric vector of zeros and ones stays numeric.
 
 Every column must have the same length. Names must be a letter followed by letters, digits, or `_`. `Properties` is reserved. Duplicate names are an error.
 
 `feval("table", ...)` sees values, not names, so those columns are `VarN` unless `"VariableNames"` is passed.
 
 ### `T.var` / `T.var = value`
-`T.var` returns the column: a numeric vector (even when it has one row), a string array, or — for a one-row logical column — `true` / `false`.
+`T.var` returns the column: a numeric vector (even when it has one row), a string array, a scalar `true` / `false` for a one-row logical column, or a logical array when the column is longer.
 
 `T.var = value` replaces that column or appends a new one. The new column's length must equal `height(T)`. A table with no columns yet takes the new length. A multi-column matrix is an error (it is not split). A scalar is a one-row column; it is not broadcast down the table.
 
@@ -4083,13 +4485,13 @@ names = T.Properties.VariableNames
 names(1)          % first column name
 ```
 
-`.name(` is a method call, so `T.Properties.VariableNames(1)` calls a function named `VariableNames`. Index the string array itself, as above.
+`T.Properties.VariableNames(1)` indexes the string array directly, and `T.a(2)` indexes column `a`: `obj.name(args)` indexes when `obj` is a struct or table that has `name`, and is a call `name(obj, args)` otherwise.
 
 ### `T(rows, vars)`
 Two subscripts, both required. The result is a table.
 
-- Rows: `:`, a scalar, a numeric vector, or a 0/1 mask whose length is `height(T)`.
-- Variables: `:`, numeric indices, a variable name, a string array of names, or a 0/1 mask whose length is `width(T)`.
+- Rows: `:`, a scalar, a numeric vector, or a logical or 0/1 mask whose length is `height(T)`.
+- Variables: `:`, numeric indices, a variable name, a string array of names, or a logical or 0/1 mask whose length is `width(T)`.
 
 `end` is the height on the row side and the width on the variable side. Selecting the same variable twice is an error. An empty variable selection is an error. `T(rows)` with one subscript is an error — write `T(rows, :)`.
 
@@ -4106,7 +4508,7 @@ Same two subscripts, and exactly one variable. The result is the cells, not a ta
 
 - One numeric row → scalar (or complex). Several → vector.
 - One text row → string. Several → string array.
-- One logical row → `true` / `false`. Several → a 0/1 vector.
+- One logical row → `true` / `false`. Several → a logical row.
 
 ```
 T{2, "x"}          % the number in row 2
@@ -4192,6 +4594,14 @@ Workers do not inherit the caller's variables (a lambda still sees the names it 
 ```
 seed(1);
 y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
+```
+
+### `nproc()`
+
+Number of logical CPUs, the same count the rayon pool and `parmap` use. On Linux this respects a cgroup CPU quota. On macOS it is the total core count.
+
+```
+nproc()
 ```
 
 ### `feval("name", args...)`
@@ -4565,6 +4975,27 @@ The `cache` statement opts a session into a SQLite-backed persistent cache:
 once enabled, every call to an in-scope user function consults the store,
 and misses with serialisable results are saved for next time.
 
+The store is **off unless the host opts in**. A script or notebook that
+says `cache enable` does not create or open `.rustlab/cache.db` (and
+does not touch any other cache path) until one of these is set:
+
+- `rustlab run --cache`, `rustlab repl --cache`
+- `rustlab-notebook render --cache`, `rustlab-notebook watch --cache`
+- `[cache] enabled = true` in `~/.rustlabrc` or
+  `$XDG_CONFIG_HOME/rustlab/config.toml`
+
+`--no-cache` on those same commands forces the store off even when the
+rc key is true. With the host off, `cache enable` prints
+
+```
+cache: disabled (off by default; pass --cache or set [cache] enabled = true)
+```
+
+and the script keeps running, uncached. `cache status` then prints
+`cache: off`. `rustlab cache` and `rustlab-notebook cache` only open a
+file that already exists; they never create one. The in-memory notebook
+prefix cache is a different mechanism and stays on.
+
 ### Why use this
 
 The hit path returns a stored result in **roughly a millisecond
@@ -4610,8 +5041,8 @@ cache).
 
 | Form | Effect |
 |------|--------|
-| `cache enable` | Open or create the per-project store at `.rustlab/cache.db` |
-| `cache enable "path.rcache"` | Open or create a user-named store at `path.rcache` |
+| `cache enable` | Open or create the per-project store at `.rustlab/cache.db`, if the host opted in (`--cache` or `[cache] enabled = true`). Otherwise print `cache: disabled` and leave the filesystem alone |
+| `cache enable "path.rcache"` | Open or create a user-named store at `path.rcache`, under the same opt-in as `cache enable`. With the host off, this does not create the file either |
 | `cache "path.rcache"` | Sugar for `cache enable "path.rcache"` |
 | `cache off` | Close the active store (DB rows preserved on disk) |
 | `cache add file "helpers.rlab"` | Source a `.rlab` file and register each top-level function as cacheable |
@@ -4709,6 +5140,7 @@ over NFS; pick a local path if your project is on a network mount.
 ### Example
 
 ```
+% host must opt in first: rustlab run --cache, or [cache] enabled = true
 cache enable                          % opens .rustlab/cache.db
 
 function y = expensive(x)

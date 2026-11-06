@@ -91,6 +91,29 @@ pub const IMPURE_BUILTINS: &[&str] = &[
     "ylabel",
 ];
 
+/// Names in [`IMPURE_BUILTINS`] that [`crate::eval::BuiltinRegistry`] does
+/// not contain. Flat-sorted, same as the denylist.
+///
+/// Forward bans (`fopen`, `fread`, `fwrite`, `fclose`, `printf`, `clock`,
+/// `now`, `randperm`, `readmatrix`, `audio_play`) stay here so a builtin
+/// added under one of these names is still impure the day it is registered:
+/// the drift test fails until the name leaves this slice and stays on the
+/// denylist as a real builtin. `widget` is not a forward ban. The evaluator
+/// dispatches it before the registry, and the cache walker still rejects it.
+pub const IMPURE_RESERVED: &[&str] = &[
+    "audio_play",
+    "clock",
+    "fclose",
+    "fopen",
+    "fread",
+    "fwrite",
+    "now",
+    "printf",
+    "randperm",
+    "readmatrix",
+    "widget",
+];
+
 /// Names referenced by a function body that are not bound by it.
 /// Sorted, deduplicated. Empty `free_vars` means the function passes
 /// the purity contract.
@@ -287,7 +310,7 @@ fn visit_stmt_collect_call_names(stmt: &Stmt, out: &mut BTreeSet<String>) {
 
 fn visit_expr_collect_call_names(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             out.insert(name.clone());
             for a in args {
                 visit_expr_collect_call_names(a, out);
@@ -474,7 +497,7 @@ fn visit_expr_for_var_refs(e: &Expr, out: &mut BTreeSet<String>) {
         Expr::Var(n) => {
             out.insert(n.clone());
         }
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             out.insert(name.clone());
             for a in args {
                 visit_expr_for_var_refs(a, out);
@@ -613,7 +636,7 @@ fn visit_stmt_for_impure_calls(stmt: &Stmt, out: &mut BTreeSet<String>) {
 
 fn visit_expr_for_impure_calls(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
-        Expr::Call { name, args } => {
+        Expr::Call { name, args } | Expr::DotCall { name, args } => {
             if is_impure_builtin(name) {
                 out.insert(name.clone());
             }
@@ -706,6 +729,52 @@ mod tests {
             sorted,
             "IMPURE_BUILTINS must stay flat-sorted for binary_search"
         );
+    }
+
+    /// Every cache-denylist name is a real builtin or a documented forward
+    /// ban ([`IMPURE_RESERVED`]). The parmap denylist in `eval/mod.rs` is a
+    /// separate list and is not checked here.
+    #[test]
+    fn impure_names_are_registered_or_reserved() {
+        use crate::eval::BuiltinRegistry;
+        let reg = BuiltinRegistry::with_defaults();
+        let reserved: std::collections::BTreeSet<&str> =
+            IMPURE_RESERVED.iter().copied().collect();
+        assert_eq!(
+            reserved.len(),
+            IMPURE_RESERVED.len(),
+            "IMPURE_RESERVED contains duplicates"
+        );
+        let mut sorted_reserved = IMPURE_RESERVED.to_vec();
+        sorted_reserved.sort();
+        assert_eq!(
+            IMPURE_RESERVED,
+            sorted_reserved.as_slice(),
+            "IMPURE_RESERVED must stay flat-sorted"
+        );
+
+        let mut unknown = Vec::new();
+        for name in IMPURE_BUILTINS {
+            let is_reg = reg.contains(name);
+            let is_reserved = reserved.contains(name);
+            assert!(
+                !(is_reg && is_reserved),
+                "{name} is both a registered builtin and on IMPURE_RESERVED"
+            );
+            if !is_reg && !is_reserved {
+                unknown.push(*name);
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "IMPURE_BUILTINS names neither registered nor reserved: {unknown:?}"
+        );
+        for name in IMPURE_RESERVED {
+            assert!(
+                IMPURE_BUILTINS.binary_search(name).is_ok(),
+                "{name} is reserved but not on IMPURE_BUILTINS"
+            );
+        }
     }
 
     // ── free-var walker ──────────────────────────────────────────

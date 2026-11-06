@@ -103,6 +103,21 @@ pub fn resolve_source_open(
     cell.or(frontmatter).or(rc).unwrap_or(true)
 }
 
+/// Top-bar link to the first failed cell. Empty when nothing failed, so a
+/// clean page has no chip. `1 error` / `N errors`. The href is always
+/// `#rl-error-1`: anchors number failures in document order, not code cells.
+fn error_chip_html(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let label = if n == 1 {
+        "1 error".to_string()
+    } else {
+        format!("{n} errors")
+    };
+    format!("<a class=\"rl-errors\" href=\"#rl-error-1\">{label}</a>")
+}
+
 /// How cross-notebook `.md` link destinations resolve in HTML output.
 ///
 /// The static build and the watch server publish notebooks at different
@@ -513,6 +528,9 @@ pub fn render_html_nonced(
     // sections are stamped with it (`data-code-idx`) so the interactive
     // server's ▶ Run can address the block; inert in static output.
     let mut exec_idx = 0usize;
+    // Failed code cells, in document order. `rl-error-1` is the first
+    // failure; the top-bar chip links there when the count is positive.
+    let mut cell_errors = 0usize;
     let _comment_page = crate::comments::enter_page();
     crate::comments::locate_installed(blocks);
     let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
@@ -594,25 +612,42 @@ pub fn render_html_nonced(
                 widget_reads: _,
             } => {
                 let mark = body.len();
-                body.push_str("<div class=\"code-block\">\n");
+                let show_error = error.is_some();
+                let error_anchor = if show_error {
+                    cell_errors += 1;
+                    format!(" id=\"rl-error-{cell_errors}\"")
+                } else {
+                    String::new()
+                };
+                body.push_str(&format!("<div class=\"code-block\"{error_anchor}>\n"));
                 let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
+                // A failed cell's left rule is the error color. The class is
+                // on every `.rl-cell` this block emits (source, and output
+                // when `<!-- details: -->` splits them).
+                let cell_open = if show_error {
+                    "<div class=\"rl-cell rl-cell-error\">\n"
+                } else {
+                    "<div class=\"rl-cell\">\n"
+                };
 
                 // Source, printed text, and errors share one indent (`.rl-cell`).
                 // The source alone sits in `<details class="rl-src">` so a
                 // reader can collapse it; the `open` attribute follows the
-                // resolved initial state. Output and errors stay visible.
+                // resolved initial state. A cell that errored opens anyway,
+                // so the failing source is visible without a click. Output
+                // and errors stay visible.
                 // Plots are emitted afterward, outside that wrapper, so they
                 // stay full width. `<!-- details: -->` keeps that source
                 // disclosure above the author's disclosure (not nested inside
                 // it) and puts output, errors, and plots in the author's
                 // disclosure; the output inside it uses the same `.rl-cell`.
                 let show_source = !hidden;
-                let show_error = error.is_some();
                 let source_html = if show_source {
                     // `open` omitted when the resolved state is collapsed.
                     // Cell directive wins; otherwise the notebook default
                     // (frontmatter, else rc, else open) installed by the caller.
-                    let open = source_open.unwrap_or_else(notebook_source_open);
+                    // An error overrides every one of those and opens the source.
+                    let open = show_error || source_open.unwrap_or_else(notebook_source_open);
                     let open_attr = if open { " open" } else { "" };
                     format!(
                         "<details class=\"rl-src\"{open_attr}>\n<summary class=\"rl-lang\">rustlab</summary>\n\
@@ -711,14 +746,14 @@ pub fn render_html_nonced(
                     // Plots stay in the disclosure and outside `.rl-cell`.
                     // A control panel travels with those plots.
                     if show_source {
-                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(cell_open);
                         body.push_str(&source_html);
                         body.push_str("</div>\n");
                     }
                     body.push_str("<details class=\"code-details\">\n");
                     body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
                     if !text_html.is_empty() {
-                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(cell_open);
                         body.push_str(&text_html);
                         body.push_str("</div>\n");
                     }
@@ -726,7 +761,7 @@ pub fn render_html_nonced(
                     body.push_str("</details>\n");
                 } else {
                     if show_source || !text_html.is_empty() {
-                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(cell_open);
                         body.push_str(&source_html);
                         body.push_str(&text_html);
                         body.push_str("</div>\n");
@@ -876,14 +911,13 @@ pub fn render_html_nonced(
                         )
                     })
                     .unwrap_or_default(),
-                n.index_href
-                    .as_ref()
-                    .map(|href| {
-                        format!(
-                            "<a class=\"index\" href=\"{href}\">Index</a><span class=\"sep\">/</span>",
-                            href = escape_html(href),
-                        )
-                    })
+                n.index_href.as_ref().map(|href| {
+                    format!(
+                        "<a class=\"index\" href=\"{href}\">{label}</a><span class=\"sep\">/</span>",
+                        href = escape_html(href),
+                        label = escape_html(index_link_label(n)),
+                    )
+                })
                     .unwrap_or_default(),
                 n.next
                     .as_ref()
@@ -900,11 +934,12 @@ pub fn render_html_nonced(
             None => (String::new(), String::new(), String::new()),
         };
         let mut bar = format!(
-            "<header class=\"topbar\">{prev}<span class=\"crumb\">{index}<span class=\"current\">{title}</span></span>{next}</header>\n",
+            "<header class=\"topbar\">{prev}<span class=\"crumb\">{index}<span class=\"current\">{title}</span>{chip}</span>{next}</header>\n",
             prev = prev_link,
             index = index_link,
             next = next_link,
             title = escape_html(title),
+            chip = error_chip_html(cell_errors),
         );
         if let Some(on) = crate::comments::mode().toggle {
             let toggle = crate::comments::toggle_html(on);
@@ -914,8 +949,9 @@ pub fn render_html_nonced(
     };
 
     // A notebook with no h1–h3 has nothing to put in a TOC; emitting the
-    // sidebar anyway costs 220px of empty chrome. `no-toc` lets main reclaim it.
-    let has_toc = !nav_items.trim().is_empty();
+    // sidebar anyway costs 220px of empty chrome. `no-toc` lets main reclaim
+    // it. `--no-toc` forces the same layout when the page does have headings.
+    let has_toc = !nav_items.trim().is_empty() && !nav.is_some_and(|n| n.hide_toc);
     // Directory pages carry the collection file browser beside the TOC.
     // Single-file nav (or nav with only prev/next) leaves `files` empty.
     let files_block = nav
@@ -1172,6 +1208,24 @@ document.addEventListener('click', (e) => {{
     white-space: nowrap;
     min-width: 0;
   }}
+  /* Present only when at least one code cell failed. Sits beside the
+     title and jumps to `#rl-error-1`. Batch HTML and watch share this
+     markup; watch syncs the top bar on a chrome change. */
+  .topbar a.rl-errors {{
+    flex: 0 0 auto;
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid {error_text};
+    border-radius: 999px;
+    color: {error_text};
+    background: {error_bg};
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }}
+  .topbar a.rl-errors:hover {{
+    text-decoration: underline;
+  }}
   /* Anchor targets must clear the fixed topbar. Without this a link scrolls
      its target to y=0, which is behind the bar — the heading you clicked is
      the one thing you cannot see. Applies to EVERY id, not just the
@@ -1242,14 +1296,19 @@ document.addEventListener('click', (e) => {{
     margin: 1rem 0;
   }}
   .prose th, .prose td {{
-    border: 1px solid {border_subtle};
+    border: none;
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     padding: 0.5rem 0.8rem;
     text-align: left;
   }}
   .prose th {{
-    background: {border};
+    background: color-mix(in srgb, {text} 11%, {bg});
     color: {accent_primary};
     font-weight: 600;
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
+  }}
+  .prose tbody tr:nth-child(even) td {{
+    background: color-mix(in srgb, {text} 6%, {bg});
   }}
   .prose img, .callout img {{
     max-width: 100%;
@@ -1280,6 +1339,11 @@ document.addEventListener('click', (e) => {{
     margin: 0.2rem 0 0.35rem 0.15rem;
     padding: 0.05rem 0 0.05rem 0.85rem;
     border-left: 3px solid {accent_primary};
+  }}
+  /* A cell that failed. Same rule, error color, so the red pre is not
+     the only signal when the page is long. */
+  .rl-cell.rl-cell-error {{
+    border-left-color: {error_text};
   }}
   /* Language chip shared by rustlab cells and highlighted prose fences. */
   .rl-lang {{
@@ -1345,8 +1409,9 @@ document.addEventListener('click', (e) => {{
     white-space: pre-wrap;
     line-height: 1.5;
   }}
-  /* Table display. The colors are the notebook theme tokens (`--rl-*`,
-     with the palette literal as fallback). No extra stylesheet and no CDN. */
+  /* Table display. Header wash, zebra, and rules are a mix of the theme
+     text color into the page background (11%, 6%, 30%). No extra stylesheet
+     and no CDN. */
   table.rl-table {{
     border-collapse: collapse;
     margin: 0.6rem 0 0.2rem;
@@ -1354,7 +1419,7 @@ document.addEventListener('click', (e) => {{
     color: {text};
     font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
     font-size: 0.85rem;
-    border: 1px solid {border};
+    border: 1px solid color-mix(in srgb, {text} 30%, {bg});
     border-radius: 6px;
     overflow: hidden;
   }}
@@ -1362,13 +1427,13 @@ document.addEventListener('click', (e) => {{
     text-align: left;
     font-weight: 600;
     color: {accent_primary};
-    background: {bg_secondary};
-    border-bottom: 2px solid {accent_primary};
+    background: color-mix(in srgb, {text} 11%, {bg});
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     padding: 0.4rem 0.8rem;
   }}
   table.rl-table td {{
     padding: 0.3rem 0.8rem;
-    border-bottom: 1px solid {border};
+    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
     color: {text};
   }}
   table.rl-table td.rl-num {{
@@ -1379,7 +1444,7 @@ document.addEventListener('click', (e) => {{
     border-bottom: none;
   }}
   table.rl-table tbody tr:nth-child(even) td {{
-    background: {bg_secondary};
+    background: color-mix(in srgb, {text} 6%, {bg});
   }}
   .error {{
     background: {error_bg};
@@ -2175,6 +2240,13 @@ fn warn_mermaid_disabled_once() {
     }
 }
 
+fn index_link_label(nav: &NotebookNav) -> &str {
+    nav.index_label
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Index")
+}
+
 fn build_footer_nav(nav: &NotebookNav) -> String {
     if nav.prev.is_none() && nav.next.is_none() && nav.index_href.is_none() {
         return String::new();
@@ -2188,8 +2260,9 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
         ));
     }
     if let Some(href) = &nav.index_href {
+        let label = escape_html(index_link_label(nav));
         out.push_str(&format!(
-            "  <a class=\"index\" href=\"{href}\"><span class=\"title\">Index</span></a>\n",
+            "  <a class=\"index\" href=\"{href}\"><span class=\"title\">{label}</span></a>\n",
             href = escape_html(href),
         ));
     }
@@ -2802,7 +2875,9 @@ pub(crate) fn prose_parts(md: &str) -> Vec<(&'static str, String)> {
                 depth += 1;
             }
             Event::End(_) => depth = depth.saturating_sub(1),
-            Event::Rule if depth == 0 => out.push(("rule", protected[range].trim_end().to_string())),
+            Event::Rule if depth == 0 => {
+                out.push(("rule", protected[range].trim_end().to_string()))
+            }
             _ => {}
         }
     }
@@ -4631,6 +4706,35 @@ mod tests {
         assert!(html.contains("Generated by rustlab-notebook"));
     }
 
+    /// Markdown tables and script tables share the page stylesheet.
+    /// Stripes, the header wash, and rules are mixes of the theme
+    /// foreground into the page background: 6%, 11%, and 30%.
+    #[test]
+    fn html_tables_blend_foreground_for_light_and_dark_themes() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
+        for theme in [Theme::Light.colors(), Theme::Dark.colors()] {
+            let html = render_html(
+                "T",
+                &[Rendered::Markdown(md.to_string())],
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                theme,
+                None,
+                &LinkMode::single_file(),
+            );
+            let text = theme.css_var("text");
+            let bg = theme.css_var("bg");
+            for (pct, role) in [(6, "stripe"), (11, "header"), (30, "rule")] {
+                let mix = format!("color-mix(in srgb, {text} {pct}%, {bg})");
+                assert!(
+                    html.contains(&mix),
+                    "{} {role} missing ({mix})",
+                    if theme.is_dark() { "dark" } else { "light" }
+                );
+            }
+        }
+    }
+
     #[test]
     fn render_html_styles_prose_links_and_sets_color_scheme() {
         let dark = Theme::Dark.colors();
@@ -5158,7 +5262,9 @@ mod tests {
                 html.contains(&format!("border-left: 3px solid {accent_var}")),
                 "accent rule for {accent} missing"
             );
-            let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+            let cell_at = html
+                .find("<div class=\"rl-cell rl-cell-error\">")
+                .expect("rl-cell");
             let plot_at = html
                 .find("class=\"plot-container\"")
                 .expect("plot-container");
@@ -5211,7 +5317,9 @@ mod tests {
             None,
             &LinkMode::single_file(),
         );
-        let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+        let cell_at = html
+            .find("<div class=\"rl-cell rl-cell-error\">")
+            .expect("rl-cell");
         let plot_at = html
             .find("class=\"plot-container\"")
             .expect("plot-container");
@@ -5282,9 +5390,21 @@ mod tests {
         assert!(author_body.contains("class=\"output\""));
         assert!(author_body.contains("ans = 1"));
         assert!(author_body.contains("class=\"error\""));
+        assert!(
+            author_body.contains("class=\"rl-cell rl-cell-error\""),
+            "the output cell keeps the error rule inside details: {author_body}"
+        );
         assert!(!author_body.contains("class=\"rl-src\""));
         assert!(!author_body.contains("class=\"source\""));
         let source_body = &html[src_at..author_at];
+        let source_cell = &html[..src_at];
+        assert!(
+            source_cell.ends_with("<div class=\"rl-cell rl-cell-error\">\n")
+                || source_cell.contains(
+                    "<div class=\"rl-cell rl-cell-error\">\n<details class=\"rl-src\" open>"
+                ),
+            "the source cell keeps the error rule above details"
+        );
         assert!(source_body.contains("class=\"source\""));
         assert!(!source_body.contains("class=\"output\""));
     }
@@ -5399,6 +5519,133 @@ w = 4
         );
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
+        assert!(
+            html.contains("<a class=\"rl-errors\" href=\"#rl-error-1\">1 error</a>"),
+            "one failure is singular: {html}"
+        );
+        assert!(html.contains("id=\"rl-error-1\""), "{html}");
+    }
+
+    /// A failed cell keeps the red `<pre class="error">`, paints the left
+    /// rule in the error color, opens its source even when the notebook
+    /// fold is collapsed, and is the target of the top-bar chip. A clean
+    /// cell on the same page stays collapsed and uncolored. The chip is
+    /// absent when nothing failed.
+    #[test]
+    fn render_html_failed_cell_chrome_and_error_chip() {
+        let _guard = NotebookSourceOpenGuard::set(false);
+        let cell = |source: &str, error: Option<&str>, open: Option<bool>| Rendered::Code {
+            source: source.to_string(),
+            text_output: String::new(),
+            error: error.map(str::to_string),
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: open,
+            widget_reads: Vec::new(),
+        };
+        let blocks = vec![
+            cell("y = 1", None, None),
+            cell("bad", Some("undefined variable"), Some(false)),
+            cell("also bad", Some("second boom"), Some(false)),
+        ];
+        let theme = test_theme();
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            theme,
+            None,
+            &LinkMode::single_file(),
+        );
+        let error_text = theme.css_var("error-text");
+        assert!(
+            html.contains(".rl-cell.rl-cell-error"),
+            "failed-cell rule missing: {html}"
+        );
+        assert!(
+            html.contains(&format!("border-left-color: {error_text}")),
+            "error-colored rule missing"
+        );
+        let section = |idx: usize| {
+            let marker = format!("data-code-idx=\"{idx}\"");
+            let at = html
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing {marker}"));
+            let start = html[..at].rfind("<section").expect("section");
+            let rest = &html[start..];
+            let end = rest.find("</section>").expect("section end");
+            &rest[..end]
+        };
+        let clean = section(0);
+        assert!(
+            clean.contains("<details class=\"rl-src\">"),
+            "clean cell stays collapsed: {clean}"
+        );
+        assert!(
+            !clean.contains("<details class=\"rl-src\" open>"),
+            "{clean}"
+        );
+        assert!(!clean.contains("rl-cell-error"), "{clean}");
+        assert!(!clean.contains("id=\"rl-error-"), "{clean}");
+        let failed = section(1);
+        assert!(
+            failed.contains("<div class=\"code-block\" id=\"rl-error-1\">"),
+            "first failure anchor: {failed}"
+        );
+        assert!(
+            failed.contains("class=\"rl-cell rl-cell-error\""),
+            "{failed}"
+        );
+        assert!(
+            failed.contains("<details class=\"rl-src\" open>"),
+            "an error opens the source despite code: collapsed: {failed}"
+        );
+        assert!(failed.contains("<pre class=\"error\">"), "{failed}");
+        assert!(failed.contains("undefined variable"), "{failed}");
+        let failed_again = section(2);
+        assert!(
+            failed_again.contains("<div class=\"code-block\" id=\"rl-error-2\">"),
+            "{failed_again}"
+        );
+        assert!(
+            failed_again.contains("<details class=\"rl-src\" open>"),
+            "{failed_again}"
+        );
+        assert!(
+            html.contains("<a class=\"rl-errors\" href=\"#rl-error-1\">2 errors</a>"),
+            "chip should name the count and jump to the first failure: {html}"
+        );
+        let header_end = html.find("</header>").expect("header");
+        assert!(
+            html[..header_end].contains("class=\"rl-errors\""),
+            "chip belongs in the top bar"
+        );
+
+        let clean_page = render_html(
+            "Test",
+            &blocks[..1],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            theme,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            !clean_page.contains("<a class=\"rl-errors\""),
+            "no chip when nothing failed"
+        );
+        assert!(
+            !clean_page.contains("id=\"rl-error-"),
+            "no failure anchor on a clean page"
+        );
+        assert!(
+            !clean_page.contains("<div class=\"rl-cell rl-cell-error\">"),
+            "a clean cell keeps the accent rule"
+        );
     }
 
     #[test]
@@ -6686,6 +6933,7 @@ w = 4
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         for n in [None, Some(&nav)] {
             let html = render_html(
@@ -6705,12 +6953,41 @@ w = 4
     }
 
     #[test]
+    fn single_file_index_label_and_hidden_toc() {
+        let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
+        let nav = NotebookNav {
+            index_href: Some("/notebooks/".to_string()),
+            index_label: Some("Note <b>".to_string()),
+            hide_toc: true,
+            ..Default::default()
+        };
+        let html = render_html(
+            "Alpha",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("<a class=\"index\" href=\"/notebooks/\">Note &lt;b&gt;</a>"));
+        assert!(html.contains(
+            "<a class=\"index\" href=\"/notebooks/\"><span class=\"title\">Note &lt;b&gt;</span></a>"
+        ));
+        assert!(!html.contains("<nav class=\"sidebar\""));
+        assert!(!html.contains("<button class=\"nav-toggle\""));
+        assert!(html.contains("class=\"no-toc\""));
+        assert!(html.contains("id=\"alpha\""));
+    }
+
+    #[test]
     fn render_html_topbar_breadcrumb_when_nav_provided() {
         let nav = NotebookNav {
             index_href: Some("index.html".to_string()),
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
         let html = render_html(
@@ -6832,6 +7109,7 @@ w = 4
             prev: Some(("Lesson 08".to_string(), "08.html".to_string())),
             next: Some(("Lesson 10".to_string(), "10.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let blocks = vec![Rendered::Markdown(
             "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
@@ -6865,6 +7143,7 @@ w = 4
             prev: None,
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "A <script> & \"x\"",
@@ -6885,6 +7164,7 @@ w = 4
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6912,6 +7192,7 @@ w = 4
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6934,6 +7215,7 @@ w = 4
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",
@@ -6955,6 +7237,7 @@ w = 4
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
             files: None,
+            ..Default::default()
         };
         let html = render_html(
             "Test",

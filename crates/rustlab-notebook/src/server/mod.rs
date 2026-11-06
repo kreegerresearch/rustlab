@@ -18,6 +18,7 @@ pub mod auth;
 pub mod browser;
 pub mod cell;
 pub mod diff;
+pub mod drawer;
 pub mod http;
 pub mod page;
 pub mod render_loop;
@@ -599,6 +600,7 @@ fn server_nav(
         prev: (idx > 0).then(|| link(idx - 1)),
         next: (idx + 1 < listing.len()).then(|| link(idx + 1)),
         files,
+        ..Default::default()
     })
 }
 

@@ -20,8 +20,8 @@ print("diag(D) extracts the eigenvalue vector:");
 print(diag(D))
 
 # ── 3. Verify A·V = V·D ─────────────────────────────────────────────
-print("residual ||A*V - V*D||:");
-print(norm(A * V - V * D))
+print("residual ||A*V - V*D||_F:");
+print(norm(A * V - V * D, "fro"))
 
 # ── 4. Generalized form: eig(A, B) for A·v = λ·B·v ─────────────────
 A2 = [3, 1; 1, 3];
@@ -33,8 +33,8 @@ print(eig(A2, B))
 print("[V, D] = eig(A, B):");
 print(V2)
 print(D2)
-print("residual ||A*V - B*V*D||:");
-print(norm(A2*V2 - B*V2*D2))
+print("residual ||A*V - B*V*D||_F:");
+print(norm(A2*V2 - B*V2*D2, "fro"))
 
 # ── 5. Output-form flag: eig(A, "vector") returns D as a vector ────
 % Useful when you want eigenvalues directly indexable as D(k) instead
