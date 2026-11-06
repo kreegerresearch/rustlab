@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.59
+
+### Added
+- **Coding guidelines.** [`docs/coding-guidelines.md`](docs/coding-guidelines.md) is a short, human-first style page for `.rlab` scripts and notebooks. Scripts lead with cutting nested loops: array operations, slices, logical masks, `find`, reductions, and `arrayfun` / `parmap`, for readability and for speed. The default is one loop or none; a nested loop that is the physics, the state, or a seeded stream stays, with a one-line reason. [`examples/language/seeded_random_loop.rlab`](examples/language/seeded_random_loop.rlab) is the seeded-stream case: four `rand()` draws per trial, in order, under `seed(322)`. There is no `break` or `continue`. `#` and `%` both start a comment; `%` is the one to prefer. Notebooks stay a light convention list (one idea per cell, `clf;` before a plot cell, `<!-- hide -->` for setup) and point at [`docs/notebooks.md`](docs/notebooks.md) and [`docs/lesson-site-pattern.md`](docs/lesson-site-pattern.md). Worked `.rlab` examples stay in [Script style for agents](docs/agent-guide.md#script-style-for-agents).
+
 ## 0.3.58
 
 ### Breaking / behavior changes
