@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.59
+
+### Added
+- **Coding guidelines.** [`docs/coding-guidelines.md`](docs/coding-guidelines.md) is a short, human-first style page for `.rlab` scripts and notebooks. Scripts lead with cutting nested loops: array operations, slices, logical masks, `find`, reductions, and `arrayfun` / `parmap`, for readability and for speed. Notebooks get a light convention list (one idea per cell, `%` comments, `clf;` before a plot cell, `<!-- hide -->` for setup) and point at [`docs/notebooks.md`](docs/notebooks.md) and [`docs/lesson-site-pattern.md`](docs/lesson-site-pattern.md). Worked `.rlab` examples stay in [Script style for agents](docs/agent-guide.md#script-style-for-agents).
+
 ## 0.3.58
 
 ### Breaking / behavior changes

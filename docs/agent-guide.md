@@ -10,7 +10,8 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from. When you write `.rlab`, follow [Script style for agents](#script-style-for-agents) below.
+5. [`docs/coding-guidelines.md`](coding-guidelines.md) — human-first style for `.rlab` scripts and notebooks. The worked `.rlab` before-and-after examples are [Script style for agents](#script-style-for-agents) below.
+6. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from.
 
 ---
 
@@ -128,6 +129,8 @@ fprintf("designed %d taps\n", length(h))
 ---
 
 ## Script style for agents
+
+The human-facing page for this style, including a short notebook half, is [Coding guidelines](coding-guidelines.md). The six practices below are the worked `.rlab` examples.
 
 Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote. The same six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab).
 
@@ -380,7 +383,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 When asked to produce rustlab code:
 
 1. **Check the capability index first** (`docs/quickref.md` or `rustlab docs --json`). Never invent function names.
-2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
+2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Coding guidelines](coding-guidelines.md) and [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
 3. **Run it:** `rustlab run script.rlab --plot none`, capturing stderr.
 4. **A nonzero exit code means the script failed.** Without `--profile`, stderr also has a line starting with `error:`. Fix and re-run.
 5. **Verify artifacts** (the SVG/CSV/NPZ files you expected) exist and are non-trivial in size.
