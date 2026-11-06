@@ -21410,12 +21410,27 @@ mod printf_and_row_matrix_tests {
         }
         assert_eq!(scalar(&ev, "s"), 3.0);
 
-        let msg = eval_err(
+        // An n×1 column and a length-n vector compare element-wise, the
+        // same pairs as `.*` and `+`. This used to be a shape error.
+        let ev = eval(
             "v = [1, 2, 3]
              c = [1; 2; 3]
-             b = v == c",
+             b = v == c
+             prod = v .* c
+             sm = v + c",
         );
-        assert!(msg.contains("comparison"), "{msg}");
+        match ev.get("b").unwrap() {
+            Value::Logical(a) => {
+                assert_eq!((a.rows(), a.cols()), (1, 3));
+                assert_eq!(a.to_flags(), vec![true, true, true]);
+            }
+            other => panic!("b: expected logical, got {other:?}"),
+        }
+        assert_eq!(shape_1d(&ev, "prod"), 3);
+        assert_eq!(shape_1d(&ev, "sm"), 3);
+
+        // A column is still not a `for` sequence. That rule is separate
+        // from comparison.
         let msg = eval_err(
             "s = 0
              for i = [1; 2; 3]
@@ -21423,6 +21438,14 @@ mod printf_and_row_matrix_tests {
              end",
         );
         assert!(msg.contains("cannot iterate"), "{msg}");
+    }
+
+    fn shape_1d(ev: &Evaluator, name: &str) -> usize {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.len(),
+            Value::Matrix(m) => m.nrows() * m.ncols(),
+            other => panic!("{name}: {other:?}"),
+        }
     }
 }
 
