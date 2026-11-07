@@ -357,16 +357,16 @@ Unless a test says otherwise, it uses Grid A: 32³, `dx = dy = dz = 1 mm`, `fdtd
 |---|---|---|---|---|
 | G1 | `ntff_z_dipole_matches_hertzian_amplitude_and_phase` | `abs(abs(F/F_an) − 1) ≤ 0.01` and `abs(arg(F/F_an)) ≤ 0.02` rad at θ = 90°, φ = 0, origin at the source; at λ/Δ = 20: ≤ 0.02 and ≤ 0.03 | 0.0040 / 0.0050; 0.0009 / 0.0015 | η, k, 4π, sign of j, M sign, exponent sign, source timing, missing trapezoid |
 | G2 | `ntff_z_dipole_has_no_cross_pol` | max over a 72-point xy cut of `abs(Fφ)/abs(Fθ) ≤ 2e-5`; at λ/Δ = 20 ≤ 2e-4 | 4.9e-6 / 7.6e-6 | H timing, one-plane H, weights. This is the item-12 correction: Eθ dominates |
-| G3 | `ntff_z_dipole_sin_theta_shape_and_azimuth` | `abs(abs(Fθ)/(abs(F_an)·sinθ) − 1) ≤ 0.01` for θ = 5°…175°; azimuth ripple `max/min − 1 ≤ 5e-3` | 3.3e-3 / 4.2e-3; 2.1e-3 / 2.7e-3 | same as G2 |
+| G3 | `ntff_z_dipole_sin_theta_shape_and_azimuth` | **Wording check (implementation):** the written formula is already a normalized magnitude shape, `abs(abs(Fθ)/(abs(F_an)·sinθ) − 1)`, not an absolute residual `abs(Fθ − F_an sinθ)`. Leave it. θ = 5°…175°; azimuth ripple `max/min − 1 ≤ 5e-3`. Grid A remeasure: shape 3.32e-3, ripple 2.14e-3 | 3.3e-3 / 4.2e-3; 2.1e-3 / 2.7e-3 | same as G2 |
 | G4 | `ntff_x_dipole_exercises_phi_components` | `ex` source: max over φ of `abs(Fφ − F0·sinφ)/abs(F0) ≤ 0.01` at θ = 90°; max over θ of `abs(Fθ + F0·cosθ)/abs(F0) ≤ 0.01` at φ = 0; `abs(Fθ(90°, φ))/abs(F0) ≤ 1e-12` | 4.1e-3 / 5.2e-3; 3e-16 | the `Nφ` / `Lθ` paths and the x/y-face rows that a z dipole barely uses |
 | G5 | `ntff_offset_source_phase_is_2kd` | `ez` at `+4Δ` in x, default origin: `abs(arg(F(90°, 0)/F(90°, π)) − 2kd) ≤ 0.01` rad (compare `arg(ratio·e^{−j2kd})`, never raw args); `abs(abs(ratio) − 1) ≤ 0.01` | 2.0e-3 / 3.1e-3 | exponent sign (0.12), M sign (3.06), H timing (0.014), weights (0.021), position offsets of ½ cell |
 | G6 | `ntff_flux_matches_hertzian_power` | `abs(P_flux/P_an − 1) ≤ 0.01`; at λ/Δ = 20 ≤ 0.02 | 0.0051 / 0.0043 | flux sign and weights; the source normalization of §2.4 |
 | G7 | `ntff_pattern_integral_matches_flux` | full sphere, 61 θ (trapezoid incl. poles) × 120 φ: `abs(P_pat/P_flux − 1) ≤ 0.005` | 1.2e-4 / 1.7e-3 | transform vs flux consistency (H timing 0.015, weights 0.058, one-plane 0.0075) |
-| G8 | `ntff_short_dipole_directivity_is_1_5` | max over the 61 × 120 grid of `abs(directivity/1.5 − 1) ≤ 0.01`, and at λ/Δ = 40 as well | 0.0029 / 0.0057 | flux normalization end to end |
+| G8 | `ntff_short_dipole_directivity_is_1_5` | **Wording correction.** `D(θ) = 1.5 sin²θ`, so pointwise `D` equals 1.5 only at θ = 90°. The old “max of abs(D/1.5 − 1)” is 1 at the poles and is not the gate. Same 0.01 tolerance, at λ/Δ = 30 and 40 only (λ/Δ = 20 measured peak error 1.02e-2 and angular 1.32e-2, outside 0.01; not added). Gate: `abs(D_peak/1.5 − 1) ≤ 0.01` and `abs(D/(D_peak sin²θ) − 1) ≤ 0.01` for θ in [5°, 175°]. Grid A: peak 2.95e-3 / angular 5.16e-3 at λ/Δ = 30; peak 9.14e-4 / angular 1.32e-3 at λ/Δ = 40 | 0.0029 was the peak statistic, not the pointwise one | flux normalization end to end |
 | G9 | `ntff_box_size_invariance` | margin 2 vs margin 4: `abs(F₂/F₄ − 1) ≤ 0.005` at θ = 90° | 0.0020 / 0.0022 | box-dependent errors (weights at face edges, CPML leakage) |
 | G10 | `ntff_port_power_matches_flux` | one-edge `ez` port, `Z0 = 50`: `abs(P_acc/P_flux − 1) ≤ 1e-3`, `abs(G/D − 1) ≤ 1e-3`, `abs(G_r/(G·(1 − abs(S11)²)) − 1) ≤ 1e-9` | ≤ 6e-5; 1e-6 | port phasor timing and sign, the §2.7 definitions. The last identity is self-consistency and is labelled as such |
 | G11 | `ntff_port_s11_matches_fdtd_s11_bin` | armed f = an exact FFT bin `m/(N·dt)` of the record: `abs(S11_ntff − S11_fdtd_s11) ≤ 1e-9·abs(S11)` | — | the two timing conventions agree |
-| G12 | `ntff_background_eps_r_2` | uniform `eps_r = 2` everywhere, f at medium λ/Δ = 30: G1 amplitude ≤ 0.02, G6 ≤ 0.02 (using η and k of the medium), G8 ≤ 0.02 | not measured | k and η of the background. Measure before implementing. If it fails, report; do not widen |
+| G12 | `ntff_background_eps_r_2` | uniform `eps_r = 2` everywhere, f at medium λ/Δ = 30: G1 amplitude ≤ 0.02, G6 ≤ 0.02 (using η and k of the medium), peak `|D/1.5 − 1|` ≤ 0.02. Decay is **off** in the test | 700 steps: `|F/Fan|` err 0.0036, arg +0.0005, power err 0.0048, peak D err 0.0024, angular 5.03e-3. 1400 steps stays inside 0.02. Surface tail 2.75e-3 at 700 and 2.40e-3 at 1400 (a floor: CPML σ is not scaled by eps_r). The 1e-3 decay limit is not weakened | k and η of the background |
 
 **Exactness and lifecycle (rustlab-dsp).**
 
@@ -455,6 +455,10 @@ Also rerun the Phase 4 gates unchanged: the `rustlab-dsp` port/S11 tests, and th
 ---
 
 ## 12. Decisions for Michael
+
+These are the reviewer's recommendations. They are **not** Michael's signed approval of a Phase 6 design. Phase 6 geometry stays undecided. This implementation does not choose among the three options in item 5, and it does not implement image theory, a sweep, parallel stepping, or S21.
+
+A non-positive accepted or incident power is returned as `NaN` gain (and `NaN` dBi). That is so a negative power is not printed as a gain. It is not a tolerance change.
 
 1. **Directivity normalizer.** This brief uses the surface flux `P_flux`, so a single cut has a directivity and the pattern integral is a test (G7). The parent plan uses the pattern integral, with NaN for a cut. *Recommendation: flux.*
 2. **Realized gain.** `4πU/P_inc` from port phasors at the armed frequencies, plus IEEE gain `4πU/P_acc`. The parent plan uses `D·(1 − |S11|²)` with S11 interpolated from `fdtd_s11`, which is wrong once there is loss. *Recommendation: as in this brief.*

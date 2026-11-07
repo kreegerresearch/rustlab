@@ -188,6 +188,8 @@ impl BuiltinRegistry {
         r.register("fdtd_step", super::fdtd::builtin_fdtd_step);
         r.register("fdtd_record", super::fdtd::builtin_fdtd_record);
         r.register("fdtd_slice", super::fdtd::builtin_fdtd_slice);
+        r.register("fdtd_ntff", super::fdtd::builtin_fdtd_ntff);
+        r.register("fdtd_farfield", super::fdtd::builtin_fdtd_farfield);
         // Array construction
         r.register("zeros", builtin_zeros);
         r.register("ones", builtin_ones);

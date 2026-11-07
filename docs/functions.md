@@ -300,7 +300,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), and point probes. A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. The far-field transform is a later phase of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), point probes, and a near-to-far transform (`fdtd_ntff`, `fdtd_farfield`). A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. v1 of the transform is a closed box inside CPML on all six faces, in a homogeneous lossless exterior. A ground plane, a substrate, and image theory are Phase 6, and that geometry is not decided.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -329,7 +329,7 @@ sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, CPML, and NTFF storage), `c0` (299 792 458 m/s), `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off), and `ntff` (how many frequencies are armed; 0 when the transform is off).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
@@ -510,6 +510,44 @@ rfplot(s);
 sij(s, 1, 1)
 s = fdtd_s11(V, I, dt, Z0, "window", "hann");
 s = fdtd_s11(sim, "nfft", 8 * fdtd_info(sim).steps);
+```
+
+### `fdtd_ntff(sim, freqs)` / `fdtd_ntff(sim, freqs, "margin", m)`
+Arm the near-to-far transform before the first step. `freqs` is one frequency or a vector, in Hz, finite and positive. `m` defaults to 2 and is an integer `>= 1`. An empty `freqs` disarms the transform; `margin` is then ignored. A later call replaces the earlier one.
+
+The surface is one closed Huygens box, `m` cells inside the CPML, on all six faces. v1 refuses anything else:
+
+- CPML must be on every face. Turning one face off is an error at the first step.
+- Cells outside the box, and the one-cell layer just inside it, must equal the corner cell. That background is lossless (`sigma = 0`). A dielectric or a loss inside the box is allowed.
+- Every source, every port edge, and every PEC edge must sit strictly inside the box.
+- Each frequency needs at least 10 cells per background wavelength, and must be below `1/(2·dt)`.
+
+`fdtd_info(sim).ntff` is the armed count. `bytes` grows as soon as the transform is armed. Phase 6 (a ground, a substrate, image theory) is not this function, and that geometry is not decided.
+```
+fdtd_ntff(sim, c0 / 0.030);
+fdtd_ntff(sim, 8e9:0.5e9:10e9, "margin", 2);
+```
+
+### `pat = fdtd_farfield(sim, theta, phi)` / `fdtd_farfield(..., "origin", [x, y, z])` / `fdtd_farfield(..., "decay", "pulse"|"off")`
+The far field at the angles you name. `theta` and `phi` are radians, a scalar or a vector, and the result is their outer product.
+
+For a z-directed electric current, `Etheta` is the co-polar component and `Ephi` is the cross-polar one. In the xy plane (`theta = pi/2`) the co-polar field is `Etheta`, not `Ephi`. The phasors include `dt`, so the unit is V·s. The spherical factor `e^{-jkr}/r` is left off.
+
+`directivity = 4π U / Pflux`, with `U = (|Etheta|² + |Ephi|²) / (2 η)` and `Pflux` the time-average power leaving the box. `gain` divides by the power the port accepted, `½ Re(V conj(I))`. `realized_gain` divides by the incident power `½ |a|²`, with the same `a` as `fdtd_s11`. With no port, or when that power is not positive, `gain`, `realized_gain`, and their dBi fields are `NaN`. dBi is `10·log10` of a positive linear value. `realized_gain = gain · (1 − |S11|²)` is an algebraic identity of those definitions. `realized_gain = directivity · (1 − |S11|²)` is not, once the grid has loss.
+
+The default origin is the centroid of the box. An `"origin"` of three metres changes the phase and not the magnitude. `"decay", "pulse"` (the default) errors when the last 10% of the surface `|E|`, or of `|V|` or `|I|` when a port exists, is still above `1e-3` of that signal's peak. `"off"` returns the pattern anyway. Nothing is clipped.
+
+`abs` of a phasor near `1e-14` drops the imaginary part (`|Im| < 1e-10` is treated as real), and a one-element tensor index does the same below `1e-12`. Scale before the magnitude, and ask for at least two angles:
+
+```
+eth = pat.Etheta(1, :, 1) * 1e12;
+ae = abs(eth) / 1e12;
+```
+
+`angle` keeps the phase. The struct fields are `freq`, `theta`, `phi`, `Etheta`, `Ephi`, `U`, `prad`, `directivity`, `directivity_dBi`, `gain`, `gain_dBi`, `realized_gain`, `realized_gain_dBi`, `paccepted`, `pincident`, `s11` (`NaN` without a port), `origin`, `box` (1-based node planes `[xlo xhi ylo yhi zlo zhi]`), `k`, `eta`, and `decay`.
+```
+pat = fdtd_farfield(sim, (1:35) * pi / 36, 0);
+pat.directivity(1, 18, 1)
 ```
 
 ### `M = fdtd_slice(sim, comp, axis, index)`

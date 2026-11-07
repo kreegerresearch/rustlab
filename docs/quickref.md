@@ -169,12 +169,12 @@ Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, wi
 
 ## FDTD (3-D)
 
-Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_port` add materials, metal, or a lumped port. `fdtd_cpml` adds an absorber inside the walls. Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
+Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_port` add materials, metal, or a lumped port. `fdtd_cpml` adds an absorber inside the walls. `fdtd_ntff` / `fdtd_farfield` are the near-to-far transform (v1: six-face CPML, homogeneous lossless exterior). Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
 
 | Function | Description |
 |---|---|
 | `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99) |
-| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes`, `c0`, `cpml` (1×6 face thicknesses) |
+| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes` (includes NTFF), `c0`, `cpml` (1×6 face thicknesses), `ntff` (armed frequency count) |
 | `fdtd_media(sim, eps_r [, mu_r [, sigma]])` | Cell-centred materials: real scalars or `ny × nx × nz` Tensor3s; `sigma` in S/m; recomputes `dt` |
 | `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)` | Metal: every edge of each nonzero cell, or a sheet on node plane `index` (`1 .. n+1`, `fdtd_slice` layout) |
 | `fdtd_cpml(sim, n [, key, value...])` / `fdtd_cpml(sim, face, n)` | CPML absorber, `n` cells inside the PEC walls. Faces `xmin`…`zmax`; `0` turns one face off. Defaults: `sigma_factor` 1, `kappa_max` 1, `alpha_max` 0, `order` 3, `alpha_order` 1 |
@@ -186,6 +186,8 @@ Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_por
 | `fdtd_run(sim, nsteps)` / `fdtd_step(sim [, n])` | Advance; returns the record plus `seconds`, `cell_updates`, `cell_rate`. Ctrl+C returns the partial record with `interrupted = true` |
 | `fdtd_record(sim)` | `t`, `dt`, `steps`, `probe` (`steps × nprobes`), `V` and `I` (`steps × nports`), `Z0`, `interrupted` |
 | `fdtd_slice(sim, comp, axis, index)` | One plane: `"z"` → `ny × nx`, `"y"` → `nx × nz`, `"x"` → `ny × nz` |
+| `fdtd_ntff(sim, freqs [, "margin", m])` | Arm the near-to-far box before the first step. Default margin 2. Empty `freqs` disarms. At least 10 cells per background wavelength |
+| `fdtd_farfield(sim, theta, phi [, "origin", xyz] [, "decay", "pulse"\|"off"])` | `Etheta` / `Ephi` (V·s), flux directivity, port-power gain and realized gain (`NaN` with no port). Default origin is the box centroid. A pulse tail above 1e-3 is an error unless `"off"` |
 
 ---
 

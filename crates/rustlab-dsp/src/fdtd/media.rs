@@ -39,7 +39,7 @@ pub enum CellMap {
 
 impl CellMap {
     #[inline]
-    fn at(&self, c: usize) -> f64 {
+    pub(in crate::fdtd) fn at(&self, c: usize) -> f64 {
         match self {
             CellMap::Uniform(v) => *v,
             CellMap::Cells(v) => v[c],
@@ -85,7 +85,7 @@ pub(super) fn pec_bit(c: usize) -> u8 {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Media {
+pub(in crate::fdtd) struct Media {
     pub eps: CellMap,
     pub mu: CellMap,
     pub sigma: CellMap,
