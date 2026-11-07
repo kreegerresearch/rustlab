@@ -498,6 +498,8 @@ s = σ dt / (2 ε0),  Ca = (1−s)/(1+s),  β = 2s/(1+s)
 
 `examples/pde/fdtd_dipole.rlab`, notebook `examples/notebooks/fdtd_dipole.md`. A short z-directed soft source in a vacuum PML box, one armed frequency, one far-field cut. Check: `Ephi` dominates in the xy-plane, the pattern is symmetric under `φ → φ+π`, and directivity is between 0 and 4 dBi (validation item 12).
 
+**Superseded by `dev/plans/fdtd3d_phase5_impl.md` (2026-11-07 review, not yet implemented).** For a z-directed electric dipole `Ephi ≡ 0` and `Etheta` is the co-polar component in the xy plane. The 0–4 dBi window does not catch a flipped `Ms`. The brief replaces item 12 with analytic gates G1–G12. It also changes the default origin to the box centroid, normalizes directivity by the surface flux, takes gain and realized gain from port power, and requires CPML on all six faces. This section and § Near-to-far are updated when Phase 5 is implemented.
+
 ### Phase 6 — patch and a sweep
 
 The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the lossless `|S11|` minimum is within 5% of 2.4 GHz, broadside is a peak of the principal cut, and the notebook also shows the `tanδ = 0.02` rerun (not gated). The pattern call passes the patch centre as `"origin"`. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return `s.frequencies(argmin(abs(sij(s, 1, 1))))`, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
