@@ -1884,8 +1884,8 @@ fn s11_of_a_resistance_is_the_reflection_formula() {
 /// at the port (late gap voltage about 69 dB down; `|S11|` stays near 1, so
 /// its minimum is not a resonance). A feed inset by `L/3` from the radiating
 /// edge does: after the pulse the gap voltage peaks at the transmission-line
-/// frequency. That is the check this test locks. The `|S11|` minimum on the
-/// edge feed is recorded in `dev/plans/fdtd3d.md` and is not asserted here.
+/// frequency. This is a diagnostic, not Phase 4 validation item 10, which
+/// is still pending (`dev/plans/fdtd3d_phase4_review.md` §7–8).
 #[test]
 fn lossless_patch_inset_feed_rings_at_2_4_ghz() {
     let eps_r = 4.4_f64;
