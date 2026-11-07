@@ -178,6 +178,8 @@ impl BuiltinRegistry {
         r.register("fdtd_info", super::fdtd::builtin_fdtd_info);
         r.register("gaussian_pulse", super::fdtd::builtin_gaussian_pulse);
         r.register("fdtd_source", super::fdtd::builtin_fdtd_source);
+        r.register("fdtd_port", super::fdtd::builtin_fdtd_port);
+        r.register("fdtd_s11", super::fdtd::builtin_fdtd_s11);
         r.register("fdtd_media", super::fdtd::builtin_fdtd_media);
         r.register("fdtd_pec", super::fdtd::builtin_fdtd_pec);
         r.register("fdtd_cpml", super::fdtd::builtin_fdtd_cpml);
