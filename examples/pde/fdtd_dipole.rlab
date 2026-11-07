@@ -39,14 +39,13 @@ org = [16e-3, 16e-3, 16.5e-3];
 th = (1:35) * pi / 36;                  # 5° … 175°
 pat = fdtd_farfield(sim, th, 0, "origin", org);
 k = 2 * pi * f / c0;
-# The current moment itself is ~1e-17. abs() treats |Im| < 1e-10 as
-# real, so take the magnitude and the phase from this O(1) spectrum.
+# The drive spectrum is the current moment. Etheta is that moment
+# times the dipole factor, in V·s, so it is small. abs and angle keep it.
 spec = sum(g .* exp(-j * 2 * pi * f * (s - 0.5) * dt));
 il = abs(spec) * dt * dx * dx;
 fan = eta0 * k * il / (4 * pi);
-# The far-field phasor is a few 1e-14. Scale before abs().
-eth = pat.Etheta(1, :, 1) * 1e12;
-ae = abs(eth) / 1e12;
+eth = pat.Etheta(1, :, 1);
+ae = abs(eth);
 a90 = ae(18);                           # θ = 90°
 amp = abs(a90 / fan - 1);
 ph = abs(angle(eth)(18) - angle(spec) - pi / 2);
@@ -77,8 +76,8 @@ end
 phic = linspace(0, 2 * pi, 73);
 phic = phic(1:end - 1);
 cut = fdtd_farfield(sim, pi / 2, phic, "origin", org);
-xe = abs(cut.Ephi(1, 1, :) * 1e12);
-ye = abs(cut.Etheta(1, 1, :) * 1e12);
+xe = abs(cut.Ephi(1, 1, :));
+ye = abs(cut.Etheta(1, 1, :));
 xpol = max(xe ./ ye);
 fprintf("              max |Ephi|/|Etheta| on the xy cut = %.3e\n", xpol);
 if xpol > 2e-5
@@ -92,7 +91,7 @@ ylabel("|Etheta| / max");
 title("short dipole elevation");
 
 subplot(2, 1, 2);
-ring = abs(cut.Etheta(1, 1, :) * 1e12);
+ring = abs(cut.Etheta(1, 1, :));
 polar(phic, ring / max(ring));
 title("short dipole, theta = 90 deg");
 

@@ -187,7 +187,7 @@ Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_por
 | `fdtd_record(sim)` | `t`, `dt`, `steps`, `probe` (`steps × nprobes`), `V` and `I` (`steps × nports`), `Z0`, `interrupted` |
 | `fdtd_slice(sim, comp, axis, index)` | One plane: `"z"` → `ny × nx`, `"y"` → `nx × nz`, `"x"` → `ny × nz` |
 | `fdtd_ntff(sim, freqs [, "margin", m])` | Arm the near-to-far box before the first step. Default margin 2. Empty `freqs` disarms. At least 10 cells per background wavelength |
-| `fdtd_farfield(sim, theta, phi [, "origin", xyz] [, "decay", "pulse"\|"off"])` | `Etheta` / `Ephi` (V·s), flux directivity, port-power gain and realized gain (`NaN` with no port). Default origin is the box centroid. A pulse tail above 1e-3 is an error unless `"off"` |
+| `fdtd_farfield(sim, theta, phi [, "origin", xyz] [, "decay", "pulse"\|"off"])` | `Etheta` / `Ephi` (V·s), flux directivity, port-power gain and realized gain (`NaN` with no port). Default origin is the box centroid. A pulse tail above 1e-3 is an error unless `"off"`. A nonfinite field, port record, or flux is an error either way |
 
 ---
 
@@ -559,7 +559,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
 | `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1×n row with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
-| `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
+| `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos, eigenvalues exactly real; general → Arnoldi. Smallest-magnitude of a real matrix uses shift-and-invert. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |
 | `laplacian_1d(n [, dx] [, bc])` | Tridiagonal sparse Laplacian; `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"` |
 | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |

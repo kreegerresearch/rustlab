@@ -329,6 +329,28 @@ impl FdtdSim {
                 ]
             }
         };
+        // Once, at the end. A NaN field does not show up in the decay
+        // trace: `f64::max` drops NaN, and the phasor sum then returns a
+        // NaN pattern with no error. Inf survives that max and still has
+        // to be refused. Gain stays NaN when there is no port or the
+        // power is not positive; that is a defined result, not bad data.
+        require_finite(&self.ex, "a field sample")?;
+        require_finite(&self.ey, "a field sample")?;
+        require_finite(&self.ez, "a field sample")?;
+        require_finite(&self.hx, "a field sample")?;
+        require_finite(&self.hy, "a field sample")?;
+        require_finite(&self.hz, "a field sample")?;
+        require_finite(&r.decay, "the surface field")?;
+        if self.n_ports() > 0 {
+            require_finite(self.port_voltage(), "the port voltage")?;
+            require_finite(self.port_current(), "the port current")?;
+        }
+        if r.e.iter().any(|z| !z.is_finite()) || r.h.iter().any(|z| !z.is_finite()) {
+            return Err(DspError::InvalidParameter(
+                "a surface phasor is not finite (NaN or Inf). The far field is not a pattern"
+                    .into(),
+            ));
+        }
         let surface = tail_over_peak(&r.decay);
         if decay == RecordDecay::Pulse {
             if surface > PULSE_TAIL_LIMIT {
@@ -365,6 +387,11 @@ impl FdtdSim {
                 p += -0.5 * (ev * (sm.sj * hv).conj()).re * sm.w;
             }
             prad.push(p);
+        }
+        if prad.iter().any(|p| !p.is_finite()) {
+            return Err(DspError::InvalidParameter(
+                "the flux is not finite (NaN or Inf). The far field is not a pattern".into(),
+            ));
         }
         let (nt, np) = (theta.len(), phi.len());
         let mut e_theta = vec![C64::new(0.0, 0.0); nf * nt * np];
@@ -622,6 +649,15 @@ pub fn db10(x: f64) -> f64 {
     } else {
         f64::NAN
     }
+}
+
+fn require_finite(samples: &[f64], what: &str) -> Result<(), DspError> {
+    if samples.iter().any(|x| !x.is_finite()) {
+        return Err(DspError::InvalidParameter(format!(
+            "{what} is not finite (NaN or Inf). The far field is not a pattern"
+        )));
+    }
+    Ok(())
 }
 
 fn off_face(name: &str) -> DspError {

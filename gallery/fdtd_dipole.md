@@ -18,7 +18,7 @@ v1 is a box in air, inside CPML on all six faces. The cells outside the box, and
 
 The default `"decay", "pulse"` refuses the pattern when the last tenth of the surface field, or of the port voltage or current, is still above `1e-3` of its peak. A tone that never dies is not a far field of a pulse.
 
-`abs` treats a value whose imaginary part is below `1e-10` as real. The far-field phasor is a few times `1e-14`, so it is scaled by `1e12` before `abs`. The current moment is even smaller, about `1e-17`, so its magnitude and phase come from the spectrum of the driving samples, which is order 1. A one-element tensor index snaps below `1e-12` as well, so the cuts ask for more than one angle.
+`Etheta` is a few times `1e-14` V·s, because the current moment is about `1e-17` A·m·s. `abs` and `angle` keep that value, including a single element `pat.Etheta(1, 18, 1)`. The drive spectrum below is only the reference for the current moment.
 
 ```rustlab
 c0 = 299792458;
@@ -52,8 +52,8 @@ k = 2 * pi * f / c0;
 spec = sum(g .* exp(-j * 2 * pi * f * (s - 0.5) * dt));
 il = abs(spec) * dt * dx * dx;
 fan = eta0 * k * il / (4 * pi);
-eth = pat.Etheta(1, :, 1) * 1e12;
-ae = abs(eth) / 1e12;
+eth = pat.Etheta(1, :, 1);
+ae = abs(eth);
 a90 = ae(18);
 amp = abs(a90 / fan - 1);
 ph = abs(angle(eth)(18) - angle(spec) - pi / 2);
@@ -84,8 +84,8 @@ end
 phic = linspace(0, 2 * pi, 73);
 phic = phic(1:end - 1);
 cut = fdtd_farfield(sim, pi / 2, phic, "origin", org);
-xe = abs(cut.Ephi(1, 1, :) * 1e12);
-ye = abs(cut.Etheta(1, 1, :) * 1e12);
+xe = abs(cut.Ephi(1, 1, :));
+ye = abs(cut.Etheta(1, 1, :));
 xpol = max(xe ./ ye);
 fprintf("              max |Ephi|/|Etheta| on the xy cut = %.3e\n", xpol);
 if xpol > 2e-5
@@ -99,7 +99,7 @@ ylabel("|Etheta| / max");
 title("short dipole elevation");
 
 subplot(2, 1, 2);
-ring = abs(cut.Etheta(1, 1, :) * 1e12);
+ring = abs(cut.Etheta(1, 1, :));
 polar(phic, ring / max(ring));
 title("short dipole, theta = 90 deg");
 ```
@@ -108,7 +108,7 @@ title("short dipole, theta = 90 deg");
 ```text
 short dipole  |F/Fan|-1 = 0.0040   phase = 0.0009 rad
               shape = 0.0040   D(90) = 1.5044 (1.774 dBi)   |P/Pan|-1 = 0.0050
-              max |Ephi|/|Etheta| on the xy cut = 2.399e-06
+              max |Ephi|/|Etheta| on the xy cut = 4.928e-06
 ```
 
 ![plot 1](plots/fdtd_dipole/plot-1-81a04a04.svg)

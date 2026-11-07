@@ -227,12 +227,23 @@ fn run_shift_invert_sm(a: &SparseMat, n: usize, m: usize) -> Result<EigPairs, Sp
     // The n largest-magnitude eigenpairs of A⁻¹ ↔ the n smallest of A.
     let inv = run_arnoldi_with_matvec(n_size, &matvec, n, Which::LargestMagnitude, m)?;
 
+    // A Hermitian spectrum is real. Arnoldi on A⁻¹ leaves an imaginary
+    // residual near 1e-18 on those eigenvalues. That is roundoff, not a
+    // phase, so the stored value is exactly real. A non-Hermitian real
+    // matrix can have a genuinely complex eigenvalue, and that part stays.
+    let hermitian = a.is_hermitian(1e-10);
+
     // Transform back: λ = 1/μ, recomputing the residual ‖A v − λ v‖ against A.
     let mut values = Array1::<C64>::zeros(n);
     let mut max_residual = 0.0_f64;
     for k in 0..n {
         let mu = inv.values[k];
         let lambda = Complex::new(1.0, 0.0) / mu;
+        let lambda = if hermitian {
+            Complex::new(lambda.re, 0.0)
+        } else {
+            lambda
+        };
         values[k] = lambda;
 
         let v: Vec<C64> = inv.vectors.column(k).to_vec();

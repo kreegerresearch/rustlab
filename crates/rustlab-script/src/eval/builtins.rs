@@ -768,16 +768,16 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
         }),
         Value::Complex(c) => Ok(Value::Scalar(c.norm())),
         Value::Vector(v) => {
-            // Fast path: |re| is cheaper than sqrt(re²+im²) for real-only vectors.
-            if is_real_vector(v) {
-                Ok(Value::Vector(
-                    v.mapv(|c| Complex::new(c.re.abs(), 0.0)).into(),
-                ))
-            } else {
-                Ok(Value::Vector(
-                    v.mapv(|c| Complex::new(c.norm(), 0.0)).into(),
-                ))
-            }
+            // Per element. Exact-zero imag uses `|re|`, which equals
+            // `hypot(re, ±0)`. Any other imag uses the modulus, so a part
+            // of `1e-15` is kept. `is_real_vector` is only the plot threshold.
+            Ok(Value::Vector(
+                v.mapv(|c| {
+                    let m = if c.im == 0.0 { c.re.abs() } else { c.norm() };
+                    Complex::new(m, 0.0)
+                })
+                .into(),
+            ))
         }
         Value::Matrix(m) => {
             let result = m.mapv(|c| Complex::new(c.norm(), 0.0));
@@ -964,7 +964,9 @@ fn apply_scalar_fn_promoting(
         // Real input avoids the complex formula. Contiguous arrays map in
         // parallel when long (`par_map`); the values are the same either way.
         Value::Vector(v) => {
-            let real = is_real_vector(v);
+            // Same rule as a matrix: the real formula only when every
+            // imaginary part is exactly zero.
+            let real = v.iter().all(|c| c.im == 0.0);
             let map = |c: Complex<f64>| {
                 if real {
                     elem(c.re)
@@ -2891,8 +2893,10 @@ fn parse_reduction_dim(name: &str, args: &[Value]) -> Result<Option<usize>, Scri
     Ok(Some(d as usize))
 }
 
-/// Wrap a complex sum/reduction result, collapsing imaginary noise to zero
-/// when it's negligible.
+/// A reduction (`sum`, `mean`, `prod`, and the callers below) drops an
+/// imaginary part below `1e-12`. That part is accumulated roundoff when
+/// the mathematical result is real. A stored sample uses
+/// [`Value::from_c64`], which keeps every nonzero imaginary part.
 fn complex_to_value(s: C64) -> Value {
     if s.im.abs() < 1e-12 {
         Value::Scalar(s.re)
@@ -5612,7 +5616,8 @@ fn builtin_print(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::None)
 }
 
-/// Check if a CVector is "real" (all imaginary parts < 1e-10)
+/// Plotting threshold: every imaginary part below `1e-10` draws as real.
+/// Not a value rule. `abs` and the scalar functions use an exact-zero imag.
 fn is_real_vector(v: &CVector) -> bool {
     v.iter().all(|c| c.im.abs() < 1e-10)
 }
@@ -8161,11 +8166,7 @@ fn array_to_value(
     match shape {
         [] | [1] => {
             let c = *values.first().ok_or("NPY: empty array")?;
-            if c.im.abs() < 1e-12 {
-                Ok(Value::Scalar(c.re))
-            } else {
-                Ok(Value::Complex(c))
-            }
+            Ok(Value::from_c64(c))
         }
         // 1-D layout is identical in C and Fortran order.
         [_n] => Ok(Value::Vector(Array1::from_vec(values).into())),
@@ -8512,14 +8513,7 @@ fn load_csv(path: &str) -> Result<Value, String> {
         return Err("CSV load: rows have inconsistent column counts".to_string());
     }
     match (rows.len(), ncols) {
-        (1, 1) => {
-            let c = rows[0][0];
-            if c.im.abs() < 1e-12 {
-                Ok(Value::Scalar(c.re))
-            } else {
-                Ok(Value::Complex(c))
-            }
-        }
+        (1, 1) => Ok(Value::from_c64(rows[0][0])),
         (_, 1) => {
             // Column vector
             Ok(Value::Vector(
@@ -9347,13 +9341,8 @@ fn builtin_squeeze(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Vector(Array1::from_vec(out).into()))
         }
         _ => {
-            // All singletons → Scalar / Complex
-            let c = t[[0, 0, 0]];
-            if c.im.abs() < 1e-12 {
-                Ok(Value::Scalar(c.re))
-            } else {
-                Ok(Value::Complex(c))
-            }
+            // All singletons: one stored sample.
+            Ok(Value::from_c64(t[[0, 0, 0]]))
         }
     }
 }
@@ -9870,12 +9859,7 @@ fn builtin_det(args: Vec<Value>) -> Result<Value, ScriptError> {
                 ));
             }
             if n == 1 {
-                let c = m[[0, 0]];
-                return if c.im.abs() < 1e-12 {
-                    Ok(Value::Scalar(c.re))
-                } else {
-                    Ok(Value::Complex(c))
-                };
+                return Ok(Value::from_c64(m[[0, 0]]));
             }
             let (lu, sign) = lu_decompose(m);
             let d: C64 = sign * (0..n).map(|i| lu[[i, i]]).product::<C64>();

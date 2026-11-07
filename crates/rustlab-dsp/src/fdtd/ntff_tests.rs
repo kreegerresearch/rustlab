@@ -448,7 +448,7 @@ fn g12_uniform_dielectric_uses_the_medium_k_and_eta() {
     let origin = [16.0e-3, 16.0e-3, 16.5e-3];
     let theta: Vec<f64> = (1..36).map(|a| PI * a as f64 / 36.0).collect();
     let ff = sim
-        .far_field(&theta, &[0.0], Some(origin), RecordDecay::Off)
+        .far_field(&theta, &[0.0], Some(origin), RecordDecay::Pulse)
         .unwrap();
     let il = moment(&g, sim.dt(), f, 1.0e-6);
     let a90 = theta
@@ -478,53 +478,167 @@ fn g12_uniform_dielectric_uses_the_medium_k_and_eta() {
     assert!(derr <= 0.02, "|Dpeak/1.5 − 1| = {derr}");
 }
 
+/// `Pacc − Pflux` against an independent `½ Σ σ |Ê|² ΔV`.
+///
+/// The cube is the same 4 mm block at every resolution, on a 40 mm domain
+/// with 8 mm of CPML and a 2 mm margin, so the Huygens surface does not
+/// move. σ = 1 S/m. The centre Ez port edge does not touch the cube, so
+/// its material σ is 0 and the port resistor is not in this sum.
+///
+/// Ê uses the same sample the surface flux uses: E after the update, at
+/// time `n·dt`, times `dt`. σ on an edge is the arithmetic mean of the
+/// cells around it, the mean the bake uses, and not the port's extra σ.
+/// The centred sample `(E^n + E^{n−1})/2` is what the loss update
+/// dissipates; it falls on the other side of the gap.
+///
+/// Measured `(diss / gap − 1)` for the end-of-step sample, then the
+/// centred sample, at Δ = 2 mm, 1 mm, ⅔ mm (λ/Δ = 15, 30, 45 at 30 mm):
+///
+/// | Δ | end-of-step | centred |
+/// |---|---|---|
+/// | 2 mm | +2.46e-3 | −1.19e-2 |
+/// | 1 mm | +1.44e-3 | −2.14e-3 |
+/// | ⅔ mm | +7.57e-4 | −8.35e-4 |
+///
+/// Both shrink, and they bracket the gap. `Pacc/Pflux` is 1.0185 at all
+/// three, so the gap is 1.85% of the flux and not a sign check. The
+/// bounds sit just above that table. An omitted ½, a missing component,
+/// or the port resistor added in would miss by a factor, not by 1e-3.
 #[test]
-fn loss_separates_accepted_power_from_flux() {
-    let mut sim = grid(32, 6);
-    let n = 32usize;
-    let mut sigma = vec![0.0; n * n * n];
-    for k in 9..=22 {
-        for i in 9..=22 {
-            for j in 9..=22 {
-                sigma[(k * n + i) * n + j] = 5.0;
+fn loss_balances_accepted_minus_flux_against_sigma_e_squared() {
+    let coarse = dissipation_balance(20, 4, 1);
+    let mid = dissipation_balance(40, 8, 2);
+    let fine = dissipation_balance(60, 12, 3);
+    for (name, b) in [("2 mm", coarse), ("1 mm", mid), ("2/3 mm", fine)] {
+        assert!(
+            (0.015..0.022).contains(&(b.ratio - 1.0)),
+            "{name}: Pacc/Pflux − 1 = {:.4e} (gap should be about 1.85% of the flux)",
+            b.ratio - 1.0
+        );
+        assert!(
+            b.decay < 1e-3,
+            "{name}: surface tail/peak {} with the pulse check on",
+            b.decay
+        );
+        assert!(
+            b.end_rel > 0.0,
+            "{name}: end-of-step dissipation is below the gap"
+        );
+        assert!(
+            b.avg_rel < 0.0,
+            "{name}: centred dissipation is above the gap"
+        );
+    }
+    assert!(
+        fine.end_rel < mid.end_rel && mid.end_rel < coarse.end_rel,
+        "end-of-step error did not shrink: 2 mm {:.4e}, 1 mm {:.4e}, 2/3 mm {:.4e}",
+        coarse.end_rel,
+        mid.end_rel,
+        fine.end_rel
+    );
+    assert!(
+        fine.avg_rel.abs() < mid.avg_rel.abs() && mid.avg_rel.abs() < coarse.avg_rel.abs(),
+        "centred error did not shrink: 2 mm {:.4e}, 1 mm {:.4e}, 2/3 mm {:.4e}",
+        coarse.avg_rel,
+        mid.avg_rel,
+        fine.avg_rel
+    );
+    assert!(
+        coarse.end_rel < 3.5e-3 && fine.end_rel < 1.0e-3 && fine.end_rel < 0.5 * coarse.end_rel,
+        "end-of-step (diss/gap − 1) = {:.4e} at 2 mm, {:.4e} at 2/3 mm",
+        coarse.end_rel,
+        fine.end_rel
+    );
+    assert!(
+        coarse.avg_rel.abs() < 1.5e-2 && fine.avg_rel.abs() < 1.5e-3,
+        "centred (diss/gap − 1) = {:.4e} at 2 mm, {:.4e} at 2/3 mm",
+        coarse.avg_rel,
+        fine.avg_rel
+    );
+    let s = coarse.s11_sq;
+    let alg = (coarse.realized / (coarse.gain * (1.0 - s)) - 1.0).abs();
+    assert!(alg <= 1e-9, "algebraic identity err {alg}");
+}
+
+#[derive(Clone, Copy)]
+struct Dissipation {
+    end_rel: f64,
+    avg_rel: f64,
+    ratio: f64,
+    decay: f64,
+    gain: f64,
+    realized: f64,
+    s11_sq: f64,
+}
+
+fn dissipation_balance(n: usize, pml: usize, margin: usize) -> Dissipation {
+    let sigma0 = 1.0;
+    let dx = 0.040 / n as f64;
+    let mut sim = FdtdSim::new(n, n, n, dx, dx, dx, 0.99).unwrap();
+    sim.set_cpml(pml, CpmlParams::default()).unwrap();
+    let mut cells = vec![0.0; n * n * n];
+    let a = (0.012 / dx).round() as usize;
+    let b = (0.016 / dx).round() as usize;
+    for k in a..b {
+        for i in a..b {
+            for j in a..b {
+                cells[(k * n + i) * n + j] = sigma0;
             }
         }
     }
     sim.set_media(
         CellMap::Uniform(1.0),
         CellMap::Uniform(1.0),
-        CellMap::Cells(sigma),
+        CellMap::Cells(cells.clone()),
     )
     .unwrap();
-    let g = dgauss(sim.dt(), 700, C0 / 0.020);
-    sim.add_port(Component::Ez, &[(16, 16, 16)], 50.0, Waveform::Samples(g))
-        .unwrap();
     let f = C0 / 0.030;
-    sim.set_ntff(&[f], 2).unwrap();
-    sim.run(700, &mut never()).unwrap();
+    let g = dgauss(sim.dt(), 700, C0 / 0.020);
+    let c = n / 2;
+    sim.add_port(Component::Ez, &[(c, c, c)], 50.0, Waveform::Samples(g))
+        .unwrap();
+    sim.set_ntff(&[f], margin).unwrap();
+    let edges = lossy_edges(&cells, n);
+    let dt = sim.dt();
+    let w = 2.0 * PI * f;
+    let dv = dx * dx * dx;
+    let mut prev: Vec<f64> = edges.iter().map(|e| sim_field(&sim, e.0)[e.1]).collect();
+    let mut end = vec![C64::new(0.0, 0.0); edges.len()];
+    let mut avg = vec![C64::new(0.0, 0.0); edges.len()];
+    for _ in 0..700 {
+        sim.run(1, &mut never()).unwrap();
+        let s = sim.steps() as f64;
+        let re = Complex::from_polar(dt, -w * s * dt);
+        for (p, &(comp, idx, _)) in edges.iter().enumerate() {
+            let en = sim_field(&sim, comp)[idx];
+            end[p] += re * en;
+            avg[p] += re * 0.5 * (en + prev[p]);
+            prev[p] = en;
+        }
+    }
+    let pd = |ph: &[C64]| {
+        0.5 * edges
+            .iter()
+            .zip(ph)
+            .map(|((_, _, sig), e)| sig * e.norm_sqr())
+            .sum::<f64>()
+            * dv
+    };
     let ff = sim
-        .far_field(&[PI / 2.0], &[0.0], None, RecordDecay::Off)
+        .far_field(&[PI / 2.0], &[0.0], None, RecordDecay::Pulse)
         .unwrap();
     let port = ff.port.as_ref().unwrap();
+    let gap = port.accepted[0] - ff.prad[0];
     let (ft, fp) = at(&ff, 0, 0, 0);
-    let d = directive_gain(ft, fp, ff.eta, ff.prad[0]);
-    let g = directive_gain(ft, fp, ff.eta, port.accepted[0]);
-    let gr = directive_gain(ft, fp, ff.eta, port.incident[0]);
-    assert!(
-        port.accepted[0] > ff.prad[0],
-        "Pacc {} should exceed Pflux {} when the interior is lossy",
-        port.accepted[0],
-        ff.prad[0]
-    );
-    assert!(g < d, "gain {g} should be below directivity {d}");
-    let s = port.s11[0].norm_sqr();
-    let alg = (gr / (g * (1.0 - s)) - 1.0).abs();
-    assert!(alg <= 1e-9, "algebraic identity err {alg}");
-    let rejected = (gr - d * (1.0 - s)).abs() / d;
-    assert!(
-        rejected > 1e-3,
-        "Gr and D(1−|S11|²) did not separate ({rejected}); the loss is too weak to test the parent formula"
-    );
+    Dissipation {
+        end_rel: pd(&end) / gap - 1.0,
+        avg_rel: pd(&avg) / gap - 1.0,
+        ratio: port.accepted[0] / ff.prad[0],
+        decay: ff.decay,
+        gain: directive_gain(ft, fp, ff.eta, port.accepted[0]),
+        realized: directive_gain(ft, fp, ff.eta, port.incident[0]),
+        s11_sq: port.s11[0].norm_sqr(),
+    }
 }
 
 #[test]
@@ -545,6 +659,71 @@ fn l1_ntff_off_does_not_change_the_fields() {
     off.run(200, &mut never()).unwrap();
     on.run(200, &mut never()).unwrap();
     assert_eq!(off.field_bits(), on.field_bits());
+}
+
+#[test]
+fn l1_port_media_and_pec_fields_do_not_change_when_ntff_is_on() {
+    let drive = |s: &mut FdtdSim| {
+        let g = dgauss(s.dt(), 40, C0 / 0.020);
+        s.add_source(
+            Component::Ez,
+            &[(16, 16, 16)],
+            SourceKind::Soft,
+            Waveform::Samples(g),
+        )
+        .unwrap();
+    };
+    let mut off = grid(32, 6);
+    let mut on = grid(32, 6);
+    for s in [&mut off, &mut on] {
+        s.add_port(
+            Component::Ez,
+            &[(16, 16, 16)],
+            50.0,
+            Waveform::Samples(dgauss(s.dt(), 40, C0 / 0.020)),
+        )
+        .unwrap();
+    }
+    on.set_ntff(&[C0 / 0.030], 2).unwrap();
+    off.run(40, &mut never()).unwrap();
+    on.run(40, &mut never()).unwrap();
+    assert_eq!(off.field_bits(), on.field_bits(), "port");
+
+    let mut off = grid(32, 6);
+    let mut on = grid(32, 6);
+    for s in [&mut off, &mut on] {
+        s.set_media(
+            CellMap::Uniform(2.0),
+            CellMap::Uniform(1.0),
+            CellMap::Uniform(0.0),
+        )
+        .unwrap();
+        drive(s);
+    }
+    on.set_ntff(&[C0 / 0.030], 2).unwrap();
+    off.run(40, &mut never()).unwrap();
+    on.run(40, &mut never()).unwrap();
+    assert_eq!(off.field_bits(), on.field_bits(), "media");
+
+    let mut off = grid(32, 6);
+    let mut on = grid(32, 6);
+    let n = 32usize;
+    let mut cells = vec![false; n * n * n];
+    for k in 12..14 {
+        for i in 12..14 {
+            for j in 12..14 {
+                cells[(k * n + i) * n + j] = true;
+            }
+        }
+    }
+    for s in [&mut off, &mut on] {
+        s.add_pec_volume(&cells).unwrap();
+        drive(s);
+    }
+    on.set_ntff(&[C0 / 0.030], 2).unwrap();
+    off.run(40, &mut never()).unwrap();
+    on.run(40, &mut never()).unwrap();
+    assert_eq!(off.field_bits(), on.field_bits(), "pec");
 }
 
 #[test]
@@ -708,6 +887,69 @@ fn l5_exterior_and_the_inner_layer_stay_homogeneous() {
     lossy.set_ntff(&[C0 / 0.030], 2).unwrap();
     let err = lossy.run(1, &mut never()).unwrap_err().to_string();
     assert!(err.contains("sigma"), "{err}");
+}
+
+#[test]
+fn l5_every_face_of_the_shell_is_exterior() {
+    // n = 32, CPML 6, margin 2 → node planes 8 and 24. A cell on the
+    // inner face of that plane (8, or 23) is the one-cell shell.
+    let n = 32usize;
+    let plant = |axis: &str, index: usize| {
+        let mut eps = vec![1.0; n * n * n];
+        let (i, j, k) = match axis {
+            "x" => (16usize, index, 16usize),
+            "y" => (index, 16, 16),
+            _ => (16, 16, index),
+        };
+        eps[(k * n + i) * n + j] = 2.0;
+        let mut s = grid(n, 6);
+        s.set_media(
+            CellMap::Cells(eps),
+            CellMap::Uniform(1.0),
+            CellMap::Uniform(0.0),
+        )
+        .unwrap();
+        s.add_source(
+            Component::Ez,
+            &[(16, 16, 16)],
+            SourceKind::Soft,
+            Waveform::Samples(vec![1.0]),
+        )
+        .unwrap();
+        s.set_ntff(&[C0 / 0.030], 2).unwrap();
+        s
+    };
+    for axis in ["x", "y", "z"] {
+        for index in [8usize, 23] {
+            let mut s = plant(axis, index);
+            let err = s.run(1, &mut never()).unwrap_err().to_string();
+            assert!(
+                err.contains("homogeneous") || err.contains("material"),
+                "{axis}={index}: {err}"
+            );
+            assert_eq!(s.steps(), 0, "{axis}={index}");
+        }
+    }
+    plant("z", 9).run(1, &mut never()).unwrap();
+}
+
+#[test]
+fn l6_a_port_outside_the_box_is_refused() {
+    let mut s = grid(32, 6);
+    s.add_port(
+        Component::Ez,
+        &[(16, 8, 16)],
+        50.0,
+        Waveform::Samples(vec![1.0]),
+    )
+    .unwrap();
+    s.set_ntff(&[C0 / 0.030], 2).unwrap();
+    let err = s.run(1, &mut never()).unwrap_err().to_string();
+    assert!(
+        err.contains("Huygens") || err.contains("inside") || err.contains("port"),
+        "{err}"
+    );
+    assert_eq!(s.steps(), 0);
 }
 
 #[test]
@@ -883,6 +1125,25 @@ fn l9_decay_gate_quotes_the_ratio_and_off_skips_it() {
 }
 
 #[test]
+fn l9_port_decay_is_refused_and_off_skips_it() {
+    // The surface of this record has already decayed (G10). A late port
+    // sample is what the port gate is for; the surface check would hide
+    // it on a short record.
+    let (sim, _) = port_run();
+    let mut s = sim.clone();
+    let n = s.port_v.len();
+    let peak = s.port_v.iter().fold(0.0_f64, |p, v| p.max(v.abs()));
+    s.port_v[n - 1] = peak * 10.0 + 1.0;
+    let err = s
+        .far_field(&[1.0], &[0.0], None, RecordDecay::Pulse)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("port"), "{err}");
+    assert!(err.contains("has not decayed"), "{err}");
+    s.far_field(&[1.0], &[0.0], None, RecordDecay::Off).unwrap();
+}
+
+#[test]
 fn l10_bytes_match_the_table() {
     let mut s = grid(32, 6);
     s.add_source(
@@ -901,6 +1162,83 @@ fn l10_bytes_match_the_table() {
     let nf = 2usize;
     let steps = 20usize;
     assert_eq!(s.bytes() - armed, ns * 48 + ns * nf * 32 + steps * 8);
+}
+
+#[test]
+fn a_nonfinite_field_or_port_record_is_an_error() {
+    let mut s = grid(16, 4);
+    s.add_source(
+        Component::Ez,
+        &[(8, 8, 8)],
+        SourceKind::Soft,
+        Waveform::Samples(vec![1.0, 0.0, 0.0, 0.0]),
+    )
+    .unwrap();
+    s.set_ntff(&[C0 / 0.020], 1).unwrap();
+    s.run(3, &mut never()).unwrap();
+    let poisoned = s.idx(8, 8, 4);
+    s.ex[poisoned] = f64::NAN;
+    s.run(1, &mut never()).unwrap();
+    for decay in [RecordDecay::Pulse, RecordDecay::Off] {
+        let err = s
+            .far_field(&[1.0], &[0.0], None, decay)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not finite"), "decay {decay:?} returned {err}");
+    }
+
+    let mut s = grid(16, 4);
+    let g = dgauss(s.dt(), 20, C0 / 0.020);
+    s.add_port(Component::Ez, &[(8, 8, 8)], 50.0, Waveform::Samples(g))
+        .unwrap();
+    s.set_ntff(&[C0 / 0.020], 1).unwrap();
+    s.run(8, &mut never()).unwrap();
+    s.port_v[0] = f64::INFINITY;
+    let err = s
+        .far_field(&[1.0], &[0.0], None, RecordDecay::Off)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("port voltage") && err.contains("not finite"),
+        "{err}"
+    );
+}
+
+fn sim_field(sim: &FdtdSim, c: usize) -> &[f64] {
+    match c {
+        0 => &sim.ex,
+        1 => &sim.ey,
+        _ => &sim.ez,
+    }
+}
+
+fn lossy_edges(cells: &[f64], n: usize) -> Vec<(usize, usize, f64)> {
+    let span = [(1usize, 0usize, 1usize), (0, 1, 1), (1, 1, 0)];
+    let mut out = Vec::new();
+    for c in 0..3 {
+        let (di, dj, dk) = span[c];
+        for k in 0..n {
+            for i in 0..n {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    let mut cnt = 0.0;
+                    for kk in k.saturating_sub(dk)..=k {
+                        for ii in i.saturating_sub(di)..=i {
+                            for jj in j.saturating_sub(dj)..=j {
+                                sum += cells[(kk * n + ii) * n + jj];
+                                cnt += 1.0;
+                            }
+                        }
+                    }
+                    let sig = sum / cnt;
+                    if sig > 0.0 {
+                        out.push((c, (k * n + i) * n + j, sig));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 #[test]

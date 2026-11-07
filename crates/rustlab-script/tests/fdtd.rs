@@ -1106,11 +1106,9 @@ n = 700;
 fc = c0 / 0.020;
 tau = sqrt(2) / (2 * pi * fc);
 t0 = 5 * tau;
-g = zeros(1, n);
-for s = 1:n
-    u = (s * dt - t0) / tau;
-    g(s) = -u * exp(-u * u);
-end
+s = 1:n;
+u = (s * dt - t0) / tau;
+g = -u .* exp(-u .* u);
 fdtd_source(sim, "ez", 17, 17, 17, "soft", g);
 f = c0 / 0.030;
 fdtd_ntff(sim, f, "margin", 2);
@@ -1121,18 +1119,14 @@ mu0 = 1.25663706212e-6;
 eps0 = 1 / (mu0 * c0 * c0);
 eta = sqrt(mu0 / eps0);
 k = 2 * pi * f / c0;
-il = 0;
-for s = 1:n
-    il = il + g(s) * dt * exp(-j * 2 * pi * f * (s - 0.5) * dt);
-end
-il = il * dx * dx;
+il = sum(g .* exp(-j * 2 * pi * f * (s - 0.5) * dt)) * dt * dx * dx;
 fan = j * eta * k * il / (4 * pi);
-% A single sample this small has |Im F| < 1e-10, and abs() then keeps
-% only the real part. Scale first; the ratio does not change.
-eth = pat.Etheta(1, :, 1) * 1e12;
-ae = abs(eth) / 1e12;
+eth = pat.Etheta(1, :, 1);
+one = pat.Etheta(1, 1, 1);
+ae = abs(eth);
 amp = abs(ae(1) / abs(fan) - 1);
-ph = abs(angle(pat.Etheta(1, :, 1))(1) - angle(fan));
+amp1 = abs(abs(one) / abs(fan) - 1);
+ph = abs(angle(one) - angle(fan));
 "#,
     );
     let stored = match ev.get("pat") {
@@ -1152,6 +1146,7 @@ ph = abs(angle(pat.Etheta(1, :, 1))(1) - angle(fan));
     assert!(amp <= 0.01, "|F/Fan| error {amp}");
     assert!(ph <= 0.02, "phase error {ph} rad");
     assert!((scalar(&ev, "amp") - amp).abs() < 1e-9);
+    assert!((scalar(&ev, "amp1") - amp).abs() < 1e-9);
     assert!((scalar(&ev, "ph") - ph).abs() < 1e-9);
     assert!(ph <= 0.02, "phase error {ph}");
 }
@@ -1230,4 +1225,135 @@ n2 = fdtd_info(sim).ntff;
     assert_eq!(scalar(&ev, "n1"), 2.0);
     assert_eq!(scalar(&ev, "n2"), 0.0);
     assert!(scalar(&ev, "b1") > scalar(&ev, "b0"));
+}
+
+fn vec_re(ev: &Evaluator, name: &str) -> Vec<f64> {
+    match ev.get(name) {
+        Some(Value::Vector(v)) => v.iter().map(|c| c.re).collect(),
+        other => panic!("{name}: expected vector, got {other:?}"),
+    }
+}
+
+/// One complex element, a row `abs`, and the phase, at three source amplitudes.
+/// `U` and `prad` already scaled; `abs` of the phasor used to drop the
+/// imaginary part below `1e-10` and report a magnitude about 17 times low.
+#[test]
+fn fdtd_farfield_phasor_scales_from_1e_minus_6_to_1e6() {
+    let ev = eval(
+        r#"
+c0 = 299792458;
+dx = 1e-3;
+n = 32;
+nsteps = 700;
+fc = c0 / 0.020;
+f = c0 / 0.030;
+mu0 = 1.25663706212e-6;
+eta = sqrt(mu0 / (1 / (mu0 * c0 * c0)));
+amps = [1e-6, 1, 1e6];
+mag = [0, 0, 0];
+mag1 = [0, 0, 0];
+ph = [0, 0, 0];
+pw = [0, 0, 0];
+uu = [0, 0, 0];
+dd = [0, 0, 0];
+for ia = 1:3
+    A = amps(ia);
+    sim = fdtd3d(n, n, n, dx, dx, dx, "courant", 0.99);
+    fdtd_cpml(sim, 6);
+    dt = fdtd_info(sim).dt;
+    tau = sqrt(2) / (2 * pi * fc);
+    t0 = 5 * tau;
+    s = 1:nsteps;
+    u = (s * dt - t0) / tau;
+    g = -u .* exp(-u .* u);
+    fdtd_source(sim, "ez", 17, 17, 17, "soft", A * g);
+    fdtd_ntff(sim, f, "margin", 2);
+    fdtd_run(sim, nsteps);
+    th = (1:35) * pi / 36;
+    pat = fdtd_farfield(sim, th, 0, "origin", [16e-3, 16e-3, 16.5e-3]);
+    one = pat.Etheta(1, 18, 1);
+    if class(one) != "complex"
+        error("Etheta(1, 18, 1) was not complex");
+    end
+    row = abs(pat.Etheta(1, :, 1));
+    mag(ia) = row(18) / A;
+    mag1(ia) = abs(one) / A;
+    ph(ia) = angle(one);
+    pw(ia) = pat.prad(1) / A^2;
+    uu(ia) = pat.U(1, 18, 1) / A^2;
+    dd(ia) = pat.directivity(1, 18, 1);
+end
+"#,
+    );
+    let mag = vec_re(&ev, "mag");
+    let mag1 = vec_re(&ev, "mag1");
+    let ph = vec_re(&ev, "ph");
+    let pw = vec_re(&ev, "pw");
+    let uu = vec_re(&ev, "uu");
+    let dd = vec_re(&ev, "dd");
+    let eta = {
+        let mu0 = 1.25663706212e-6;
+        (mu0 / (1.0 / (mu0 * 299792458.0_f64.powi(2)))).sqrt()
+    };
+    for i in 0..3 {
+        let rel = (mag[i] - mag[0]).abs() / mag[0];
+        assert!(rel < 1e-9, "row |E|/A moved by {rel} at {i}");
+        let rel1 = (mag1[i] - mag[i]).abs() / mag[i];
+        assert!(rel1 < 1e-12, "single-element abs vs row: {rel1}");
+        let dph = (ph[i] - ph[0]).abs();
+        assert!(dph < 1e-9, "phase moved by {dph}");
+        let relp = (pw[i] - pw[0]).abs() / pw[0];
+        assert!(relp < 1e-9, "prad/A^2 moved by {relp}");
+        let relu = (uu[i] - uu[0]).abs() / uu[0];
+        assert!(relu < 1e-9, "U/A^2 moved by {relu}");
+        let reld = (dd[i] - dd[0]).abs() / dd[0];
+        assert!(reld < 1e-9, "directivity moved by {reld}");
+        let from_u = (2.0 * eta * uu[i]).sqrt();
+        let ident = (mag1[i] / from_u - 1.0).abs();
+        assert!(
+            ident < 1e-9,
+            "|E| vs sqrt(2 eta U) differs by {ident} at amplitude index {i}"
+        );
+    }
+    assert!(ph[0].abs() > 0.1, "phase collapsed to {}", ph[0]);
+}
+
+#[test]
+fn fdtd_farfield_port_reports_gain_and_s11() {
+    let ev = eval(
+        r#"
+c0 = 299792458;
+dx = 1e-3;
+n = 20;
+sim = fdtd3d(n, n, n, dx, dx, dx, "courant", 0.99);
+fdtd_cpml(sim, 4);
+dt = fdtd_info(sim).dt;
+nsteps = 250;
+fc = c0 / 0.020;
+tau = sqrt(2) / (2 * pi * fc);
+t0 = 5 * tau;
+s = 1:nsteps;
+u = (s * dt - t0) / tau;
+g = -u .* exp(-u .* u);
+ic = n / 2 + 1;
+fdtd_port(sim, "ez", ic, ic, ic, 50, g);
+fdtd_ntff(sim, c0 / 0.030, "margin", 1);
+fdtd_run(sim, nsteps);
+pat = fdtd_farfield(sim, pi / 2, 0, "decay", "off");
+gv = pat.gain(1, 1, 1);
+gr = pat.realized_gain(1, 1, 1);
+dv = pat.directivity(1, 1, 1);
+s11 = pat.s11(1);
+alg = abs(gr / (gv * (1 - abs(s11)^2)) - 1);
+"#,
+    );
+    let g = scalar(&ev, "gv");
+    let d = scalar(&ev, "dv");
+    assert!(g.is_finite() && g > 0.0, "gain {g}");
+    assert!(d.is_finite() && d > 0.0, "directivity {d}");
+    assert!(scalar(&ev, "alg") < 1e-9, "identity {}", scalar(&ev, "alg"));
+    match ev.get("s11") {
+        Some(Value::Complex(c)) => assert!(c.is_finite(), "s11 {c}"),
+        other => panic!("s11: {other:?}"),
+    }
 }
