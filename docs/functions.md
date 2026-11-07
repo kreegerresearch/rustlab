@@ -488,7 +488,11 @@ The record of every step since the grid was created, without stepping:
 ### `s = fdtd_s11(sim)` / `fdtd_s11(V, I, dt, Z0)`
 One-port S11 from the port's gap voltage and Ampère current. `fdtd_s11(sim)` reads the one port on that grid (`"port", 1` is accepted and is the only id; any other id errors and names S21). `fdtd_s11(V, I, dt, Z0)` is the same calculation on samples: `V` and `I` are real vectors or `steps × 1` columns of equal length (at least 2), `dt` and `Z0` are finite and positive. A grid with no port is an error.
 
-`"window", "hann"` (the default; `"hanning"` is the same name) or `"window", "rect"` (`"rectangular"` too). Hann is the window builtin. Rectangular leaves a long steady tail untapered.
+The default window is none (`"window", "rect"`, also `"rectangular"`). That is the pulse default: `S11 = b/a` needs the whole incident and reflected records. `"window", "hann"` (`"hanning"` too) is the Hann window, and it is the right choice for a steady tone that fills the record, where it cuts leakage into the next bin. On a pulse it weights an early incident wave and a later reflection differently, so `|S11|` can exceed 1 even when the grid is passive. Nothing in `fdtd_s11` rescales a bin onto the unit disk.
+
+`"nfft", M` zero-pads the windowed samples to `M` (`M` an integer, at least the record length). The extra bins interpolate the DFT of these samples. Bin spacing becomes `1/(M·dt)`, but two tones closer than `1/(N·dt)` stay unresolved until the record itself is longer. A shorter `M` is an error: that would drop samples, which is not interpolation.
+
+`fdtd_s11(sim)` is pulse extraction. It errors when the last 10% of `|V|` or of `|I|` is still above `1e-3` of that signal's peak. Run more steps; padding does not make a truncated ring decay. Naming a window turns this check off, because that is the steady-tone path. `"decay", "pulse"` forces the check and `"decay", "off"` skips it. `fdtd_s11(V, I, dt, Z0)` does not check the tail unless you pass `"decay", "pulse"`, so a synthetic tone stays usable.
 
 `I` was sampled `dt/2` earlier than `V`. Its FFT is multiplied by `exp(+j·ω·dt/2)` first. Then
 
@@ -498,12 +502,14 @@ b   = (V - Z0·I) / (2·sqrt(Z0))
 S11 = b ./ a
 ```
 
-The return is a 1-port `sparameters` network (`__kind__ = "sparameters"`, `parameter_type = "S"`, `parameters` shaped `(n_freq, 1, 1)`, `num_ports = 1`, `impedance = Z0`). `frequencies` are in Hz, strictly increasing, and every entry is `> 0`: bin `m` of a length-`N` record is `m/(N·dt)` for `m = 1 .. floor(N/2)`, so DC is dropped (`rfplot` uses a logarithmic frequency axis) and an even `N` keeps Nyquist. A bin whose `|a|` is below `1e-12` times the peak `|a|` (the peak includes DC) is `NaN` at that frequency. `smith(s)` and `rfplot(s)` take this value. `s.impedance` is the port `Z0`, not `V/I`.
+The return is a 1-port `sparameters` network (`__kind__ = "sparameters"`, `parameter_type = "S"`, `parameters` shaped `(n_freq, 1, 1)`, `num_ports = 1`, `impedance = Z0`). `frequencies` are in Hz, strictly increasing, and every entry is `> 0`: bin `m` is `m/(M·dt)` for `m = 1 .. floor(M/2)`, with `M` the record length or `nfft`. DC is dropped (`rfplot` uses a logarithmic frequency axis) and an even `M` keeps Nyquist. A bin whose `|a|` is below `1e-12` times the peak `|a|` (the peak includes DC) is `NaN` at that frequency. `smith(s)` and `rfplot(s)` take this value. `s.impedance` is the port `Z0`, not `V/I`.
 ```
-s = fdtd_s11(sim, "window", "rect");
+s = fdtd_s11(sim);
 smith(s);
 rfplot(s);
 sij(s, 1, 1)
+s = fdtd_s11(V, I, dt, Z0, "window", "hann");
+s = fdtd_s11(sim, "nfft", 8 * fdtd_info(sim).steps);
 ```
 
 ### `M = fdtd_slice(sim, comp, axis, index)`

@@ -60,7 +60,7 @@ mod tests;
 
 pub use cpml::{CpmlParams, Face};
 pub use media::CellMap;
-pub use port::{s11, PortWindow, S11};
+pub use port::{s11, s11_with, PortWindow, RecordDecay, S11Spec, PULSE_TAIL_LIMIT, S11};
 pub use pulse::gaussian_pulse;
 
 use crate::error::DspError;

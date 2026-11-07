@@ -1,7 +1,7 @@
 # Phase 4 review: lumped port and S11 (physics review + implementation brief)
 
-**Status:** review complete, fix not started. Phase 4 of `dev/plans/fdtd3d.md` stays **pending**. Draft PR #142 stays unmerged.
-**Scope of this file:** what is right, what is wrong, the failing tests to write first, and the exact gates. No runtime code was changed in the review.
+**Status:** implemented on draft PR #142 (0.3.59, unshipped). The gates below are unchanged. `port_reads_an_independent_resistor`, `port_short_reads_minus_one`, and `lossless_patch_s11_minimum_near_2_4_ghz` lock items 8 and 10. The recovered-resistance test and the inset-feed ring test stay diagnostics. Phase 5 is not started.
+**Scope of this file:** what is right, what is wrong, the failing tests to write first, and the exact gates. The review commit changed no runtime code. The implementation that followed is in the FDTD crates, the example, and the docs.
 **Reviewer runs:** release binary `./target/release/rustlab` at 0.3.59 (commit `c516fae`). Scripts in `dev/plans/fdtd3d_phase4_review/`. Run each one from the repo root with `--plot none`.
 
 The original Phase 4 gates are unchanged and remain the bar:
@@ -215,7 +215,7 @@ Each item is a plan change; the review recommends the option given.
 
 - **D1 — window default.** Make `fdtd_s11` default to no window. Keep `"hann"` as an explicit opt-in documented for steady-state tones only, or remove it.
 - **D2 — zero padding.** Add `"nfft", M` (M ≥ steps) to `fdtd_s11`. Recommended default: `nfft = 8·steps` rounded to an FFT-friendly length.
-- **D3 — decay check.** `fdtd_s11` should refuse (error), or warn once on stderr, when `max(|a|, |b|)` over the last 10% of the record exceeds `1e−3` of the peak. The patch needs about 16000 steps to pass that. Recommended: an error, with a hint naming the tail ratio and suggesting more steps.
+- **D3 — decay check.** `fdtd_s11` should refuse (error), or warn once on stderr, when `max(|a|, |b|)` over the last 10% of the record exceeds `1e−3` of the peak. The patch needs about 16000 steps to pass that. Recommended: an error, with a hint naming the tail ratio and suggesting more steps. **Implemented:** the check is on the raw samples (last 10% of `|V|` and of `|I|`), because `a` and `b` are spectra. It applies to `fdtd_s11(sim)` unless a window is named or `"decay", "off"` is passed. `fdtd_s11(V, I, dt, Z0)` and an explicit window stay usable for a steady tone unless `"decay", "pulse"` is set. There is no unconditional refusal of every input.
 - **D4 — feed index.** Replace the plan's edge feed `round(px/dx)+1` with the first metal node of the mask, e.g. `find(patch(iy, :), 1)`.
 - **D5 — patch snapping.** Leave the mesh as is; do not snap `L` to the grid. It passes at +1.6% without snapping.
 - **D6 — Decisions A and B.** Sign-off (§1 shows both are forced by the equations).
@@ -239,7 +239,7 @@ Write these failing tests first, then make them pass. Do not loosen any number b
 3. **`s11_of_a_transient_is_passive`.**
    - Feed the R = 50 and R = 100 pillar records to `fdtd::s11` with its **default** options.
    - Assert `|S11| ≤ 1 + 1e−9` and `Re(V I*) ≥ 0` in every bin up to 300 MHz.
-   - **Fails today** because of the Hann default.
+   - This failed on the Hann default. The pulse default is now rectangular, and `port_reads_an_independent_resistor` locks the passivity gate.
 4. **`s11_zero_pad_matches_direct_dft`.** The padded `s11` at a bin equals a direct DFT of `V` and `I` at that frequency to 1e−9 relative. New `nfft` option.
 5. **`s11_rejects_undecayed_record`** (if D3 = error). A 6000-step inset patch, or a synthetic ringing record, must be refused.
 6. **Patch: replace `lossless_patch_inset_feed_rings_at_2_4_ghz` with `lossless_patch_s11_minimum_near_2_4_ghz`.**

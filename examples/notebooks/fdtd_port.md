@@ -1,141 +1,111 @@
-# FDTD port — a resistor in series with one gap
+# FDTD port — an independent resistor
 
-A lumped port is a voltage source in series with a resistor, sitting on
-one edge of the Yee grid. The resistor is not a separate component. It
-is extra conductivity on that edge,
+A lumped port is a voltage source in series with `Z0`, on one edge of
+the Yee grid. The resistor in this notebook is not that source
+resistance. It is a pillar of conductive cells under a metal pad, one
+node away from the port, so the port edges carry none of its
+conductivity.
 
-$$\sigma = \frac{\Delta z}{Z_0\,\Delta x\,\Delta y},$$
+The pillar is `n×n` cells in cross-section and `kp` cells tall, with
 
-baked into the same $C_a$ and $C_b$ a material conductivity uses. The
-source then subtracts
+$$\sigma = \frac{k_p\,\Delta z}{R\,n\,\Delta x\,n\,\Delta y}.$$
 
-$$\frac{\Delta t}{\varepsilon_0}\,C_b\,\frac{V_g}{Z_0\,\mathrm{Area}}$$
+The edge bake takes an arithmetic mean. Interior edges count 1, side
+edges ½ and corners ¼, and those weights sum to `n²`, so the DC
+conductance is exactly `1/R`. `V/I` at the port is that resistance.
+Solving the port's own update for `Z0` only restates the stamp, so it
+is not the check.
 
-from $E_z$. An impressed field $E_z \mathrel{-}= C_b\,V_g/(N\Delta z)$
-is the existing soft source. It does not put $V_g$ in series with
-$Z_0$, so the port does not use it.
+`Δx` and `Δy` are different. The Ampère current uses the Yee segment
+lengths, `ΔHy·Δy − ΔHx·Δx`. Swapping them misses `R`.
 
-The gap voltage is $V = -E_z\Delta z$, taken after the E update. The
-current is the Ampère loop around the edge, with the segment lengths
-of the curl ($\Delta H_y$ is multiplied by $\Delta y$, $\Delta H_x$ by
-$\Delta x$). $I$ is the half-step sample. `fdtd_s11` multiplies its
-spectrum by $e^{+j\omega\Delta t/2}$ so both phasors sit at the integer
-time of $V$, then
-
-$$a = \frac{V + Z_0 I}{2\sqrt{Z_0}}, \qquad
-b = \frac{V - Z_0 I}{2\sqrt{Z_0}}, \qquad
-S_{11} = b/a.$$
-
-The return value is a 1-port `sparameters` network, which `smith` and
-`rfplot` already accept. v1 has one port. A second `fdtd_port` errors
-and names the deferred S21 phase.
-
-## What the 1% check is
-
-The lossy update on that edge is the recurrence
-
-$$V^{n} = C_a V^{n-1} + \beta\,(V_g - Z_0 I^{n}),$$
-
-with $s = \sigma\Delta t/(2\varepsilon_0)$, $C_a = (1-s)/(1+s)$ and
-$\beta = 2s/(1+s)$. Solving it for $Z_0$ recovers the resistance the
-port enforces. $V/I$ is a different number: it is the impedance of the
-grid beyond the gap. This box is a small PEC cavity, not a 50 ohm
-load, so $|S_{11}|$ on the chart is the reflection of that cavity.
-$\Delta x$ and $\Delta y$ are different, so a loop that swaps those
-two lengths does not recover 50 ohm.
+`fdtd_s11` applies no window unless you name one. A Hann window is the
+right tool for a steady tone that fills the record. On a pulse it
+weights the early incident wave and a later reflection differently, so
+the ratio is not `b/a`. `"nfft", M` zero-pads to `M` samples. The new
+bins interpolate the DFT of the record in hand. They do not resolve
+tones closer than `1/(NΔt)`; a longer record is what does that.
+`fdtd_s11(sim)` also refuses a pulse whose last 10% is still above
+`1e-3` of the peak. `fdtd_s11(V, I, dt, Z0)` is the synthetic form and
+does not apply that check unless you pass `"decay", "pulse"`.
 
 ```rustlab
 dx = 1.0e-3;
 dy = 1.5e-3;
-dz = 0.5e-3;
+dz = 1.0e-3;
 z0 = 50;
-sim = fdtd3d(12, 10, 10, dx, dy, dz);
-info = fdtd_info(sim);
-dt = info.dt;
-mu0 = 1.25663706212e-6;
-eps0 = 1 / (mu0 * info.c0^2);
-tau = 80 * dt;
-t0 = 4 * tau;
-fdtd_port(sim, "ez", 5, 5, 5, z0, "gaussian", t0, tau);
-out = fdtd_run(sim, 800);
+n = 4;
+kp = 2;
+ip = 6;
+jp = 8;
+tau = 1e-9;
 
-V = out.V;
-I = out.I;
-n = out.steps;
-t = (1:n) * dt;
-vg = gaussian_pulse(t, t0, tau);
+function [vi, s_real, s_abs, V, I, t, net] = one_load(rload, dx, dy, dz, z0, n, kp, ip, jp, tau)
+  sim = fdtd3d(16, 14, 8, dx, dy, dz);
+  sig = zeros3(14, 16, 8);
+  sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (rload * n * dx * n * dy);
+  fdtd_media(sim, 1, 1, sig);
+  pad = zeros(14, 16);
+  pad(ip:ip + n, jp - 1:jp + n) = 1;
+  fdtd_pec(sim, "z", kp + 1, pad);
+  fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+  dt = fdtd_info(sim).dt;
+  out = fdtd_run(sim, round(16 * tau / dt));
+  V = out.V;
+  I = out.I;
+  t = (1:out.steps) * out.dt;
+  at = argmax(abs(I));
+  vi = V(at) / I(at);
+  net = fdtd_s11(sim);
+  f = net.frequencies;
+  tone = sij(net, 1, 1);
+  mag = abs(tone);
+  keep = and(mag == mag, f <= 300e6);
+  s_abs = max(mag(keep));
+  ks = find(keep);
+  s_real = real(tone(ks(1)));
+end
 
-sigma = dz / (z0 * dx * dy);
-s = sigma * dt / (2 * eps0);
-ca = (1 - s) / (1 + s);
-beta = 2 * s / (1 + s);
-peak = max(abs(I));
-
-# The update is a recurrence in V, so each sample uses the one before it.
-worst = 0;
-power = 0;
-npow = 0;
-for k = 2:n
-  if abs(I(k)) >= 0.2 * peak
-    zk = (vg(k) - (V(k) - ca * V(k - 1)) / beta) / I(k);
-    err = abs(zk / z0 - 1);
-    if err > worst
-      worst = err;
-    end
-    if t(k) < t0
-      power = power + V(k) * I(k);
-      npow = npow + 1;
-    end
+for rload = [25, 50, 100]
+  [vi, s_real, s_abs, V, I, t, net] = one_load(rload, dx, dy, dz, z0, n, kp, ip, jp, tau);
+  fprintf("R = %6.1f ohm   V/I = %8.4f ohm (%+.3f%%)   S11(first bin) = %+.4f   max |S11| to 300 MHz = %.4f\n", ...
+          rload, vi, 100 * (vi / rload - 1), s_real, s_abs);
+  if abs(vi / rload - 1) > 0.01
+    error(sprintf("V/I is %.3f%% off R = %g (1%% gate)", 100 * (vi / rload - 1), rload));
   end
-end
-power = power / npow;
-
-net = fdtd_s11(sim, "window", "rect");
-from_samples = fdtd_s11(V, I, dt, z0, "window", "rect");
-if max(abs(sij(net, 1, 1) - sij(from_samples, 1, 1))) != 0
-  error("fdtd_s11(sim) and fdtd_s11(V, I, dt, Z0) disagree");
-end
-
-f = net.frequencies;
-mag = abs(sij(net, 1, 1));
-finite = mag == mag;
-band = and(finite, and(f > 0.05 / tau, f < 2 / tau));
-gb = mag(band);
-fb = f(band);
-at = argmin(gb);
-gb_at = gb(at);
-fb_ghz = fb(at) / 1e9;
-
-fprintf("recovered Z0                 %.6f ohm\n", z0);
-fprintf("worst relative error         %.3e\n", worst);
-fprintf("mean V*I while rising        %.3e W\n", power);
-fprintf("smallest |S11| in the band   %.3f at %.3f GHz\n", gb_at, fb_ghz);
-
-if worst > 0.01
-  error(sprintf("recovered resistance is %.3e relative to Z0 (1%% gate)", worst));
-end
-if power <= 0
-  error("V*I on the rise is not into the grid");
+  if rload == z0 && s_abs > 0.01
+    error(sprintf("matched |S11| = %.4f, want <= 0.01 up to 300 MHz", s_abs));
+  end
+  if rload < z0 && s_real >= 0
+    error(sprintf("R = %g < Z0, but low-frequency S11 is %+.4f", rload, s_real));
+  end
+  if rload > z0 && s_real <= 0
+    error(sprintf("R = %g > Z0, but low-frequency S11 is %+.4f", rload, s_real));
+  end
+  if rload == z0
+    matched_v = V;
+    matched_i = I;
+    matched_t = t;
+    matched_net = net;
+    matched_vi = vi;
+    matched_s = s_abs;
+    matched_err = abs(vi / rload - 1);
+  end
 end
 ```
 
-On this run the recovered resistance is off by ${worst:%.3e} relative
-to 50 ohm. The mean $VI$ while the Gaussian is still rising is
-${power:%.3e} W (positive means power into the grid). The smallest
-$|S_{11}|$ in the pulse band is ${gb_at:%.3f} at ${fb_ghz:%.3f} GHz.
-
-`out.V` and `out.I` are `steps × 1`. `out.Z0` is the port resistance.
-`fdtd_s11` drops DC, because `rfplot` draws a logarithmic frequency
-axis.
+On this run the 50 ohm pillar reads ${matched_vi:%.3f} ohm at the
+current peak, ${matched_err:%.3e} relative to 50 ohm. The largest
+$|S_{11}|$ up to 300 MHz is ${matched_s:%.4f}.
 
 ```rustlab
 subplot(2, 1, 1);
-plot(t * 1e9, V);
+plot(matched_t * 1e9, matched_v);
 xlabel("t (ns)");
 ylabel("V (V)");
-title("Gap voltage");
+title("Gap voltage, 50 ohm pillar");
 subplot(2, 1, 2);
-plot(t * 1e9, I * 1e3);
+plot(matched_t * 1e9, matched_i * 1e3);
 xlabel("t (ns)");
 ylabel("I (mA)");
 title("Ampere current");
@@ -143,18 +113,17 @@ title("Ampere current");
 
 ```rustlab
 clf
-smith(net);
-title("S11 of the gap");
+smith(matched_net);
+title("S11 of the 50 ohm pillar");
 ```
 
 ```rustlab
 clf
-rfplot(net);
-title("|S11| of the gap");
+rfplot(matched_net);
+title("|S11| of the 50 ohm pillar");
 ```
 
 > [!NOTE]
-> A rectangular window leaves the long tail of the Gaussian in the
-> transform. Hann is the default, and it would taper that tail. The
-> same network is what `fdtd_s11(sim)` returns when the grid has one
-> port.
+> The chart is the default `fdtd_s11(sim)`: no window, and no zero
+> padding. A matched pillar sits near the centre of the Smith chart.
+> `"window", "hann"` is for a steady tone. `"nfft", M` only interpolates.

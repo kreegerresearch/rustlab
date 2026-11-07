@@ -12,8 +12,8 @@ use ndarray::{Array1, Array2, Array3};
 use rustlab_core::C64;
 use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
-    gaussian_pulse, s11, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, PortWindow,
-    SourceKind, Waveform, C0, DEFAULT_COURANT,
+    gaussian_pulse, s11_with, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, PortWindow,
+    RecordDecay, S11Spec, SourceKind, Waveform, C0, DEFAULT_COURANT,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -667,15 +667,100 @@ fn one_positive(name: &str, what: &str, v: &Value) -> Result<f64, ScriptError> {
     Ok(data[0])
 }
 
+struct S11Opt {
+    window: PortWindow,
+    window_set: bool,
+    nfft: Option<usize>,
+    decay: Option<RecordDecay>,
+}
+
+/// Name/value pairs. `"port"` is accepted only when `allow_port` is set,
+/// and only as id 1. An explicit window does not by itself pick the tail
+/// check; the caller does, so a steady tone can still name a window.
+fn parse_s11_options(
+    name: &str,
+    args: &[Value],
+    from: usize,
+    allow_port: bool,
+) -> Result<S11Opt, ScriptError> {
+    if (args.len() - from) % 2 != 0 {
+        return Err(err(name, "options are name, value pairs"));
+    }
+    let mut opt = S11Opt {
+        window: PortWindow::Rect,
+        window_set: false,
+        nfft: None,
+        decay: None,
+    };
+    let mut i = from;
+    while i < args.len() {
+        let key = str_arg(name, "option", &args[i])?;
+        let val = &args[i + 1];
+        match key.to_ascii_lowercase().as_str() {
+            "window" => {
+                if opt.window_set {
+                    return Err(err(name, "\"window\" given twice"));
+                }
+                opt.window = window_arg(name, val)?;
+                opt.window_set = true;
+            }
+            "nfft" => {
+                if opt.nfft.is_some() {
+                    return Err(err(name, "\"nfft\" given twice"));
+                }
+                opt.nfft = Some(positive_int(name, "nfft", val)?);
+            }
+            "decay" => {
+                if opt.decay.is_some() {
+                    return Err(err(name, "\"decay\" given twice"));
+                }
+                let s = str_arg(name, "decay", val)?;
+                opt.decay = Some(match s.to_ascii_lowercase().as_str() {
+                    "pulse" => RecordDecay::Pulse,
+                    "off" => RecordDecay::Off,
+                    _ => {
+                        return Err(err(
+                            name,
+                            format!("decay must be \"pulse\" or \"off\", got \"{s}\""),
+                        ))
+                    }
+                });
+            }
+            "port" if allow_port => {
+                let id = positive_int(name, "port", val)?;
+                if id != 1 {
+                    return Err(err(
+                        name,
+                        "v1 has one port; S21 of a second port is deferred",
+                    ));
+                }
+            }
+            other => {
+                let expected = if allow_port {
+                    "\"port\", \"window\", \"nfft\", or \"decay\""
+                } else {
+                    "\"window\", \"nfft\", or \"decay\""
+                };
+                return Err(err(
+                    name,
+                    format!("unknown option \"{other}\" (expected {expected})"),
+                ));
+            }
+        }
+        i += 2;
+    }
+    Ok(opt)
+}
+
 fn s11_value(
     name: &str,
     v: &[f64],
     i: &[f64],
     dt: f64,
     z0: f64,
-    window: PortWindow,
+    spec: S11Spec,
 ) -> Result<Value, ScriptError> {
-    let spec = s11(v, i, dt, z0, window).map_err(|e| dsp_err(name, e))?;
+    let spec = s11_with(v, i, dt, z0, spec).map_err(|e| dsp_err(name, e))?;
     let mut parameters = Array3::<C64>::zeros((spec.s11.len(), 1, 1));
     for (k, s) in spec.s11.iter().enumerate() {
         parameters[[k, 0, 0]] = *s;
@@ -687,67 +772,45 @@ fn s11_value(
 pub(crate) fn builtin_fdtd_s11(args: Vec<Value>) -> Result<Value, ScriptError> {
     const NAME: &str = "fdtd_s11";
     if args.is_empty() {
-        return Err(ScriptError::arg_count_range(NAME.into(), 1, 6, 0));
+        return Err(ScriptError::arg_count_range(NAME.into(), 1, 12, 0));
     }
     if matches!(args[0], Value::Fdtd3d(_)) {
         return s11_from_sim(NAME, &args);
     }
-    if args.len() != 4 && args.len() != 6 {
-        return Err(ScriptError::arg_count_range(NAME.into(), 4, 6, args.len()));
+    if args.len() < 4 {
+        return Err(ScriptError::arg_count_range(NAME.into(), 4, 10, args.len()));
     }
     let v = signal_samples(NAME, "V", &args[0])?;
     let i = signal_samples(NAME, "I", &args[1])?;
     let dt = positive_scalar(NAME, "dt", &args[2])?;
     let z0 = one_positive(NAME, "Z0", &args[3])?;
-    let window = if args.len() == 6 {
-        let key = str_arg(NAME, "option", &args[4])?;
-        if !key.eq_ignore_ascii_case("window") {
-            return Err(err(
-                NAME,
-                format!("unknown option \"{key}\" (expected \"window\")"),
-            ));
-        }
-        window_arg(NAME, &args[5])?
-    } else {
-        PortWindow::Hann
-    };
-    s11_value(NAME, &v, &i, dt, z0, window)
+    let opt = parse_s11_options(NAME, &args, 4, false)?;
+    // Samples are the synthetic API. A tail check is opt-in, including
+    // when the caller names a window.
+    let decay = opt.decay.unwrap_or(RecordDecay::Off);
+    s11_value(
+        NAME,
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: opt.window,
+            nfft: opt.nfft,
+            decay,
+        },
+    )
 }
 
 fn s11_from_sim(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
-    if args.len() != 1 && args.len() != 3 && args.len() != 5 {
-        return Err(ScriptError::arg_count_range(name.into(), 1, 5, args.len()));
-    }
-    let mut window = PortWindow::Hann;
-    let mut saw_port = false;
-    let mut i = 1;
-    while i < args.len() {
-        let key = str_arg(name, "option", &args[i])?;
-        let Some(val) = args.get(i + 1) else {
-            return Err(err(name, format!("option \"{key}\" needs a value")));
-        };
-        match key.to_ascii_lowercase().as_str() {
-            "window" => window = window_arg(name, val)?,
-            "port" => {
-                let id = positive_int(name, "port", val)?;
-                if id != 1 {
-                    return Err(err(
-                        name,
-                        "v1 has one port; S21 of a second port is deferred",
-                    ));
-                }
-                saw_port = true;
-            }
-            other => {
-                return Err(err(
-                    name,
-                    format!("unknown option \"{other}\" (expected \"port\" or \"window\")"),
-                ))
-            }
-        }
-        i += 2;
-    }
-    let _ = saw_port;
+    let opt = parse_s11_options(name, args, 1, true)?;
+    // Reading the grid is pulse extraction. An explicit window is how a
+    // steady tone opts out of the tail refusal; `"decay"` overrides that.
+    let decay = opt.decay.unwrap_or(if opt.window_set {
+        RecordDecay::Off
+    } else {
+        RecordDecay::Pulse
+    });
     let s = sim_arg(name, &args[0])?;
     let g = lock(name, &s)?;
     if g.n_ports() != 1 {
@@ -758,7 +821,18 @@ fn s11_from_sim(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
     let i = g.port_current().to_vec();
     let dt = g.dt();
     drop(g);
-    s11_value(name, &v, &i, dt, z0, window)
+    s11_value(
+        name,
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: opt.window,
+            nfft: opt.nfft,
+            decay,
+        },
+    )
 }
 
 /// `id = fdtd_probe(sim, comp, i, j, k)`

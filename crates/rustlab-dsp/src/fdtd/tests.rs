@@ -1703,7 +1703,7 @@ fn port_resistor_matches_z0_to_one_percent() {
     let (z_err, residual, power) = series_resistance(&[(4, 4, 4)], false);
     assert!(
         z_err < 0.01,
-        "recovered resistance is {z_err:.3e} relative to Z0 (1% gate)"
+        "series-identity diagnostic (not the item 8 load): recovered resistance is {z_err:.3e} relative to Z0"
     );
     assert!(residual < 1e-9, "series identity residual {residual}");
     assert!(
@@ -1966,5 +1966,648 @@ fn lossless_patch_inset_feed_rings_at_2_4_ghz() {
         "late gap voltage peaks at {:.4} GHz, {:.2}% from 2.4 GHz (L = {length:.4} m, W = {width:.4} m)",
         ring / 1e9,
         rel * 100.0
+    );
+}
+
+fn tail_ratio(x: &[f64]) -> f64 {
+    let n = x.len();
+    let tail = (n / 10).max(1);
+    let peak = x.iter().fold(0.0_f64, |p, v| p.max(v.abs()));
+    if peak == 0.0 {
+        return 0.0;
+    }
+    x[n - tail..].iter().fold(0.0_f64, |p, v| p.max(v.abs())) / peak
+}
+
+/// Unnormalised DFT bin `m` of `x` at length `nfft` (zeros past `x.len()`).
+fn direct_dft(x: &[f64], nfft: usize, m: usize) -> num_complex::Complex<f64> {
+    let mut z = num_complex::Complex::new(0.0, 0.0);
+    for (t, &v) in x.iter().enumerate() {
+        let theta = 2.0 * PI * (m as f64) * (t as f64) / (nfft as f64);
+        z += num_complex::Complex::new(v * theta.cos(), -v * theta.sin());
+    }
+    z
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadAxis {
+    Ex,
+    Ey,
+    Ez,
+}
+
+struct LoadRun {
+    v: Vec<f64>,
+    i: Vec<f64>,
+    dt: f64,
+}
+
+/// Resistive pillar under a PEC pad, one node off the port edges.
+///
+/// The conductivity is the cell map, not the port stamp. Arithmetic-mean
+/// edge weights on an `n×n` cross-section sum to `n²`, so the pillar's DC
+/// conductance is `1/R` exactly. `dx`, `dy`, `dz` are not all equal, so a
+/// swapped Ampère length misses `R`. `short` replaces the pillar with PEC.
+fn conductive_load(axis: LoadAxis, r: f64, kp: usize, cpml: bool, short: bool) -> LoadRun {
+    let n = 4usize;
+    let (mut sim, edges, comp, ground) = match axis {
+        LoadAxis::Ez => {
+            let (dx, dy, dz) = (1.0e-3, 1.5e-3, 1.0e-3);
+            let (nx, ny, nz) = (16usize, 14, kp + 6);
+            let (ip, jp) = (5usize, 7usize);
+            let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, DEFAULT_COURANT).unwrap();
+            let sig = kp as f64 * dz / (r * n as f64 * dx * n as f64 * dy);
+            fill_pillar(&mut sim, nx, ny, sig, short, |i, j, k| {
+                (ip..ip + n).contains(&i) && (jp..jp + n).contains(&j) && k < kp
+            });
+            let mut pad = vec![false; ny * nx];
+            for i in ip..=ip + n {
+                for j in (jp - 1)..=jp + n {
+                    pad[i * nx + j] = true;
+                }
+            }
+            let edges: Vec<_> = (0..kp).map(|k| (ip + n / 2, jp - 1, k)).collect();
+            (sim, edges, Component::Ez, (Axis::Z, kp, pad, Face::ZMin))
+        }
+        LoadAxis::Ex => {
+            // Ex averages σ in y and z, not along x, so the port sits one
+            // row off the pillar in y. dy ≠ dz catches a swapped Ampère pair.
+            let (dx, dy, dz) = (1.0e-3, 1.5e-3, 1.0e-3);
+            let (nx, ny, nz) = (kp + 8, 16usize, 14);
+            let (ip, kz) = (6usize, 4usize);
+            let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, DEFAULT_COURANT).unwrap();
+            let sig = kp as f64 * dx / (r * n as f64 * dy * n as f64 * dz);
+            fill_pillar(&mut sim, nx, ny, sig, short, |i, j, k| {
+                (ip..ip + n).contains(&i) && j < kp && (kz..kz + n).contains(&k)
+            });
+            let mut pad = vec![false; ny * nz];
+            for i in (ip - 1)..=ip + n {
+                for k in kz..=kz + n {
+                    pad[i * nz + k] = true;
+                }
+            }
+            let port_k = kz + n / 2;
+            let edges: Vec<_> = (0..kp).map(|j| (ip - 1, j, port_k)).collect();
+            (sim, edges, Component::Ex, (Axis::X, kp, pad, Face::XMin))
+        }
+        LoadAxis::Ey => {
+            let (dx, dy, dz) = (1.5e-3, 1.0e-3, 1.0e-3);
+            let (nx, ny, nz) = (16usize, kp + 8, 14);
+            let (jp, kz) = (6usize, 4usize);
+            let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, DEFAULT_COURANT).unwrap();
+            let sig = kp as f64 * dy / (r * n as f64 * dx * n as f64 * dz);
+            fill_pillar(&mut sim, nx, ny, sig, short, |i, j, k| {
+                i < kp && (jp..jp + n).contains(&j) && (kz..kz + n).contains(&k)
+            });
+            let mut pad = vec![false; nx * nz];
+            for j in (jp - 1)..=jp + n {
+                for k in kz..=kz + n {
+                    pad[j * nz + k] = true;
+                }
+            }
+            let port_k = kz + n / 2;
+            let edges: Vec<_> = (0..kp).map(|i| (i, jp - 1, port_k)).collect();
+            (sim, edges, Component::Ey, (Axis::Y, kp, pad, Face::YMin))
+        }
+    };
+    if cpml {
+        sim.set_cpml(3, CpmlParams::default()).unwrap();
+        sim.set_cpml_face(ground.3, 0).unwrap();
+    }
+    sim.add_pec_face(ground.0, ground.1, &ground.2).unwrap();
+    let tau = 1.0e-9;
+    sim.add_port(
+        comp,
+        &edges,
+        50.0,
+        Waveform::Pulse {
+            t0: 4.0 * tau,
+            tau,
+            f0: 0.0,
+        },
+    )
+    .unwrap();
+    let dt = sim.dt();
+    let nsteps = (16.0 * tau / dt).round() as usize;
+    sim.run(nsteps, &mut never()).unwrap();
+    LoadRun {
+        v: sim.port_voltage().to_vec(),
+        i: sim.port_current().to_vec(),
+        dt,
+    }
+}
+
+fn fill_pillar(
+    sim: &mut FdtdSim,
+    nx: usize,
+    ny: usize,
+    sigma: f64,
+    short: bool,
+    inside: impl Fn(usize, usize, usize) -> bool,
+) {
+    let n = sim.n_cells();
+    let nz = n / (nx * ny);
+    if short {
+        let mut cells = vec![false; n];
+        for k in 0..nz {
+            for i in 0..ny {
+                for j in 0..nx {
+                    if inside(i, j, k) {
+                        cells[(k * ny + i) * nx + j] = true;
+                    }
+                }
+            }
+        }
+        sim.add_pec_volume(&cells).unwrap();
+    } else {
+        let mut sig = vec![0.0; n];
+        for k in 0..nz {
+            for i in 0..ny {
+                for j in 0..nx {
+                    if inside(i, j, k) {
+                        sig[(k * ny + i) * nx + j] = sigma;
+                    }
+                }
+            }
+        }
+        sim.set_media(
+            CellMap::Uniform(1.0),
+            CellMap::Uniform(1.0),
+            CellMap::Cells(sig),
+        )
+        .unwrap();
+    }
+}
+
+fn z_of(run: &LoadRun, nfft: usize, freq: f64) -> (f64, num_complex::Complex<f64>) {
+    let m = if freq == 0.0 {
+        0
+    } else {
+        (freq * nfft as f64 * run.dt).round() as usize
+    };
+    let vf = direct_dft(&run.v, nfft, m);
+    let iw = direct_dft(&run.i, nfft, m);
+    let phase = num_complex::Complex::new(0.0, PI * m as f64 / nfft as f64).exp();
+    let f = m as f64 / (nfft as f64 * run.dt);
+    (f, vf / (iw * phase))
+}
+
+fn vi_at_peak(run: &LoadRun) -> f64 {
+    let (at, _) = run
+        .i
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+        .unwrap();
+    run.v[at] / run.i[at]
+}
+
+#[test]
+fn port_reads_an_independent_resistor() {
+    let z0 = 50.0;
+    for axis in [LoadAxis::Ez, LoadAxis::Ex, LoadAxis::Ey] {
+        let run = conductive_load(axis, z0, 2, false, false);
+        let nfft = 8 * run.v.len();
+        let (_, zdc) = z_of(&run, nfft, 0.0);
+        assert!(
+            (zdc.re / z0 - 1.0).abs() < 1e-3 && zdc.im.abs() < 1e-2,
+            "{axis:?} DC Z = {zdc}"
+        );
+        let vi = vi_at_peak(&run);
+        assert!(
+            (vi / z0 - 1.0).abs() < 0.01,
+            "{axis:?} V/I at the current peak is {vi}"
+        );
+        let spec = s11_with(&run.v, &run.i, run.dt, z0, S11Spec::pulse()).unwrap();
+        for (f, s) in spec.frequencies.iter().zip(&spec.s11) {
+            if *f > 300e6 {
+                break;
+            }
+            if !s.is_finite() {
+                continue;
+            }
+            assert!(
+                s.norm() <= 1.0 + 1e-9,
+                "{axis:?} |S11| = {} at {f} Hz",
+                s.norm()
+            );
+            if *f <= 300e6 && axis == LoadAxis::Ez {
+                assert!(
+                    s.norm() <= 0.01,
+                    "matched Ez |S11| = {} at {f} Hz",
+                    s.norm()
+                );
+            }
+        }
+        let mut flipped = run.i.clone();
+        for x in &mut flipped {
+            *x = -*x;
+        }
+        let neg = LoadRun {
+            v: run.v.clone(),
+            i: flipped,
+            dt: run.dt,
+        };
+        let (_, zneg) = z_of(&neg, nfft, 0.0);
+        assert!(zneg.re < 0.0, "{axis:?} sign flip still reads {zneg}");
+    }
+
+    // Item 8 on the Ez pillar, including the mismatched signs.
+    for r in [25.0, 50.0, 100.0] {
+        let run = conductive_load(LoadAxis::Ez, r, 2, false, false);
+        let vi = vi_at_peak(&run);
+        assert!(
+            (vi / r - 1.0).abs() < 0.01,
+            "R = {r}: V/I at the current peak is {vi}"
+        );
+        let nfft = 8 * run.v.len();
+        let (_, zdc) = z_of(&run, nfft, 0.0);
+        assert!((zdc.re / r - 1.0).abs() < 1e-3, "R = {r}: DC {zdc}");
+        let (f, z) = z_of(&run, nfft, 25e6);
+        assert!(
+            f <= 25e6 + 1.0 / (run.v.len() as f64 * run.dt),
+            "bin {f} is not the low-frequency sample"
+        );
+        // |Z/R − 1| at or below 25 MHz. Im Z there is the fixture inductance.
+        assert!(
+            (z.norm() / r - 1.0).abs() < 0.01,
+            "R = {r}: |Z| at {f} Hz is {z} (want within 1% of {r})"
+        );
+        let s = (z - z0) / (z + z0);
+        let expect = (r - z0) / (r + z0);
+        if expect.abs() < 1e-6 {
+            assert!(s.norm() < 0.02, "R = {r}: S11 = {s}");
+        } else {
+            assert!(
+                (s.re - expect).abs() < 0.02 && s.re.signum() == expect.signum(),
+                "R = {r}: S11 = {s}, expected near {expect}"
+            );
+        }
+    }
+
+    // Stack depth and CPML. The ground face of the pillar stays PEC, not CPML.
+    for kp in [1usize, 2, 3] {
+        for cpml in [false, true] {
+            let run = conductive_load(LoadAxis::Ez, z0, kp, cpml, false);
+            let (_, zdc) = z_of(&run, 8 * run.v.len(), 0.0);
+            assert!(
+                (zdc.re / z0 - 1.0).abs() < 1e-3,
+                "N = {kp}, cpml {cpml}: DC {zdc}"
+            );
+        }
+    }
+}
+
+#[test]
+fn port_short_reads_minus_one() {
+    let z0 = 50.0;
+    let run = conductive_load(LoadAxis::Ez, z0, 2, false, true);
+    // 8× padding puts a bin under 10 MHz. It interpolates; the record is
+    // already 16τ long, which is what sets the resolution.
+    let spec = s11_with(
+        &run.v,
+        &run.i,
+        run.dt,
+        z0,
+        S11Spec {
+            window: PortWindow::Rect,
+            nfft: Some(8 * run.v.len()),
+            decay: RecordDecay::Pulse,
+        },
+    )
+    .unwrap();
+    let mut seen = false;
+    for (f, s) in spec.frequencies.iter().zip(&spec.s11) {
+        if *f > 300e6 {
+            break;
+        }
+        if !s.is_finite() {
+            continue;
+        }
+        assert!(
+            (s.norm() - 1.0).abs() < 1e-3,
+            "short |S11| = {} at {f} Hz",
+            s.norm()
+        );
+        if *f <= 10e6 {
+            seen = true;
+            assert!(
+                (s.re + 1.0).abs() < 0.01 && s.im.abs() < 0.01,
+                "short S11 at {f} Hz is {s}"
+            );
+        }
+    }
+    assert!(seen, "no bin at or below 10 MHz");
+}
+
+#[test]
+fn s11_does_not_clip_a_nonpassive_load() {
+    let n = 256;
+    let dt = 1.0e-9;
+    let z0 = 50.0;
+    let r = -10.0;
+    let m = 8usize;
+    let omega = 2.0 * PI * m as f64 / (n as f64 * dt);
+    let mut v = vec![0.0; n];
+    let mut i = vec![0.0; n];
+    for k in 0..n {
+        let t = k as f64 * dt;
+        v[k] = (omega * t).cos();
+        i[k] = (omega * (t - 0.5 * dt)).cos() / r;
+    }
+    let s = s11(&v, &i, dt, z0, PortWindow::Rect).unwrap();
+    let expect = (r - z0) / (r + z0);
+    let tone = s.s11[m - 1];
+    assert!(
+        (tone.re - expect).abs() < 1e-9 && tone.norm() > 1.0,
+        "negative R must come back as S11 = {expect}, got {tone}"
+    );
+}
+
+#[test]
+fn s11_pulse_check_rejects_a_steady_tone_and_a_short_pad() {
+    let n = 256;
+    let dt = 1.0e-9;
+    let z0 = 50.0;
+    let mut v = vec![0.0; n];
+    let mut i = vec![0.0; n];
+    let omega = 2.0 * PI * 8.0 / (n as f64 * dt);
+    for k in 0..n {
+        let t = k as f64 * dt;
+        v[k] = (omega * t).cos();
+        i[k] = (omega * (t - 0.5 * dt)).cos() / z0;
+    }
+    let err = s11_with(&v, &i, dt, z0, S11Spec::pulse())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has not decayed"), "{err}");
+    // The same tone with the check off is the synthetic API, and it matches.
+    assert!(s11(&v, &i, dt, z0, PortWindow::Rect).unwrap().s11[7].norm() < 1e-9);
+    let err = s11_with(
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: PortWindow::Rect,
+            nfft: Some(n - 1),
+            decay: RecordDecay::Off,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("interpolat") && err.contains("resolution"),
+        "{err}"
+    );
+}
+
+#[test]
+fn s11_zero_pad_matches_the_unpadded_bin() {
+    let n = 256;
+    let dt = 1.0e-9;
+    let z0 = 50.0;
+    let r = 150.0;
+    let m = 8usize;
+    let omega = 2.0 * PI * m as f64 / (n as f64 * dt);
+    let mut v = vec![0.0; n];
+    let mut i = vec![0.0; n];
+    for k in 0..n {
+        let t = k as f64 * dt;
+        v[k] = (omega * t).cos();
+        i[k] = (omega * (t - 0.5 * dt)).cos() / r;
+    }
+    let plain = s11(&v, &i, dt, z0, PortWindow::Rect).unwrap();
+    let nfft = 4 * n;
+    let padded = s11_with(
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: PortWindow::Rect,
+            nfft: Some(nfft),
+            decay: RecordDecay::Off,
+        },
+    )
+    .unwrap();
+    // 4× bins. The original tone frequency is still one sample of the same
+    // DFT, not a finer observation.
+    assert_eq!(padded.frequencies.len(), nfft / 2);
+    let tone = padded.s11[4 * m - 1];
+    assert!(
+        (tone.re - 0.5).abs() < 1e-9 && tone.im.abs() < 1e-9,
+        "{tone}"
+    );
+    assert!((tone - plain.s11[m - 1]).norm() < 1e-9);
+    assert!((padded.frequencies[4 * m - 1] - plain.frequencies[m - 1]).abs() < 1e-6);
+    // Halfway between native bins: the hand sum of the original samples.
+    let mid = 4 * m + 2;
+    let vf = direct_dft(&v, nfft, mid);
+    let iw = direct_dft(&i, nfft, mid);
+    let phase = num_complex::Complex::new(0.0, PI * mid as f64 / nfft as f64).exp();
+    let ic = iw * phase;
+    let expect = (vf - z0 * ic) / (vf + z0 * ic);
+    assert!(
+        (padded.s11[mid - 1] - expect).norm() < 1e-9,
+        "padded bin {} vs hand DFT {expect}",
+        padded.s11[mid - 1]
+    );
+    // Native spacing is still the resolution. The pad only fills between.
+    let native = 1.0 / (n as f64 * dt);
+    assert!((plain.frequencies[1] - plain.frequencies[0] - native).abs() < 1e-6);
+    assert!((padded.frequencies[1] - padded.frequencies[0] - native / 4.0).abs() < 1e-6);
+}
+
+/// Teaching-mesh patch. The transmission-line length is about 29.42 mm.
+/// Nodes are at `j·1 mm`, and the mask is inclusive, so the metal runs
+/// from 16 mm to 44 mm: 28 mm on the grid, not 29.42 mm. `round(px/dx)`
+/// is 15 mm, one node outside that metal. The feed is the first metal
+/// node of the row. `L` and `W` are not snapped to move the dip.
+#[test]
+fn lossless_patch_s11_minimum_near_2_4_ghz() {
+    let eps_r = 4.4_f64;
+    let h = 1.6e-3_f64;
+    let f0 = 2.4e9_f64;
+    let width = C0 / (2.0 * f0) * (2.0 / (eps_r + 1.0)).sqrt();
+    let ee = (eps_r + 1.0) / 2.0 + (eps_r - 1.0) / 2.0 / (1.0 + 12.0 * h / width).sqrt();
+    let dl = 0.412 * h * (ee + 0.3) * (width / h + 0.264) / ((ee - 0.258) * (width / h + 0.8));
+    let length = C0 / (2.0 * f0 * ee.sqrt()) - 2.0 * dl;
+
+    let (dx, dy, dz) = (1.0e-3, 1.0e-3, 0.4e-3);
+    let (nx, ny, nz) = (60usize, 60, 20);
+    let nsub = 4usize;
+    let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, DEFAULT_COURANT).unwrap();
+    let mut eps = vec![1.0; nx * ny * nz];
+    for k in 0..nsub {
+        for i in 0..ny {
+            for j in 0..nx {
+                eps[(k * ny + i) * nx + j] = eps_r;
+            }
+        }
+    }
+    sim.set_media(
+        CellMap::Cells(eps),
+        CellMap::Uniform(1.0),
+        CellMap::Uniform(0.0),
+    )
+    .unwrap();
+    sim.set_cpml(6, CpmlParams::default()).unwrap();
+    sim.set_cpml_face(Face::ZMin, 0).unwrap();
+
+    let px = (nx as f64 * dx - length) / 2.0;
+    let py = (ny as f64 * dy - width) / 2.0;
+    let mut nodes = vec![false; ny * nx];
+    for i in 0..ny {
+        for j in 0..nx {
+            let x = j as f64 * dx;
+            let y = i as f64 * dy;
+            if x >= px && x <= px + length && y >= py && y <= py + width {
+                nodes[i * nx + j] = true;
+            }
+        }
+    }
+    sim.add_pec_face(Axis::Z, nsub, &nodes).unwrap();
+
+    let iy = ((py + width / 2.0) / dy).round() as usize;
+    let off_metal = (px / dx).round() as usize;
+    let ix = (0..nx)
+        .find(|&j| nodes[iy * nx + j])
+        .expect("feed row has no metal");
+    let last = (0..nx).rev().find(|&j| nodes[iy * nx + j]).unwrap();
+    let metal = (last - ix) as f64 * dx;
+    assert!(
+        !nodes[iy * nx + off_metal],
+        "round(px/dx) = {off_metal} mm is on the metal; the staircasing changed"
+    );
+    assert!(ix != off_metal);
+    assert!(
+        (metal - length).abs() > 0.5 * dx,
+        "metal {metal} m snapped onto the transmission-line length {length} m"
+    );
+
+    let edges: Vec<(usize, usize, usize)> = (0..nsub).map(|k| (iy, ix, k)).collect();
+    let dt = sim.dt();
+    let tau = 1.0 / (2.0 * f0);
+    sim.add_port(
+        Component::Ez,
+        &edges,
+        50.0,
+        Waveform::Pulse {
+            t0: 4.0 * tau,
+            tau,
+            f0,
+        },
+    )
+    .unwrap();
+    sim.run(16_000, &mut never()).unwrap();
+    let v = sim.port_voltage();
+    let i = sim.port_current();
+    assert!(
+        tail_ratio(v) <= PULSE_TAIL_LIMIT && tail_ratio(i) <= PULSE_TAIL_LIMIT,
+        "16k-step tail/peak V {:.3e}, I {:.3e}",
+        tail_ratio(v),
+        tail_ratio(i)
+    );
+
+    let early = 6_000;
+    assert!(
+        tail_ratio(&v[..early]) > PULSE_TAIL_LIMIT,
+        "the first 6000 steps already decayed; the truncation check has nothing to catch"
+    );
+    let err = s11_with(&v[..early], &i[..early], dt, 50.0, S11Spec::pulse())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("has not decayed"), "{err}");
+
+    let band = |s: &S11| -> (f64, f64, bool) {
+        let mut best = (f64::MAX, f64::MAX);
+        let mut passive = true;
+        for (f, z) in s.frequencies.iter().zip(&s.s11) {
+            if *f < 1.5e9 || *f > 3.5e9 || !z.is_finite() {
+                continue;
+            }
+            if z.norm() > 1.0 + 1e-9 {
+                passive = false;
+            }
+            if z.norm() < best.1 {
+                best = (*f, z.norm());
+            }
+        }
+        (best.0, best.1, passive)
+    };
+
+    let full = s11_with(
+        v,
+        i,
+        dt,
+        50.0,
+        S11Spec {
+            window: PortWindow::Rect,
+            nfft: Some(8 * v.len()),
+            decay: RecordDecay::Pulse,
+        },
+    )
+    .unwrap();
+    let (f_dip, mag, passive) = band(&full);
+    eprintln!(
+        "patch dip {:.4} GHz ({:+.2}%), |S11|={mag:.3}, metal {:.2} mm, design L {:.2} mm",
+        f_dip / 1e9,
+        (f_dip / f0 - 1.0) * 100.0,
+        metal * 1e3,
+        length * 1e3
+    );
+    assert!(passive, "decayed edge feed is non-passive");
+    let rel = (f_dip / f0 - 1.0).abs();
+    assert!(
+        rel < 0.05,
+        "dip {:.4} GHz is {:.2}% from 2.4 GHz (|S11| = {mag}, metal {metal:.4} m vs L {length:.4} m)",
+        f_dip / 1e9,
+        rel * 100.0
+    );
+
+    let native = s11_with(v, i, dt, 50.0, S11Spec::pulse()).unwrap();
+    let (f_native, _, passive_native) = band(&native);
+    assert!(passive_native);
+    let df = 1.0 / (v.len() as f64 * dt);
+    assert!(
+        (f_native - f_dip).abs() <= df,
+        "pad moved the dip from {f_native} to {f_dip}, more than one native bin {df}"
+    );
+
+    let truncated = s11_with(
+        &v[..early],
+        &i[..early],
+        dt,
+        50.0,
+        S11Spec {
+            window: PortWindow::Rect,
+            nfft: Some(8 * early),
+            decay: RecordDecay::Off,
+        },
+    )
+    .unwrap();
+    let (_, _, early_passive) = band(&truncated);
+    assert!(
+        !early_passive,
+        "a 6000-step truncation of this pulse was passive; the decay check would be redundant"
+    );
+
+    let hann = s11_with(
+        v,
+        i,
+        dt,
+        50.0,
+        S11Spec {
+            window: PortWindow::Hann,
+            nfft: Some(8 * v.len()),
+            decay: RecordDecay::Off,
+        },
+    )
+    .unwrap();
+    let (_, _, hann_passive) = band(&hann);
+    assert!(
+        !hann_passive,
+        "Hann on this pulse stayed passive, so it is no longer a bad default"
     );
 }

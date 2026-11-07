@@ -25,18 +25,27 @@
 
 use super::EPS0;
 use crate::error::DspError;
-use crate::fft::fft;
+use crate::fft::fft_n;
 use crate::window::WindowFunction;
 use ndarray::Array1;
 use num_complex::Complex;
 use std::f64::consts::PI;
 
-/// Window applied to `V` and `I` before the DFT.
+/// Last 10% of `|V|` and of `|I|`, each divided by its own peak, must be at
+/// or below this for a pulse record. A longer record is what makes the tail
+/// fall. Zero padding does not.
+pub const PULSE_TAIL_LIMIT: f64 = 1e-3;
+
+/// Window applied to the recorded samples before the DFT. The pad, if any,
+/// stays zero: the window is the length of the record, not of `nfft`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortWindow {
-    /// Symmetric Hann, endpoints about 0. The default.
+    /// Symmetric Hann. Right for a steady tone that fills the record,
+    /// where it reduces leakage into neighbouring bins. On a pulse it
+    /// weights the early incident wave and a later reflection differently,
+    /// so the ratio is not `b/a`.
     Hann,
-    /// Rectangular. Used when a long tail must not be tapered.
+    /// No window. This is the pulse default.
     Rect,
 }
 
@@ -51,8 +60,45 @@ impl PortWindow {
     }
 }
 
-/// Positive-frequency S11 of one port. DC is omitted. Bin `m` (`1..=n/2`)
-/// sits at `m / (n·dt)`, so an even length keeps the Nyquist bin.
+/// Whether to refuse a record whose tail is still ringing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordDecay {
+    /// Do not look at the tail. Steady tones, synthetic samples, and any
+    /// call that opts out.
+    Off,
+    /// Pulse extraction. The last 10% of the raw record (before a window
+    /// or a pad) must fall to [`PULSE_TAIL_LIMIT`] of the peak.
+    Pulse,
+}
+
+/// How to turn `V` and `I` into S11.
+///
+/// The pulse default is no window, no padding, and [`RecordDecay::Pulse`].
+/// A synthetic or steady-state call uses [`RecordDecay::Off`] and may set
+/// a window. `nfft` zero-pads; it interpolates the DFT of these samples
+/// and does not resolve tones closer than `1/(N·dt)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct S11Spec {
+    pub window: PortWindow,
+    /// DFT length. `None` is the record length. A larger value zero-pads.
+    pub nfft: Option<usize>,
+    pub decay: RecordDecay,
+}
+
+impl S11Spec {
+    /// Pulse extraction: rectangular window, no padding, tail check on.
+    pub fn pulse() -> Self {
+        Self {
+            window: PortWindow::Rect,
+            nfft: None,
+            decay: RecordDecay::Pulse,
+        }
+    }
+}
+
+/// Positive-frequency S11 of one port. DC is omitted. Bin `m`
+/// (`1..=nfft/2`) sits at `m / (nfft·dt)`. `nfft` is the record length
+/// unless the call zero-pads, so an even length keeps the Nyquist bin.
 #[derive(Clone, Debug)]
 pub struct S11 {
     pub frequencies: Vec<f64>,
@@ -113,9 +159,37 @@ pub(super) fn ampere_ey(hx: f64, hx_m: f64, hz: f64, hz_m: f64, dx: f64, dz: f64
 /// ```
 ///
 /// Bins whose `|a|` is below `1e-12` times the peak `|a|` (DC included in
-/// the peak, then dropped) are `NaN`. `v` and `i` must be the same length,
-/// at least 2, and finite. `dt` and `z0` must be finite and positive.
+/// the peak, then dropped) are `NaN`. Nothing rescales a bin onto the unit
+/// disk: a non-passive load is returned as computed. `v` and `i` must be
+/// the same length, at least 2, and finite. `dt` and `z0` must be finite
+/// and positive. The tail is not checked; use [`s11_with`] for that.
 pub fn s11(v: &[f64], i: &[f64], dt: f64, z0: f64, window: PortWindow) -> Result<S11, DspError> {
+    s11_with(
+        v,
+        i,
+        dt,
+        z0,
+        S11Spec {
+            window,
+            nfft: None,
+            decay: RecordDecay::Off,
+        },
+    )
+}
+
+/// [`s11`] with a pad length and a pulse-tail check.
+///
+/// `spec.nfft` larger than the record appends zeros and calls the same
+/// DFT. Bin spacing becomes `1/(nfft·dt)`, which traces the same transform
+/// more finely. Two tones closer than `1/(N·dt)` stay unresolved; a longer
+/// record is what separates them. `nfft` shorter than the record is an
+/// error, because that would throw samples away.
+///
+/// [`RecordDecay::Pulse`] runs on the raw samples, before the window and
+/// the pad. The last 10% of `|V|` and of `|I|` must each be at or below
+/// [`PULSE_TAIL_LIMIT`] times its peak (a peak of 0 is quiet). A steady
+/// tone fails this on purpose.
+pub fn s11_with(v: &[f64], i: &[f64], dt: f64, z0: f64, spec: S11Spec) -> Result<S11, DspError> {
     if v.len() != i.len() {
         return Err(DspError::InvalidParameter(format!(
             "V and I must have the same length, got {} and {}",
@@ -142,24 +216,48 @@ pub fn s11(v: &[f64], i: &[f64], dt: f64, z0: f64, window: PortWindow) -> Result
     if v.iter().any(|x| !x.is_finite()) || i.iter().any(|x| !x.is_finite()) {
         return Err(DspError::InvalidParameter("V and I must be finite".into()));
     }
+    if spec.decay == RecordDecay::Pulse {
+        let rv = tail_over_peak(v);
+        let ri = tail_over_peak(i);
+        if rv > PULSE_TAIL_LIMIT || ri > PULSE_TAIL_LIMIT {
+            return Err(DspError::InvalidParameter(format!(
+                "pulse record has not decayed: |V| tail/peak = {rv:.3e}, |I| tail/peak = {ri:.3e} \
+                 (limit {PULSE_TAIL_LIMIT:.0e} over the last 10%). A truncated pulse has no usable \
+                 S11. A longer record is what converges; zero padding only interpolates the DFT of \
+                 the samples in hand. A steady tone is not a pulse and should not use this check"
+            )));
+        }
+    }
 
-    let w: Vec<f64> = match window {
+    let nfft = spec.nfft.unwrap_or(n);
+    if nfft < n {
+        return Err(DspError::InvalidParameter(format!(
+            "nfft ({nfft}) is shorter than the {n}-sample record. Zero padding interpolates the \
+             DFT of these samples; it does not raise frequency resolution, and it must not drop \
+             samples. Pass nfft >= {n}. Tones closer than 1/(N·dt) stay unresolved until the \
+             record itself is longer"
+        )));
+    }
+
+    let w: Vec<f64> = match spec.window {
         PortWindow::Rect => vec![1.0; n],
         PortWindow::Hann => WindowFunction::Hann.generate(n).to_vec(),
     };
     let vc = Array1::from_iter(v.iter().zip(&w).map(|(&x, &ww)| Complex::new(x * ww, 0.0)));
     let ic = Array1::from_iter(i.iter().zip(&w).map(|(&x, &ww)| Complex::new(x * ww, 0.0)));
-    let vw = fft(&vc)?;
-    let iw = fft(&ic)?;
+    // fft_n appends zeros when nfft > n. Those bins sample the same DFT more
+    // finely; they are not a longer observation.
+    let vw = fft_n(&vc, nfft)?;
+    let iw = fft_n(&ic, nfft)?;
 
-    let nd = n as f64 * dt;
+    let nd = nfft as f64 * dt;
     let sqrt_z = z0.sqrt();
-    let mut a_bins = Vec::with_capacity(n / 2 + 1);
-    let mut b_bins = Vec::with_capacity(n / 2 + 1);
-    let mut freqs = Vec::with_capacity(n / 2 + 1);
-    for m in 0..=n / 2 {
+    let mut a_bins = Vec::with_capacity(nfft / 2 + 1);
+    let mut b_bins = Vec::with_capacity(nfft / 2 + 1);
+    let mut freqs = Vec::with_capacity(nfft / 2 + 1);
+    for m in 0..=nfft / 2 {
         let freq = m as f64 / nd;
-        // exp(+j ω dt / 2) = exp(+j π m / n), including +j at Nyquist.
+        // exp(+j ω dt / 2) = exp(+j π m / nfft), including +j at Nyquist.
         let phase = Complex::new(0.0, PI * freq * dt).exp();
         let iw_c = iw[m] * phase;
         let a = (vw[m] + z0 * iw_c) / (2.0 * sqrt_z);
@@ -170,9 +268,9 @@ pub fn s11(v: &[f64], i: &[f64], dt: f64, z0: f64, window: PortWindow) -> Result
     }
     let peak = a_bins.iter().map(|a| a.norm()).fold(0.0_f64, f64::max);
     let floor = 1e-12 * peak;
-    let mut frequencies = Vec::with_capacity(n / 2);
-    let mut s11 = Vec::with_capacity(n / 2);
-    for m in 1..=n / 2 {
+    let mut frequencies = Vec::with_capacity(nfft / 2);
+    let mut s11 = Vec::with_capacity(nfft / 2);
+    for m in 1..=nfft / 2 {
         let a = a_bins[m];
         let mag = a.norm();
         let s = if !a.is_finite() || mag == 0.0 || mag < floor {
@@ -184,4 +282,16 @@ pub fn s11(v: &[f64], i: &[f64], dt: f64, z0: f64, window: PortWindow) -> Result
         s11.push(s);
     }
     Ok(S11 { frequencies, s11 })
+}
+
+/// Peak of the last 10% of `|x|`, divided by the peak of `|x|`. At least
+/// one sample. A silent record is 0.
+fn tail_over_peak(x: &[f64]) -> f64 {
+    let n = x.len();
+    let tail = (n / 10).max(1);
+    let peak = x.iter().fold(0.0_f64, |p, v| p.max(v.abs()));
+    if peak == 0.0 {
+        return 0.0;
+    }
+    x[n - tail..].iter().fold(0.0_f64, |p, v| p.max(v.abs())) / peak
 }
