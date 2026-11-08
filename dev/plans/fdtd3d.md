@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
 **Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML); Phase 4 complete (0.3.59, draft PR #142, unshipped; items 8 and 10 met, see `dev/plans/fdtd3d_phase4_review.md`)
-**Current phase:** 5 (near-to-far). Not started. Waits for an explicit yes. Do not begin it from this plan.
+**Current phase:** 6 (parallel stepping and the patch capstone). Not started. Phase 5 shipped in provisional 0.3.61 on draft PR #143. Phase 6 geometry is not decided: the brief's option list is not a signed design. Do not begin Phase 6 from this plan.
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -497,6 +497,8 @@ s = σ dt / (2 ε0),  Ca = (1−s)/(1+s),  β = 2s/(1+s)
 ### Phase 5 — far-field
 
 `examples/pde/fdtd_dipole.rlab`, notebook `examples/notebooks/fdtd_dipole.md`. A short z-directed soft source in a vacuum PML box, one armed frequency, one far-field cut. Check: `Ephi` dominates in the xy-plane, the pattern is symmetric under `φ → φ+π`, and directivity is between 0 and 4 dBi (validation item 12).
+
+**Shipped** in provisional 0.3.61 (`dev/plans/fdtd3d_phase5_impl.md`). For a z-directed electric dipole `Eθ` is co-polar and `Eφ` is the cross-polar component. Directivity is `4πU/P_flux` (peak 1.5 for a short dipole, `D(θ) = 1.5 sin²θ`). Gain and realized gain use port accepted and incident power; without a port they are `NaN`. The default origin is the box centroid. v1 requires CPML on all six faces and a homogeneous lossless exterior. Phase 6's box (ground, substrate, image theory) is not decided here.
 
 ### Phase 6 — patch and a sweep
 
@@ -996,7 +998,7 @@ Estimates are implementer time for someone who already knows this tree, includin
 | **2** (complete, 0.3.48) | `fdtd_media`, edge bake, volume and face `fdtd_pec`. Cavity example `examples/pde/fdtd_cavity.rlab` and `examples/notebooks/fdtd_cavity.md` (probe FFT vs analytic modes). | 2–3 days | Dielectric cavity shifts by `1/sqrt(eps_r)`; PEC face actually zeros a probe on that face. The cavity notebook's FFT peak is within 2% of `f_mnp` and within 0.5% of the dispersion prediction. `render --strict` and `run-examples` exit 0. |
 | **3** (complete, 0.3.51) | CPML, per-face disable. PML example `examples/pde/fdtd_pml.rlab` and `examples/notebooks/fdtd_pml.md` (pulse leaves; compare with a PEC-walled run). | 3–5 days | Bit-exact against Phase 1 when `sigma_factor = 0`. CPML late residual over the incident peak < −40 dB, plotted against the PEC-walled run of the same box. `render --strict` and `run-examples` exit 0. |
 | **4** (complete, 0.3.59) | One lumped port. `fdtd_s11` returns a 1-port `sparameters` network, unwindowed unless `"hann"` is named. `"nfft"` zero-pads (interpolation). A sim call refuses an undecayed pulse. Example `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md` (`smith` and `rfplot`) drive an independent pillar. | — | Items 8 and 10, locked by `port_reads_an_independent_resistor`, `port_short_reads_minus_one`, and `lossless_patch_s11_minimum_near_2_4_ghz` (dip at 2.4395 GHz, +1.64%, metal 28 mm vs design L 29.42 mm). Diagnostics, not gates: recovered gap resistance and the inset-feed ring. `render --strict` and `run-examples` exit 0. |
-| **5** | On-the-fly NTFF, `fdtd_farfield` with a settable origin (default grid centre), directivity and realized gain. No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | 4–6 days | Dipole symmetry and 0–4 dBi directivity, shown by the example pattern (grid-centre origin). Patch broadside peak is qualitative. `render --strict` and `run-examples` exit 0. |
+| **5** (complete, 0.3.61 provisional) | On-the-fly NTFF, `fdtd_ntff` / `fdtd_farfield`. Origin defaults to the box centroid. Directivity from surface flux; gain and realized gain from port power (`NaN` with no port). No `Js`/`Ms` export. Dipole example `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. | — | Gates G1–G12 and L1–L10 in `fdtd3d_phase5_impl.md`. G8 is peak directivity plus `sin²θ`, not pointwise 1.5. Phase 6 geometry is not decided. |
 | **6** | Y-slab parallelism with **rayon, already in `Cargo.lock` at 1.12.0** (direct dep of `rustlab-dsp` and `rustlab-script`; not a new crate). Inner x-loop stays unit-stride so it can autovectorise. Same global pool as `parmap`, so a parameter sweep does not oversubscribe. Perf gate. Capstone `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`, plus the sweep `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`. | 2–3 days | Parallel matches serial bit for bit. 60×60×20 × 8000 steps under 60 s in release. A two-trial `parmap` does not start a second thread pool. Both notebooks pass `render --strict`; both scripts pass `run-examples`. The sweep returns one resonance per width. |
 
 Total roughly **three to five weeks**. Phase 0 merges alone and unblocks rustlab_em Lesson 15 before any Yee PR.

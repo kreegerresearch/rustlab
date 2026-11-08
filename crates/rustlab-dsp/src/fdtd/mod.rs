@@ -51,15 +51,19 @@
 
 mod cpml;
 mod media;
+mod ntff;
 mod port;
 mod pulse;
 mod yee;
 
 #[cfg(test)]
+mod ntff_tests;
+#[cfg(test)]
 mod tests;
 
 pub use cpml::{CpmlParams, Face};
 pub use media::CellMap;
+pub use ntff::{db10, directive_gain, FarField, NtffBox, PortPower};
 pub use port::{s11, s11_with, PortWindow, RecordDecay, S11Spec, PULSE_TAIL_LIMIT, S11};
 pub use pulse::gaussian_pulse;
 
@@ -247,6 +251,9 @@ pub struct FdtdSim {
     /// Identity profiles and one scratch row when CPML is off; full `q`
     /// arrays when any face is on.
     absorber: cpml::Absorber,
+    /// `None` until [`FdtdSim::set_ntff`] with a non-empty frequency list.
+    /// Off is the Phase 1–4 step, bit for bit.
+    ntff: Option<ntff::Ntff>,
 }
 
 /// `courant / (c0 sqrt(1/dx² + 1/dy² + 1/dz²))`.
@@ -324,6 +331,7 @@ impl FdtdSim {
             baked: media::Baked::default(),
             cpml: None,
             absorber: cpml::Absorber::off(nx, ny, nz),
+            ntff: None,
         })
     }
 
@@ -368,6 +376,7 @@ impl FdtdSim {
             + self.baked.bytes()
             + self.pec.as_ref().map_or(0, |p| p.len())
             + self.absorber.bytes(self.cpml_active())
+            + self.ntff_bytes()
     }
 
     /// Ports on the grid. v1 is 0 or 1.
@@ -997,6 +1006,11 @@ impl FdtdSim {
                 self.interrupted = true;
                 break;
             }
+            // Resolve the Huygens box before any field is written, so a
+            // rejected surface leaves steps at 0.
+            if self.steps == 0 {
+                self.prepare_ntff()?;
+            }
             self.step();
             completed += 1;
         }
@@ -1100,6 +1114,8 @@ impl FdtdSim {
             }
         }
         self.record_port();
+        // NTFF off skips this. The branch does not write a field.
+        self.accumulate_ntff();
     }
 
     /// Series voltage on the port edges, after the E update. A grid with no

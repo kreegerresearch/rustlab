@@ -99,6 +99,11 @@ fn eigs_laplacian_smallest_matches_analytic() {
             rel
         );
     }
+    // Hermitian eigenvalues are exactly real. A 1e-18 Arnoldi residual
+    // is not a phase, and a one-element read of D must be a real scalar.
+    for c in result.values.iter() {
+        assert_eq!(c.im, 0.0, "imaginary residual {}", c.im);
+    }
 }
 
 #[test]

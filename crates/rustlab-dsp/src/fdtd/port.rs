@@ -286,7 +286,7 @@ pub fn s11_with(v: &[f64], i: &[f64], dt: f64, z0: f64, spec: S11Spec) -> Result
 
 /// Peak of the last 10% of `|x|`, divided by the peak of `|x|`. At least
 /// one sample. A silent record is 0.
-fn tail_over_peak(x: &[f64]) -> f64 {
+pub(super) fn tail_over_peak(x: &[f64]) -> f64 {
     let n = x.len();
     let tail = (n / 10).max(1);
     let peak = x.iter().fold(0.0_f64, |p, v| p.max(v.abs()));

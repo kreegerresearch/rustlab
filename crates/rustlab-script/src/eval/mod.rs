@@ -14,9 +14,9 @@ pub(crate) mod real_index;
 pub(crate) mod real_ops;
 pub mod rng;
 pub mod shared;
-pub(crate) mod subscript;
 pub mod sparam_analysis;
 pub mod sparam_conv;
+pub(crate) mod subscript;
 pub mod table;
 pub mod toml_io;
 pub mod touchstone;
@@ -441,9 +441,10 @@ impl Evaluator {
         // A 1×1 matrix is a scalar in every write that accepts a scalar.
         // A 1×n right-hand side stays a matrix and still errors when the
         // left side is one element (MATLAB: dimension mismatch).
+        // A 1×1 right-hand side is that one sample. Exact-zero imag is
+        // real; a smaller-than-1e-12 imag is still the sample.
         let val = match val.unit_matrix() {
-            Some(c) if c.im.abs() < 1e-10 => Value::Scalar(c.re),
-            Some(c) => Value::Complex(c),
+            Some(c) => Value::from_c64(c),
             None => val,
         };
 

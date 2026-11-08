@@ -42,12 +42,16 @@ w = z ./ [3, 4]     % w has nonzero imag — z's complex content is preserved
 
 This applies to `.*`, `./`, and `.^` on `Vector` and `Matrix` types. Other operators (`*`, `/`, `inv`, `fft`, etc.) still produce complex outputs even on real inputs — extending the no-noise behaviour to those would require a typed-real value variant, which is tracked as a future plan.
 
+Reading one stored sample (`v(i)`, `M(i, j)`, `T(i, j, k)`, a 1×1 `det`, `squeeze` of a singleton) returns a real scalar only when the imaginary part is exactly zero, including `-0`. Any other imaginary part is kept, however small, so `abs` and `angle` of that scalar see both components. `abs` of a vector does the same per element: `|re|` when the imaginary part is exactly zero, and `hypot(re, im)` otherwise. A vector of `1e-15j` is not real. Scalar functions on a vector (`sqrt`, `sin`, …) use the real formula only when every imaginary part is exactly zero, which is the rule a matrix already used.
+
+`sum`, `mean`, `prod`, `dot`, `trace`, and `det` of a matrix larger than 1×1 still drop an imaginary part of the result below `1e-12`. That is accumulated roundoff on a result that is supposed to be real. A reduction whose whole value sits below `1e-12` can still lose a part. `to_scalar` and a size argument still accept `|Im| < 1e-10` as a real count.
+
 ### `abs(x)`
 Absolute value or magnitude. Element-wise on all numeric types.
 - Scalar: `abs(-3.0)` → `3.0`
-- Complex: `abs(3 + j*4)` → `5.0` (L2 norm)
-- Vector: element-wise magnitude, returns real vector
-- Matrix: element-wise magnitude, returns real matrix of the same shape
+- Complex: `abs(3 + j*4)` → `5.0` (L2 norm). A pure-imaginary `1e-15j` has magnitude `1e-15`, not `0`.
+- Vector: element-wise magnitude. An element whose imaginary part is exactly zero uses `|re|`; any other element uses `hypot`. The result is a real vector.
+- Matrix: element-wise `hypot`, a real matrix of the same shape.
 
 ### `angle(x)`
 Phase angle in radians (`atan2(im, re)`).
@@ -300,7 +304,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), and point probes. A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. The far-field transform is a later phase of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), point probes, and a near-to-far transform (`fdtd_ntff`, `fdtd_farfield`). A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. v1 of the transform is a closed box inside CPML on all six faces, in a homogeneous lossless exterior. A ground plane, a substrate, and image theory are Phase 6, and that geometry is not decided.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -329,7 +333,7 @@ sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, CPML, and NTFF storage), `c0` (299 792 458 m/s), `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off), and `ntff` (how many frequencies are armed; 0 when the transform is off).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
@@ -510,6 +514,37 @@ rfplot(s);
 sij(s, 1, 1)
 s = fdtd_s11(V, I, dt, Z0, "window", "hann");
 s = fdtd_s11(sim, "nfft", 8 * fdtd_info(sim).steps);
+```
+
+### `fdtd_ntff(sim, freqs)` / `fdtd_ntff(sim, freqs, "margin", m)`
+Arm the near-to-far transform before the first step. `freqs` is one frequency or a vector, in Hz, finite and positive. `m` defaults to 2 and is an integer `>= 1`. An empty `freqs` disarms the transform; `margin` is then ignored. A later call replaces the earlier one.
+
+The surface is one closed Huygens box, `m` cells inside the CPML, on all six faces. v1 refuses anything else:
+
+- CPML must be on every face. Turning one face off is an error at the first step.
+- Cells outside the box, and the one-cell layer just inside it, must equal the corner cell. That background is lossless (`sigma = 0`). A dielectric or a loss inside the box is allowed.
+- Every source, every port edge, and every PEC edge must sit strictly inside the box.
+- Each frequency needs at least 10 cells per background wavelength, and must be below `1/(2·dt)`.
+
+`fdtd_info(sim).ntff` is the armed count. `bytes` grows as soon as the transform is armed. Phase 6 (a ground, a substrate, image theory) is not this function, and that geometry is not decided.
+```
+fdtd_ntff(sim, c0 / 0.030);
+fdtd_ntff(sim, 8e9:0.5e9:10e9, "margin", 2);
+```
+
+### `pat = fdtd_farfield(sim, theta, phi)` / `fdtd_farfield(..., "origin", [x, y, z])` / `fdtd_farfield(..., "decay", "pulse"|"off")`
+The far field at the angles you name. `theta` and `phi` are radians, a scalar or a vector, and the result is their outer product.
+
+For a z-directed electric current, `Etheta` is the co-polar component and `Ephi` is the cross-polar one. In the xy plane (`theta = pi/2`) the co-polar field is `Etheta`, not `Ephi`. The phasors include `dt`, so the unit is V·s. The spherical factor `e^{-jkr}/r` is left off.
+
+`directivity = 4π U / Pflux`, with `U = (|Etheta|² + |Ephi|²) / (2 η)` and `Pflux` the time-average power leaving the box. `gain` divides by the power the port accepted, `½ Re(V conj(I))`. `realized_gain` divides by the incident power `½ |a|²`, with the same `a` as `fdtd_s11`. With no port, or when that power is not positive, `gain`, `realized_gain`, and their dBi fields are `NaN`. dBi is `10·log10` of a positive linear value. `realized_gain = gain · (1 − |S11|²)` is an algebraic identity of those definitions. `realized_gain = directivity · (1 − |S11|²)` is not, once the grid has loss.
+
+The default origin is the centroid of the box. An `"origin"` of three metres changes the phase and not the magnitude. `"decay", "pulse"` (the default) errors when the last 10% of the surface `|E|`, or of `|V|` or `|I|` when a port exists, is still above `1e-3` of that signal's peak. `"off"` returns the pattern anyway. Nothing is clipped. A nonfinite field sample, surface trace, port record, surface phasor, or flux is an error in either mode. `gain` and `realized_gain` stay `NaN` when there is no port or that power is not positive; that is a defined result.
+
+`Etheta` and `Ephi` are often near `1e-14` V·s. `abs(pat.Etheta(1, :, 1))` and `abs(pat.Etheta(1, 18, 1))` both return the modulus, and `angle` returns the phase. Do not rescale the phasor. The struct fields are `freq`, `theta`, `phi`, `Etheta`, `Ephi`, `U`, `prad`, `directivity`, `directivity_dBi`, `gain`, `gain_dBi`, `realized_gain`, `realized_gain_dBi`, `paccepted`, `pincident`, `s11` (`NaN` without a port), `origin`, `box` (1-based node planes `[xlo xhi ylo yhi zlo zhi]`), `k`, `eta`, and `decay`.
+```
+pat = fdtd_farfield(sim, (1:35) * pi / 36, 0);
+pat.directivity(1, 18, 1)
 ```
 
 ### `M = fdtd_slice(sim, comp, axis, index)`
@@ -1667,7 +1702,8 @@ Sparse partial eigensolver. Returns a tuple `[V, D]` where `V` is a dense `n_row
 - `A` (and `B`) must be **sparse** — call `sparse(A)` first if you have a dense matrix. Use `eig` for dense problems.
 
 Auto-routing:
-- Hermitian / SPD `A` → hand-rolled symmetric Lanczos with full reorthogonalization.
+- Hermitian / SPD `A` → hand-rolled symmetric Lanczos with full reorthogonalization. Those eigenvalues are stored with imaginary part exactly `0`, so `D(k)` is a real scalar.
+- Smallest-magnitude pairs of a real matrix use shift-and-invert at `σ = 0`. On a Hermitian matrix the Arnoldi residual on the imaginary part is discarded; the stored eigenvalue is exactly real. A non-Hermitian eigenvalue keeps its imaginary part, including a tiny one.
 - General `A` → hand-rolled Arnoldi.
 - Generalized `eigs(A, B, n)` reduces to a standard problem via the existing `SparseChol` factor of `B` and routes through Arnoldi.
 
@@ -1684,7 +1720,7 @@ L = -1 * laplacian_2d(nx, ny);
 [V, D] = eigs(A, B, 6, "sm");
 ```
 
-**Convergence and limits.** The default Krylov dimension is `min(n_rows, max(6n+10, 40))`. For matrices with closely-spaced eigenvalues (clusters), Lanczos may need more iterations to resolve them. **Implicit restart** and **shift-invert** are not yet implemented; if convergence is poor on a particular system, the next steps in `dev/plans/em_requests_queue.md` cover those enhancements.
+**Convergence and limits.** The default Krylov dimension is `min(n_rows, max(6n+10, 40))`. For matrices with closely-spaced eigenvalues (clusters), Lanczos may need more iterations to resolve them. **Implicit restart** is not implemented; if convergence is poor on a particular system, the next steps in `dev/plans/em_requests_queue.md` cover that enhancement.
 
 **Hand-rolled algorithm references:**
 - Symmetric Lanczos with full reorthogonalization — Saad, *Numerical Methods for Large Eigenvalue Problems*, ch. 6; Golub & Van Loan §10.1.

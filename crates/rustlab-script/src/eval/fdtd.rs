@@ -12,8 +12,8 @@ use ndarray::{Array1, Array2, Array3};
 use rustlab_core::C64;
 use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
-    gaussian_pulse, s11_with, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, PortWindow,
-    RecordDecay, S11Spec, SourceKind, Waveform, C0, DEFAULT_COURANT,
+    db10, directive_gain, gaussian_pulse, s11_with, Axis, CellMap, Component, CpmlParams, Face,
+    FdtdSim, PortWindow, RecordDecay, S11Spec, SourceKind, Waveform, C0, DEFAULT_COURANT,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -278,6 +278,10 @@ pub(crate) fn builtin_fdtd_info(args: Vec<Value>) -> Result<Value, ScriptError> 
     f.insert(
         "cpml".to_string(),
         Value::real_vector(Array1::from_vec(faces.map(|n| n as f64).to_vec())),
+    );
+    f.insert(
+        "ntff".to_string(),
+        Value::Scalar(g.ntff_freqs().len() as f64),
     );
     Ok(Value::Struct(f))
 }
@@ -1220,4 +1224,200 @@ pub(crate) fn builtin_fdtd_cpml(args: Vec<Value>) -> Result<Value, ScriptError> 
     }
     g.set_cpml(n, params).map_err(|e| dsp_err(NAME, e))?;
     Ok(Value::None)
+}
+
+/// Real vector, or a scalar. A matrix that is not a single row or column
+/// is an error.
+fn real_vector_arg(name: &str, what: &str, v: &Value) -> Result<Vec<f64>, ScriptError> {
+    let (data, shape) = real_values(name, what, v)?;
+    if shape.len() == 2 && shape[0] != 1 && shape[1] != 1 {
+        return Err(err(name, format!("{what} must be a scalar or a vector")));
+    }
+    Ok(data)
+}
+
+/// `fdtd_ntff(sim, freqs [, "margin", m])`. An empty `freqs` disarms.
+pub(crate) fn builtin_fdtd_ntff(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_ntff";
+    if args.len() < 2 || !(args.len() - 2).is_multiple_of(2) {
+        return Err(err(NAME, "usage: fdtd_ntff(sim, freqs [, \"margin\", m])"));
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let freqs = real_vector_arg(NAME, "freqs", &args[1])?;
+    let mut margin = 2usize;
+    let mut seen = false;
+    for pair in args[2..].chunks(2) {
+        let key = str_arg(NAME, "option", &pair[0])?;
+        if !key.eq_ignore_ascii_case("margin") {
+            return Err(err(
+                NAME,
+                format!("unknown option \"{key}\" (expected \"margin\")"),
+            ));
+        }
+        if seen {
+            return Err(err(NAME, "\"margin\" given twice"));
+        }
+        seen = true;
+        margin = positive_int(NAME, "margin", &pair[1])?;
+    }
+    let mut g = lock(NAME, &s)?;
+    g.set_ntff(&freqs, margin).map_err(|e| dsp_err(NAME, e))?;
+    Ok(Value::None)
+}
+
+/// `pat = fdtd_farfield(sim, theta, phi [, "origin", [x y z]] [, "decay", "off"|"pulse"])`
+pub(crate) fn builtin_fdtd_farfield(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_farfield";
+    if args.len() < 3 || !(args.len() - 3).is_multiple_of(2) {
+        return Err(err(
+            NAME,
+            "usage: fdtd_farfield(sim, theta, phi [, \"origin\", xyz] [, \"decay\", \"pulse\"|\"off\"])",
+        ));
+    }
+    let theta = real_vector_arg(NAME, "theta", &args[1])?;
+    let phi = real_vector_arg(NAME, "phi", &args[2])?;
+    let mut origin = None;
+    let mut decay = RecordDecay::Pulse;
+    let mut origin_set = false;
+    let mut decay_set = false;
+    for pair in args[3..].chunks(2) {
+        let key = str_arg(NAME, "option", &pair[0])?;
+        match key.to_ascii_lowercase().as_str() {
+            "origin" => {
+                if origin_set {
+                    return Err(err(NAME, "\"origin\" given twice"));
+                }
+                origin_set = true;
+                let o = real_vector_arg(NAME, "origin", &pair[1])?;
+                if o.len() != 3 {
+                    return Err(err(
+                        NAME,
+                        format!("origin must be three coordinates, got {}", o.len()),
+                    ));
+                }
+                origin = Some([o[0], o[1], o[2]]);
+            }
+            "decay" => {
+                if decay_set {
+                    return Err(err(NAME, "\"decay\" given twice"));
+                }
+                decay_set = true;
+                let s = str_arg(NAME, "decay", &pair[1])?;
+                decay = match s.to_ascii_lowercase().as_str() {
+                    "pulse" => RecordDecay::Pulse,
+                    "off" => RecordDecay::Off,
+                    _ => {
+                        return Err(err(
+                            NAME,
+                            format!("decay must be \"pulse\" or \"off\", got \"{s}\""),
+                        ))
+                    }
+                };
+            }
+            other => {
+                return Err(err(
+                    NAME,
+                    format!("unknown option \"{other}\" (expected \"origin\" or \"decay\")"),
+                ));
+            }
+        }
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let g = lock(NAME, &s)?;
+    let ff = g
+        .far_field(&theta, &phi, origin, decay)
+        .map_err(|e| dsp_err(NAME, e))?;
+    drop(g);
+
+    let nf = ff.freqs.len();
+    let nt = ff.theta.len();
+    let np = ff.phi.len();
+    let n = nf * nt * np;
+    let mut u = vec![0.0; n];
+    let mut directivity = vec![0.0; n];
+    let mut directivity_db = vec![0.0; n];
+    let mut gain = vec![0.0; n];
+    let mut gain_db = vec![0.0; n];
+    let mut realized = vec![0.0; n];
+    let mut realized_db = vec![0.0; n];
+    for idx in 0..n {
+        let q = idx / (nt * np);
+        let ft = ff.e_theta[idx];
+        let fp = ff.e_phi[idx];
+        u[idx] = (ft.norm_sqr() + fp.norm_sqr()) / (2.0 * ff.eta);
+        directivity[idx] = directive_gain(ft, fp, ff.eta, ff.prad[q]);
+        directivity_db[idx] = db10(directivity[idx]);
+        let (pacc, pinc) = match &ff.port {
+            Some(p) => (p.accepted[q], p.incident[q]),
+            None => (f64::NAN, f64::NAN),
+        };
+        gain[idx] = directive_gain(ft, fp, ff.eta, pacc);
+        gain_db[idx] = db10(gain[idx]);
+        realized[idx] = directive_gain(ft, fp, ff.eta, pinc);
+        realized_db[idx] = db10(realized[idx]);
+    }
+    let nan = C64::new(f64::NAN, f64::NAN);
+    let (s11, pacc, pinc) = match &ff.port {
+        Some(p) => (p.s11.clone(), p.accepted.clone(), p.incident.clone()),
+        None => (vec![nan; nf], vec![f64::NAN; nf], vec![f64::NAN; nf]),
+    };
+    let tensor = |data: Vec<f64>| {
+        Value::real_tensor3(Array3::from_shape_vec((nf, nt, np), data).expect("nf*nt*np"))
+    };
+    let complex_tensor = |data: Vec<C64>| {
+        Value::Tensor3(
+            Array3::from_shape_vec((nf, nt, np), data)
+                .expect("nf*nt*np")
+                .into(),
+        )
+    };
+    let mut f = HashMap::new();
+    f.insert(
+        "freq".into(),
+        Value::real_vector(Array1::from_vec(ff.freqs)),
+    );
+    f.insert(
+        "theta".into(),
+        Value::real_vector(Array1::from_vec(ff.theta)),
+    );
+    f.insert("phi".into(), Value::real_vector(Array1::from_vec(ff.phi)));
+    f.insert("Etheta".into(), complex_tensor(ff.e_theta));
+    f.insert("Ephi".into(), complex_tensor(ff.e_phi));
+    f.insert("U".into(), tensor(u));
+    f.insert("prad".into(), Value::real_vector(Array1::from_vec(ff.prad)));
+    f.insert("directivity".into(), tensor(directivity));
+    f.insert("directivity_dBi".into(), tensor(directivity_db));
+    f.insert("gain".into(), tensor(gain));
+    f.insert("gain_dBi".into(), tensor(gain_db));
+    f.insert("realized_gain".into(), tensor(realized));
+    f.insert("realized_gain_dBi".into(), tensor(realized_db));
+    f.insert(
+        "paccepted".into(),
+        Value::real_vector(Array1::from_vec(pacc)),
+    );
+    f.insert(
+        "pincident".into(),
+        Value::real_vector(Array1::from_vec(pinc)),
+    );
+    f.insert("s11".into(), Value::Vector(Array1::from_vec(s11).into()));
+    f.insert(
+        "origin".into(),
+        Value::real_vector(Array1::from_vec(ff.origin.to_vec())),
+    );
+    let p = ff.planes;
+    f.insert(
+        "box".into(),
+        Value::real_vector(Array1::from_vec(vec![
+            p.x.0 as f64 + 1.0,
+            p.x.1 as f64 + 1.0,
+            p.y.0 as f64 + 1.0,
+            p.y.1 as f64 + 1.0,
+            p.z.0 as f64 + 1.0,
+            p.z.1 as f64 + 1.0,
+        ])),
+    );
+    f.insert("k".into(), Value::real_vector(Array1::from_vec(ff.k)));
+    f.insert("eta".into(), Value::Scalar(ff.eta));
+    f.insert("decay".into(), Value::Scalar(ff.decay));
+    Ok(Value::Struct(f))
 }
