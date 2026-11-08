@@ -738,3 +738,293 @@ cpml = late(1);
     println!("script late residual: pec {pec:.3e}, cpml {cpml:.3e}, {db:.1} dB");
     assert!(db < -30.0, "cpml is only {db} dB below pec");
 }
+
+#[test]
+fn fdtd_s11_of_a_resistance_is_a_one_port_network() {
+    let ev = eval(
+        r#"
+n = 256;
+dt = 1e-9;
+Z0 = 50;
+m = 8;
+t = (0:n-1) * dt;
+w = 2 * pi * m / (n * dt);
+V = cos(w * t);
+I = cos(w * (t - dt / 2)) / (3 * Z0);
+s = fdtd_s11(V, I, dt, Z0, "window", "rect");
+kind = parameter_type(s);
+ports = nports(s);
+zref = s.impedance;
+f = s.frequencies;
+tone = sij(s, 1, 1);
+tr = real(tone(m));
+ti = imag(tone(m));
+f1 = real(f(1));
+"#,
+    );
+    assert_eq!(
+        match ev.get("kind") {
+            Some(Value::Str(s)) => s.as_str(),
+            other => panic!("kind: {other:?}"),
+        },
+        "S"
+    );
+    assert_eq!(scalar(&ev, "ports"), 1.0);
+    assert_eq!(scalar(&ev, "zref"), 50.0);
+    assert!(
+        (scalar(&ev, "tr") - 0.5).abs() < 1e-9,
+        "re {}",
+        scalar(&ev, "tr")
+    );
+    assert!(scalar(&ev, "ti").abs() < 1e-9, "im {}", scalar(&ev, "ti"));
+    let df = 1.0 / (256.0 * 1e-9);
+    assert!((scalar(&ev, "f1") - df).abs() < 1e-3);
+}
+
+#[test]
+fn fdtd_port_record_round_trips_through_fdtd_s11() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+tau = 15 * dt;
+id = fdtd_port(sim, "ez", 4, 4, 3:4, 75, "gaussian", 4*tau, tau);
+out = fdtd_run(sim, 48);
+s = fdtd_s11(sim, "port", 1, "window", "rect");
+s2 = fdtd_s11(out.V, out.I, out.dt, out.Z0, "window", "rect");
+a = sij(s, 1, 1);
+b = sij(s2, 1, 1);
+same = max(abs(a - b));
+V = out.V;
+I = out.I;
+z = out.Z0;
+"#,
+    );
+    assert_eq!(scalar(&ev, "id"), 1.0);
+    assert!(scalar(&ev, "same") == 0.0, "sim and samples disagree");
+    assert_eq!(shape(&ev, "V"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "I"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "z"), vec![1.0, 1.0]);
+}
+
+#[test]
+fn fdtd_port_rejects_a_second_port_and_a_shared_hard_edge() {
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ey", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 1, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC outer wall"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "hx", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("E edges"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 0, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("positive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, [1, 3], 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("consecutive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 2);
+fdtd_port(sim, "ez", 3, 4, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    // The second call is refused because a port already exists, before the
+    // step check. Build a fresh grid that has already stepped.
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_run(sim, 1);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("before the first step"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_s11(sim);
+"#,
+    );
+    assert!(msg.contains("no port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_s11(sim, "port", 2);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 8);
+fdtd_s11(sim, "window", "kaiser");
+"#,
+    );
+    assert!(msg.contains("hann"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+mask = zeros3(8, 8, 8);
+mask(3, 3, 3) = 1;
+fdtd_pec(sim, mask);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC"), "{msg}");
+}
+
+#[test]
+fn fdtd_s11_default_is_a_pulse_and_the_samples_form_is_not() {
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 8);
+fdtd_s11(sim);
+"#,
+    );
+    assert!(msg.contains("has not decayed"), "{msg}");
+
+    // A named window is the steady-tone path: the tail check stays off.
+    eval(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 16);
+s = fdtd_s11(sim, "window", "hann");
+n = length(s.frequencies);
+"#,
+    );
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 16);
+fdtd_s11(sim, "window", "hann", "decay", "pulse");
+"#,
+    );
+    assert!(msg.contains("has not decayed"), "{msg}");
+
+    let ev = eval(
+        r#"
+n = 256;
+dt = 1e-9;
+Z0 = 50;
+m = 8;
+t = (0:n - 1) * dt;
+w = 2 * pi * m / (n * dt);
+V = cos(w * t);
+I = cos(w * (t - dt / 2)) / (3 * Z0);
+s = fdtd_s11(V, I, dt, Z0);
+tone = sij(s, 1, 1);
+tr = real(tone(m));
+padded = fdtd_s11(V, I, dt, Z0, "nfft", 4 * n);
+tp = real(sij(padded, 1, 1)(4 * m));
+"#,
+    );
+    assert!((scalar(&ev, "tr") - 0.5).abs() < 1e-9);
+    assert!((scalar(&ev, "tp") - 0.5).abs() < 1e-9);
+
+    let msg = run_err(
+        r#"
+V = [1, 0, 0, 0];
+I = [1, 0, 0, 0] / 50;
+fdtd_s11(V, I, 1e-9, 50, "nfft", 2);
+"#,
+    );
+    assert!(
+        msg.contains("interpolat") && msg.contains("resolution"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn fdtd_s11_of_an_independent_pillar_is_a_small_reflection() {
+    let ev = eval(
+        r#"
+dx = 1e-3; dy = 1.5e-3; dz = 1e-3; z0 = 50; n = 4; kp = 2; ip = 6; jp = 8; tau = 1e-9;
+sim = fdtd3d(16, 14, 8, dx, dy, dz);
+sig = zeros3(14, 16, 8);
+sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (z0 * n * dx * n * dy);
+fdtd_media(sim, 1, 1, sig);
+pad = zeros(14, 16);
+pad(ip:ip + n, jp - 1:jp + n) = 1;
+fdtd_pec(sim, "z", kp + 1, pad);
+fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+out = fdtd_run(sim, round(16 * tau / fdtd_info(sim).dt));
+at = argmax(abs(out.I));
+vi = out.V(at) / out.I(at);
+s = fdtd_s11(sim);
+mag = abs(sij(s, 1, 1));
+f = s.frequencies;
+keep = and(mag == mag, f <= 300e6);
+sabs = max(mag(keep));
+"#,
+    );
+    let vi = scalar(&ev, "vi");
+    let sabs = scalar(&ev, "sabs");
+    assert!(
+        (vi / 50.0 - 1.0).abs() < 0.01,
+        "V/I at the current peak is {vi}"
+    );
+    assert!(sabs <= 0.01, "max |S11| to 300 MHz is {sabs}");
+}

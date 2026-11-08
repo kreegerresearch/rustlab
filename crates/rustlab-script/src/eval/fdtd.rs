@@ -5,13 +5,15 @@
 //! Indices are 1-based `(i, j, k)` = (y row, x column, z page).
 
 use super::builtin_cancel;
+use super::builtins::build_sparameters_struct;
 use super::value::Value;
 use crate::error::ScriptError;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Array3};
+use rustlab_core::C64;
 use rustlab_dsp::error::DspError;
 use rustlab_dsp::fdtd::{
-    gaussian_pulse, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, SourceKind, Waveform, C0,
-    DEFAULT_COURANT,
+    gaussian_pulse, s11_with, Axis, CellMap, Component, CpmlParams, Face, FdtdSim, PortWindow,
+    RecordDecay, S11Spec, SourceKind, Waveform, C0, DEFAULT_COURANT,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -205,15 +207,17 @@ fn record_fields(sim: &FdtdSim) -> HashMap<String, Value> {
     f.insert("dt".to_string(), Value::Scalar(dt));
     f.insert("steps".to_string(), Value::Scalar(steps as f64));
     f.insert("probe".to_string(), Value::real_matrix(probe));
+    let nports = sim.n_ports();
+    let vport = Array2::from_shape_vec((steps, nports), sim.port_voltage().to_vec())
+        .expect("port voltage is steps × ports");
+    let iport = Array2::from_shape_vec((steps, nports), sim.port_current().to_vec())
+        .expect("port current is steps × ports");
+    f.insert("V".to_string(), Value::real_matrix(vport));
+    f.insert("I".to_string(), Value::real_matrix(iport));
     f.insert(
-        "V".to_string(),
-        Value::real_matrix(Array2::zeros((steps, 0))),
+        "Z0".to_string(),
+        Value::real_vector(Array1::from_vec(sim.port_z0())),
     );
-    f.insert(
-        "I".to_string(),
-        Value::real_matrix(Array2::zeros((steps, 0))),
-    );
-    f.insert("Z0".to_string(), Value::real_vector(Array1::zeros(0)));
     f.insert("interrupted".to_string(), Value::Bool(sim.interrupted()));
     f
 }
@@ -449,6 +453,386 @@ pub(crate) fn builtin_fdtd_source(args: Vec<Value>) -> Result<Value, ScriptError
     g.add_source(comp, &edges, kind, waveform)
         .map_err(|e| dsp_err(NAME, e))?;
     Ok(Value::None)
+}
+
+/// Collinear E-edge stack. `along` is the index list on the component's axis.
+fn electric_edges(
+    name: &str,
+    comp: Component,
+    rows: &[usize],
+    cols: &[usize],
+    pages: &[usize],
+) -> Result<Vec<(usize, usize, usize)>, ScriptError> {
+    let (along_name, along) = match comp.axis() {
+        Axis::X => ("j", cols),
+        Axis::Y => ("i", rows),
+        Axis::Z => ("k", pages),
+    };
+    for (n, list) in [("i", rows), ("j", cols), ("k", pages)] {
+        if list.len() > 1 && n != along_name {
+            return Err(err(
+                name,
+                format!(
+                    "only {along_name} may be a range for {} (a stack of collinear edges); {n} has {} values",
+                    comp.name(),
+                    list.len()
+                ),
+            ));
+        }
+    }
+    if along.windows(2).any(|w| w[1] != w[0] + 1) {
+        return Err(err(
+            name,
+            format!("{along_name} must be consecutive ascending indices"),
+        ));
+    }
+    let edges = match comp.axis() {
+        Axis::X => cols.iter().map(|&j| (rows[0], j, pages[0])).collect(),
+        Axis::Y => rows.iter().map(|&i| (i, cols[0], pages[0])).collect(),
+        Axis::Z => pages.iter().map(|&k| (rows[0], cols[0], k)).collect(),
+    };
+    Ok(edges)
+}
+
+fn reject_wall_or_pec(
+    name: &str,
+    g: &FdtdSim,
+    comp: Component,
+    edges: &[(usize, usize, usize)],
+) -> Result<(), ScriptError> {
+    for &(i, j, k) in edges {
+        if g.is_pec_edge(comp, i, j, k) {
+            return Err(err(
+                name,
+                format!(
+                    "{} at (i, j, k) = ({}, {}, {}) is PEC (fdtd_pec) and held at 0",
+                    comp.name(),
+                    i + 1,
+                    j + 1,
+                    k + 1
+                ),
+            ));
+        }
+        if g.is_wall_edge(comp, i, j, k) {
+            return Err(err(
+                name,
+                format!(
+                    "{} at (i, j, k) = ({}, {}, {}) lies on a PEC outer wall and is held at 0",
+                    comp.name(),
+                    i + 1,
+                    j + 1,
+                    k + 1
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `id = fdtd_port(sim, comp, i, j, k, Z0, waveform…)`
+pub(crate) fn builtin_fdtd_port(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_port";
+    if !(7..=10).contains(&args.len()) {
+        return Err(ScriptError::arg_count_range(NAME.into(), 7, 10, args.len()));
+    }
+    let s = sim_arg(NAME, &args[0])?;
+    let comp = component_arg(NAME, &args[1])?;
+    if !comp.is_electric() {
+        return Err(err(
+            NAME,
+            format!("a port drives E edges (ex, ey, ez), not {}", comp.name()),
+        ));
+    }
+    let z0 = positive_scalar(NAME, "Z0", &args[5])?;
+    let waveform = match &args[6] {
+        Value::Str(w) => {
+            let w = w.to_ascii_lowercase();
+            let want = match w.as_str() {
+                "gaussian" => 9,
+                "modulated" => 10,
+                _ => {
+                    return Err(err(
+                        NAME,
+                        format!(
+                            "waveform must be \"gaussian\", \"modulated\", or a real vector, got \"{w}\""
+                        ),
+                    ))
+                }
+            };
+            if args.len() != want {
+                return Err(err(
+                    NAME,
+                    format!(
+                        "\"{w}\" takes {} arguments after the waveform name, got {}",
+                        want - 7,
+                        args.len() - 7
+                    ),
+                ));
+            }
+            let t0 = finite_scalar(NAME, "t0", &args[7])?;
+            let tau = positive_scalar(NAME, "tau", &args[8])?;
+            let f0 = if want == 10 {
+                finite_scalar(NAME, "f0", &args[9])?
+            } else {
+                0.0
+            };
+            Waveform::Pulse { t0, tau, f0 }
+        }
+        v => {
+            if args.len() != 7 {
+                return Err(ScriptError::arg_count(NAME.into(), 7, args.len()));
+            }
+            let (samples, shape) = real_values(NAME, "waveform", v)?;
+            if shape.len() == 2 && shape[0] != 1 && shape[1] != 1 {
+                return Err(err(NAME, "waveform must be a vector"));
+            }
+            if samples.is_empty() || samples.iter().any(|x| !x.is_finite()) {
+                return Err(err(
+                    NAME,
+                    "waveform must be a non-empty vector of finite values",
+                ));
+            }
+            Waveform::Samples(samples)
+        }
+    };
+
+    let mut g = lock(NAME, &s)?;
+    // A grid that already has a port names the deferred S21 phase, including
+    // after the first step. The step check is only for the first port.
+    if g.n_ports() != 0 {
+        return Err(err(
+            NAME,
+            "one port in v1; S21 of a second port is deferred",
+        ));
+    }
+    if g.steps() != 0 {
+        return Err(err(
+            NAME,
+            format!(
+                "add a port before the first step ({} steps done); build a new fdtd3d",
+                g.steps()
+            ),
+        ));
+    }
+    let rows = index_list(NAME, "i", &args[2], g.ny())?;
+    let cols = index_list(NAME, "j", &args[3], g.nx())?;
+    let pages = index_list(NAME, "k", &args[4], g.nz())?;
+    let edges = electric_edges(NAME, comp, &rows, &cols, &pages)?;
+    reject_wall_or_pec(NAME, &g, comp, &edges)?;
+    let id = g
+        .add_port(comp, &edges, z0, waveform)
+        .map_err(|e| dsp_err(NAME, e))?;
+    Ok(Value::Scalar((id + 1) as f64))
+}
+
+fn window_arg(name: &str, v: &Value) -> Result<PortWindow, ScriptError> {
+    let s = str_arg(name, "window", v)?;
+    PortWindow::parse(&s).ok_or_else(|| {
+        err(
+            name,
+            format!("window must be \"hann\" or \"rect\", got \"{s}\""),
+        )
+    })
+}
+
+fn signal_samples(name: &str, what: &str, v: &Value) -> Result<Vec<f64>, ScriptError> {
+    let (data, shape) = real_values(name, what, v)?;
+    match shape.as_slice() {
+        [] | [_] | [1, _] | [_, 1] => Ok(data),
+        [r, c] => Err(err(
+            name,
+            format!("{what} must be a vector or a steps × 1 record, got {r}×{c}"),
+        )),
+        _ => Err(err(name, format!("{what} must be a vector"))),
+    }
+}
+
+fn one_positive(name: &str, what: &str, v: &Value) -> Result<f64, ScriptError> {
+    let (data, shape) = real_values(name, what, v)?;
+    if shape.len() == 2 && shape[0] != 1 && shape[1] != 1 {
+        return Err(err(name, format!("{what} must be a scalar")));
+    }
+    if data.len() != 1 {
+        return Err(err(
+            name,
+            format!("{what} must be one value, got {}", data.len()),
+        ));
+    }
+    if !(data[0].is_finite() && data[0] > 0.0) {
+        return Err(err(
+            name,
+            format!("{what} must be finite and positive, got {}", data[0]),
+        ));
+    }
+    Ok(data[0])
+}
+
+struct S11Opt {
+    window: PortWindow,
+    window_set: bool,
+    nfft: Option<usize>,
+    decay: Option<RecordDecay>,
+}
+
+/// Name/value pairs. `"port"` is accepted only when `allow_port` is set,
+/// and only as id 1. An explicit window does not by itself pick the tail
+/// check; the caller does, so a steady tone can still name a window.
+fn parse_s11_options(
+    name: &str,
+    args: &[Value],
+    from: usize,
+    allow_port: bool,
+) -> Result<S11Opt, ScriptError> {
+    if (args.len() - from) % 2 != 0 {
+        return Err(err(name, "options are name, value pairs"));
+    }
+    let mut opt = S11Opt {
+        window: PortWindow::Rect,
+        window_set: false,
+        nfft: None,
+        decay: None,
+    };
+    let mut i = from;
+    while i < args.len() {
+        let key = str_arg(name, "option", &args[i])?;
+        let val = &args[i + 1];
+        match key.to_ascii_lowercase().as_str() {
+            "window" => {
+                if opt.window_set {
+                    return Err(err(name, "\"window\" given twice"));
+                }
+                opt.window = window_arg(name, val)?;
+                opt.window_set = true;
+            }
+            "nfft" => {
+                if opt.nfft.is_some() {
+                    return Err(err(name, "\"nfft\" given twice"));
+                }
+                opt.nfft = Some(positive_int(name, "nfft", val)?);
+            }
+            "decay" => {
+                if opt.decay.is_some() {
+                    return Err(err(name, "\"decay\" given twice"));
+                }
+                let s = str_arg(name, "decay", val)?;
+                opt.decay = Some(match s.to_ascii_lowercase().as_str() {
+                    "pulse" => RecordDecay::Pulse,
+                    "off" => RecordDecay::Off,
+                    _ => {
+                        return Err(err(
+                            name,
+                            format!("decay must be \"pulse\" or \"off\", got \"{s}\""),
+                        ))
+                    }
+                });
+            }
+            "port" if allow_port => {
+                let id = positive_int(name, "port", val)?;
+                if id != 1 {
+                    return Err(err(
+                        name,
+                        "v1 has one port; S21 of a second port is deferred",
+                    ));
+                }
+            }
+            other => {
+                let expected = if allow_port {
+                    "\"port\", \"window\", \"nfft\", or \"decay\""
+                } else {
+                    "\"window\", \"nfft\", or \"decay\""
+                };
+                return Err(err(
+                    name,
+                    format!("unknown option \"{other}\" (expected {expected})"),
+                ));
+            }
+        }
+        i += 2;
+    }
+    Ok(opt)
+}
+
+fn s11_value(
+    name: &str,
+    v: &[f64],
+    i: &[f64],
+    dt: f64,
+    z0: f64,
+    spec: S11Spec,
+) -> Result<Value, ScriptError> {
+    let spec = s11_with(v, i, dt, z0, spec).map_err(|e| dsp_err(name, e))?;
+    let mut parameters = Array3::<C64>::zeros((spec.s11.len(), 1, 1));
+    for (k, s) in spec.s11.iter().enumerate() {
+        parameters[[k, 0, 0]] = *s;
+    }
+    build_sparameters_struct(parameters, spec.frequencies, z0)
+}
+
+/// `s = fdtd_s11(sim)` or `s = fdtd_s11(V, I, dt, Z0)`.
+pub(crate) fn builtin_fdtd_s11(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "fdtd_s11";
+    if args.is_empty() {
+        return Err(ScriptError::arg_count_range(NAME.into(), 1, 12, 0));
+    }
+    if matches!(args[0], Value::Fdtd3d(_)) {
+        return s11_from_sim(NAME, &args);
+    }
+    if args.len() < 4 {
+        return Err(ScriptError::arg_count_range(NAME.into(), 4, 10, args.len()));
+    }
+    let v = signal_samples(NAME, "V", &args[0])?;
+    let i = signal_samples(NAME, "I", &args[1])?;
+    let dt = positive_scalar(NAME, "dt", &args[2])?;
+    let z0 = one_positive(NAME, "Z0", &args[3])?;
+    let opt = parse_s11_options(NAME, &args, 4, false)?;
+    // Samples are the synthetic API. A tail check is opt-in, including
+    // when the caller names a window.
+    let decay = opt.decay.unwrap_or(RecordDecay::Off);
+    s11_value(
+        NAME,
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: opt.window,
+            nfft: opt.nfft,
+            decay,
+        },
+    )
+}
+
+fn s11_from_sim(name: &str, args: &[Value]) -> Result<Value, ScriptError> {
+    let opt = parse_s11_options(name, args, 1, true)?;
+    // Reading the grid is pulse extraction. An explicit window is how a
+    // steady tone opts out of the tail refusal; `"decay"` overrides that.
+    let decay = opt.decay.unwrap_or(if opt.window_set {
+        RecordDecay::Off
+    } else {
+        RecordDecay::Pulse
+    });
+    let s = sim_arg(name, &args[0])?;
+    let g = lock(name, &s)?;
+    if g.n_ports() != 1 {
+        return Err(err(name, "the grid has no port"));
+    }
+    let z0 = g.port_z0()[0];
+    let v = g.port_voltage().to_vec();
+    let i = g.port_current().to_vec();
+    let dt = g.dt();
+    drop(g);
+    s11_value(
+        name,
+        &v,
+        &i,
+        dt,
+        z0,
+        S11Spec {
+            window: opt.window,
+            nfft: opt.nfft,
+            decay,
+        },
+    )
 }
 
 /// `id = fdtd_probe(sim, comp, i, j, k)`
