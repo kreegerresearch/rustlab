@@ -1,0 +1,113 @@
+# Lumped port driving an independent resistor.
+# Demonstrates: fdtd_port, fdtd_media, fdtd_pec, fdtd_run, fdtd_s11, smith, rfplot
+#
+# The load is a 4-by-4 pillar of conductive cells, two cells tall, under a
+# PEC pad. Its conductivity is
+#
+#   σ = (kp·Δz) / (R · n·Δx · n·Δy)
+#
+# The edge bake averages neighbouring cells, and those weights on an n×n
+# block sum to n², so the pillar's DC conductance is exactly 1/R. The port
+# is an Ez stack one node outside the pillar, under the pad's overhang, so
+# the port edges carry none of that conductivity. V/I is the pillar, not
+# the port's own update rearranged.
+#
+# Δx and Δy differ, so an Ampère loop that swaps those two lengths misses R.
+# The current is
+#
+#   I = (Hy − Hy_left)·Δy − (Hx − Hx_below)·Δx
+#
+# fdtd_s11 uses no window unless one is named. "nfft" zero-pads: the extra
+# bins interpolate this record. They do not resolve a closer pair of tones.
+
+dx = 1.0e-3;
+dy = 1.5e-3;
+dz = 1.0e-3;
+z0 = 50;
+n = 4;
+kp = 2;
+ip = 6;
+jp = 8;
+tau = 1e-9;
+
+function [vi, s_real, s_abs, V, I, t, net] = one_load(rload, dx, dy, dz, z0, n, kp, ip, jp, tau)
+  sim = fdtd3d(16, 14, 8, dx, dy, dz);
+  sig = zeros3(14, 16, 8);
+  sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (rload * n * dx * n * dy);
+  fdtd_media(sim, 1, 1, sig);
+  pad = zeros(14, 16);
+  pad(ip:ip + n, jp - 1:jp + n) = 1;
+  fdtd_pec(sim, "z", kp + 1, pad);
+  fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+  dt = fdtd_info(sim).dt;
+  out = fdtd_run(sim, round(16 * tau / dt));
+  V = out.V;
+  I = out.I;
+  t = (1:out.steps) * out.dt;
+  at = argmax(abs(I));
+  vi = V(at) / I(at);
+  net = fdtd_s11(sim);
+  f = net.frequencies;
+  tone = sij(net, 1, 1);
+  mag = abs(tone);
+  keep = and(mag == mag, f <= 300e6);
+  s_abs = max(mag(keep));
+  ks = find(keep);
+  s_real = real(tone(ks(1)));
+end
+
+for rload = [25, 50, 100]
+  [vi, s_real, s_abs, V, I, t, net] = one_load(rload, dx, dy, dz, z0, n, kp, ip, jp, tau);
+  fprintf("R = %6.1f ohm   V/I = %8.4f ohm (%+.3f%%)   S11(first bin) = %+.4f   max |S11| to 300 MHz = %.4f\n", ...
+          rload, vi, 100 * (vi / rload - 1), s_real, s_abs);
+  if abs(vi / rload - 1) > 0.01
+    error(sprintf("V/I is %.3f%% off R = %g (1%% gate)", 100 * (vi / rload - 1), rload));
+  end
+  if rload == z0 && s_abs > 0.01
+    error(sprintf("matched |S11| = %.4f, want <= 0.01 up to 300 MHz", s_abs));
+  end
+  if rload < z0 && s_real >= 0
+    error(sprintf("R = %g < Z0, but low-frequency S11 is %+.4f", rload, s_real));
+  end
+  if rload > z0 && s_real <= 0
+    error(sprintf("R = %g > Z0, but low-frequency S11 is %+.4f", rload, s_real));
+  end
+  if rload == z0
+    matched_v = V;
+    matched_i = I;
+    matched_t = t;
+    matched_net = net;
+    matched_vi = vi;
+    matched_s = s_abs;
+  end
+end
+
+# The padded bin at the same frequency is the same DFT sample. 4× nfft
+# does not add a longer observation.
+plain = sij(matched_net, 1, 1);
+padded = fdtd_s11(matched_v, matched_i, matched_t(2) - matched_t(1), z0, "nfft", 4 * length(matched_v));
+pad_s = sij(padded, 1, 1);
+k = 4;
+if abs(plain(k) - pad_s(4 * k)) > 1e-8
+  error("nfft moved an on-grid bin; padding must only interpolate");
+end
+fprintf("nfft check: bin %d and padded bin %d differ by %.3e\n", k, 4 * k, abs(plain(k) - pad_s(4 * k)));
+
+subplot(2, 1, 1);
+plot(matched_t * 1e9, matched_v);
+xlabel("t (ns)");
+ylabel("V (V)");
+title("Gap voltage, 50 ohm pillar");
+subplot(2, 1, 2);
+plot(matched_t * 1e9, matched_i * 1e3);
+xlabel("t (ns)");
+ylabel("I (mA)");
+title("Ampere current");
+
+figure();
+smith(matched_net);
+title("S11 of the 50 ohm pillar");
+
+figure();
+rfplot(matched_net);
+title("|S11| of the 50 ohm pillar");

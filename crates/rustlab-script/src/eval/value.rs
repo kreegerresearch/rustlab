@@ -459,6 +459,23 @@ impl Value {
         Complex::new(n, 0.0)
     }
 
+    /// One stored sample as a script value.
+    ///
+    /// An imaginary part of exactly zero (`+0` or `-0`) is a real scalar.
+    /// Any other imaginary part is the value's phase and is kept, including
+    /// parts far below `1e-12`. `abs` and `angle` of that scalar then see
+    /// both components. This is not the reduction rule: `sum`, `mean`,
+    /// `prod`, `dot`, `trace`, and `det` of a matrix still drop an
+    /// imaginary part below `1e-12`, because that is accumulated roundoff
+    /// on an ordinary real result.
+    pub(crate) fn from_c64(z: C64) -> Value {
+        if z.im == 0.0 {
+            Value::Scalar(z.re)
+        } else {
+            Value::Complex(z)
+        }
+    }
+
     /// Promote a Scalar value to Complex
     fn promote_to_complex(v: Value) -> Result<C64, String> {
         match v {
@@ -1259,12 +1276,7 @@ impl Value {
                     if i >= v.len() {
                         return Err(format!("index {} out of bounds (length {})", n, v.len()));
                     }
-                    let c = v[i];
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(v[i]))
                 }
                 Value::Vector(idx_v) => {
                     // `v(a:b)`: a run of consecutive in-range positions is
@@ -1344,14 +1356,7 @@ impl Value {
                     Ok(m[[row, col]])
                 };
                 match &idx {
-                    Value::Scalar(k) => {
-                        let c = pick(*k)?;
-                        if c.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(c.re))
-                        } else {
-                            Ok(Value::Complex(c))
-                        }
-                    }
+                    Value::Scalar(k) => Ok(Self::from_c64(pick(*k)?)),
                     Value::Vector(idx_v) => {
                         // Column-major linear logical indexing: M(M > 2).
                         let total = m.nrows() * m.ncols();
@@ -1450,14 +1455,7 @@ impl Value {
                         }
                         Ok(Value::Vector(Array1::from_vec(flat).into()))
                     }
-                    Value::Scalar(k) => {
-                        let c = pick(*k)?;
-                        if c.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(c.re))
-                        } else {
-                            Ok(Value::Complex(c))
-                        }
-                    }
+                    Value::Scalar(k) => Ok(Self::from_c64(pick(*k)?)),
                     Value::Vector(idx_v) => {
                         let picks: Result<Vec<C64>, _> =
                             idx_v.iter().map(|c| pick(c.re)).collect();
@@ -1475,12 +1473,7 @@ impl Value {
                     if i >= sv.len {
                         return Err(format!("index {} out of bounds (length {})", n, sv.len));
                     }
-                    let c = sv.get(i);
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(sv.get(i)))
                 }
                 _ => Err(format!(
                     "sparse vector indexing: unsupported index type {}",
@@ -1610,12 +1603,7 @@ impl Value {
 
                 if rows.len() == 1 && cols.len() == 1 {
                     // Single element
-                    let c = m[[rows[0], cols[0]]];
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(m[[rows[0], cols[0]]]))
                 } else if rows.len() == 1 {
                     // Single row → Vector
                     let r = rows[0];
@@ -1680,12 +1668,7 @@ impl Value {
                                 r, c, sm.rows, sm.cols
                             ));
                         }
-                        let v = sm.get(ri, ci);
-                        if v.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(v.re))
-                        } else {
-                            Ok(Value::Complex(v))
-                        }
+                        Ok(Self::from_c64(sm.get(ri, ci)))
                     }
                     _ => {
                         // Fall back to dense for complex indexing
@@ -1746,12 +1729,7 @@ impl Value {
 
         // Single-element extract
         if nr == 1 && nc == 1 && np == 1 {
-            let c = t[[rows[0], cols[0], pages[0]]];
-            return if c.im.abs() < 1e-12 {
-                Ok(Value::Scalar(c.re))
-            } else {
-                Ok(Value::Complex(c))
-            };
+            return Ok(Self::from_c64(t[[rows[0], cols[0], pages[0]]]));
         }
 
         // All-range extract: clone the whole tensor (or the sub-tensor)
@@ -2247,11 +2225,85 @@ impl Value {
         )
     }
 
+    /// `n×1` column compared with a length-`n` vector, the pairs
+    /// [`Self::column_elem`] uses for `+` and `.*`. The result is a `1×n`
+    /// logical. `None` when this is not that pair, so singleton dimensions
+    /// can still expand (a `3×1` matrix against a `1×3` matrix is `3×3`).
+    fn compare_column_with_vector(
+        op: BinOp,
+        lhs: &Value,
+        rhs: &Value,
+    ) -> Option<Result<Value, String>> {
+        let (col, vec, col_left) = match (lhs, rhs) {
+            (Value::Matrix(m), Value::Vector(v)) => (m, v, true),
+            (Value::Vector(v), Value::Matrix(m)) => (m, v, false),
+            _ => return None,
+        };
+        let shape = Shared::shape(col);
+        let n = Shared::len(vec);
+        if shape[1] != 1 || shape[0] != n {
+            return None;
+        }
+        let col_re: Vec<f64> = if let Some(r) = Shared::real_slice(col) {
+            r[..n].to_vec()
+        } else {
+            (0..n).map(|i| col[[i, 0]].re).collect()
+        };
+        let vec_re: Vec<f64> = if let Some(r) = Shared::real_slice(vec) {
+            r.to_vec()
+        } else {
+            vec.iter().map(|c| c.re).collect()
+        };
+        let flag = |a: f64, b: f64| -> bool {
+            match op {
+                BinOp::Eq => a == b,
+                BinOp::Ne => a != b,
+                BinOp::Lt => a < b,
+                BinOp::Le => a <= b,
+                BinOp::Gt => a > b,
+                BinOp::Ge => a >= b,
+                _ => unreachable!("compare_column_with_vector is only called for comparisons"),
+            }
+        };
+        let flags: Vec<bool> = if col_left {
+            col_re
+                .into_iter()
+                .zip(vec_re)
+                .map(|(a, b)| flag(a, b))
+                .collect()
+        } else {
+            vec_re
+                .into_iter()
+                .zip(col_re)
+                .map(|(a, b)| flag(a, b))
+                .collect()
+        };
+        Some(
+            LogicalArray::from_flags(flags, 1, n)
+                .map(Value::Logical)
+                .map_err(|e| e.to_string()),
+        )
+    }
+
+    /// One dimension of an implicit expansion: equal, or one side 1.
+    fn cmp_broadcast_dim(a: usize, b: usize) -> Option<usize> {
+        if a == b {
+            Some(a)
+        } else if a == 1 {
+            Some(b)
+        } else if b == 1 {
+            Some(a)
+        } else {
+            None
+        }
+    }
+
     /// Relational operators. Two scalars (including `bool`) return [`Value::Bool`].
-    /// An array operand returns a [`Value::Logical`] of the same shape.
-    /// Real parts are compared, including `NaN` (which compares false for
-    /// `==` and true for `~=`). A vector is a `1×n` row, so it matches a
-    /// `1×n` matrix and not an `n×1` column.
+    /// An array operand returns a [`Value::Logical`]. Real parts are compared,
+    /// including `NaN` (which compares false for `==` and true for `~=`).
+    /// Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector
+    /// is element-wise, other arrays repeat a dimension of length 1, and two
+    /// vectors must be the same length.
     fn compare_numeric(op: BinOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         enum Side {
             Scalar(f64),
@@ -2328,6 +2380,10 @@ impl Value {
                 .map(Value::Logical)
                 .map_err(|e| e.to_string())
         };
+        if let Some(ans) = Self::compare_column_with_vector(op, lhs, rhs) {
+            return ans;
+        }
+        let both_vectors = matches!((lhs, rhs), (Value::Vector(_), Value::Vector(_)));
         let left = side(lhs)?;
         let right = side(rhs)?;
         match (left, right) {
@@ -2350,17 +2406,45 @@ impl Value {
                     re: b,
                 },
             ) => {
-                if (r1, c1) != (r2, c2) {
+                // Two vectors do not stretch, not even a length-1 vector.
+                // `+` and `.*` report a length mismatch for the same pair.
+                if both_vectors && c1 != c2 {
+                    return Err(format!("comparison length mismatch: {c1} vs {c2}"));
+                }
+                let (Some(rows), Some(cols)) = (
+                    Self::cmp_broadcast_dim(r1, r2),
+                    Self::cmp_broadcast_dim(c1, c2),
+                ) else {
                     if r1 == 1 && r2 == 1 {
                         return Err(format!("comparison length mismatch: {c1} vs {c2}"));
                     }
                     return Err(format!("comparison shape mismatch: {r1}x{c1} vs {r2}x{c2}"));
+                };
+                if (r1, c1) == (r2, c2) {
+                    return logical(
+                        a.into_iter().zip(b).map(|(x, y)| flag(x, y)).collect(),
+                        r1,
+                        c1,
+                    );
                 }
-                logical(
-                    a.into_iter().zip(b).map(|(x, y)| flag(x, y)).collect(),
-                    r1,
-                    c1,
-                )
+                if rustlab_core::checked_elems(&[rows, cols], rustlab_core::ELEM_U8).is_err() {
+                    return Err(rustlab_core::variable_too_large(
+                        "comparison",
+                        &[rows, cols],
+                    ));
+                }
+                let at = |re: &[f64], r: usize, c: usize, i: usize, j: usize| {
+                    let ii = if r == 1 { 0 } else { i };
+                    let jj = if c == 1 { 0 } else { j };
+                    re[ii * c + jj]
+                };
+                let mut flags = Vec::with_capacity(rows * cols);
+                for i in 0..rows {
+                    for j in 0..cols {
+                        flags.push(flag(at(&a, r1, c1, i, j), at(&b, r2, c2, i, j)));
+                    }
+                }
+                logical(flags, rows, cols)
             }
         }
     }
@@ -2686,7 +2770,7 @@ impl Value {
                         // Collapse 1×1 result to scalar (e.g. v * v' gives scalar)
                         if k == 1 {
                             let c = result[0];
-                            if c.im.abs() < 1e-12 { Ok(Value::Scalar(c.re)) } else { Ok(Value::Complex(c)) }
+                            Ok(Self::from_c64(c))
                         } else {
                             Ok(Value::Vector(result.into()))
                         }

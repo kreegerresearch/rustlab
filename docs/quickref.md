@@ -40,7 +40,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
-| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
+| `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector is element-wise (`v' == v` is `1×n`); other arrays repeat a length-1 dimension; two vectors must be the same length. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
 | `!` | Element-wise not (MATLAB `~`). `!0` is true. `!NaN` is false. An array result is logical |
 | `and(a, b)`, `or(a, b)`, `xor(a, b)` | Element-wise logical ops. Shapes match, or one side is scalar. Two scalars stay `bool`. No `&` or `\|` token |
 | `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero, including a 1-element logical); rhs only evaluated if lhs is not decisive. A wider array is an error — use `any` / `all` |
@@ -169,21 +169,25 @@ Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, wi
 
 ## FDTD (3-D)
 
-Yee stepper with PEC walls; vacuum unless `fdtd_media` / `fdtd_pec` add materials or metal. `fdtd_cpml` adds an absorber inside the walls. Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
+Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_port` add materials, metal, or a lumped port. `fdtd_cpml` adds an absorber inside the walls. `fdtd_ntff` / `fdtd_farfield` are the near-to-far transform (v1: six-face CPML, homogeneous lossless exterior). Indices are 1-based `(i, j, k)` = (y row, x column, z page); components `"ex"` … `"hz"`.
 
 | Function | Description |
 |---|---|
 | `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99) |
-| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes`, `c0`, `cpml` (1×6 face thicknesses) |
+| `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes` (includes NTFF), `c0`, `cpml` (1×6 face thicknesses), `ntff` (armed frequency count) |
 | `fdtd_media(sim, eps_r [, mu_r [, sigma]])` | Cell-centred materials: real scalars or `ny × nx × nz` Tensor3s; `sigma` in S/m; recomputes `dt` |
 | `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)` | Metal: every edge of each nonzero cell, or a sheet on node plane `index` (`1 .. n+1`, `fdtd_slice` layout) |
 | `fdtd_cpml(sim, n [, key, value...])` / `fdtd_cpml(sim, face, n)` | CPML absorber, `n` cells inside the PEC walls. Faces `xmin`…`zmax`; `0` turns one face off. Defaults: `sigma_factor` 1, `kappa_max` 1, `alpha_max` 0, `order` 3, `alpha_order` 1 |
 | `gaussian_pulse(t, t0, tau [, f0])` | `exp(-((t-t0)/tau)^2) cos(2π f0 (t-t0))`, shape of `t` |
 | `fdtd_source(sim, comp, i, j, k, "soft"\|"hard", waveform...)` | E-edge source: `"gaussian", t0, tau`, `"modulated", t0, tau, f0`, or a sampled vector; a range on the component's axis is a stack |
+| `fdtd_port(sim, comp, i, j, k, Z0, waveform...)` | One series lumped port, resistance `Z0` ohms. A range on the component's axis is a stack. v1 accepts one port |
+| `fdtd_s11(sim)` / `fdtd_s11(V, I, dt, Z0)` | 1-port `sparameters` S11. Half-step correction on `I`. No window unless `"window", "hann"` (steady tones). `"nfft", M` zero-pads (interpolation, not finer resolution). `fdtd_s11(sim)` refuses an undecayed pulse. DC dropped |
 | `fdtd_probe(sim, comp, i, j, k)` | Record one component every step; returns the probe column |
 | `fdtd_run(sim, nsteps)` / `fdtd_step(sim [, n])` | Advance; returns the record plus `seconds`, `cell_updates`, `cell_rate`. Ctrl+C returns the partial record with `interrupted = true` |
-| `fdtd_record(sim)` | `t`, `dt`, `steps`, `probe` (`steps × nprobes`), `V`, `I`, `Z0`, `interrupted` |
+| `fdtd_record(sim)` | `t`, `dt`, `steps`, `probe` (`steps × nprobes`), `V` and `I` (`steps × nports`), `Z0`, `interrupted` |
 | `fdtd_slice(sim, comp, axis, index)` | One plane: `"z"` → `ny × nx`, `"y"` → `nx × nz`, `"x"` → `ny × nz` |
+| `fdtd_ntff(sim, freqs [, "margin", m])` | Arm the near-to-far box before the first step. Default margin 2. Empty `freqs` disarms. At least 10 cells per background wavelength |
+| `fdtd_farfield(sim, theta, phi [, "origin", xyz] [, "decay", "pulse"\|"off"])` | `Etheta` / `Ephi` (V·s), flux directivity, port-power gain and realized gain (`NaN` with no port). Default origin is the box centroid. A pulse tail above 1e-3 is an error unless `"off"`. A nonfinite field, port record, or flux is an error either way |
 
 ---
 
@@ -555,7 +559,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
 | `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1×n row with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
-| `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
+| `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos, eigenvalues exactly real; general → Arnoldi. Smallest-magnitude of a real matrix uses shift-and-invert. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |
 | `laplacian_1d(n [, dx] [, bc])` | Tridiagonal sparse Laplacian; `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"` |
 | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |

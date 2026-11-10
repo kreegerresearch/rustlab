@@ -1,0 +1,74 @@
+# A seeded stream is a loop that stays.
+#
+# Companion to examples/language/vectorized_style.rlab. That file keeps a
+# loop when step k reads step k-1. This one keeps a loop because the
+# trials share one seeded rand stream and have to consume it in order.
+# The arithmetic inside the loop is array code.
+#
+#   rustlab run examples/language/seeded_random_loop.rlab --plot none
+
+# Measurement directions in the xz plane, as Bloch rows
+# [sin(angle), 0, cos(angle)]. Alice: 0 and pi/2. Bob: pi/4 and 3pi/4.
+a1 = 0;
+a2 = pi / 2;
+b1 = pi / 4;
+b2 = 3 * pi / 4;
+uA = [sin(a1), 0, cos(a1); sin(a2), 0, cos(a2)];
+uB = [sin(b1), 0, cos(b1); sin(b2), 0, cos(b2)];
+# E(a1,b1) + E(a1,b2) + E(a2,b1) - E(a2,b2).
+sgn = [1, 1; 1, -1];
+
+seed(322);
+Nprod = 3000;
+S_prod = zeros(1, Nprod);
+
+# The per-sample algebra could be flattened: the four correlated draws
+# would be one rand array, and the correlators already factor into Bloch
+# components. A vectorized rand(...) sliced by component changes the
+# draw order, and parmap reseeds each worker, so the numbers printed
+# below would move. Preserving the stream is why the loop stays.
+# Each trial draws four rand() values in order, so a lambda, parmap, or vectorized draw would change the sample.
+for n = 1:Nprod
+  thA = acos(2.0 * rand() - 1.0);
+  phA = 2.0 * pi * rand();
+  thB = acos(2.0 * rand() - 1.0);
+  phB = 2.0 * pi * rand();
+  # Bloch components, then the factored correlator table.
+  nA = [sin(thA) * cos(phA), sin(thA) * sin(phA), cos(thA)];
+  nB = [sin(thB) * cos(phB), sin(thB) * sin(phB), cos(thB)];
+  eA = uA * nA.';
+  eB = uB * nB.';
+  E = eA * eB.';
+  S_prod(n) = sum(sum(E .* sgn));
+end
+# Product states at these angles are bounded by sqrt(2). A fraction
+# with |S| > 2 for classical independent draws would be sampling noise,
+# not a Bell violation.
+
+# Re-seed and recompute the first four samples. Same draws, same values.
+prefix = S_prod(1:4);
+seed(322);
+S_replay = zeros(1, 4);
+for n = 1:4
+  thA = acos(2.0 * rand() - 1.0);
+  phA = 2.0 * pi * rand();
+  thB = acos(2.0 * rand() - 1.0);
+  phB = 2.0 * pi * rand();
+  nA = [sin(thA) * cos(phA), sin(thA) * sin(phA), cos(thA)];
+  nB = [sin(thB) * cos(phB), sin(thB) * sin(phB), cos(thB)];
+  eA = uA * nA.';
+  eB = uB * nB.';
+  E = eA * eB.';
+  S_replay(n) = sum(sum(E .* sgn));
+end
+if max(abs(S_replay - prefix)) != 0
+  error("seeded stream did not replay");
+end
+if max(abs(S_prod)) > sqrt(2.0) + 1e-9
+  error("product-state CHSH exceeded sqrt(2)");
+end
+
+print(max(S_prod));
+print(min(S_prod));
+print(sqrt(2.0));
+print(sum(S_prod > 2.0) / Nprod);

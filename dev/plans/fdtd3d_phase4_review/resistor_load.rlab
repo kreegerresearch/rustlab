@@ -1,0 +1,85 @@
+# Phase 4 review diagnostic: an independent resistive load for the port.
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase4_review/resistor_load.rlab --plot none
+#
+# The load is a pillar of conductive cells (fdtd_media sigma) between the
+# ground wall and a PEC pad. Its resistance comes from Ohm's law and the
+# arithmetic-mean edge bake, not from the port stamp:
+#   n x n cells of sigma, kp cells tall. Interior Ez columns get sigma, the
+#   4(n-1) side columns sigma/2, the 4 corners sigma/4. The weights sum to n^2,
+#   so G = sigma * n^2 * dx * dy / (kp * dz) exactly.
+# The port is a 2-edge Ez stack one node outside the pillar, under the pad,
+# so its own edges carry no material sigma. dx != dy catches swapped Ampère
+# lengths.
+
+dx = 1.0e-3; dy = 1.5e-3; dz = 1.0e-3;
+nx = 16; ny = 14; nz = 8;
+n = 4; kp = 2;
+ip = 6; jp = 8;                 # first pillar cell (1-based row, column)
+z0 = 50;
+
+function [V, I, vg, dt] = load_run(nx, ny, nz, dx, dy, dz, n, kp, ip, jp, rload, z0, nsteps, tau, sgn_flip)
+  sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+  sig = zeros3(ny, nx, nz);
+  sigma = kp * dz / (rload * n * dx * n * dy);
+  sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = sigma;
+  fdtd_media(sim, 1, 1, sig);
+  pad = zeros(ny, nx);
+  pad(ip:ip + n, jp - 1:jp + n) = 1;   # pillar nodes plus one overhang column
+  fdtd_pec(sim, "z", kp + 1, pad);
+  t0 = 4 * tau;
+  iq = ip + n / 2;
+  fdtd_port(sim, "ez", iq, jp - 1, 1:kp, z0, "gaussian", t0, tau);
+  out = fdtd_run(sim, nsteps);
+  V = out.V;
+  I = sgn_flip * out.I;
+  dt = out.dt;
+  vg = gaussian_pulse(((1:nsteps) * dt)', t0, tau);
+end
+
+dt0 = fdtd_info(fdtd3d(nx, ny, nz, dx, dy, dz)).dt;
+tau = 1.0e-9;
+nsteps = round(14 * tau / dt0);
+fprintf("dt = %.4e s, steps = %d, tau = %.2e s\n", dt0, nsteps, tau);
+fmax = 0.3e9;
+
+function report(label, V, I, vg, dt, rload, z0, fmax)
+  nn = length(V);
+  f = ((0:nn - 1) / (nn * dt))';
+  Vf = fft(V);
+  If = fft(I) .* exp(1j * pi * f * dt);
+  Gf = fft(vg);
+  band = find(f <= fmax);
+  Z = Vf(band) ./ If(band);
+  re_err = max(abs(real(Z) / rload - 1));
+  im_rel = max(abs(imag(Z)) / rload);
+  thev = rload / (rload + z0);
+  vrat = Vf(band) ./ Gf(band);
+  th_err = max(abs(vrat / thev - 1));
+  s = (Vf(band) - z0 * If(band)) ./ (Vf(band) + z0 * If(band));
+  s_exp = (rload - z0) / (rload + z0);
+  s_err = max(abs(s - s_exp));
+  p = real(Vf(band) .* conj(If(band)));
+  fprintf("%-22s R = %5.1f  max|ReZ/R-1| %.2e  max|ImZ|/R %.2e  max|V/Vg/thev-1| %.2e  S11 exp %+.4f  max|S11-exp| %.2e  Re(VI*)<0 bins %d/%d\n", ...
+          label, rload, re_err, im_rel, th_err, s_exp, s_err, sum(p < 0), length(band));
+  # Time domain: V/I at the current peak, and energy balance against V^2/R.
+  [ipk, at] = max(abs(I));
+  e_in = sum(V .* I) * dt;
+  e_r = sum(V .^ 2) * dt / rload;
+  fprintf("%-22s V/I at |I| peak %.4f ohm, energy V*I / (V^2/R) = %.5f\n", "", V(at) / I(at), e_in / e_r);
+end
+
+for rload = [50, 25, 100]
+  [V, I, vg, dt] = load_run(nx, ny, nz, dx, dy, dz, n, kp, ip, jp, rload, z0, nsteps, tau, 1);
+  report("pillar", V, I, vg, dt, rload, z0, fmax);
+  if rload == 50
+    report("pillar, -I", V, -I, vg, dt, rload, z0, fmax);
+    s = fdtd_s11(V, I, dt, z0, "window", "rect");
+    sh = fdtd_s11(V, I, dt, z0, "window", "hann");
+    fr = s.frequencies;
+    b = find(fr <= fmax);
+    m_rect = max(abs(sij(s, 1, 1)(b)));
+    m_hann = max(abs(sij(sh, 1, 1)(b)));
+    fprintf("fdtd_s11 on R = 50, f <= %.0f MHz: max |S11| rect %.4f, hann %.4f\n", fmax / 1e6, m_rect, m_hann);
+  end
+end

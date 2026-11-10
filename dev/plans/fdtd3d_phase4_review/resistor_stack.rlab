@@ -1,0 +1,40 @@
+# Phase 4 review diagnostic: the pillar with 1 / 2 / 3 port edges, CPML off and on.
+# Checks stack normalisation (Z(DC) = R, V/Vg = R/(R+Z0)) and CPML interaction.
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase4_review/resistor_stack.rlab --plot none
+dx = 1.0e-3; dy = 1.5e-3; dz = 1.0e-3; z0 = 50; n = 4; ip = 8; jp = 10; tau = 1e-9;
+function [zdc, z100, thev, s100, pneg] = run_one(kp, cpml, rload, z0, dx, dy, dz, n, ip, jp, tau)
+  nx = 20; ny = 18; nz = kp + 6;
+  sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+  sig = zeros3(ny, nx, nz);
+  sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (rload * n * dx * n * dy);
+  fdtd_media(sim, 1, 1, sig);
+  if cpml
+    fdtd_cpml(sim, 3);
+    fdtd_cpml(sim, "zmin", 0);
+  end
+  pad = zeros(ny, nx); pad(ip:ip + n, jp - 1:jp + n) = 1;
+  fdtd_pec(sim, "z", kp + 1, pad);
+  fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+  dt = fdtd_info(sim).dt;
+  nsteps = round(16 * tau / dt);
+  out = fdtd_run(sim, nsteps);
+  V = out.V; I = out.I;
+  vg = gaussian_pulse(((1:nsteps) * dt)', 4 * tau, tau);
+  nf = 8 * nsteps;
+  f = ((0:nf - 1) / (nf * dt))';
+  Vf = fft(V, nf); If = fft(I, nf) .* exp(1j * pi * f * dt); Gf = fft(vg, nf);
+  k = round(100e6 * nf * dt) + 1;
+  zdc = real(Vf(1) / If(1));
+  z100 = Vf(k) / If(k);
+  thev = real(Vf(1) / Gf(1));
+  s100 = abs((Vf(k) - z0 * If(k)) / (Vf(k) + z0 * If(k)));
+  band = find(f <= 300e6);
+  pneg = sum(real(Vf(band) .* conj(If(band))) < 0);
+end
+for kp = [1, 2, 3]
+  for cpml = [0, 1]
+    [zdc, z100, thev, s100, pneg] = run_one(kp, cpml, 50, z0, dx, dy, dz, n, ip, jp, tau);
+    fprintf("N=%d cpml=%d  Z(DC) %.5f  Z(100MHz) %.4f%+.4fj  V/Vg(DC) %.5f  |S11|(100MHz) %.4f  neg-power bins %d\n", kp, cpml, zdc, real(z100), imag(z100), thev, s100, pneg);
+  end
+end

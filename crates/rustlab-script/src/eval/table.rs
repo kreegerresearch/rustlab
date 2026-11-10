@@ -148,12 +148,7 @@ impl TableColumn {
         match self {
             TableColumn::Number(v) => {
                 if rows.len() == 1 {
-                    let c = v[rows[0]];
-                    if c.im.abs() < 1e-12 {
-                        Value::Scalar(c.re)
-                    } else {
-                        Value::Complex(c)
-                    }
+                    Value::from_c64(v[rows[0]])
                 } else {
                     Value::Vector(ndarray::Array1::from_iter(rows.iter().map(|&r| v[r])).into())
                 }
