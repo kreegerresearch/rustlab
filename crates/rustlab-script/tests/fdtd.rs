@@ -738,3 +738,622 @@ cpml = late(1);
     println!("script late residual: pec {pec:.3e}, cpml {cpml:.3e}, {db:.1} dB");
     assert!(db < -30.0, "cpml is only {db} dB below pec");
 }
+
+#[test]
+fn fdtd_s11_of_a_resistance_is_a_one_port_network() {
+    let ev = eval(
+        r#"
+n = 256;
+dt = 1e-9;
+Z0 = 50;
+m = 8;
+t = (0:n-1) * dt;
+w = 2 * pi * m / (n * dt);
+V = cos(w * t);
+I = cos(w * (t - dt / 2)) / (3 * Z0);
+s = fdtd_s11(V, I, dt, Z0, "window", "rect");
+kind = parameter_type(s);
+ports = nports(s);
+zref = s.impedance;
+f = s.frequencies;
+tone = sij(s, 1, 1);
+tr = real(tone(m));
+ti = imag(tone(m));
+f1 = real(f(1));
+"#,
+    );
+    assert_eq!(
+        match ev.get("kind") {
+            Some(Value::Str(s)) => s.as_str(),
+            other => panic!("kind: {other:?}"),
+        },
+        "S"
+    );
+    assert_eq!(scalar(&ev, "ports"), 1.0);
+    assert_eq!(scalar(&ev, "zref"), 50.0);
+    assert!(
+        (scalar(&ev, "tr") - 0.5).abs() < 1e-9,
+        "re {}",
+        scalar(&ev, "tr")
+    );
+    assert!(scalar(&ev, "ti").abs() < 1e-9, "im {}", scalar(&ev, "ti"));
+    let df = 1.0 / (256.0 * 1e-9);
+    assert!((scalar(&ev, "f1") - df).abs() < 1e-3);
+}
+
+#[test]
+fn fdtd_port_record_round_trips_through_fdtd_s11() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+tau = 15 * dt;
+id = fdtd_port(sim, "ez", 4, 4, 3:4, 75, "gaussian", 4*tau, tau);
+out = fdtd_run(sim, 48);
+s = fdtd_s11(sim, "port", 1, "window", "rect");
+s2 = fdtd_s11(out.V, out.I, out.dt, out.Z0, "window", "rect");
+a = sij(s, 1, 1);
+b = sij(s2, 1, 1);
+same = max(abs(a - b));
+V = out.V;
+I = out.I;
+z = out.Z0;
+"#,
+    );
+    assert_eq!(scalar(&ev, "id"), 1.0);
+    assert!(scalar(&ev, "same") == 0.0, "sim and samples disagree");
+    assert_eq!(shape(&ev, "V"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "I"), vec![48.0, 1.0]);
+    assert_eq!(shape(&ev, "z"), vec![1.0, 1.0]);
+}
+
+#[test]
+fn fdtd_port_rejects_a_second_port_and_a_shared_hard_edge() {
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ey", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_source(sim, "ez", 3, 3, 3, "hard", "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("hard source and a port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 1, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC outer wall"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "hx", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("E edges"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 0, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("positive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, [1, 3], 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("consecutive"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 2);
+fdtd_port(sim, "ez", 3, 4, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    // The second call is refused because a port already exists, before the
+    // step check. Build a fresh grid that has already stepped.
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_run(sim, 1);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("before the first step"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_s11(sim);
+"#,
+    );
+    assert!(msg.contains("no port"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_s11(sim, "port", 2);
+"#,
+    );
+    assert!(msg.contains("S21"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(6, 6, 6, 1e-3, 1e-3, 1e-3);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+fdtd_run(sim, 8);
+fdtd_s11(sim, "window", "kaiser");
+"#,
+    );
+    assert!(msg.contains("hann"), "{msg}");
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+mask = zeros3(8, 8, 8);
+mask(3, 3, 3) = 1;
+fdtd_pec(sim, mask);
+fdtd_port(sim, "ez", 3, 3, 3, 50, "gaussian", 1e-9, 2e-10);
+"#,
+    );
+    assert!(msg.contains("PEC"), "{msg}");
+}
+
+#[test]
+fn fdtd_s11_default_is_a_pulse_and_the_samples_form_is_not() {
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 8);
+fdtd_s11(sim);
+"#,
+    );
+    assert!(msg.contains("has not decayed"), "{msg}");
+
+    // A named window is the steady-tone path: the tail check stays off.
+    eval(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 16);
+s = fdtd_s11(sim, "window", "hann");
+n = length(s.frequencies);
+"#,
+    );
+
+    let msg = run_err(
+        r#"
+sim = fdtd3d(8, 8, 8, 1e-3, 1e-3, 1e-3);
+dt = fdtd_info(sim).dt;
+fdtd_port(sim, "ez", 4, 4, 4, 50, "gaussian", 4 * dt, dt);
+fdtd_run(sim, 16);
+fdtd_s11(sim, "window", "hann", "decay", "pulse");
+"#,
+    );
+    assert!(msg.contains("has not decayed"), "{msg}");
+
+    let ev = eval(
+        r#"
+n = 256;
+dt = 1e-9;
+Z0 = 50;
+m = 8;
+t = (0:n - 1) * dt;
+w = 2 * pi * m / (n * dt);
+V = cos(w * t);
+I = cos(w * (t - dt / 2)) / (3 * Z0);
+s = fdtd_s11(V, I, dt, Z0);
+tone = sij(s, 1, 1);
+tr = real(tone(m));
+padded = fdtd_s11(V, I, dt, Z0, "nfft", 4 * n);
+tp = real(sij(padded, 1, 1)(4 * m));
+"#,
+    );
+    assert!((scalar(&ev, "tr") - 0.5).abs() < 1e-9);
+    assert!((scalar(&ev, "tp") - 0.5).abs() < 1e-9);
+
+    let msg = run_err(
+        r#"
+V = [1, 0, 0, 0];
+I = [1, 0, 0, 0] / 50;
+fdtd_s11(V, I, 1e-9, 50, "nfft", 2);
+"#,
+    );
+    assert!(
+        msg.contains("interpolat") && msg.contains("resolution"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn fdtd_s11_of_an_independent_pillar_is_a_small_reflection() {
+    let ev = eval(
+        r#"
+dx = 1e-3; dy = 1.5e-3; dz = 1e-3; z0 = 50; n = 4; kp = 2; ip = 6; jp = 8; tau = 1e-9;
+sim = fdtd3d(16, 14, 8, dx, dy, dz);
+sig = zeros3(14, 16, 8);
+sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (z0 * n * dx * n * dy);
+fdtd_media(sim, 1, 1, sig);
+pad = zeros(14, 16);
+pad(ip:ip + n, jp - 1:jp + n) = 1;
+fdtd_pec(sim, "z", kp + 1, pad);
+fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+out = fdtd_run(sim, round(16 * tau / fdtd_info(sim).dt));
+at = argmax(abs(out.I));
+vi = out.V(at) / out.I(at);
+s = fdtd_s11(sim);
+mag = abs(sij(s, 1, 1));
+f = s.frequencies;
+keep = and(mag == mag, f <= 300e6);
+sabs = max(mag(keep));
+"#,
+    );
+    let vi = scalar(&ev, "vi");
+    let sabs = scalar(&ev, "sabs");
+    assert!(
+        (vi / 50.0 - 1.0).abs() < 0.01,
+        "V/I at the current peak is {vi}"
+    );
+    assert!(sabs <= 0.01, "max |S11| to 300 MHz is {sabs}");
+}
+
+#[test]
+fn fdtd_farfield_shapes_match_the_rust_phasors() {
+    let src = r#"
+sim = fdtd3d(16, 16, 16, 1e-3, 1e-3, 1e-3, "courant", 0.99);
+fdtd_cpml(sim, 4);
+g = [1, -0.5, 0.25, 0.1, 0];
+fdtd_source(sim, "ez", 9, 9, 8:9, "soft", g);
+f = 299792458 / 0.020;
+fdtd_ntff(sim, f, "margin", 1);
+fdtd_run(sim, 5);
+pat = fdtd_farfield(sim, [0.4, 1.2], [0.2, 1.1, 2.0], "decay", "off");
+Eth = pat.Etheta; Eph = pat.Ephi; U = pat.U;
+D = pat.directivity; Dd = pat.directivity_dBi;
+G = pat.gain; Gd = pat.gain_dBi; Gr = pat.realized_gain; Grd = pat.realized_gain_dBi;
+freq = pat.freq; th = pat.theta; ph = pat.phi;
+pr = pat.prad; pa = pat.paccepted; pi = pat.pincident; s = pat.s11;
+org = pat.origin; bx = pat.box; kk = pat.k; eta = pat.eta; dec = pat.decay;
+szE = size(Eth); ntf = fdtd_info(sim).ntff;
+"#;
+    let ev = eval(src);
+    let sz = match ev.get("szE") {
+        Some(Value::Vector(v)) => v.iter().map(|c| c.re).collect::<Vec<_>>(),
+        other => panic!("size: {other:?}"),
+    };
+    assert_eq!(sz, vec![1.0, 2.0, 3.0]);
+    assert_eq!(scalar(&ev, "ntf"), 1.0);
+    assert_eq!(scalar(&ev, "eta").is_finite(), true);
+
+    let mut sim = rustlab_dsp::fdtd::FdtdSim::new(16, 16, 16, 1e-3, 1e-3, 1e-3, 0.99).unwrap();
+    sim.set_cpml(4, rustlab_dsp::fdtd::CpmlParams::default())
+        .unwrap();
+    sim.add_source(
+        rustlab_dsp::fdtd::Component::Ez,
+        &[(8, 8, 7), (8, 8, 8)],
+        rustlab_dsp::fdtd::SourceKind::Soft,
+        rustlab_dsp::fdtd::Waveform::Samples(vec![1.0, -0.5, 0.25, 0.1, 0.0]),
+    )
+    .unwrap();
+    let f = 299792458.0 / 0.020;
+    sim.set_ntff(&[f], 1).unwrap();
+    sim.run(5, &mut || false).unwrap();
+    let ff = sim
+        .far_field(
+            &[0.4, 1.2],
+            &[0.2, 1.1, 2.0],
+            None,
+            rustlab_dsp::fdtd::RecordDecay::Off,
+        )
+        .unwrap();
+    let got = match ev.get("Eth") {
+        Some(Value::Tensor3(t)) => t[[0, 1, 2]],
+        other => panic!("Etheta: {other:?}"),
+    };
+    assert_eq!(
+        got.re.to_bits(),
+        ff.e_theta[(0 * 2 + 1) * 3 + 2].re.to_bits()
+    );
+    assert_eq!(
+        got.im.to_bits(),
+        ff.e_theta[(0 * 2 + 1) * 3 + 2].im.to_bits()
+    );
+}
+
+#[test]
+fn fdtd_farfield_matches_the_hertzian_dipole_at_thirty_cells() {
+    let ev = eval(
+        r#"
+c0 = 299792458;
+dx = 1e-3;
+sim = fdtd3d(32, 32, 32, dx, dx, dx, "courant", 0.99);
+fdtd_cpml(sim, 6);
+info = fdtd_info(sim);
+dt = info.dt;
+n = 700;
+fc = c0 / 0.020;
+tau = sqrt(2) / (2 * pi * fc);
+t0 = 5 * tau;
+s = 1:n;
+u = (s * dt - t0) / tau;
+g = -u .* exp(-u .* u);
+fdtd_source(sim, "ez", 17, 17, 17, "soft", g);
+f = c0 / 0.030;
+fdtd_ntff(sim, f, "margin", 2);
+fdtd_run(sim, n);
+org = [16e-3, 16e-3, 16.5e-3];
+pat = fdtd_farfield(sim, [pi / 2, pi / 2], 0, "origin", org);
+mu0 = 1.25663706212e-6;
+eps0 = 1 / (mu0 * c0 * c0);
+eta = sqrt(mu0 / eps0);
+k = 2 * pi * f / c0;
+il = sum(g .* exp(-j * 2 * pi * f * (s - 0.5) * dt)) * dt * dx * dx;
+fan = j * eta * k * il / (4 * pi);
+eth = pat.Etheta(1, :, 1);
+one = pat.Etheta(1, 1, 1);
+ae = abs(eth);
+amp = abs(ae(1) / abs(fan) - 1);
+amp1 = abs(abs(one) / abs(fan) - 1);
+ph = abs(angle(one) - angle(fan));
+"#,
+    );
+    let stored = match ev.get("pat") {
+        Some(Value::Struct(s)) => match s.get("Etheta") {
+            Some(Value::Tensor3(t)) => t[[0, 0, 0]],
+            other => panic!("Etheta field: {other:?}"),
+        },
+        other => panic!("pat: {other:?}"),
+    };
+    let fan = match ev.get("fan") {
+        Some(Value::Complex(c)) => *c,
+        other => panic!("fan: {other:?}"),
+    };
+    let rel = stored / fan;
+    let amp = (rel.norm() - 1.0).abs();
+    let ph = rel.arg().abs();
+    assert!(amp <= 0.01, "|F/Fan| error {amp}");
+    assert!(ph <= 0.02, "phase error {ph} rad");
+    assert!((scalar(&ev, "amp") - amp).abs() < 1e-9);
+    assert!((scalar(&ev, "amp1") - amp).abs() < 1e-9);
+    assert!((scalar(&ev, "ph") - ph).abs() < 1e-9);
+    assert!(ph <= 0.02, "phase error {ph}");
+}
+
+#[test]
+fn fdtd_farfield_without_a_port_has_no_gain() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(16, 16, 16, 1e-3, 1e-3, 1e-3, "courant", 0.99);
+fdtd_cpml(sim, 4);
+fdtd_source(sim, "ez", 9, 9, 9, "soft", [1, 0, 0, 0]);
+fdtd_ntff(sim, 299792458 / 0.020, "margin", 1);
+fdtd_run(sim, 4);
+pat = fdtd_farfield(sim, 1.0, 0.2, "decay", "off");
+gv = pat.gain(1, 1, 1);
+gr = pat.realized_gain(1, 1, 1);
+pa = pat.paccepted(1);
+s = pat.s11(1);
+dv = pat.directivity(1, 1, 1);
+"#,
+    );
+    let nan = |name: &str| match ev.get(name) {
+        Some(Value::Scalar(x)) => assert!(x.is_nan(), "{name} = {x}"),
+        Some(Value::Complex(c)) => assert!(c.re.is_nan() && c.im.is_nan(), "{name} = {c}"),
+        other => panic!("{name}: {other:?}"),
+    };
+    nan("gv");
+    nan("gr");
+    nan("pa");
+    nan("s");
+    let d = scalar(&ev, "dv");
+    assert!(d.is_finite() && d > 0.0, "directivity {d}");
+}
+
+#[test]
+fn fdtd_ntff_rejects_bad_options() {
+    let base = r#"
+sim = fdtd3d(16, 16, 16, 1e-3, 1e-3, 1e-3, "courant", 0.99);
+fdtd_cpml(sim, 4);
+fdtd_source(sim, "ez", 9, 9, 9, "soft", [1]);
+"#;
+    let msg = run_err(&format!("{base}\nfdtd_ntff(sim, 1e9, \"scale\", 1);"));
+    assert!(msg.contains("unknown option"), "{msg}");
+    let msg = run_err(&format!(
+        "{base}\nfdtd_ntff(sim, 1e9, \"margin\", 2, \"margin\", 3);"
+    ));
+    assert!(msg.contains("twice"), "{msg}");
+    let msg = run_err(&format!("{base}\nfdtd_ntff(sim, 1e9, \"margin\", 0);"));
+    assert!(msg.contains("margin"), "{msg}");
+    let msg = run_err(&format!(
+        "{base}\nfdtd_ntff(sim, 1e9);\nfdtd_run(sim, 1);\nfdtd_farfield(sim, [1, 2], 0, \"origin\", [0, 0]);"
+    ));
+    assert!(msg.contains("origin") || msg.contains("three"), "{msg}");
+    let msg = run_err(&format!(
+        "{base}\nfdtd_ntff(sim, 1e9);\nfdtd_run(sim, 1);\nfdtd_farfield(sim, 1 + j, 0, \"decay\", \"off\");"
+    ));
+    assert!(msg.contains("real") || msg.contains("theta"), "{msg}");
+}
+
+#[test]
+fn fdtd_info_reports_the_armed_frequency_count() {
+    let ev = eval(
+        r#"
+sim = fdtd3d(16, 16, 16, 1e-3, 1e-3, 1e-3);
+b0 = fdtd_info(sim).bytes;
+n0 = fdtd_info(sim).ntff;
+fdtd_cpml(sim, 4);
+fdtd_ntff(sim, [1e9, 2e9]);
+n1 = fdtd_info(sim).ntff;
+b1 = fdtd_info(sim).bytes;
+fdtd_ntff(sim, []);
+n2 = fdtd_info(sim).ntff;
+"#,
+    );
+    assert_eq!(scalar(&ev, "n0"), 0.0);
+    assert_eq!(scalar(&ev, "n1"), 2.0);
+    assert_eq!(scalar(&ev, "n2"), 0.0);
+    assert!(scalar(&ev, "b1") > scalar(&ev, "b0"));
+}
+
+fn vec_re(ev: &Evaluator, name: &str) -> Vec<f64> {
+    match ev.get(name) {
+        Some(Value::Vector(v)) => v.iter().map(|c| c.re).collect(),
+        other => panic!("{name}: expected vector, got {other:?}"),
+    }
+}
+
+/// One complex element, a row `abs`, and the phase, at three source amplitudes.
+/// `U` and `prad` already scaled; `abs` of the phasor used to drop the
+/// imaginary part below `1e-10` and report a magnitude about 17 times low.
+#[test]
+fn fdtd_farfield_phasor_scales_from_1e_minus_6_to_1e6() {
+    let ev = eval(
+        r#"
+c0 = 299792458;
+dx = 1e-3;
+n = 32;
+nsteps = 700;
+fc = c0 / 0.020;
+f = c0 / 0.030;
+mu0 = 1.25663706212e-6;
+eta = sqrt(mu0 / (1 / (mu0 * c0 * c0)));
+amps = [1e-6, 1, 1e6];
+mag = [0, 0, 0];
+mag1 = [0, 0, 0];
+ph = [0, 0, 0];
+pw = [0, 0, 0];
+uu = [0, 0, 0];
+dd = [0, 0, 0];
+for ia = 1:3
+    A = amps(ia);
+    sim = fdtd3d(n, n, n, dx, dx, dx, "courant", 0.99);
+    fdtd_cpml(sim, 6);
+    dt = fdtd_info(sim).dt;
+    tau = sqrt(2) / (2 * pi * fc);
+    t0 = 5 * tau;
+    s = 1:nsteps;
+    u = (s * dt - t0) / tau;
+    g = -u .* exp(-u .* u);
+    fdtd_source(sim, "ez", 17, 17, 17, "soft", A * g);
+    fdtd_ntff(sim, f, "margin", 2);
+    fdtd_run(sim, nsteps);
+    th = (1:35) * pi / 36;
+    pat = fdtd_farfield(sim, th, 0, "origin", [16e-3, 16e-3, 16.5e-3]);
+    one = pat.Etheta(1, 18, 1);
+    if class(one) != "complex"
+        error("Etheta(1, 18, 1) was not complex");
+    end
+    row = abs(pat.Etheta(1, :, 1));
+    mag(ia) = row(18) / A;
+    mag1(ia) = abs(one) / A;
+    ph(ia) = angle(one);
+    pw(ia) = pat.prad(1) / A^2;
+    uu(ia) = pat.U(1, 18, 1) / A^2;
+    dd(ia) = pat.directivity(1, 18, 1);
+end
+"#,
+    );
+    let mag = vec_re(&ev, "mag");
+    let mag1 = vec_re(&ev, "mag1");
+    let ph = vec_re(&ev, "ph");
+    let pw = vec_re(&ev, "pw");
+    let uu = vec_re(&ev, "uu");
+    let dd = vec_re(&ev, "dd");
+    let eta = {
+        let mu0 = 1.25663706212e-6;
+        (mu0 / (1.0 / (mu0 * 299792458.0_f64.powi(2)))).sqrt()
+    };
+    for i in 0..3 {
+        let rel = (mag[i] - mag[0]).abs() / mag[0];
+        assert!(rel < 1e-9, "row |E|/A moved by {rel} at {i}");
+        let rel1 = (mag1[i] - mag[i]).abs() / mag[i];
+        assert!(rel1 < 1e-12, "single-element abs vs row: {rel1}");
+        let dph = (ph[i] - ph[0]).abs();
+        assert!(dph < 1e-9, "phase moved by {dph}");
+        let relp = (pw[i] - pw[0]).abs() / pw[0];
+        assert!(relp < 1e-9, "prad/A^2 moved by {relp}");
+        let relu = (uu[i] - uu[0]).abs() / uu[0];
+        assert!(relu < 1e-9, "U/A^2 moved by {relu}");
+        let reld = (dd[i] - dd[0]).abs() / dd[0];
+        assert!(reld < 1e-9, "directivity moved by {reld}");
+        let from_u = (2.0 * eta * uu[i]).sqrt();
+        let ident = (mag1[i] / from_u - 1.0).abs();
+        assert!(
+            ident < 1e-9,
+            "|E| vs sqrt(2 eta U) differs by {ident} at amplitude index {i}"
+        );
+    }
+    assert!(ph[0].abs() > 0.1, "phase collapsed to {}", ph[0]);
+}
+
+#[test]
+fn fdtd_farfield_port_reports_gain_and_s11() {
+    let ev = eval(
+        r#"
+c0 = 299792458;
+dx = 1e-3;
+n = 20;
+sim = fdtd3d(n, n, n, dx, dx, dx, "courant", 0.99);
+fdtd_cpml(sim, 4);
+dt = fdtd_info(sim).dt;
+nsteps = 250;
+fc = c0 / 0.020;
+tau = sqrt(2) / (2 * pi * fc);
+t0 = 5 * tau;
+s = 1:nsteps;
+u = (s * dt - t0) / tau;
+g = -u .* exp(-u .* u);
+ic = n / 2 + 1;
+fdtd_port(sim, "ez", ic, ic, ic, 50, g);
+fdtd_ntff(sim, c0 / 0.030, "margin", 1);
+fdtd_run(sim, nsteps);
+pat = fdtd_farfield(sim, pi / 2, 0, "decay", "off");
+gv = pat.gain(1, 1, 1);
+gr = pat.realized_gain(1, 1, 1);
+dv = pat.directivity(1, 1, 1);
+s11 = pat.s11(1);
+alg = abs(gr / (gv * (1 - abs(s11)^2)) - 1);
+"#,
+    );
+    let g = scalar(&ev, "gv");
+    let d = scalar(&ev, "dv");
+    assert!(g.is_finite() && g > 0.0, "gain {g}");
+    assert!(d.is_finite() && d > 0.0, "directivity {d}");
+    assert!(scalar(&ev, "alg") < 1e-9, "identity {}", scalar(&ev, "alg"));
+    match ev.get("s11") {
+        Some(Value::Complex(c)) => assert!(c.is_finite(), "s11 {c}"),
+        other => panic!("s11: {other:?}"),
+    }
+}

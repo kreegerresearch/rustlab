@@ -276,7 +276,13 @@ All operators broadcast scalars onto vectors and matrices automatically.
 ### Logical arrays and `&&` / `||`
 
 An array comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`) is a logical array.
-A scalar comparison stays `true` or `false`. `islogical` is true for both;
+A scalar comparison stays `true` or `false`. The pairs are the same ones
+`+` and `.*` use. An `n×1` column and a length-`n` vector compare element
+by element, so `v = 1:3; v' == v` is a `1×3` logical, the same pairs as
+`v' .* v`. Two matrices repeat a dimension of length 1, so
+`[1; 2; 3] == ones(1, 3)` is `3×3`, the same shape as the product.
+Two vectors have to be the same length. A shape that cannot pair is an
+error. `islogical` is true for both;
 a numeric 0/1 array is not logical. `logical(x)` converts (exact 0 is false,
 `NaN` is true). `true(m, n)` and `false(m, n)` build an array. `A(mask)`
 keeps the elements where the mask is true. `!` is element-wise not.
@@ -444,7 +450,7 @@ rustlab ships with 401 builtins. Here are the most commonly used; see [`docs/qui
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
 | **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
 | **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
-| **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, `gaussian_pulse`, `fdtd_source`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces, CPML absorber) |
+| **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, `gaussian_pulse`, `fdtd_source`, `fdtd_port`, `fdtd_s11`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice`, `fdtd_ntff`, `fdtd_farfield` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces, CPML absorber, one lumped port, near-to-far) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |
 | **Special** | `laguerre`, `legendre`, `factor`, `rk4`, `lyap`, `gram`, `freqresp` |
 | **Profiling** | `profile`, `profile_report` |

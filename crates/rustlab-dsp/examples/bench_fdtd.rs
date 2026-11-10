@@ -18,7 +18,12 @@
 //! - lossy: the substrate with `sigma > 0` (adds `Ca` arrays).
 //!
 //! `gate` times one 8000-step vacuum run with CPML on all six faces and
-//! exits 1 if that run takes 60 seconds or more.
+//! exits 1 if that run takes 60 seconds or more. That path is unchanged.
+//!
+//! After the 60×60×20 table, a 40³ grid with CPML 8 times the stepper
+//! with the near-to-far transform off, at one frequency, and at eight.
+//! One frequency must stay within 10% of the off time in the same run.
+//! The 60×60×20 mesh has no room in z for CPML 8 plus the Huygens margin.
 
 use rustlab_dsp::fdtd::{
     Axis, CellMap, Component, CpmlParams, FdtdSim, SourceKind, Waveform, DEFAULT_COURANT,
@@ -140,5 +145,66 @@ fn main() {
             100.0 * off_rate / vacuum_off,
             100.0 * on_rate / vacuum_off
         );
+    }
+    bench_ntff();
+}
+
+/// 40³ with CPML 8. The 60×60×20 mesh has no room in z for that absorber
+/// plus the Huygens margin. One frequency must stay within 10% of the
+/// same grid with the transform off.
+fn bench_ntff() {
+    use rustlab_dsp::fdtd::C0;
+    const N: usize = 40;
+    const STEPS: usize = 2000;
+    let cells = (N * N * N) as f64;
+    let rate = |secs: f64| cells * STEPS as f64 / secs / 1e6;
+    let time = |nf: usize| {
+        let mut best = f64::INFINITY;
+        for _ in 0..5 {
+            let mut sim = FdtdSim::new(N, N, N, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+            sim.set_cpml(8, CpmlParams::default()).unwrap();
+            let tau = 20.0 * sim.dt();
+            sim.add_source(
+                Component::Ez,
+                &[(N / 2, N / 2, N / 2)],
+                SourceKind::Soft,
+                Waveform::Pulse {
+                    t0: 4.0 * tau,
+                    tau,
+                    f0: 0.0,
+                },
+            )
+            .unwrap();
+            if nf > 0 {
+                let freqs: Vec<f64> = (0..nf)
+                    .map(|q| C0 / (1e-3 * (20.0 + 5.0 * q as f64)))
+                    .collect();
+                sim.set_ntff(&freqs, 2).unwrap();
+            }
+            let start = Instant::now();
+            let report = sim.run(STEPS, &mut || false).unwrap();
+            let secs = start.elapsed().as_secs_f64();
+            assert_eq!(report.completed, STEPS);
+            best = best.min(secs);
+        }
+        best
+    };
+    let off = time(0);
+    let one = time(1);
+    let eight = time(8);
+    let off_r = rate(off);
+    let one_r = rate(one);
+    let eight_r = rate(eight);
+    println!(
+        "ntff 40³ CPML 8: off {off_r:.1} Mcell/s, 1 freq {one_r:.1} ({:.1}% of off), \
+         8 freq {eight_r:.1} ({:.1}% of off)",
+        100.0 * one_r / off_r,
+        100.0 * eight_r / off_r
+    );
+    if one > off * 1.10 {
+        eprintln!(
+            "ntff gate: 1 frequency took {one:.3} s, NTFF-off took {off:.3} s (more than 10% slower)"
+        );
+        std::process::exit(1);
     }
 }
