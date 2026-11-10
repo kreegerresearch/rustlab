@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
 **Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML); Phase 4 complete (0.3.59, draft PR #142, unshipped; items 8 and 10 met, see `dev/plans/fdtd3d_phase4_review.md`)
-**Current phase:** 6 (parallel stepping and the patch capstone). Not started. Phase 5 shipped in provisional 0.3.61 on draft PR #143. Phase 6 geometry is not decided: the brief's option list is not a signed design. Do not begin Phase 6 from this plan.
+**Current phase:** 6 (parallel stepping and the patch capstone). Not started. Phase 5 shipped in provisional 0.3.61 on draft PR #143. Phase 6 geometry is decided (finite ground and substrate floating in air, CPML on six faces, closed NTFF box in air) and planned in `dev/plans/fdtd3d_phase6_impl.md`, which supersedes the Phase 6 section below where they differ. Do not begin implementation until Michael approves that brief.
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -501,6 +501,8 @@ s = σ dt / (2 ε0),  Ca = (1−s)/(1+s),  β = 2s/(1+s)
 **Shipped** in provisional 0.3.61 (`dev/plans/fdtd3d_phase5_impl.md`). For a z-directed electric dipole `Eθ` is co-polar and `Eφ` is the cross-polar component. Directivity is `4πU/P_flux` (peak 1.5 for a short dipole, `D(θ) = 1.5 sin²θ`). Gain and realized gain use port accepted and incident power; without a port they are `NaN`. The default origin is the box centroid. v1 requires CPML on all six faces and a homogeneous lossless exterior. Phase 6's box (ground, substrate, image theory) is not decided here.
 
 ### Phase 6 — patch and a sweep
+
+Superseded in detail by `dev/plans/fdtd3d_phase6_impl.md` (floating ground instead of the `zmin` wall, rebuild instead of `fdtd_reset`, gated lossy rerun, measured mesh and runtime numbers).
 
 The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the lossless `|S11|` minimum is within 5% of 2.4 GHz, broadside is a peak of the principal cut, and the notebook also shows the `tanδ = 0.02` rerun (not gated). The pattern call passes the patch centre as `"origin"`. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return `s.frequencies(argmin(abs(sij(s, 1, 1))))`, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
 

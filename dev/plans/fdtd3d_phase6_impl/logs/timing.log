@@ -1,0 +1,6 @@
+rustlab 0.3.63 — interpreting /tmp/proto/timing.rlab (.rlab)
+mesh 102 x 110 x 74 = 830280 cells, 174 MB, dt = 1.1497e-12 s, metal 28.0 x 38.0 mm, feed edge ix=38
+ground 62.0 x 70.0 mm, sigma 0 S/m, NTFF freqs 0, steps 4000
+run 29.8 s, 111.5 Mcell/s
+  n= 4000 tail V 1.02e-01 I 4.90e-02  min|S11| 0.468 at 2.4463 GHz
+ring-down: amplitude decay 6.463e+08 1/s, loaded Q at 2.44 GHz = 11.9

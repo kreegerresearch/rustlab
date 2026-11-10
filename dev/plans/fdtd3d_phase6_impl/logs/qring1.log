@@ -1,0 +1,5 @@
+rustlab 0.3.63 — interpreting /tmp/proto/qloss1.rlab (.rlab)
+mesh 102 x 110 x 74 = 830280 cells, 174 MB, dt = 1.1497e-12 s, metal 28.0 x 38.0 mm, feed edge ix=38
+ground 62.0 x 70.0 mm, sigma 0.01175 S/m, NTFF freqs 0, steps 16000
+run 148.9 s, 89.2 Mcell/s
+ring-down: amplitude decay 2.653e+08 1/s, loaded Q at 2.44 GHz = 28.9
