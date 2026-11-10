@@ -46,7 +46,7 @@ rustlab/
 │   └── plans/              # multi-phase development plans (see section below)
 ├── perf/                   # performance benchmarks and reports
 ├── examples/               # 89 scripts organised by toolbox (one subdir per toolbox):
-│   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling, chat_loop, vectorized_style, logical arrays (17)
+│   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling, chat_loop, vectorized_style, seeded_random_loop, logical arrays (18)
 │   ├── math/               # complex basics, trig/special, random, ML activations (4)
 │   ├── linalg/             # eig, matrix_ops, tensor3, rank, roots, linear_algebra, ind2sub (7)
 │   ├── stats/              # stats aggregates, all/any (2)
