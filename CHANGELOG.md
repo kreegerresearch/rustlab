@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.62
+
+### Breaking / behavior changes
+- **Comparisons use the same pairs as `+` and `.*`.** `==`, `!=`, `<`, `>`, `<=`, and `>=` used to require identical shapes and error with `comparison shape mismatch` when an `n×1` column met a length-`n` vector, or when two matrices could expand a length-1 dimension. They now follow the arithmetic rule. `v = 1:3; v' == v` is a `1×3` logical (element-wise, the same pairs as `v' .* v`), not a `3×3` outer table. `c = [1; 2; 3]; c == ones(1, 3)` is `3×3`, the same shape as `c .* ones(1, 3)`. Two vectors still have to be the same length, including a length-1 vector against a longer vector. A shape that cannot pair is still an error. A script that caught the old shape error on a pair `+` already accepted now gets a logical array instead.
+
 ## 0.3.61
 
 `0.3.59` is the lumped port. This release is the near-to-far transform.
