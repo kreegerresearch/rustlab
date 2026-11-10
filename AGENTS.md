@@ -6,7 +6,8 @@ Read it before making any changes.
 > **Using rustlab rather than modifying it?** Read [`docs/agent-guide.md`](docs/agent-guide.md)
 > instead — it covers the scripting language, builtins, plotting, and notebooks from a
 > user's perspective. `llms.txt` at the repo root is the machine-readable doc map.
-> **Writing `.rlab`?** Follow [Script style for agents](docs/agent-guide.md#script-style-for-agents).
+> **Writing `.rlab` or a notebook?** Start with [`docs/coding-guidelines.md`](docs/coding-guidelines.md).
+> Worked `.rlab` examples: [Script style for agents](docs/agent-guide.md#script-style-for-agents).
 
 ---
 
@@ -71,6 +72,7 @@ rustlab/
 │       └── comm/           # communications notebooks (convolutional codes + Viterbi FEC)
 └── docs/
     ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows; "Script style for agents" is the .rlab style section
+    ├── coding-guidelines.md # human-first style for .rlab scripts and notebooks
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
     ├── rustlabrc.example.toml # annotated user-global settings template
@@ -1198,7 +1200,7 @@ Documented for users in `docs/notebooks.md` ("Plot output layout").
 
 ## Scripting Language Reference
 
-Scripts use the `.rlab` extension. Run with `rustlab run script.rlab` or enter statements interactively in the REPL. When writing a script, follow [Script style for agents](docs/agent-guide.md#script-style-for-agents).
+Scripts use the `.rlab` extension. Run with `rustlab run script.rlab` or enter statements interactively in the REPL. When writing a script or a notebook, follow [`docs/coding-guidelines.md`](docs/coding-guidelines.md). Worked `.rlab` examples: [Script style for agents](docs/agent-guide.md#script-style-for-agents).
 
 ### Grammar (informal)
 
