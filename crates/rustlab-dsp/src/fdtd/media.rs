@@ -39,7 +39,7 @@ pub enum CellMap {
 
 impl CellMap {
     #[inline]
-    fn at(&self, c: usize) -> f64 {
+    pub(in crate::fdtd) fn at(&self, c: usize) -> f64 {
         match self {
             CellMap::Uniform(v) => *v,
             CellMap::Cells(v) => v[c],
@@ -85,7 +85,7 @@ pub(super) fn pec_bit(c: usize) -> u8 {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Media {
+pub(in crate::fdtd) struct Media {
     pub eps: CellMap,
     pub mu: CellMap,
     pub sigma: CellMap,
@@ -159,14 +159,24 @@ const E_SPAN: [(usize, usize, usize); 3] = [(1, 0, 1), (0, 1, 1), (1, 1, 0)];
 const H_SPAN: [(usize, usize, usize); 3] = [(0, 1, 0), (1, 0, 0), (0, 0, 1)];
 
 /// Bake `media` and `pec` for a step of `dt`. `media = None` is vacuum.
-pub(super) fn bake(g: Grid, media: Option<&Media>, pec: Option<&[u8]>, dt: f64) -> Baked {
+///
+/// `extra_sigma` is `(component 0..3, flat edge index, σ)` added to the
+/// material mean of that E edge before `Ca`/`Cb`. An empty list leaves the
+/// bake unchanged, including a vacuum grid that stores no coefficients.
+pub(super) fn bake(
+    g: Grid,
+    media: Option<&Media>,
+    pec: Option<&[u8]>,
+    dt: f64,
+    extra_sigma: &[(usize, usize, f64)],
+) -> Baked {
     let vac = Media {
         eps: CellMap::Uniform(1.0),
         mu: CellMap::Uniform(1.0),
         sigma: CellMap::Uniform(0.0),
     };
     let m = media.unwrap_or(&vac);
-    let lossy = !m.sigma.all_eq(0.0);
+    let lossy = !m.sigma.all_eq(0.0) || !extra_sigma.is_empty();
     let need_cb = lossy || !m.eps.all_eq(1.0) || pec.is_some();
     let need_db = !m.mu.all_eq(1.0);
     let n = g.nx * g.ny * g.nz;
@@ -184,7 +194,14 @@ pub(super) fn bake(g: Grid, media: Option<&Media>, pec: Option<&[u8]>, dt: f64) 
                             continue;
                         }
                         let eps = mean(&m.eps, g, (i, j, k), E_SPAN[c]);
-                        let sig = mean(&m.sigma, g, (i, j, k), E_SPAN[c]);
+                        let mut sig = mean(&m.sigma, g, (i, j, k), E_SPAN[c]);
+                        if !extra_sigma.is_empty() {
+                            for &(pc, pidx, ps) in extra_sigma {
+                                if pc == c && pidx == e {
+                                    sig += ps;
+                                }
+                            }
+                        }
                         let s = sig * dt / (2.0 * EPS0 * eps);
                         cb[c][e] = (1.0 / eps) / (1.0 + s);
                         ca[c][e] = (1.0 - s) / (1.0 + s);

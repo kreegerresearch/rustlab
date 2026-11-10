@@ -459,6 +459,23 @@ impl Value {
         Complex::new(n, 0.0)
     }
 
+    /// One stored sample as a script value.
+    ///
+    /// An imaginary part of exactly zero (`+0` or `-0`) is a real scalar.
+    /// Any other imaginary part is the value's phase and is kept, including
+    /// parts far below `1e-12`. `abs` and `angle` of that scalar then see
+    /// both components. This is not the reduction rule: `sum`, `mean`,
+    /// `prod`, `dot`, `trace`, and `det` of a matrix still drop an
+    /// imaginary part below `1e-12`, because that is accumulated roundoff
+    /// on an ordinary real result.
+    pub(crate) fn from_c64(z: C64) -> Value {
+        if z.im == 0.0 {
+            Value::Scalar(z.re)
+        } else {
+            Value::Complex(z)
+        }
+    }
+
     /// Promote a Scalar value to Complex
     fn promote_to_complex(v: Value) -> Result<C64, String> {
         match v {
@@ -1259,12 +1276,7 @@ impl Value {
                     if i >= v.len() {
                         return Err(format!("index {} out of bounds (length {})", n, v.len()));
                     }
-                    let c = v[i];
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(v[i]))
                 }
                 Value::Vector(idx_v) => {
                     // `v(a:b)`: a run of consecutive in-range positions is
@@ -1344,14 +1356,7 @@ impl Value {
                     Ok(m[[row, col]])
                 };
                 match &idx {
-                    Value::Scalar(k) => {
-                        let c = pick(*k)?;
-                        if c.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(c.re))
-                        } else {
-                            Ok(Value::Complex(c))
-                        }
-                    }
+                    Value::Scalar(k) => Ok(Self::from_c64(pick(*k)?)),
                     Value::Vector(idx_v) => {
                         // Column-major linear logical indexing: M(M > 2).
                         let total = m.nrows() * m.ncols();
@@ -1450,14 +1455,7 @@ impl Value {
                         }
                         Ok(Value::Vector(Array1::from_vec(flat).into()))
                     }
-                    Value::Scalar(k) => {
-                        let c = pick(*k)?;
-                        if c.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(c.re))
-                        } else {
-                            Ok(Value::Complex(c))
-                        }
-                    }
+                    Value::Scalar(k) => Ok(Self::from_c64(pick(*k)?)),
                     Value::Vector(idx_v) => {
                         let picks: Result<Vec<C64>, _> =
                             idx_v.iter().map(|c| pick(c.re)).collect();
@@ -1475,12 +1473,7 @@ impl Value {
                     if i >= sv.len {
                         return Err(format!("index {} out of bounds (length {})", n, sv.len));
                     }
-                    let c = sv.get(i);
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(sv.get(i)))
                 }
                 _ => Err(format!(
                     "sparse vector indexing: unsupported index type {}",
@@ -1610,12 +1603,7 @@ impl Value {
 
                 if rows.len() == 1 && cols.len() == 1 {
                     // Single element
-                    let c = m[[rows[0], cols[0]]];
-                    if c.im.abs() < 1e-12 {
-                        Ok(Value::Scalar(c.re))
-                    } else {
-                        Ok(Value::Complex(c))
-                    }
+                    Ok(Self::from_c64(m[[rows[0], cols[0]]]))
                 } else if rows.len() == 1 {
                     // Single row → Vector
                     let r = rows[0];
@@ -1680,12 +1668,7 @@ impl Value {
                                 r, c, sm.rows, sm.cols
                             ));
                         }
-                        let v = sm.get(ri, ci);
-                        if v.im.abs() < 1e-12 {
-                            Ok(Value::Scalar(v.re))
-                        } else {
-                            Ok(Value::Complex(v))
-                        }
+                        Ok(Self::from_c64(sm.get(ri, ci)))
                     }
                     _ => {
                         // Fall back to dense for complex indexing
@@ -1746,12 +1729,7 @@ impl Value {
 
         // Single-element extract
         if nr == 1 && nc == 1 && np == 1 {
-            let c = t[[rows[0], cols[0], pages[0]]];
-            return if c.im.abs() < 1e-12 {
-                Ok(Value::Scalar(c.re))
-            } else {
-                Ok(Value::Complex(c))
-            };
+            return Ok(Self::from_c64(t[[rows[0], cols[0], pages[0]]]));
         }
 
         // All-range extract: clone the whole tensor (or the sub-tensor)
@@ -2792,7 +2770,7 @@ impl Value {
                         // Collapse 1×1 result to scalar (e.g. v * v' gives scalar)
                         if k == 1 {
                             let c = result[0];
-                            if c.im.abs() < 1e-12 { Ok(Value::Scalar(c.re)) } else { Ok(Value::Complex(c)) }
+                            Ok(Self::from_c64(c))
                         } else {
                             Ok(Value::Vector(result.into()))
                         }
