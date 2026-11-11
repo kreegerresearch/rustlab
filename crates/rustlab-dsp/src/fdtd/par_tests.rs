@@ -247,12 +247,22 @@ fn cpml_correction_runs_on_the_pool() {
         yee::set_par_cells_threshold(0);
         yee::set_rows_per_task(2);
         yee::reset_cpml_hits();
+        yee::reset_par_chunks();
         let mut s = cpml();
         s.run(2, &mut never()).unwrap();
         assert!(
             yee::cpml_hits() >= 4,
             "CPML correction stayed serial (hits {})",
             yee::cpml_hits()
+        );
+        let per = (s.ny() * s.nz()).div_ceil(2) as u64;
+        // Two steps, four parallel regions each step (H curl, H correction,
+        // E curl, E correction), two rows per task.
+        assert!(
+            yee::par_chunks() >= per * 8,
+            "CPML row split was not exercised ({} chunks, need {})",
+            yee::par_chunks(),
+            per * 8
         );
     });
 }
