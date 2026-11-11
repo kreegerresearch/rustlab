@@ -24,19 +24,15 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          ok=0
-          for attempt in 1 2 3; do
-            if sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
-              libfontconfig1-dev \
-              libfreetype-dev \
-              pkg-config; then
-              ok=1
-              break
-            fi
-            echo "apt attempt ${attempt} failed"
-            sleep 20
-          done
-          test "$ok" = 1
+          # The runner mirror azure.archive.ubuntu.com has failed DNS on this
+          # image. Point apt at archive.ubuntu.com and fail a fetch quickly.
+          sudo find /etc/apt -type f -exec sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' {} +
+          opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          sudo apt-get $opts update -y
+          sudo apt-get $opts install -y --no-install-recommends \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            pkg-config
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
