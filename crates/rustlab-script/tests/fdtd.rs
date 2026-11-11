@@ -205,6 +205,14 @@ fn setup_errors() {
             "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0)",
             "courant must be in (0, 1]",
         ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"threads\", 2)",
+            "threads must be 0",
+        ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"threads\", 1, \"threads\", 0)",
+            "given twice",
+        ),
         ("fdtd3d(4, 4, 4, 1e-3, 1e-3)", "wrong number of arguments"),
         ("fdtd_info(3)", "fdtd3d handle"),
         ("gaussian_pulse(0, 0, 0)", "tau must be finite and positive"),
@@ -1356,4 +1364,224 @@ alg = abs(gr / (gv * (1 - abs(s11)^2)) - 1);
         Some(Value::Complex(c)) => assert!(c.is_finite(), "s11 {c}"),
         other => panic!("s11: {other:?}"),
     }
+}
+
+#[test]
+fn fdtd3d_threads_option() {
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3, \"threads\", 1, \"courant\", 0.5);
+         info = fdtd_info(sim);
+         t = info.threads; c = info.courant;",
+    );
+    assert_eq!(scalar(&ev, "t"), 1.0);
+    assert!((scalar(&ev, "c") - 0.5).abs() < 1e-15);
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0.8, \"threads\", 0);
+         t = fdtd_info(sim).threads;",
+    );
+    assert_eq!(scalar(&ev, "t"), 0.0);
+}
+
+#[test]
+fn parmap_of_fdtd_matches_arrayfun() {
+    let ev = eval(
+        r#"
+function r = one(k)
+    sim = fdtd3d(12, 10, 8, 2e-3, 2e-3, 1e-3, "threads", 1);
+    fdtd_cpml(sim, 2);
+    info = fdtd_info(sim);
+    fdtd_source(sim, "ez", 5, 6, 4, "soft", "gaussian", 30 * info.dt, 8 * info.dt);
+    fdtd_run(sim, 12 + k);
+    M = fdtd_slice(sim, "ez", "z", 4);
+    r = [max(abs(M(:))), sum(sum(M))];
+end
+A = arrayfun(@(k) one(k), [0, 1]);
+P = parmap(@(k) one(k), [0, 1]);
+d = max(abs(A(:) - P(:)));
+"#,
+    );
+    assert_eq!(
+        bits(&ev, "A"),
+        bits(&ev, "P"),
+        "parmap and arrayfun diverged"
+    );
+    match ev.get("P") {
+        Some(Value::Matrix(m)) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+        other => panic!("P: {other:?}"),
+    }
+}
+
+/// `parmap` runs each trial on the global pool, and a grid above the cell
+/// threshold then steps on that same pool. The result matches `"threads", 1`.
+#[test]
+fn parmap_sweep_parallel_kernel_matches_threads_one() {
+    let ev = eval(
+        r#"
+function r = one(k, threads)
+    sim = fdtd3d(22, 22, 22, 1e-3, 1e-3, 1e-3, "threads", threads);
+    fdtd_cpml(sim, 4);
+    info = fdtd_info(sim);
+    fdtd_source(sim, "ez", 11, 11, 11, "soft", "gaussian", 20 * info.dt, 6 * info.dt);
+    fdtd_run(sim, 4 + k);
+    M = fdtd_slice(sim, "ez", "z", 11);
+    r = M(:);
+end
+S = arrayfun(@(k) one(k, 1), [0, 1]);
+P = parmap(@(k) one(k, 0), [0, 1]);
+"#,
+    );
+    assert_eq!(
+        bits(&ev, "S"),
+        bits(&ev, "P"),
+        "parallel kernel inside parmap diverged from threads = 1"
+    );
+}
+
+fn patch_antenna_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/pde/patch_antenna.rlab");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Statement text with strings and comments removed, so a depth scan does
+/// not treat `%s` or a quoted `end` as syntax.
+fn bare_statement(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            while let Some(d) = chars.next() {
+                if d == '\\' {
+                    chars.next();
+                    continue;
+                }
+                if d == '"' {
+                    break;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        if c == '%' || c == '#' {
+            break;
+        }
+        out.push(c);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn block_open(stmt: &str) -> bool {
+    stmt.starts_with("function ")
+        || stmt == "if"
+        || stmt.starts_with("if ")
+        || stmt.starts_with("for ")
+        || stmt.starts_with("while ")
+        || stmt == "switch"
+        || stmt.starts_with("switch ")
+}
+
+fn block_end(stmt: &str) -> bool {
+    stmt == "end" || stmt.starts_with("end;") || stmt.starts_with("end ")
+}
+
+fn extract_function(src: &str, name: &str) -> String {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut started = false;
+    for line in src.lines() {
+        let stmt = bare_statement(line);
+        if !started {
+            if stmt.starts_with("function ") && stmt.contains(name) {
+                started = true;
+                depth = 1;
+                out.push(line);
+            }
+            continue;
+        }
+        if block_open(&stmt) {
+            depth += 1;
+        }
+        if block_end(&stmt) {
+            depth -= 1;
+        }
+        out.push(line);
+        if depth == 0 {
+            break;
+        }
+    }
+    assert!(
+        started && depth == 0,
+        "examples/pde/patch_antenna.rlab has no function {name}"
+    );
+    out.join("\n")
+}
+
+fn preset_fields(src: &str, name: &str) -> Evaluator {
+    let func = extract_function(src, "patch_preset");
+    eval(&format!(
+        "{func}\nm = patch_preset(\"{name}\");\n\
+         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps;\n\
+         gpad = m.gpad; air_xy = m.air_xy; air_z = m.air_z;\n\
+         npml = m.npml; margin = m.margin;\n"
+    ))
+}
+
+/// `quick` is the default and `full` is the 2 mm, 16 000-step lesson.
+/// Any other name errors and names both presets. This does not step a grid.
+#[test]
+fn patch_antenna_presets_accept_quick_and_full() {
+    let src = patch_antenna_source();
+    let is_line = |line: &str, want: &str| {
+        let trimmed = line.trim();
+        !trimmed.starts_with('%') && !trimmed.starts_with('#') && trimmed == want
+    };
+    assert!(
+        src.lines().any(|line| is_line(line, "preset = \"quick\";")),
+        "the default assignment is preset = \"quick\";"
+    );
+    assert!(
+        src.lines()
+            .any(|line| is_line(line, "mesh = patch_preset(preset);")),
+        "the script runs the preset it names"
+    );
+
+    let quick = preset_fields(&src, "quick");
+    let full = preset_fields(&src, "full");
+    assert_eq!(scalar(&full, "dx"), 2e-3);
+    assert_eq!(scalar(&full, "dy"), 2e-3);
+    assert_eq!(scalar(&full, "nsub"), 2.0);
+    assert_eq!(scalar(&full, "nsteps"), 16_000.0);
+    assert_eq!(scalar(&full, "gpad"), 16e-3);
+    assert_eq!(scalar(&full, "air_xy"), 10e-3);
+    assert_eq!(scalar(&full, "air_z"), 20e-3);
+    assert_eq!(scalar(&full, "npml"), 8.0);
+    assert_eq!(scalar(&full, "margin"), 2.0);
+
+    let coarser = scalar(&quick, "dx") > scalar(&full, "dx")
+        || scalar(&quick, "nsub") < scalar(&full, "nsub")
+        || scalar(&quick, "nsteps") < scalar(&full, "nsteps");
+    assert!(
+        coarser,
+        "quick is the shorter mesh: dx {} nsub {} nsteps {}",
+        scalar(&quick, "dx"),
+        scalar(&quick, "nsub"),
+        scalar(&quick, "nsteps")
+    );
+    for name in [
+        "dx", "dy", "nsub", "nsteps", "gpad", "air_xy", "air_z", "npml", "margin",
+    ] {
+        let v = scalar(&quick, name);
+        assert!(v.is_finite() && v > 0.0, "quick {name} = {v}");
+    }
+
+    let func = extract_function(&src, "patch_preset");
+    let err = run_err(&format!("{func}\npatch_preset(\"sideways\");\n"));
+    assert!(
+        err.contains("sideways"),
+        "the error should name the bad preset, got {err}"
+    );
+    assert!(
+        err.contains("quick") && err.contains("full"),
+        "the error should name both presets, got {err}"
+    );
 }

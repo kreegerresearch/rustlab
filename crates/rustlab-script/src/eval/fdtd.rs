@@ -222,11 +222,15 @@ fn record_fields(sim: &FdtdSim) -> HashMap<String, Value> {
     f
 }
 
-/// `sim = fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s])`
+/// `sim = fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s] [, "threads", n])`
+///
+/// `"courant"` and `"threads"` may appear in either order. `threads` is 0
+/// (shared pool, the default) or 1 (serial). A grid of 8,192 cells or more
+/// uses the pool unless `threads` is 1.
 pub(crate) fn builtin_fdtd3d(args: Vec<Value>) -> Result<Value, ScriptError> {
     const NAME: &str = "fdtd3d";
-    if args.len() != 6 && args.len() != 8 {
-        return Err(ScriptError::arg_count_range(NAME.into(), 6, 8, args.len()));
+    if !(args.len() == 6 || args.len() == 8 || args.len() == 10) {
+        return Err(ScriptError::arg_count_range(NAME.into(), 6, 10, args.len()));
     }
     let nx = positive_int(NAME, "nx", &args[0])?;
     let ny = positive_int(NAME, "ny", &args[1])?;
@@ -235,17 +239,46 @@ pub(crate) fn builtin_fdtd3d(args: Vec<Value>) -> Result<Value, ScriptError> {
     let dy = positive_scalar(NAME, "dy", &args[4])?;
     let dz = positive_scalar(NAME, "dz", &args[5])?;
     let mut courant = DEFAULT_COURANT;
-    if args.len() == 8 {
-        let key = str_arg(NAME, "option name", &args[6])?;
-        if !key.eq_ignore_ascii_case("courant") {
-            return Err(err(
-                NAME,
-                format!("unknown option \"{key}\" (expected \"courant\")"),
-            ));
+    let mut threads = 0u32;
+    let mut saw_courant = false;
+    let mut saw_threads = false;
+    let mut i = 6;
+    while i < args.len() {
+        let key = str_arg(NAME, "option name", &args[i])?;
+        let val = &args[i + 1];
+        match key.to_ascii_lowercase().as_str() {
+            "courant" => {
+                if saw_courant {
+                    return Err(err(NAME, "\"courant\" given twice"));
+                }
+                saw_courant = true;
+                courant = real_scalar(NAME, "courant", val)?;
+            }
+            "threads" => {
+                if saw_threads {
+                    return Err(err(NAME, "\"threads\" given twice"));
+                }
+                saw_threads = true;
+                let n = real_scalar(NAME, "threads", val)?;
+                if n != 0.0 && n != 1.0 {
+                    return Err(err(
+                        NAME,
+                        format!("threads must be 0 (shared pool) or 1 (serial), got {n}"),
+                    ));
+                }
+                threads = n as u32;
+            }
+            other => {
+                return Err(err(
+                    NAME,
+                    format!("unknown option \"{other}\" (expected \"courant\" or \"threads\")"),
+                ));
+            }
         }
-        courant = real_scalar(NAME, "courant", &args[7])?;
+        i += 2;
     }
-    let sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, courant).map_err(|e| dsp_err(NAME, e))?;
+    let mut sim = FdtdSim::new(nx, ny, nz, dx, dy, dz, courant).map_err(|e| dsp_err(NAME, e))?;
+    sim.set_threads(threads).map_err(|e| dsp_err(NAME, e))?;
     Ok(Value::Fdtd3d(Arc::new(Mutex::new(sim))))
 }
 
@@ -271,6 +304,7 @@ pub(crate) fn builtin_fdtd_info(args: Vec<Value>) -> Result<Value, ScriptError> 
         ("steps", g.steps() as f64),
         ("bytes", g.bytes() as f64),
         ("c0", C0),
+        ("threads", g.threads() as f64),
     ] {
         f.insert(k.to_string(), Value::Scalar(v));
     }

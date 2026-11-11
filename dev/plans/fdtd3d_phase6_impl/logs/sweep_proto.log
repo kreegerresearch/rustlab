@@ -1,0 +1,7 @@
+rustlab 0.3.63 — interpreting /agent/repos/rustlab/dev/plans/fdtd3d_phase6_impl/sweep_proto.rlab (.rlab)
+parmap over 5 widths on 4 threads: 38.2 s
+  W = 28 mm: f_res = 2.3987 GHz, min |S11| = 0.729
+  W = 32 mm: f_res = 2.3851 GHz, min |S11| = 0.672
+  W = 36 mm: f_res = 2.3783 GHz, min |S11| = 0.610
+  W = 40 mm: f_res = 2.3647 GHz, min |S11| = 0.545
+  W = 44 mm: f_res = 2.3579 GHz, min |S11| = 0.475

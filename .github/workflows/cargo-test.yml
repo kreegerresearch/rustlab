@@ -33,13 +33,21 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            pkg-config \
-            chktex \
-            tidy
+          ok=0
+          for attempt in 1 2 3; do
+            if sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
+              libfontconfig1-dev \
+              libfreetype-dev \
+              pkg-config \
+              chktex \
+              tidy; then
+              ok=1
+              break
+            fi
+            echo "apt attempt ${attempt} failed"
+            sleep 20
+          done
+          test "$ok" = 1
 
       - name: Cache cargo registry and build artefacts
         uses: actions/cache@v4

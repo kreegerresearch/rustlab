@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
 **Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML); Phase 4 complete (0.3.59, draft PR #142, unshipped; items 8 and 10 met, see `dev/plans/fdtd3d_phase4_review.md`)
-**Current phase:** 6 (parallel stepping and the patch capstone). Not started. Phase 5 shipped in provisional 0.3.61 on draft PR #143. Phase 6 geometry is not decided: the brief's option list is not a signed design. Do not begin Phase 6 from this plan.
+**Current phase:** 6 implemented in provisional 0.3.64 (edge feed, 20 mm vertical air, lesson mesh in the example, lossy rerun rebuilds the grid, `parmap` width sweep, parallel stepping). Phase 5 shipped in provisional 0.3.61 on draft PR #143. The brief is `dev/plans/fdtd3d_phase6_impl.md`, which supersedes the Phase 6 section below where they differ. `fdtd_reset` was not added.
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 
@@ -502,6 +502,8 @@ s = σ dt / (2 ε0),  Ca = (1−s)/(1+s),  β = 2s/(1+s)
 
 ### Phase 6 — patch and a sweep
 
+Superseded in detail by `dev/plans/fdtd3d_phase6_impl.md` (floating ground instead of the `zmin` wall, rebuild instead of `fdtd_reset`, gated lossy rerun, measured mesh and runtime numbers).
+
 The capstone sketch above, as `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md`. Check: the lossless `|S11|` minimum is within 5% of 2.4 GHz, broadside is a peak of the principal cut, and the notebook also shows the `tanδ = 0.02` rerun (not gated). The pattern call passes the patch centre as `"origin"`. Plus `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md`: `parmap` over a few patch widths, each trial its own `fdtd3d`, each return `s.frequencies(argmin(abs(sij(s, 1, 1))))`, plot only after `parmap` returns. Check: one scalar per width, and a two-trial run stays on the one rayon pool (no second pool).
 
 ---
@@ -787,7 +789,7 @@ Doing the surface integrals in `.rlab` instead was considered (export the six fa
 - Serial correctness first (Phases 1–5). Phase 6 turns on parallelism after the bit-exact tests exist.
 - Use the rayon that is already in `Cargo.lock` (version 1.12.0, direct dependency of `rustlab-dsp` and `rustlab-script`). This is not a new dependency, and Phase 6 does not switch the split to `std::thread::scope`. Do not spawn threads per step; thread start would dominate a 72k-cell step. Stay on the **global** rayon pool (`ParallelIterator` / `join`). A private `ThreadPool` or a `std::thread::scope` of `nproc()` threads would oversubscribe when a step runs inside `parmap` (see below).
 - Parallelise over y-rows (`i`), inner loop x (`j`). The inner loop is the unit-stride axis, written so LLVM can autovectorise it (SIMD-friendly, no SIMD crate). Each row writes its own E (or H) locations and its own ψ. The neighbouring row is only **read** (the y-derivative). That is race-free without a double buffer, as long as one parallel region does not update E and H together.
-- Threshold: parallel only when `nx*ny*nz >= 32_768`. Below that, one thread. Unit tests on small cavities stay on the serial path. A test-only threshold override, same idea as `vector_calc`'s `__test_set_par_threshold`, runs the parallel path on a tiny grid and compares every field bit-for-bit against serial.
+- Threshold: parallel only when `nx*ny*nz >= 8_192`. Below that, one thread. On 4 threads the pool is slower at 4,096 cells and tied at 8,000; 10,648 cells is the first clear win (1.13×), and the 72,000-cell gate is 1.88× with the CPML correction on the same row split. Unit tests on small cavities stay on the serial path. A test-only threshold override, same idea as `vector_calc`'s `__test_set_par_threshold`, runs the parallel path on a tiny grid and compares every field bit-for-bit against serial.
 - No `std::simd`, no packed_simd crate, no nightly feature. The inner loop is plain `f64` on a unit stride so LLVM can autovectorise. If Phase 6's profile shows it did not, a later change can add `std::arch` AVX2/NEON behind `cfg` — still no new crate, and not part of this plan's commitment.
 - A kernel worker must not call back into the interpreter. Sweeps go the other way: a `parmap` lambda calls `fdtd_run` (next section).
 

@@ -112,7 +112,129 @@ fn best_secs(case: &str, cpml: bool, steps: usize, repeats: usize) -> f64 {
     best
 }
 
+/// Reference patch mesh, 2000 steps, four near-to-far frequencies.
+/// Prints the serial rate, the shared-pool rate, and the pool rate with
+/// the transform off, so the speedup and the transform's share are both
+/// on one line.
+fn bench_patch() {
+    let l = 0.0294216_f64;
+    let w = 0.0380100_f64;
+    let dx = 1e-3;
+    let dz = 0.4e-3;
+    let nsub = 4usize;
+    let npml = 8usize;
+    let margin = 2usize;
+    let ngx = 2 * ((l / 2.0 + 16e-3) / dx).round() as usize;
+    let ngy = 2 * ((w / 2.0 + 16e-3) / dx).round() as usize;
+    let nax = ((10e-3_f64) / dx).round() as usize;
+    let naz = ((20e-3_f64) / dz).round() as usize;
+    let nx = ngx + 2 * (npml + margin + nax);
+    let ny = ngy + 2 * (npml + margin + nax);
+    let nz = nsub + 2 * (npml + margin + naz);
+    let jg0 = npml + margin + nax;
+    let ig0 = jg0;
+    let kg = npml + margin + naz;
+    let cells = (nx * ny * nz) as f64;
+    let steps = 2000usize;
+    let build = |threads: u32, ntff: bool| {
+        let mut sim = FdtdSim::new(nx, ny, nz, dx, dx, dz, DEFAULT_COURANT).unwrap();
+        sim.set_threads(threads).unwrap();
+        let mut eps = vec![1.0; nx * ny * nz];
+        for k in kg..kg + nsub {
+            for i in ig0..ig0 + ngy {
+                for j in jg0..jg0 + ngx {
+                    eps[(k * ny + i) * nx + j] = 4.4;
+                }
+            }
+        }
+        sim.set_media(
+            CellMap::Cells(eps),
+            CellMap::Uniform(1.0),
+            CellMap::Uniform(0.0),
+        )
+        .unwrap();
+        sim.set_cpml(npml, CpmlParams::default()).unwrap();
+        let mut ground = vec![false; ny * nx];
+        for i in ig0..=ig0 + ngy {
+            for j in jg0..=jg0 + ngx {
+                ground[i * nx + j] = true;
+            }
+        }
+        sim.add_pec_face(Axis::Z, kg, &ground).unwrap();
+        let n_l = (28e-3 / dx).round() as usize;
+        let n_w = (38e-3 / dx).round() as usize;
+        let j0 = nx / 2 - n_l / 2;
+        let i0 = ny / 2 - n_w / 2;
+        let mut patch = vec![false; ny * nx];
+        for i in i0..=i0 + n_w {
+            for j in j0..=j0 + n_l {
+                patch[i * nx + j] = true;
+            }
+        }
+        sim.add_pec_face(Axis::Z, kg + nsub, &patch).unwrap();
+        let f0 = 2.4e9;
+        let tau = 1.0 / (2.0 * f0);
+        sim.add_port(
+            Component::Ez,
+            &[
+                (ny / 2, j0, kg),
+                (ny / 2, j0, kg + 1),
+                (ny / 2, j0, kg + 2),
+                (ny / 2, j0, kg + 3),
+            ],
+            50.0,
+            Waveform::Pulse {
+                t0: 4.0 * tau,
+                tau,
+                f0,
+            },
+        )
+        .unwrap();
+        if ntff {
+            let freqs: Vec<f64> = (0..4).map(|q| 2.40e9 + 0.02e9 * q as f64).collect();
+            sim.set_ntff(&freqs, margin).unwrap();
+        }
+        sim
+    };
+    let time = |threads: u32, ntff: bool| {
+        let mut sim = build(threads, ntff);
+        let start = Instant::now();
+        let report = sim.run(steps, &mut || false).unwrap();
+        let secs = start.elapsed().as_secs_f64();
+        assert_eq!(report.completed, steps);
+        secs
+    };
+    let serial = time(1, true);
+    let parallel = time(0, true);
+    let bare = time(0, false);
+    let rate = |secs: f64| cells * steps as f64 / secs / 1e6;
+    let long_steps = 12000usize;
+    let mut sim = build(0, true);
+    let start = Instant::now();
+    let report = sim.run(long_steps, &mut || false).unwrap();
+    let long = start.elapsed().as_secs_f64();
+    assert_eq!(report.completed, long_steps);
+    println!(
+        "patch parallel {long_steps} steps: {long:.1} s, {:.1} Mcell/s",
+        cells * long_steps as f64 / long / 1e6
+    );
+    println!(
+        "patch {nx}×{ny}×{nz} {steps} steps: serial {:.1} Mcell/s ({serial:.1} s), \
+         pool {:.1} Mcell/s ({parallel:.1} s), speedup {:.2}×, \
+         pool without NTFF {:.1} Mcell/s, NTFF share {:.0}%",
+        rate(serial),
+        rate(parallel),
+        serial / parallel,
+        rate(bare),
+        100.0 * (1.0 - bare / parallel)
+    );
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "patch") {
+        bench_patch();
+        return;
+    }
     let gate = std::env::args().any(|a| a == "gate");
     let cells = (NX * NY * NZ) as f64;
     if gate {

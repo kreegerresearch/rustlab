@@ -319,21 +319,21 @@ Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a
 
 Tangential E on the six walls is held at 0.
 
-### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)`
+### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)` / `fdtd3d(..., "threads", n)`
 Create a vacuum grid with `E = H = 0`. `nx`, `ny`, `nz` are integers `>= 2`; `dx`, `dy`, `dz` are metres, finite and positive. The time step is the CFL limit times the Courant number `s`:
 
 ```
 dt = s / (c0 * sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
 ```
 
-`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
+`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `"courant"` and `"threads"` are name-value pairs and may appear in either order. `n` is `0` (the shared rayon pool, the default) or `1` (every half-step on the calling thread). A grid of 8,192 cells or more uses the pool unless `threads` is 1. The field update, the CPML correction, the port record, and the near-to-far phasors match the serial step bit for bit. `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
 ```
 sim = fdtd3d(40, 40, 40, 1e-3, 1e-3, 1e-3);
-sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
+sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9, "threads", 1);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, CPML, and NTFF storage), `c0` (299 792 458 m/s), `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off), and `ntff` (how many frequencies are armed; 0 when the transform is off).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, CPML, and NTFF storage), `c0` (299 792 458 m/s), `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off), `ntff` (how many frequencies are armed; 0 when the transform is off), and `threads` (`0` or `1`).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
