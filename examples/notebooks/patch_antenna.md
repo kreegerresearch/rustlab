@@ -12,6 +12,8 @@ The port voltage has died by 8,000 steps. The field on the near-to-far box is sl
 
 The lossy rerun builds a new grid with $\sigma = 2\pi f_0 \varepsilon_r \varepsilon_0 \tan\delta$ at $\tan\delta = 0.02$. Nothing is reset. Directivity should stay put. Gain should fall by about $10\log_{10}\eta$, with $\eta$ near one half.
 
+The edge resistance is an independent check on that efficiency. At a dip that sits near a real impedance, $R = 50(1+|\Gamma|)/(1-|\Gamma|)$. On this mesh the minima are 206 $\Omega$ with no loss ($|S_{11}| = 0.610$) and 101 $\Omega$ at $\tan\delta = 0.02$ ($|S_{11}| = 0.339$), so the ratio is 0.491. The flux divided by the accepted port power is $\eta = 0.489$. The two come from different paths, and they agree.
+
 The script stops if a gate misses. The numbers it prints are the measurement.
 
 ```rustlab

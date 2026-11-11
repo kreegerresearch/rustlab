@@ -1,6 +1,6 @@
 # FDTD Phase 6 — patch-antenna capstone, width sweep, parallel stepping (implementation brief)
 
-**Status:** implemented in 0.3.64. The review (`fdtd3d_phase6_impl_review.md`) asked to keep the 72,000-cell gate off the pool. After the CPML correction moved onto the same row split, that mesh is 1.88× faster on the pool than serial (4 threads, release), and faster than the 0.3.63 serial step (4.536 s). The threshold is 8,192 cells: the pool loses at 4,096 and 5,832, ties at 8,000, and wins from 10,648. Task size is `min(65_536/nx, n_rows/(4·threads))` rows. The 32,768 figure below is the brief's original number.
+**Status:** implemented in 0.3.64. The review (`fdtd3d_phase6_impl_review.md`) asked to keep the 72,000-cell gate off the pool. After the CPML correction moved onto the same row split, that mesh is 1.88× faster on the pool than serial (4 threads, release), and faster than the 0.3.63 serial step (4.536 s). The threshold is 8,192 cells: the pool loses at 4,096 and 5,832, ties at 8,000, and wins from 10,648. Task size is `min(65_536/nx, n_rows/(4·threads))` rows. The brief originally named 32,768 cells.
 **Target version:** 0.3.64 (one implementation PR, staged commits, §10).
 **Parent:** `dev/plans/fdtd3d.md` § Phase 6. This brief replaces that section's geometry (ground on the `zmin` wall, image theory) and its `fdtd_reset` step.
 **Read first:** `dev/plans/fdtd3d.md`, `dev/plans/fdtd3d_phase4_review.md`, `dev/plans/fdtd3d_phase5_impl.md`, `dev/plans/fdtd3d_phase5_impl_review.md`.
@@ -294,7 +294,7 @@ C6 is the gate that would have caught `air_z = 10 mm`. A companion diagnostic te
 |---|---|
 | P1 | Parallel equals serial **bit for bit** (`f64::to_bits` on all six fields, every CPML `q` array, the port `V`/`I` record, probe record, every NTFF phasor and the surface decay trace, and `far_field` outputs) at threshold 0, for pool sizes 1, 2, 3, 4 (each test builds a private `ThreadPool` and `install`s it; production code never does). Fixtures: vacuum; lossy dielectric + `mu_r`; PEC volume and faces; CPML on six faces; soft and hard sources; one port; NTFF armed with 3 frequencies; a floating patch. |
 | P2 | The Phase 3 split-run identity holds on the parallel path: `run(150)` equals `run(70); run(80)`. |
-| P3 | Below the threshold (`nx·ny·nz < 32,768`) the stepper never enters rayon (a test-only counter). |
+| P3 | Below the threshold (`nx·ny·nz < 8,192`) the stepper never enters rayon (a test-only counter). |
 | P4 | `fdtd3d(..., "threads", 1)` forces serial at any size (counter) and the bits match P1. |
 | P5 | Ctrl+C / notebook cancel still stops between steps; the stop callback is polled on the calling thread between steps, never inside a parallel region. |
 
@@ -332,7 +332,7 @@ sim = fdtd3d(nx, ny, nz, dx, dy, dz, "threads", 0)   % default: shared pool abov
 - v1 accepts 0 and 1 only. Any other value is an error naming the two. Sizing the pool per grid would need a private `ThreadPool`, which the parent forbids.
 - `fdtd_info(sim).threads` reports the setting (0 or 1).
 - `fdtd_run` output is unchanged.
-- Docs, `HelpEntry` detail for `fdtd3d` and `fdtd_info`, `docs/functions.md`, `docs/quickref.md`, the `AGENTS.md` table and the `fdtd3d` Active Plans row, `CHANGELOG.md` under 0.3.64 (*Added*: `"threads"`; *Behavior*: parallel stepping above 32,768 cells, results bit-identical). It ships in the same commit as the parser (Workflow Rule 3).
+- Docs, `HelpEntry` detail for `fdtd3d` and `fdtd_info`, `docs/functions.md`, `docs/quickref.md`, the `AGENTS.md` table and the `fdtd3d` Active Plans row, `CHANGELOG.md` under 0.3.64 (*Added*: `"threads"`; *Behavior*: parallel stepping at or above 8,192 cells, results bit-identical). It ships in the same commit as the parser (Workflow Rule 3).
 
 Deliberately **not** added:
 
@@ -350,7 +350,7 @@ Deliberately **not** added:
 - The `ERow` / `HRow` arm (vacuum / lossless / lossy / scaled) is chosen per row exactly as now.
 - **CPML correction** (`correct_h` / `correct_e`): same per-row split over the slab rows. Each row owns its `q` (ψ) entries. Parallelise only if R2/R6 profiling shows it matters; it touches the slabs only.
 - Sources, the lumped port, probes, and `record_port`: serial, between the parallel regions (a handful of edges).
-- Threshold: parallel only when `nx·ny·nz ≥ 32,768` and `threads != 1`. Test override `__test_set_par_threshold` (same idea as `vector_calc`).
+- Threshold: parallel only when `nx·ny·nz ≥ 8,192` and `threads != 1`. Test override `__test_set_par_threshold` (same idea as `vector_calc`).
 
 ### 7.2 Pool
 

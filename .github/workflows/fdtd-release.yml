@@ -7,7 +7,7 @@ name: fdtd-release
 on:
   workflow_dispatch:
   schedule:
-    # Monday 08:00 America/Los_Angeles (PST, UTC-8).
+    # Monday 16:00 UTC, which is 08:00 PST (UTC-8) and 09:00 PDT (UTC-7).
     - cron: "0 16 * * 1"
 
 jobs:

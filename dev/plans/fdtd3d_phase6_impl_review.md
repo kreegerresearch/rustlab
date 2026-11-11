@@ -466,28 +466,23 @@ None.
 
 ### Nice-to-haves
 
-1. Give the `vacuum`, `lossy`, `pec` and `cpml` P1 fixtures a soft
-   source, or nonzero initial fields. Today they compare zeros, and the
-   chunk mutation above passes on all four.
-2. In `parallel_kernel_inside_the_global_pool_matches_serial`, reset
-   `PAR_CELLS` and `ROWS_PER_TASK` before the spawned closure returns.
-   Today they stay at 0 and 2 on that global worker for the rest of the
-   test binary. That cannot change results (the step stays bit-identical),
-   but it is test hygiene.
-3. Fix stale wording:
-   - The comment on `lesson_sized_mesh_uses_the_pool` ("the threshold
-     that keeps 72,000 serial").
-   - The P3 row (line 297) and the threshold bullet (line 353) in
-     `fdtd3d_phase6_impl.md`, which still say 32,768.
-   - The cron comment says PST only; it is 09:00 during PDT.
+1. **Fixed.** The `vacuum`, `lossy`, `pec`, and `cpml` fixtures each get
+   one interior soft `ez` source at (10, 10, 4), off the PEC volume and
+   the PEC face. `run_pair` requires a nonzero E field, and the compare
+   stays exact (`to_bits`).
+2. **Fixed.** The nested-pool test restores the cell threshold and
+   `rows_per_task` with a `Drop` guard, including when the step panics.
+3. **Fixed.** The `lesson_sized_mesh_uses_the_pool` comment, the 32,768
+   mentions in `fdtd3d_phase6_impl.md` (status line, P3, the docs bullet,
+   and the threshold bullet), and the cron comment (08:00 PST and 09:00
+   PDT) now match the 8,192-cell threshold.
 4. Dispatch `fdtd-release` once after merge (it cannot run from a branch)
    and record the run link in the plan.
-5. Two `#` comments remain in `patch_antenna.rlab` (the TL+cell note).
-   The TL check hardcodes `dx = 2e-3`, `Lm`, and `Wm` instead of reading
-   `mesh.dx`. Both presets use 2 mm, so this is correct today. It would
-   become wrong silently if a preset changed `dx`.
-6. Still open from the first review: the lesson text does not cite the
-   lossy/lossless edge-resistance ratio (0.491) as the independent check
-   on η = 0.489. It does correctly avoid quoting Balanis.
+5. **Fixed.** The two `#` comments in `patch_antenna.rlab` are `%`. The
+   TL span is `2 * floor(L / (2 * mesh.dx)) * mesh.dx` and the same form
+   for `W` with `mesh.dy`, which is 28 mm by 36 mm on both presets.
+6. **Fixed.** The lesson states the edge-resistance ratio 0.491 (206 Ω
+   lossless, 101 Ω lossy) as the independent check on η = 0.489. It does
+   not quote the Balanis edge resistance.
 7. Accepted open item, recorded only: `full` misses R4 (39.1 s pool,
    100.4 s serial).

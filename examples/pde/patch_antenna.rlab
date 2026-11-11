@@ -137,11 +137,12 @@ a_max = max(a(wide));
 fprintf("dip %.4f GHz   |S11| %.3f (%.1f dB)   max |S11| %.4f\n", ...
     f_dip / 1e9, a_dip, 20 * log10(a_dip), a_max);
 
-# The staircased metal is the node span. One extra cell is the Yee edge
-# sitting half a cell outside each end, which is what the TL check uses.
-dx = 2e-3;
-Lm = 28e-3;
-Wm = 36e-3;
+% The staircased metal is the node span. One extra cell is the Yee edge
+% sitting half a cell outside each end, which is what the TL check uses.
+dx = mesh.dx;
+dy = mesh.dy;
+Lm = 2 * floor(L / (2 * dx)) * dx;
+Wm = 2 * floor(W / (2 * dy)) * dy;
 w_eff = Wm + dx;
 ee_m = (eps_r + 1) / 2 + (eps_r - 1) / 2 / sqrt(1 + 12 * h / w_eff);
 dL_m = 0.412 * h * (ee_m + 0.3) * (w_eff / h + 0.264) / ((ee_m - 0.258) * (w_eff / h + 0.8));

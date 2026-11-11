@@ -58,8 +58,19 @@ fn pulse(dt: f64) -> Waveform {
     }
 }
 
+/// One interior soft source, off the PEC volume at (4, 4, 4) and off the
+/// face at z = 6. Without it the vacuum, lossy, PEC, and CPML fixtures stay
+/// at zero, and a wrong offset on a later chunk still compares equal.
+fn drive(s: &mut FdtdSim) {
+    let dt = s.dt();
+    s.add_source(Component::Ez, &[(10, 10, 4)], SourceKind::Soft, pulse(dt))
+        .unwrap();
+}
+
 fn vacuum() -> FdtdSim {
-    FdtdSim::new(16, 14, 12, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap()
+    let mut s = FdtdSim::new(16, 14, 12, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    drive(&mut s);
+    s
 }
 
 fn lossy() -> FdtdSim {
@@ -73,6 +84,7 @@ fn lossy() -> FdtdSim {
     }
     s.set_media(CellMap::Cells(eps), CellMap::Cells(mu), CellMap::Cells(sig))
         .unwrap();
+    drive(&mut s);
     s
 }
 
@@ -93,6 +105,14 @@ fn pec() -> FdtdSim {
 fn cpml() -> FdtdSim {
     let mut s = FdtdSim::new(20, 18, 16, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
     s.set_cpml(4, CpmlParams::default()).unwrap();
+    s
+}
+
+/// The CPML comparison fixture. `sourced`, `ported`, and `radiated` build on
+/// [`cpml`] and place their own edges, which have to stay inside the Huygens box.
+fn cpml_driven() -> FdtdSim {
+    let mut s = cpml();
+    drive(&mut s);
     s
 }
 
@@ -148,6 +168,13 @@ fn run_pair(mut serial: FdtdSim, mut parallel: FdtdSim, steps: usize) {
         yee::par_chunks()
     );
     same(&serial, &parallel);
+    let driven = [&parallel.ex, &parallel.ey, &parallel.ez]
+        .into_iter()
+        .any(|f| f.iter().any(|v| v.to_bits() != 0.0f64.to_bits()));
+    assert!(
+        driven,
+        "every E field is still zero, so a bad chunk offset would not show"
+    );
     if parallel.ntff_freqs().is_empty() {
         return;
     }
@@ -174,6 +201,15 @@ fn parallel_kernel_inside_the_global_pool_matches_serial() {
     let outside = rayon::current_num_threads();
     let (tx, rx) = std::sync::mpsc::channel();
     rayon::spawn(move || {
+        // The worker is reused. Put the overrides back even if the step panics.
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                yee::set_par_cells_threshold(yee::default_par_cells());
+                yee::set_rows_per_task(0);
+            }
+        }
+        let _restore = Restore;
         let idx = rayon::current_thread_index();
         let inside = rayon::current_num_threads();
         yee::set_par_cells_threshold(0);
@@ -204,7 +240,7 @@ fn parallel_step_matches_serial_bitwise() {
         ("vacuum", vacuum),
         ("lossy", lossy),
         ("pec", pec),
-        ("cpml", cpml),
+        ("cpml", cpml_driven),
         ("sources", sourced),
         ("port", ported),
         ("ntff", radiated),
@@ -343,8 +379,8 @@ fn parent_gate_mesh_uses_the_pool() {
     );
 }
 
-/// The lesson mesh is 285,120 cells. It has to stay on the pool, so the
-/// threshold that keeps 72,000 serial cannot sit above this grid either.
+/// 64³ is 262,144 cells and stands in for the lesson mesh (about 285,000).
+/// Both are above the 8,192-cell threshold, so the step uses the pool.
 #[test]
 fn lesson_sized_mesh_uses_the_pool() {
     yee::set_par_cells_threshold(yee::default_par_cells());
