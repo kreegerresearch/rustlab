@@ -24,11 +24,19 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            pkg-config
+          ok=0
+          for attempt in 1 2 3; do
+            if sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
+              libfontconfig1-dev \
+              libfreetype-dev \
+              pkg-config; then
+              ok=1
+              break
+            fi
+            echo "apt attempt ${attempt} failed"
+            sleep 20
+          done
+          test "$ok" = 1
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
