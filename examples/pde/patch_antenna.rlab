@@ -1,11 +1,35 @@
-# Patch antenna on a finite ground, floating in air.
-# Demonstrates: fdtd_media, fdtd_pec, fdtd_cpml, fdtd_port, fdtd_s11,
-# fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
-#
-# 2 mm lesson mesh. The 1 mm comparison with the Phase 4 reference is a
-# release test, not this script. Vertical air is 20 mm so the near-to-far
-# box is out of the reactive field above the patch. The feed is the edge
-# feed: the first metal node of the centre row, a 50 ohm series port.
+% Patch antenna on a finite ground, floating in air.
+% Demonstrates: fdtd_media, fdtd_pec, fdtd_cpml, fdtd_port, fdtd_s11,
+% fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
+%
+% preset is "quick" or "full". quick is the default: one cell through the
+% 1.6 mm substrate and 11 000 steps. The dip and the directivity are
+% approximate. full is the 2 mm lesson mesh, two cells through the
+% substrate, 16 000 steps. The 1 mm comparison with the Phase 4 reference
+% is a release test, not this script. Vertical air is 20 mm so the
+% near-to-far box is out of the reactive field above the patch. The feed
+% is the edge feed: the first metal node of the centre row, a 50 ohm series
+% port.
+
+preset = "quick";
+
+function mesh = patch_preset(name)
+    switch name
+        case "quick"
+            fprintf("quick preset: one cell through the substrate, 11000 steps. The dip and directivity are approximate.\n");
+            mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 1, ...
+                "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
+                "npml", 8, "margin", 2, "nsteps", 11000);
+        case "full"
+            mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 2, ...
+                "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
+                "npml", 8, "margin", 2, "nsteps", 16000);
+        otherwise
+            error(sprintf("unknown preset %s: use quick or full", name));
+    end
+end
+
+mesh = patch_preset(preset);
 
 c0 = 299792458;
 mu0 = 1.25663706212e-6;
@@ -22,16 +46,16 @@ L = c0 / (2 * f0 * sqrt(ee)) - 2 * dL;
 fprintf("design  L = %.2f mm   W = %.2f mm   eps_eff = %.4f   dL = %.3f mm\n", ...
     L * 1e3, W * 1e3, ee, dL * 1e3);
 
-function sim = patch_sim(sigma, L, W, f0, eps_r)
-    dx = 2e-3;
-    dy = 2e-3;
-    nsub = 2;
+function sim = patch_sim(mesh, sigma, L, W, f0, eps_r)
+    dx = mesh.dx;
+    dy = mesh.dy;
+    nsub = mesh.nsub;
     dz = 1.6e-3 / nsub;
-    gpad = 16e-3;
-    air_xy = 10e-3;
-    air_z = 20e-3;
-    npml = 8;
-    margin = 2;
+    gpad = mesh.gpad;
+    air_xy = mesh.air_xy;
+    air_z = mesh.air_z;
+    npml = mesh.npml;
+    margin = mesh.margin;
     ngx = 2 * round((L / 2 + gpad) / dx);
     ngy = 2 * round((W / 2 + gpad) / dy);
     nax = round(air_xy / dx);
@@ -88,8 +112,8 @@ function s = dip_of(sim)
 end
 
 sigma = 2 * pi * f0 * eps_r * eps0 * tand;
-lossless = patch_sim(0, L, W, f0, eps_r);
-out = fdtd_run(lossless, 16000);
+lossless = patch_sim(mesh, 0, L, W, f0, eps_r);
+out = fdtd_run(lossless, mesh.nsteps);
 fprintf("lossless  %.1f s   %.1f Mcell/s   %d cells\n", out.seconds, out.cell_rate / 1e6, ...
     fdtd_info(lossless).nx * fdtd_info(lossless).ny * fdtd_info(lossless).nz);
 rec = fdtd_record(lossless);
@@ -176,8 +200,8 @@ if abs(g0 - d0) > 0.05
     error(sprintf("lossless gain and directivity differ by %.3f dB", g0 - d0));
 end
 
-lossy = patch_sim(sigma, L, W, f0, eps_r);
-fdtd_run(lossy, 16000);
+lossy = patch_sim(mesh, sigma, L, W, f0, eps_r);
+fdtd_run(lossy, mesh.nsteps);
 s1 = dip_of(lossy);
 f1 = s1.frequencies;
 a1 = abs(sij(s1, 1, 1));

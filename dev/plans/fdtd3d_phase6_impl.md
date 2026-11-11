@@ -309,11 +309,13 @@ The parent's gate (60×60×20 × 8000 steps under 60 s) is already met serially 
 | R1 | Parent gate, release | < 60 s (record parallel) | 4.64 s |
 | R2 | Reference mesh, 2000 steps, NTFF 4 freqs: speedup at 4 threads | ≥ 2.0× (target 2.5×) | 90.4 Mcell/s |
 | R3 | Reference lossless capstone run (12000 steps, NTFF 4) wall | ≤ 100 s | ≈ 185 s projected |
-| R4 | `patch_antenna.rlab` (lesson mesh, both runs, patterns) | ≤ 60 s serial, ≤ 35 s parallel | ≈ 50–55 s |
+| R4 | `patch_antenna.rlab` **quick** preset (default: one substrate cell, 11 000 steps, both runs, patterns) | ≤ 60 s serial, ≤ 35 s parallel | 47.3 s serial, 18.8 s parallel |
 | R5 | `fdtd_sweep.rlab` (5 widths) | ≤ 90 s | 43.4 s |
 | R6 | NTFF share of a parallel step on the reference mesh | ≤ 30% | 27% serial |
 
 These are run by hand in release and recorded in the PR (`bench_fdtd` gains a `patch` mode, §7.5), not `#[test]` wall-clock asserts. If R2 misses, the order to try is the parent's: confirm unit stride, confirm autovectorisation, chunk size, then the threshold. No new crate.
+
+R4 times the default `preset = "quick"` in `examples/pde/patch_antenna.rlab` (4 threads, release, this machine): 18.8 s on the pool and 47.3 s with `"threads", 1`. Both are inside the gate. `preset = "full"` is the 2 mm lesson mesh at 16 000 steps and is not the gate: 39.1 s on the pool and 100.4 s serial. Quick prints dip 2.3577 GHz and broadside D 6.92 dBi. Full prints 2.3749 GHz and 6.94 dBi. The 1 mm reference in §4.1 is 2.4372 GHz and 6.94 dBi.
 
 ## 6. API
 
@@ -409,11 +411,11 @@ Tests that pass on 0.3.63 the moment they are written are characterisation tests
 
 Follow `docs/agent-guide.md` § Script style for agents: flat script, comments that say what the physics is, `error()` on a failed gate with the measured number in the message, no `break`/`continue`.
 
-**`examples/pde/patch_antenna.rlab`** (lesson mesh):
+**`examples/pde/patch_antenna.rlab`** (`preset = "quick"` by default; `preset = "full"` is the lesson mesh):
 
 1. Design: TL `W`, `L`, `eps_eff`, `ΔL`. Print them and the TL+cell prediction for the staircased metal.
 2. `function sim = patch_sim(sigma)`: builds the floating ground, substrate, patch, CPML, port, NTFF (4 frequencies bracketing the expected dip, e.g. 2.34:0.02:2.40 GHz on 2 mm). Asserts the even-width / mirror-feed rule.
-3. Lossless run. The port tail is under `1e-3` at 8000 steps. The near-to-far surface is not: on the lesson mesh `|E|` tail/peak is `1.886e-3` at 8000, `1.027e-3` at 14000, and `9.501e-4` at 16000. On the 1 mm mesh it is `3.603e-3` at 12000 and `8.213e-4` at 48000. The example runs 16000 steps, and the reference release test runs 48000, so `fdtd_farfield` can keep `"decay", "pulse"`. `fdtd_s11` uses `"nfft", 8*n`. Dip and `|S11|` in dB.
+3. Lossless run. The port tail is under `1e-3` at 8000 steps. The near-to-far surface is not: on the lesson mesh `|E|` tail/peak is `1.886e-3` at 8000, `1.027e-3` at 14000, and `9.501e-4` at 16000. On the 1 mm mesh it is `3.603e-3` at 12000 and `8.213e-4` at 48000. `full` runs 16000 steps. `quick` uses one cell through the substrate, so the step is longer, and 11000 steps cover the same kind of decay. The reference release test runs 48000. `fdtd_farfield` keeps `"decay", "pulse"`. `fdtd_s11` uses `"nfft", 8*n`. Dip and `|S11|` in dB.
 4. `fdtd_farfield` on a 61 × 120 sphere at the armed frequency nearest the dip: D / G / G_r at broadside, the power balance, the pattern integral, the E- and H-plane cuts, front/back.
 5. Lossy run, same function with `sigma = 2*pi*f0*eps_r*eps0*0.02`: η, G = D + 10 log10 η.
 6. Gates C1b, C2, C3, C5–C10, L1, L4, L5 as `error()` checks. Print one summary table.

@@ -9,7 +9,7 @@ should re-validate against those entries when upgrading.
 ## 0.3.64
 
 ### Added
-- **Patch antenna.** `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md` put a finite ground and an edge-fed patch in air, with CPML on all six faces and the near-to-far box in the air above the board (20 mm). The lossy rerun builds a second grid; there is no reset. `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md` map the resonance over five widths with `parmap`.
+- **Patch antenna.** `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md` put a finite ground and an edge-fed patch in air, with CPML on all six faces and the near-to-far box in the air above the board (20 mm). The lossy rerun builds a second grid; there is no reset. The script's `preset` is `"quick"` or `"full"`. `"quick"` is the default: one cell through the 1.6 mm substrate and 11 000 steps, and the script prints that the dip and the directivity are approximate. `"full"` is the 2 mm lesson mesh, two substrate cells, 16 000 steps. Any other name is an error that names both. The notebook is the full lesson and does not read `preset`. `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md` map the resonance over five widths with `parmap`.
 - **`fdtd3d(..., "threads", n)`.** `n` is `0` (the shared pool, the default) or `1` (serial). It composes with `"courant"` in either order. `fdtd_info(sim).threads` reports it. A grid of 8,192 cells or more updates the fields, the CPML correction, and the near-to-far phasors, on the pool unless `threads` is 1.
 
 ### Breaking / behavior changes

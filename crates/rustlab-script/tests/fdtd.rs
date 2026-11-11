@@ -1531,14 +1531,17 @@ fn preset_fields(src: &str, name: &str) -> Evaluator {
 #[test]
 fn patch_antenna_presets_accept_quick_and_full() {
     let src = patch_antenna_source();
+    let is_line = |line: &str, want: &str| {
+        let trimmed = line.trim();
+        !trimmed.starts_with('%') && !trimmed.starts_with('#') && trimmed == want
+    };
     assert!(
-        src.lines()
-            .any(|line| bare_statement(line) == "preset = \"quick\";"),
+        src.lines().any(|line| is_line(line, "preset = \"quick\";")),
         "the default assignment is preset = \"quick\";"
     );
     assert!(
         src.lines()
-            .any(|line| bare_statement(line) == "mesh = patch_preset(preset);"),
+            .any(|line| is_line(line, "mesh = patch_preset(preset);")),
         "the script runs the preset it names"
     );
 
@@ -1564,7 +1567,9 @@ fn patch_antenna_presets_accept_quick_and_full() {
         scalar(&quick, "nsub"),
         scalar(&quick, "nsteps")
     );
-    for name in ["dx", "dy", "nsub", "nsteps", "gpad", "air_xy", "air_z", "npml", "margin"] {
+    for name in [
+        "dx", "dy", "nsub", "nsteps", "gpad", "air_xy", "air_z", "npml", "margin",
+    ] {
         let v = scalar(&quick, name);
         assert!(v.is_finite() && v > 0.0, "quick {name} = {v}");
     }
