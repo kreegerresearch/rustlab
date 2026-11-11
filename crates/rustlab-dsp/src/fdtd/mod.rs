@@ -1116,7 +1116,7 @@ impl FdtdSim {
                     z: &h[2],
                 };
                 yee::correct_h(
-                    dims, db, hm, axes, faces, q_h, zero_row, ex, ey, ez, hx, hy, hz,
+                    dims, db, hm, axes, faces, q_h, zero_row, ex, ey, ez, hx, hy, hz, parallel,
                 );
             }
             for (p, probe) in probes.iter().enumerate() {
@@ -1138,7 +1138,9 @@ impl FdtdSim {
                     y: &e[1],
                     z: &e[2],
                 };
-                yee::correct_e(dims, cb, em, axes, faces, q_e, hx, hy, hz, ex, ey, ez);
+                yee::correct_e(
+                    dims, cb, em, axes, faces, q_e, hx, hy, hz, ex, ey, ez, parallel,
+                );
             }
         }
         self.steps += 1;
