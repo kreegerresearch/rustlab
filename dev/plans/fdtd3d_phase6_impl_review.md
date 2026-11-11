@@ -313,3 +313,181 @@ No separate failing-test-first commits, so judged by reading:
 - In the lesson text, cite the lossy/lossless edge-resistance ratio (0.491)
   as the independent check on η = 0.489, and avoid quoting the Balanis
   edge resistance as the expected value.
+
+---
+
+## Re-review — 2026-11-11, head `c68a42a`
+
+**Verdict: READY** to leave draft for Michael's review. There are no
+must-fix items. Both required fixes from the review above are done and
+verified. The nice-to-haves below are small, and none blocks the PR.
+
+Scope: `2e5d504..c68a42a` (`4480c52`, `d5a9c35`, `c1f96b0`, `19da6bb`,
+`a22068e`, `01893e1`, `0fb5e83`, `9edb9c7`, `6b60f50`, `31bec74`,
+`c68a42a`). The two DNS commits are reverted by `6b60f50`, so the net
+workflow change is the apt retry plus the new `fdtd-release.yml`.
+
+### Required fix 1: parallel CPML, task sizing, no default slowdown (done)
+
+- `correct_h` and `correct_e` take the same `parallel` flag as the curl.
+  `drive_rows` splits nine slices (three fields and six `q` arrays) into
+  whole-row chunks and calls the same `correct_*_row` function as the
+  serial loop. Each row writes only its own field row and its own `q`
+  rows. The neighbour reads are of the other field family, which is
+  read-only in that pass, so there is no race and no change in arithmetic.
+  Bit identity holds by construction, and P1 checks it.
+- `rows_per_task = min(65_536 / nx, n_rows / (4·threads)).max(1)`. The
+  lesson and reference meshes now fill four threads.
+- `DEFAULT_PAR_CELLS = 8_192`, from a measured crossover. The pool is
+  slower at 4,096 and 5,832 cells, tied at 8,000, and 1.13× faster at
+  10,648. The tests pin 20³ as serial and 22³ on the pool.
+- Mid-size regression: the 60×60×20 / 8,000-step CPML gate is
+  **2.341 s** in this re-review (`bench_fdtd gate`, release, 4 threads),
+  against the PR's reported 2.430 s. Both 0.3.63 serial (4.536 s) and the
+  parent's 4.6 s are slower. The regression is gone, and the gate now
+  stays on the pool.
+- R2 is 3.56× and R6 is 23%, both inside their gates. R4 is covered
+  below.
+
+### Required fix 2: multi-chunk P1/P2 (done)
+
+`run_pair` sets a test-only `rows_per_task = 2` and asserts a lower bound
+on chunks (`ceil(rows/2) · 2 · steps`). `cpml_correction_runs_on_the_pool`
+asserts four parallel regions per step (`≥ 8 · ceil(rows/2)` chunks over
+two steps), so a serial correction fails it. P2 is 150 = 70 + 80 at two
+rows per task.
+
+Mutation check (local only, reverted, not committed):
+
+- An off-by-one row offset on chunk 3 of the CPML `drive_rows` fails
+  `parallel_step_matches_serial_bitwise` at the `sources` fixture.
+- An off-by-one on chunk 76 of the E curl, near the source, fails both P1
+  and the nested-pool test.
+
+So a wrong later chunk is caught. One caveat is the first nice-to-have
+below: the `vacuum`, `lossy`, `pec` and `cpml` fixtures have no source,
+so their fields stay zero and they pass under either mutation. Coverage
+comes from the `sources`, `port`, `ntff` and tiny-patch fixtures. The
+lossy and `mu_r` coefficient arms run the same row function, so this is
+a gap in what the fixtures show, not a correctness hole.
+
+### Nested pool (done)
+
+- `parallel_kernel_inside_the_global_pool_matches_serial` (dsp)
+  `rayon::spawn`s onto the global pool. It asserts that the step runs on
+  a worker, that the pool size is unchanged, and that chunks are greater
+  than 0, then compares all state bit for bit against one thread.
+- `parmap_sweep_parallel_kernel_matches_threads_one` (script, brief test
+  17) runs a 22³ CPML grid inside `parmap`. That grid is above the
+  default threshold, and at 4 threads it is about 17 chunks. It compares
+  against `arrayfun` and `"threads", 1` with `to_bits`.
+- No `ThreadPoolBuilder` exists outside test code.
+
+### Lossy frequency (done)
+
+The phasors are accumulated at every armed frequency, and `q_near` is
+now the armed bin nearest the lossy dip (`nearest_freq(&spec.freqs,
+cl.dip_hz)`). The bare run's bin uses the same helper. The dip-shift
+check (≤ 0.5%) and `min_s11` check move ahead of the balance and are
+unchanged. The η window (0.40–0.60) and the 1% dissipation balance are
+unchanged too.
+
+### `fdtd-release.yml` (done, not yet exercised)
+
+- Triggers are `workflow_dispatch` and a weekly cron, with a 90-minute
+  timeout.
+- It runs the seven `#[ignore]` `rustlab-dsp` tests in release (six in
+  `patch_tests.rs` and one in `tests.rs`, all FDTD) and test 17 in
+  release.
+- It renders `patch_antenna.md` and `fdtd_sweep.md` with `--strict`.
+  `render --strict` exists and exits 1 on a cell error.
+
+GitHub only runs dispatch and schedule triggers from the default branch,
+so this job has not run yet. See the nice-to-haves.
+
+### apt retry (done)
+
+The three workflows wrap `apt-get update && apt-get install` in a
+three-attempt loop with a 20 s sleep, then run `test "$ok" = 1`. The
+mirror-rewrite and DNS workarounds are fully reverted. CI on `c68a42a`
+passed both `cargo-test` and `validate-notebooks`.
+
+### Presets in `patch_antenna.rlab` (done)
+
+- `preset = "quick"` is the default. `patch_preset` is a
+  `switch`/`otherwise` block that returns a `struct`, and an unknown name
+  `error()`s with both valid names.
+- `full` is field-for-field the old lesson mesh (2 mm, `nsub` 2, 16,000
+  steps, `gpad` 16 mm, air 10/20 mm, `npml` 8, margin 2).
+  `patch_sim(mesh, …)` reads every geometry value from `mesh`.
+- Quick prints that its dip and directivity are approximate.
+- The example's gates are unchanged: 5% from 2.4 GHz, 1.5% from TL+cell,
+  `max |S11| ≤ 1`, gain vs directivity 0.05 dB, and the rest.
+- The notebook is untouched and stays the full lesson.
+- R4 now times quick: 18.8 s on the pool and 47.3 s serial, both inside
+  the 35 s / 60 s gate. Full takes 39.1 s and 100.4 s; per Michael, its
+  miss is an accepted open item, and the plan says so.
+- Quick gives 2.3577 GHz and 6.92 dBi. Full gives 2.3749 GHz and
+  6.94 dBi. The 1 mm reference gives 2.4372 GHz and 6.94 dBi.
+
+### Process checks
+
+- **Tests first.**
+  - `4480c52` and `d5a9c35`: failing chunk, CPML-pool and threshold
+    tests, committed before `c1f96b0` and `19da6bb`. The only production
+    code in `4480c52` is test hooks: a forced `rows_per_task`, chunk and
+    CPML counters, and `chunk_plan`. Default behaviour is unchanged.
+  - `31bec74` (preset test) lands before `c68a42a`.
+  - Two of these tests were changed inside a fix commit:
+    - `parent_gate_mesh_stays_serial` (from `4480c52`) was flipped to
+      `parent_gate_mesh_uses_the_pool` in `19da6bb`, once the measurement
+      showed the pool wins. That is a design change driven by data, and
+      the plan records it. The pool-side assertion was therefore not
+      committed failing first.
+    - In `c68a42a`, the preset test's line matcher was fixed.
+      `bare_statement` blanks string literals, so the original
+      `preset = "quick"` check could never pass. The assertion did not
+      get weaker.
+- **Tolerances.** No physics tolerance moved in the dsp tests, the script
+  tests, or either example. `git diff 2e5d504..c68a42a` touches no
+  numeric gate.
+- **Guidelines and MATLAB style.**
+  - `%` comments, `switch`/`case`/`otherwise`, `struct(...)` with `...`
+    continuations, and `error(sprintf(...))` with the bad value.
+  - No `break`/`continue`. `!=` is the rustlab spelling of `~=`.
+  - Local functions sit above their first use, as they already did in
+    this file.
+  - The version stays 0.3.64, and `CHANGELOG.md` gives the new
+    threshold, the CPML correction, and the presets.
+
+### Must-fix
+
+None.
+
+### Nice-to-haves
+
+1. Give the `vacuum`, `lossy`, `pec` and `cpml` P1 fixtures a soft
+   source, or nonzero initial fields. Today they compare zeros, and the
+   chunk mutation above passes on all four.
+2. In `parallel_kernel_inside_the_global_pool_matches_serial`, reset
+   `PAR_CELLS` and `ROWS_PER_TASK` before the spawned closure returns.
+   Today they stay at 0 and 2 on that global worker for the rest of the
+   test binary. That cannot change results (the step stays bit-identical),
+   but it is test hygiene.
+3. Fix stale wording:
+   - The comment on `lesson_sized_mesh_uses_the_pool` ("the threshold
+     that keeps 72,000 serial").
+   - The P3 row (line 297) and the threshold bullet (line 353) in
+     `fdtd3d_phase6_impl.md`, which still say 32,768.
+   - The cron comment says PST only; it is 09:00 during PDT.
+4. Dispatch `fdtd-release` once after merge (it cannot run from a branch)
+   and record the run link in the plan.
+5. Two `#` comments remain in `patch_antenna.rlab` (the TL+cell note).
+   The TL check hardcodes `dx = 2e-3`, `Lm`, and `Wm` instead of reading
+   `mesh.dx`. Both presets use 2 mm, so this is correct today. It would
+   become wrong silently if a preset changed `dx`.
+6. Still open from the first review: the lesson text does not cite the
+   lossy/lossless edge-resistance ratio (0.491) as the independent check
+   on η = 0.489. It does correctly avoid quoting Balanis.
+7. Accepted open item, recorded only: `full` misses R4 (39.1 s pool,
+   100.4 s serial).
