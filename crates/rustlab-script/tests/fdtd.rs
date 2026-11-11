@@ -205,6 +205,14 @@ fn setup_errors() {
             "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0)",
             "courant must be in (0, 1]",
         ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"threads\", 2)",
+            "threads must be 0",
+        ),
+        (
+            "fdtd3d(4, 4, 4, 1e-3, 1e-3, 1e-3, \"threads\", 1, \"threads\", 0)",
+            "given twice",
+        ),
         ("fdtd3d(4, 4, 4, 1e-3, 1e-3)", "wrong number of arguments"),
         ("fdtd_info(3)", "fdtd3d handle"),
         ("gaussian_pulse(0, 0, 0)", "tau must be finite and positive"),
@@ -1355,5 +1363,46 @@ alg = abs(gr / (gv * (1 - abs(s11)^2)) - 1);
     match ev.get("s11") {
         Some(Value::Complex(c)) => assert!(c.is_finite(), "s11 {c}"),
         other => panic!("s11: {other:?}"),
+    }
+}
+
+#[test]
+fn fdtd3d_threads_option() {
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3, \"threads\", 1, \"courant\", 0.5);
+         info = fdtd_info(sim);
+         t = info.threads; c = info.courant;",
+    );
+    assert_eq!(scalar(&ev, "t"), 1.0);
+    assert!((scalar(&ev, "c") - 0.5).abs() < 1e-15);
+    let ev = eval(
+        "sim = fdtd3d(6, 5, 4, 1e-3, 1e-3, 1e-3, \"courant\", 0.8, \"threads\", 0);
+         t = fdtd_info(sim).threads;",
+    );
+    assert_eq!(scalar(&ev, "t"), 0.0);
+}
+
+#[test]
+fn parmap_of_fdtd_matches_arrayfun() {
+    let ev = eval(
+        r#"
+function r = one(k)
+    sim = fdtd3d(12, 10, 8, 2e-3, 2e-3, 1e-3, "threads", 1);
+    fdtd_cpml(sim, 2);
+    info = fdtd_info(sim);
+    fdtd_source(sim, "ez", 5, 6, 4, "soft", "gaussian", 30 * info.dt, 8 * info.dt);
+    fdtd_run(sim, 12 + k);
+    M = fdtd_slice(sim, "ez", "z", 4);
+    r = [max(abs(M(:))), sum(sum(M))];
+end
+A = arrayfun(@(k) one(k), [0, 1]);
+P = parmap(@(k) one(k), [0, 1]);
+d = max(abs(A(:) - P(:)));
+"#,
+    );
+    assert_eq!(scalar(&ev, "d"), 0.0, "parmap and arrayfun diverged");
+    match ev.get("P") {
+        Some(Value::Matrix(m)) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+        other => panic!("P: {other:?}"),
     }
 }

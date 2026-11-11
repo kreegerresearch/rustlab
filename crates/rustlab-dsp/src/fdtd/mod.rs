@@ -5,7 +5,10 @@
 //! ([`FdtdSim::set_media`]), interior PEC volumes and faces
 //! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]), a
 //! convolutional PML inside those walls ([`FdtdSim::set_cpml`]), and one
-//! lumped port ([`FdtdSim::add_port`], [`s11`]). Serial.
+//! lumped port ([`FdtdSim::add_port`], [`s11`]). The H and E curls run on
+//! the shared rayon pool once the grid is at least 32,768 cells, unless
+//! [`FdtdSim::set_threads`] forces one thread. Each row is the same
+//! function either way, so the fields stay bit-identical.
 //! The material bake is in `media.rs`; the absorber is in `cpml.rs`;
 //! the port source and S11 are in `port.rs`.
 //!
@@ -58,6 +61,10 @@ mod yee;
 
 #[cfg(test)]
 mod ntff_tests;
+#[cfg(test)]
+mod par_tests;
+#[cfg(test)]
+mod patch_tests;
 #[cfg(test)]
 mod tests;
 
@@ -254,6 +261,9 @@ pub struct FdtdSim {
     /// `None` until [`FdtdSim::set_ntff`] with a non-empty frequency list.
     /// Off is the Phase 1–4 step, bit for bit.
     ntff: Option<ntff::Ntff>,
+    /// `true` keeps the serial curl (`"threads", 1`). `false` is the
+    /// shared pool above the cell threshold (`"threads", 0`).
+    force_serial: bool,
 }
 
 /// `courant / (c0 sqrt(1/dx² + 1/dy² + 1/dz²))`.
@@ -332,7 +342,33 @@ impl FdtdSim {
             cpml: None,
             absorber: cpml::Absorber::off(nx, ny, nz),
             ntff: None,
+            force_serial: false,
         })
+    }
+
+    /// `0` uses the shared pool above the cell threshold. `1` forces the
+    /// serial curl. Any other value is an error. Safe before or after the
+    /// first step: a step is the same arithmetic either way.
+    pub fn set_threads(&mut self, threads: u32) -> Result<(), DspError> {
+        match threads {
+            0 => self.force_serial = false,
+            1 => self.force_serial = true,
+            _ => {
+                return Err(DspError::InvalidParameter(format!(
+                    "threads must be 0 (shared pool) or 1 (serial), got {threads}"
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    /// `0` for the shared pool, `1` when serial stepping was requested.
+    pub fn threads(&self) -> u32 {
+        u32::from(self.force_serial)
+    }
+
+    fn parallel_step(&self) -> bool {
+        !self.force_serial && self.n_cells() >= yee::par_cells_threshold()
     }
 
     pub fn nx(&self) -> usize {
@@ -1043,6 +1079,7 @@ impl FdtdSim {
         // update, not a parameter the update has to read.
         let cpml_on = self.cpml_active();
         let faces = self.cpml_faces();
+        let parallel = self.parallel_step();
 
         // Split the grid so the absorber profiles, the `q` rows and the six
         // fields can be borrowed together. `HCoefs` / `ECoefs` hold the
@@ -1070,7 +1107,7 @@ impl FdtdSim {
                 cb: baked.cb.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
                 ca: baked.ca.as_ref().map(|a| [&a[0][..], &a[1][..], &a[2][..]]),
             };
-            yee::update_h(dims, db, hm, zero_row, ex, ey, ez, hx, hy, hz);
+            yee::update_h(dims, db, hm, zero_row, ex, ey, ez, hx, hy, hz, parallel);
             if cpml_on {
                 let cpml::Absorber { h, q_h, .. } = absorber;
                 let axes = yee::Axes {
@@ -1093,7 +1130,7 @@ impl FdtdSim {
                     record[row0 + p] = src[probe.idx];
                 }
             }
-            yee::update_e(dims, cb, em, hx, hy, hz, ex, ey, ez);
+            yee::update_e(dims, cb, em, hx, hy, hz, ex, ey, ez, parallel);
             if cpml_on {
                 let cpml::Absorber { e, q_e, .. } = absorber;
                 let axes = yee::Axes {

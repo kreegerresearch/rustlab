@@ -15,6 +15,7 @@ use super::port::tail_over_peak;
 use super::{Component, Face, FdtdSim, RecordDecay, C0, EPS0, MU0, PULSE_TAIL_LIMIT};
 use crate::error::DspError;
 use num_complex::Complex;
+use rayon::prelude::*;
 use rustlab_core::size::checked_elems;
 use rustlab_core::C64;
 use std::f64::consts::PI;
@@ -143,6 +144,7 @@ impl Ntff {
         hx: &[f64],
         hy: &[f64],
         hz: &[f64],
+        parallel: bool,
     ) {
         let Some(r) = self.ready.as_mut() else {
             return;
@@ -150,6 +152,7 @@ impl Ntff {
         let e_fields = [ex, ey, ez];
         let h_fields = [hx, hy, hz];
         let ns = r.samples.len();
+        let parallel = parallel && ns > 0;
         let mut emax = 0.0f64;
         for (q, &f) in self.freqs.iter().enumerate() {
             let w = 2.0 * PI * f;
@@ -157,17 +160,40 @@ impl Ntff {
             let re = Complex::from_polar(dt, -w * s * dt);
             let rh = Complex::from_polar(dt, -w * (s - 0.5) * dt);
             let e_base = q * ns;
-            for (p, sm) in r.samples.iter().enumerate() {
-                let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
-                let hv = 0.5
-                    * (h_fields[sm.h_slot as usize][sm.h_a as usize]
-                        + h_fields[sm.h_slot as usize][sm.h_b as usize]);
-                r.e[e_base + p] += re * ev;
-                r.h[e_base + p] += rh * hv;
-                if q == 0 {
-                    emax = emax.max(ev.abs());
+            let e = &mut r.e[e_base..e_base + ns];
+            let h = &mut r.h[e_base..e_base + ns];
+            if parallel {
+                e.par_iter_mut()
+                    .zip(h.par_iter_mut())
+                    .zip(r.samples.par_iter())
+                    .for_each(|((e, h), sm)| {
+                        let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
+                        let hv = 0.5
+                            * (h_fields[sm.h_slot as usize][sm.h_a as usize]
+                                + h_fields[sm.h_slot as usize][sm.h_b as usize]);
+                        *e += re * ev;
+                        *h += rh * hv;
+                    });
+            } else {
+                for (p, sm) in r.samples.iter().enumerate() {
+                    let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
+                    let hv = 0.5
+                        * (h_fields[sm.h_slot as usize][sm.h_a as usize]
+                            + h_fields[sm.h_slot as usize][sm.h_b as usize]);
+                    e[p] += re * ev;
+                    h[p] += rh * hv;
+                    if q == 0 {
+                        emax = emax.max(ev.abs());
+                    }
                 }
             }
+        }
+        if parallel {
+            emax = r
+                .samples
+                .par_iter()
+                .map(|sm| e_fields[sm.e_slot as usize][sm.e_idx as usize].abs())
+                .reduce(|| 0.0, f64::max);
         }
         r.decay.push(emax);
     }
@@ -225,6 +251,12 @@ impl FdtdSim {
     }
 
     #[cfg(test)]
+    pub(super) fn ntff_snapshot(&self) -> Option<(Vec<C64>, Vec<C64>, Vec<f64>)> {
+        let r = self.ntff.as_ref()?.ready.as_ref()?;
+        Some((r.e.clone(), r.h.clone(), r.decay.clone()))
+    }
+
+    #[cfg(test)]
     pub(super) fn ntff_sample_count(&self) -> Option<usize> {
         self.ntff
             .as_ref()
@@ -268,6 +300,7 @@ impl FdtdSim {
     pub(super) fn accumulate_ntff(&mut self) {
         let dt = self.dt();
         let step = self.steps();
+        let parallel = self.parallel_step();
         let FdtdSim {
             ntff,
             ex,
@@ -279,7 +312,7 @@ impl FdtdSim {
             ..
         } = self;
         if let Some(ntff) = ntff.as_mut() {
-            ntff.accumulate(step, dt, ex, ey, ez, hx, hy, hz);
+            ntff.accumulate(step, dt, ex, ey, ez, hx, hy, hz, parallel);
         }
     }
 
@@ -396,29 +429,31 @@ impl FdtdSim {
         let (nt, np) = (theta.len(), phi.len());
         let mut e_theta = vec![C64::new(0.0, 0.0); nf * nt * np];
         let mut e_phi = vec![C64::new(0.0, 0.0); nf * nt * np];
-        let (nx, ny, nz) = (self.nx(), self.ny(), self.nz());
-        for (q, &f) in ntff.freqs.iter().enumerate() {
+        let dims = (self.nx(), self.ny(), self.nz());
+        let parallel = self.parallel_step();
+        let fill_row = |row: usize, et: &mut [C64], ep: &mut [C64]| {
+            let q = row / nt;
+            let a = row % nt;
+            let th = theta[a];
             let kq = k[q];
-            let _ = f;
-            for (a, &th) in theta.iter().enumerate() {
-                for (b, &ph) in phi.iter().enumerate() {
-                    let rh = [th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()];
-                    let px = axis_phase(nx, r.d[0], kq * rh[0], origin[0]);
-                    let py = axis_phase(ny, r.d[1], kq * rh[1], origin[1]);
-                    let pz = axis_phase(nz, r.d[2], kq * rh[2], origin[2]);
-                    let mut n = [C64::new(0.0, 0.0); 3];
-                    let mut l = [C64::new(0.0, 0.0); 3];
-                    for (s, sm) in r.samples.iter().enumerate() {
-                        let phase =
-                            px[sm.tx as usize] * py[sm.ty as usize] * pz[sm.tz as usize] * sm.w;
-                        n[sm.e_slot as usize] += phase * sm.sj * r.h[q * ns + s];
-                        l[sm.m_axis as usize] += phase * sm.sm * r.e[q * ns + s];
-                    }
-                    let (ft, fp) = spherical(th, ph, n, l, kq, r.eta);
-                    let slot = (q * nt + a) * np + b;
-                    e_theta[slot] = ft;
-                    e_phi[slot] = fp;
-                }
+            let e = &r.e[q * ns..(q + 1) * ns];
+            let h = &r.h[q * ns..(q + 1) * ns];
+            for (b, ph) in phi.iter().copied().enumerate() {
+                let (ft, fp) =
+                    direction_field(th, ph, kq, r.eta, origin, r.d, dims, &r.samples, e, h);
+                et[b] = ft;
+                ep[b] = fp;
+            }
+        };
+        if parallel {
+            e_theta
+                .par_chunks_mut(np)
+                .zip(e_phi.par_chunks_mut(np))
+                .enumerate()
+                .for_each(|(row, (et, ep))| fill_row(row, et, ep));
+        } else {
+            for (row, (et, ep)) in e_theta.chunks_mut(np).zip(e_phi.chunks_mut(np)).enumerate() {
+                fill_row(row, et, ep);
             }
         }
         let port = if self.n_ports() == 0 {
@@ -666,6 +701,35 @@ fn off_face(name: &str) -> DspError {
          beyond the surface is not the homogeneous unbounded exterior the equivalence theorem uses. \
          Turn {name} on (v1 does not do a five-face box or image theory)"
     ))
+}
+
+/// One direction. The sum over surface samples stays in sample order.
+#[allow(clippy::too_many_arguments)]
+fn direction_field(
+    th: f64,
+    ph: f64,
+    kq: f64,
+    eta: f64,
+    origin: [f64; 3],
+    d: [f64; 3],
+    dims: (usize, usize, usize),
+    samples: &[Sample],
+    e: &[C64],
+    h: &[C64],
+) -> (C64, C64) {
+    let rh = [th.sin() * ph.cos(), th.sin() * ph.sin(), th.cos()];
+    let (nx, ny, nz) = dims;
+    let px = axis_phase(nx, d[0], kq * rh[0], origin[0]);
+    let py = axis_phase(ny, d[1], kq * rh[1], origin[1]);
+    let pz = axis_phase(nz, d[2], kq * rh[2], origin[2]);
+    let mut n = [C64::new(0.0, 0.0); 3];
+    let mut l = [C64::new(0.0, 0.0); 3];
+    for (s, sm) in samples.iter().enumerate() {
+        let phase = px[sm.tx as usize] * py[sm.ty as usize] * pz[sm.tz as usize] * sm.w;
+        n[sm.e_slot as usize] += phase * sm.sj * h[s];
+        l[sm.m_axis as usize] += phase * sm.sm * e[s];
+    }
+    spherical(th, ph, n, l, kq, eta)
 }
 
 fn axis_phase(len: usize, d: f64, k_comp: f64, origin: f64) -> Vec<C64> {

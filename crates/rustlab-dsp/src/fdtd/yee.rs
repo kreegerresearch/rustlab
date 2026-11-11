@@ -22,6 +22,48 @@
 use super::cpml::{
     in_slab, Profile, EX_Y, EX_Z, EY_X, EY_Z, EZ_X, EZ_Y, HX_Y, HX_Z, HY_X, HY_Z, HZ_X, HZ_Y,
 };
+use rayon::prelude::*;
+use std::cell::Cell;
+
+/// Cells at or above this count use the shared rayon pool. Below it the
+/// step stays the serial loop, including the call overhead. Thread-local
+/// so a test can force the parallel driver without racing other tests.
+const DEFAULT_PAR_CELLS: usize = 32_768;
+
+thread_local! {
+    static PAR_CELLS: Cell<usize> = const { Cell::new(DEFAULT_PAR_CELLS) };
+    static PAR_HITS: Cell<u64> = const { Cell::new(0) };
+}
+
+pub(super) fn par_cells_threshold() -> usize {
+    PAR_CELLS.with(|c| c.get())
+}
+
+/// Test override on this thread. `0` forces the parallel driver on every grid.
+#[cfg(test)]
+pub(super) fn set_par_cells_threshold(n: usize) {
+    PAR_CELLS.with(|c| c.set(n));
+}
+
+#[cfg(test)]
+pub(super) fn reset_par_hits() {
+    PAR_HITS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn par_hits() -> u64 {
+    PAR_HITS.get()
+}
+
+fn note_parallel() {
+    PAR_HITS.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+/// Whole rows per task, at least one. 64k cells per task: 16k tasks left
+/// the 4-thread reference step at 1.82×, and 64k reached 1.89×.
+fn rows_per_task(nx: usize) -> usize {
+    (65_536 / nx).max(1)
+}
 
 /// The twelve auxiliary slots are `0..6` in this order. Referenced so a
 /// reordering of the constants fails here rather than silently in the curl.
@@ -143,6 +185,60 @@ fn step_h(h: &mut [f64], lo: usize, hi: usize, coef: HRow, curl: impl Fn(usize) 
     }
 }
 
+/// One `(k, i)` row of the H update. The serial loop and the parallel
+/// driver both call this, so a row is the same arithmetic either way.
+#[allow(clippy::too_many_arguments)]
+fn update_h_row(
+    d: Dims,
+    c: Coeffs,
+    m: HCoefs,
+    zero: &[f64],
+    ex: &[f64],
+    ey: &[f64],
+    ez: &[f64],
+    i: usize,
+    k: usize,
+    hx_r: &mut [f64],
+    hy_r: &mut [f64],
+    hz_r: &mut [f64],
+) {
+    let nx = d.nx;
+    let r = d.row(i, k);
+    let ex_r = &ex[r..r + nx];
+    let ey_r = &ey[r..r + nx];
+    let ez_r = &ez[r..r + nx];
+    let (ex_ip, ez_ip) = if i + 1 < d.ny {
+        let r2 = d.row(i + 1, k);
+        (&ex[r2..r2 + nx], &ez[r2..r2 + nx])
+    } else {
+        (zero, zero)
+    };
+    let (ex_kp, ey_kp) = if k + 1 < d.nz {
+        let r2 = d.row(i, k + 1);
+        (&ex[r2..r2 + nx], &ey[r2..r2 + nx])
+    } else {
+        (zero, zero)
+    };
+    let (mx, my, mz) = (m.row(0, r, nx), m.row(1, r, nx), m.row(2, r, nx));
+
+    step_h(hx_r, 0, nx, mx, |j| {
+        c.y * (ez_ip[j] - ez_r[j]) - c.z * (ey_kp[j] - ey_r[j])
+    });
+    step_h(hy_r, 0, nx - 1, my, |j| {
+        c.z * (ex_kp[j] - ex_r[j]) - c.x * (ez_r[j + 1] - ez_r[j])
+    });
+    step_h(hz_r, 0, nx - 1, mz, |j| {
+        c.x * (ey_r[j + 1] - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
+    });
+    let last = nx - 1;
+    step_h(hy_r, last, nx, my, |j| {
+        c.z * (ex_kp[j] - ex_r[j]) - c.x * (0.0 - ez_r[j])
+    });
+    step_h(hz_r, last, nx, mz, |j| {
+        c.x * (0.0 - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
+    });
+}
+
 /// `H^{n+1/2} = H^{n-1/2} - (dt/μ) curl E^n`, forward differences of E.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_h(
@@ -156,49 +252,98 @@ pub(super) fn update_h(
     hx: &mut [f64],
     hy: &mut [f64],
     hz: &mut [f64],
+    parallel: bool,
 ) {
     let nx = d.nx;
     let zero = &zero[..nx];
-    for k in 0..d.nz {
-        for i in 0..d.ny {
-            let r = d.row(i, k);
-            let ex_r = &ex[r..r + nx];
-            let ey_r = &ey[r..r + nx];
-            let ez_r = &ez[r..r + nx];
-            let (ex_ip, ez_ip) = if i + 1 < d.ny {
-                let r2 = d.row(i + 1, k);
-                (&ex[r2..r2 + nx], &ez[r2..r2 + nx])
-            } else {
-                (zero, zero)
-            };
-            let (ex_kp, ey_kp) = if k + 1 < d.nz {
-                let r2 = d.row(i, k + 1);
-                (&ex[r2..r2 + nx], &ey[r2..r2 + nx])
-            } else {
-                (zero, zero)
-            };
-            let hx_r = &mut hx[r..r + nx];
-            let hy_r = &mut hy[r..r + nx];
-            let hz_r = &mut hz[r..r + nx];
-            let (mx, my, mz) = (m.row(0, r, nx), m.row(1, r, nx), m.row(2, r, nx));
-
-            step_h(hx_r, 0, nx, mx, |j| {
-                c.y * (ez_ip[j] - ez_r[j]) - c.z * (ey_kp[j] - ey_r[j])
+    let row = |i: usize, k: usize, hx_r: &mut [f64], hy_r: &mut [f64], hz_r: &mut [f64]| {
+        update_h_row(d, c, m, zero, ex, ey, ez, i, k, hx_r, hy_r, hz_r);
+    };
+    if parallel {
+        note_parallel();
+        let rows_per = rows_per_task(nx);
+        let chunk = nx * rows_per;
+        hx.par_chunks_mut(chunk)
+            .zip(hy.par_chunks_mut(chunk))
+            .zip(hz.par_chunks_mut(chunk))
+            .enumerate()
+            .for_each(|(cidx, ((hxc, hyc), hzc))| {
+                let n = hxc.len() / nx;
+                let row0 = cidx * rows_per;
+                for t in 0..n {
+                    let row_i = row0 + t;
+                    let k = row_i / d.ny;
+                    let i = row_i % d.ny;
+                    let o = t * nx;
+                    row(
+                        i,
+                        k,
+                        &mut hxc[o..o + nx],
+                        &mut hyc[o..o + nx],
+                        &mut hzc[o..o + nx],
+                    );
+                }
             });
-            step_h(hy_r, 0, nx - 1, my, |j| {
-                c.z * (ex_kp[j] - ex_r[j]) - c.x * (ez_r[j + 1] - ez_r[j])
-            });
-            step_h(hz_r, 0, nx - 1, mz, |j| {
-                c.x * (ey_r[j + 1] - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
-            });
-            let last = nx - 1;
-            step_h(hy_r, last, nx, my, |j| {
-                c.z * (ex_kp[j] - ex_r[j]) - c.x * (0.0 - ez_r[j])
-            });
-            step_h(hz_r, last, nx, mz, |j| {
-                c.x * (0.0 - ey_r[j]) - c.y * (ex_ip[j] - ex_r[j])
-            });
+    } else {
+        for k in 0..d.nz {
+            for i in 0..d.ny {
+                let r = d.row(i, k);
+                row(
+                    i,
+                    k,
+                    &mut hx[r..r + nx],
+                    &mut hy[r..r + nx],
+                    &mut hz[r..r + nx],
+                );
+            }
         }
+    }
+}
+
+/// One `(k, i)` row of the E update. Same body for the serial and parallel
+/// drivers.
+#[allow(clippy::too_many_arguments)]
+fn update_e_row(
+    d: Dims,
+    c: Coeffs,
+    m: ECoefs,
+    hx: &[f64],
+    hy: &[f64],
+    hz: &[f64],
+    i: usize,
+    k: usize,
+    ex_r: &mut [f64],
+    ey_r: &mut [f64],
+    ez_r: &mut [f64],
+) {
+    let nx = d.nx;
+    let r = d.row(i, k);
+    let hx_r = &hx[r..r + nx];
+    let hy_r = &hy[r..r + nx];
+    let hz_r = &hz[r..r + nx];
+
+    if i >= 1 && k >= 1 {
+        let rim = d.row(i - 1, k);
+        let rkm = d.row(i, k - 1);
+        let hz_im = &hz[rim..rim + nx];
+        let hy_km = &hy[rkm..rkm + nx];
+        step_e(ex_r, 0, m.row(0, r, nx), |j| {
+            c.y * (hz_r[j] - hz_im[j]) - c.z * (hy_r[j] - hy_km[j])
+        });
+    }
+    if k >= 1 {
+        let rkm = d.row(i, k - 1);
+        let hx_km = &hx[rkm..rkm + nx];
+        step_e(ey_r, 1, m.row(1, r, nx), |j| {
+            c.z * (hx_r[j] - hx_km[j]) - c.x * (hz_r[j] - hz_r[j - 1])
+        });
+    }
+    if i >= 1 {
+        let rim = d.row(i - 1, k);
+        let hx_im = &hx[rim..rim + nx];
+        step_e(ez_r, 1, m.row(2, r, nx), |j| {
+            c.x * (hy_r[j] - hy_r[j - 1]) - c.y * (hx_r[j] - hx_im[j])
+        });
     }
 }
 
@@ -215,37 +360,48 @@ pub(super) fn update_e(
     ex: &mut [f64],
     ey: &mut [f64],
     ez: &mut [f64],
+    parallel: bool,
 ) {
     let nx = d.nx;
-    for k in 0..d.nz {
-        for i in 0..d.ny {
-            let r = d.row(i, k);
-            let hx_r = &hx[r..r + nx];
-            let hy_r = &hy[r..r + nx];
-            let hz_r = &hz[r..r + nx];
-
-            if i >= 1 && k >= 1 {
-                let rim = d.row(i - 1, k);
-                let rkm = d.row(i, k - 1);
-                let hz_im = &hz[rim..rim + nx];
-                let hy_km = &hy[rkm..rkm + nx];
-                step_e(&mut ex[r..r + nx], 0, m.row(0, r, nx), |j| {
-                    c.y * (hz_r[j] - hz_im[j]) - c.z * (hy_r[j] - hy_km[j])
-                });
-            }
-            if k >= 1 {
-                let rkm = d.row(i, k - 1);
-                let hx_km = &hx[rkm..rkm + nx];
-                step_e(&mut ey[r..r + nx], 1, m.row(1, r, nx), |j| {
-                    c.z * (hx_r[j] - hx_km[j]) - c.x * (hz_r[j] - hz_r[j - 1])
-                });
-            }
-            if i >= 1 {
-                let rim = d.row(i - 1, k);
-                let hx_im = &hx[rim..rim + nx];
-                step_e(&mut ez[r..r + nx], 1, m.row(2, r, nx), |j| {
-                    c.x * (hy_r[j] - hy_r[j - 1]) - c.y * (hx_r[j] - hx_im[j])
-                });
+    let row = |i: usize, k: usize, ex_r: &mut [f64], ey_r: &mut [f64], ez_r: &mut [f64]| {
+        update_e_row(d, c, m, hx, hy, hz, i, k, ex_r, ey_r, ez_r);
+    };
+    if parallel {
+        note_parallel();
+        let rows_per = rows_per_task(nx);
+        let chunk = nx * rows_per;
+        ex.par_chunks_mut(chunk)
+            .zip(ey.par_chunks_mut(chunk))
+            .zip(ez.par_chunks_mut(chunk))
+            .enumerate()
+            .for_each(|(cidx, ((exc, eyc), ezc))| {
+                let n = exc.len() / nx;
+                let row0 = cidx * rows_per;
+                for t in 0..n {
+                    let row_i = row0 + t;
+                    let k = row_i / d.ny;
+                    let i = row_i % d.ny;
+                    let o = t * nx;
+                    row(
+                        i,
+                        k,
+                        &mut exc[o..o + nx],
+                        &mut eyc[o..o + nx],
+                        &mut ezc[o..o + nx],
+                    );
+                }
+            });
+    } else {
+        for k in 0..d.nz {
+            for i in 0..d.ny {
+                let r = d.row(i, k);
+                row(
+                    i,
+                    k,
+                    &mut ex[r..r + nx],
+                    &mut ey[r..r + nx],
+                    &mut ez[r..r + nx],
+                );
             }
         }
     }
