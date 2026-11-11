@@ -33,10 +33,22 @@ const DEFAULT_PAR_CELLS: usize = 32_768;
 thread_local! {
     static PAR_CELLS: Cell<usize> = const { Cell::new(DEFAULT_PAR_CELLS) };
     static PAR_HITS: Cell<u64> = const { Cell::new(0) };
+    /// `0` uses [`rows_per_task`]'s formula. A test sets 2 so a step is many
+    /// chunks and a wrong offset on a later chunk fails the bit compare.
+    static ROWS_PER_TASK: Cell<usize> = const { Cell::new(0) };
+    static PAR_CHUNKS: Cell<u64> = const { Cell::new(0) };
+    /// Times the CPML correction took the parallel row split. Stays 0 while
+    /// `correct_h` / `correct_e` are the serial loops.
+    static PAR_CPML: Cell<u64> = const { Cell::new(0) };
 }
 
 pub(super) fn par_cells_threshold() -> usize {
     PAR_CELLS.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(super) fn default_par_cells() -> usize {
+    DEFAULT_PAR_CELLS
 }
 
 /// Test override on this thread. `0` forces the parallel driver on every grid.
@@ -55,14 +67,61 @@ pub(super) fn par_hits() -> u64 {
     PAR_HITS.get()
 }
 
+#[cfg(test)]
+pub(super) fn set_rows_per_task(n: usize) {
+    ROWS_PER_TASK.with(|c| c.set(n));
+}
+
+#[cfg(test)]
+pub(super) fn reset_par_chunks() {
+    PAR_CHUNKS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn par_chunks() -> u64 {
+    PAR_CHUNKS.get()
+}
+
+#[cfg(test)]
+pub(super) fn reset_cpml_hits() {
+    PAR_CPML.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn cpml_hits() -> u64 {
+    PAR_CPML.get()
+}
+
 fn note_parallel() {
     PAR_HITS.with(|c| c.set(c.get().saturating_add(1)));
 }
 
+fn note_chunks(n: usize) {
+    PAR_CHUNKS.with(|c| c.set(c.get().saturating_add(n as u64)));
+}
+
+/// Called from the parallel CPML correction. Unused until that split lands,
+/// so the counter test fails on the serial correction.
+#[allow(dead_code)]
+fn note_cpml() {
+    PAR_CPML.with(|c| c.set(c.get().saturating_add(1)));
+}
+
 /// Whole rows per task, at least one. 64k cells per task: 16k tasks left
 /// the 4-thread reference step at 1.82×, and 64k reached 1.89×.
+/// A test override of `n > 0` replaces the formula on this thread.
 fn rows_per_task(nx: usize) -> usize {
+    let forced = ROWS_PER_TASK.with(|c| c.get());
+    if forced > 0 {
+        return forced;
+    }
     (65_536 / nx).max(1)
+}
+
+fn chunk_plan(nx: usize, n_rows: usize) -> (usize, usize) {
+    let rows_per = rows_per_task(nx);
+    let n_chunks = n_rows.div_ceil(rows_per);
+    (rows_per, n_chunks)
 }
 
 /// The twelve auxiliary slots are `0..6` in this order. Referenced so a
@@ -261,7 +320,8 @@ pub(super) fn update_h(
     };
     if parallel {
         note_parallel();
-        let rows_per = rows_per_task(nx);
+        let (rows_per, n_chunks) = chunk_plan(nx, d.ny * d.nz);
+        note_chunks(n_chunks);
         let chunk = nx * rows_per;
         hx.par_chunks_mut(chunk)
             .zip(hy.par_chunks_mut(chunk))
@@ -368,7 +428,8 @@ pub(super) fn update_e(
     };
     if parallel {
         note_parallel();
-        let rows_per = rows_per_task(nx);
+        let (rows_per, n_chunks) = chunk_plan(nx, d.ny * d.nz);
+        note_chunks(n_chunks);
         let chunk = nx * rows_per;
         ex.par_chunks_mut(chunk)
             .zip(ey.par_chunks_mut(chunk))

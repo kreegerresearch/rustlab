@@ -127,12 +127,25 @@ fn run_pair(mut serial: FdtdSim, mut parallel: FdtdSim, steps: usize) {
     serial.set_threads(1).unwrap();
     serial.run(steps, &mut never()).unwrap();
     yee::set_par_cells_threshold(0);
+    // Two rows per task. Chunk 0 is only the first two rows, so a bad
+    // offset on any later chunk changes a field the compare reads.
+    yee::set_rows_per_task(2);
     yee::reset_par_hits();
+    yee::reset_par_chunks();
     parallel.run(steps, &mut never()).unwrap();
     assert!(
         yee::par_hits() > 0,
         "parallel driver did not run (hits {})",
         yee::par_hits()
+    );
+    let rows = parallel.ny() * parallel.nz();
+    let per_update = rows.div_ceil(2);
+    let min_chunks = (per_update * 2 * steps) as u64;
+    assert!(
+        yee::par_chunks() >= min_chunks,
+        "{} rows, {} chunks after {steps} steps (need at least {min_chunks})",
+        rows,
+        yee::par_chunks()
     );
     same(&serial, &parallel);
     if parallel.ntff_freqs().is_empty() {
@@ -190,11 +203,12 @@ fn parallel_step_matches_serial_bitwise() {
 fn parallel_split_run_identity() {
     with_pool(3, || {
         yee::set_par_cells_threshold(0);
+        yee::set_rows_per_task(2);
         let mut one = sourced();
-        one.run(40, &mut never()).unwrap();
+        one.run(150, &mut never()).unwrap();
         let mut split = sourced();
-        split.run(15, &mut never()).unwrap();
-        split.run(25, &mut never()).unwrap();
+        split.run(70, &mut never()).unwrap();
+        split.run(80, &mut never()).unwrap();
         same(&one, &split);
     });
 }
@@ -223,6 +237,57 @@ fn threads_one_forces_serial() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("0") && err.contains("1"), "{err}");
+}
+
+/// The H and E CPML corrections have to take the same row split as the curl.
+/// Two steps are four corrections (H and E, twice).
+#[test]
+fn cpml_correction_runs_on_the_pool() {
+    with_pool(4, || {
+        yee::set_par_cells_threshold(0);
+        yee::set_rows_per_task(2);
+        yee::reset_cpml_hits();
+        let mut s = cpml();
+        s.run(2, &mut never()).unwrap();
+        assert!(
+            yee::cpml_hits() >= 4,
+            "CPML correction stayed serial (hits {})",
+            yee::cpml_hits()
+        );
+    });
+}
+
+/// 60×60×20 is the Phase 3 gate (72,000 cells). The pool made this mesh
+/// about twice as slow as the 0.3.63 serial step, so the default threshold
+/// has to leave it on the serial loop.
+#[test]
+fn parent_gate_mesh_stays_serial() {
+    yee::set_par_cells_threshold(yee::default_par_cells());
+    yee::set_rows_per_task(0);
+    yee::reset_par_hits();
+    let mut s = FdtdSim::new(60, 60, 20, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    s.set_cpml(8, CpmlParams::default()).unwrap();
+    s.run(1, &mut never()).unwrap();
+    assert_eq!(
+        yee::par_hits(),
+        0,
+        "60×60×20 entered the pool at the default threshold"
+    );
+}
+
+/// The lesson mesh is 285,120 cells. It has to stay on the pool, so the
+/// threshold that keeps 72,000 serial cannot sit above this grid either.
+#[test]
+fn lesson_sized_mesh_uses_the_pool() {
+    yee::set_par_cells_threshold(yee::default_par_cells());
+    yee::set_rows_per_task(0);
+    yee::reset_par_hits();
+    let mut s = FdtdSim::new(64, 64, 64, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    s.run(1, &mut never()).unwrap();
+    assert!(
+        yee::par_hits() > 0,
+        "64³ (262144 cells) stayed serial at the default threshold"
+    );
 }
 
 #[test]
