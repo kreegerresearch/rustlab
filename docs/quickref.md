@@ -173,7 +173,7 @@ Yee stepper with PEC walls; vacuum unless `fdtd_media`, `fdtd_pec`, or `fdtd_por
 
 | Function | Description |
 |---|---|
-| `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s] [, "threads", n])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99). `n` is 0 (shared pool, default) or 1 (serial). Grids of 32,768 cells or more step in parallel unless `n` is 1, bit-identical to serial |
+| `fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s] [, "threads", n])` | Opaque grid handle; `dt` from the CFL limit, `s` in `(0, 1]` (default 0.99). `n` is 0 (shared pool, default) or 1 (serial). Grids of 8,192 cells or more step in parallel (fields, CPML correction, near-to-far) unless `n` is 1, bit-identical to serial |
 | `fdtd_info(sim)` | Struct: sizes, spacing, `dt`, `courant`, `steps`, `bytes` (includes NTFF), `c0`, `cpml` (1×6 face thicknesses), `ntff` (armed frequency count), `threads` |
 | `fdtd_media(sim, eps_r [, mu_r [, sigma]])` | Cell-centred materials: real scalars or `ny × nx × nz` Tensor3s; `sigma` in S/m; recomputes `dt` |
 | `fdtd_pec(sim, mask)` / `fdtd_pec(sim, axis, index, mask2d)` | Metal: every edge of each nonzero cell, or a sheet on node plane `index` (`1 .. n+1`, `fdtd_slice` layout) |

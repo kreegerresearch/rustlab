@@ -1,6 +1,6 @@
 # FDTD Phase 6 — patch-antenna capstone, width sweep, parallel stepping (implementation brief)
 
-**Status:** planning only. Nothing in `crates/`, `examples/`, or `docs/` changes in the PR that carries this file.
+**Status:** implemented in 0.3.64. The review (`fdtd3d_phase6_impl_review.md`) asked to keep the 72,000-cell gate off the pool. After the CPML correction moved onto the same row split, that mesh is 1.88× faster on the pool than serial (4 threads, release), and faster than the 0.3.63 serial step (4.536 s). The threshold is 8,192 cells: the pool loses at 4,096 and 5,832, ties at 8,000, and wins from 10,648. Task size is `min(65_536/nx, n_rows/(4·threads))` rows. The 32,768 figure below is the brief's original number.
 **Target version:** 0.3.64 (one implementation PR, staged commits, §10).
 **Parent:** `dev/plans/fdtd3d.md` § Phase 6. This brief replaces that section's geometry (ground on the `zmin` wall, image theory) and its `fdtd_reset` step.
 **Read first:** `dev/plans/fdtd3d.md`, `dev/plans/fdtd3d_phase4_review.md`, `dev/plans/fdtd3d_phase5_impl.md`, `dev/plans/fdtd3d_phase5_impl_review.md`.

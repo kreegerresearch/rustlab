@@ -326,7 +326,7 @@ Create a vacuum grid with `E = H = 0`. `nx`, `ny`, `nz` are integers `>= 2`; `dx
 dt = s / (c0 * sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
 ```
 
-`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `"courant"` and `"threads"` are name-value pairs and may appear in either order. `n` is `0` (the shared rayon pool, the default) or `1` (every half-step on the calling thread). A grid of 32,768 cells or more uses the pool unless `threads` is 1. The field update, the port record, and the near-to-far phasors match the serial step bit for bit. `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
+`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `"courant"` and `"threads"` are name-value pairs and may appear in either order. `n` is `0` (the shared rayon pool, the default) or `1` (every half-step on the calling thread). A grid of 8,192 cells or more uses the pool unless `threads` is 1. The field update, the CPML correction, the port record, and the near-to-far phasors match the serial step bit for bit. `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
 ```
 sim = fdtd3d(40, 40, 40, 1e-3, 1e-3, 1e-3);
 sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9, "threads", 1);

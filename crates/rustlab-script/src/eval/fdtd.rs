@@ -225,7 +225,7 @@ fn record_fields(sim: &FdtdSim) -> HashMap<String, Value> {
 /// `sim = fdtd3d(nx, ny, nz, dx, dy, dz [, "courant", s] [, "threads", n])`
 ///
 /// `"courant"` and `"threads"` may appear in either order. `threads` is 0
-/// (shared pool, the default) or 1 (serial). A grid of 32,768 cells or more
+/// (shared pool, the default) or 1 (serial). A grid of 8,192 cells or more
 /// uses the pool unless `threads` is 1.
 pub(crate) fn builtin_fdtd3d(args: Vec<Value>) -> Result<Value, ScriptError> {
     const NAME: &str = "fdtd3d";

@@ -28,7 +28,14 @@ use std::cell::Cell;
 /// Cells at or above this count use the shared rayon pool. Below it the
 /// step stays the serial loop, including the call overhead. Thread-local
 /// so a test can force the parallel driver without racing other tests.
-const DEFAULT_PAR_CELLS: usize = 32_768;
+///
+/// Measured on this 4-thread machine with the CPML correction on the same
+/// row split (release, 8000 steps, pool forced on). The pool loses below
+/// about 8,000 cells (16³ is 0.68×, 18³ is 0.80×, 20³ is tied) and wins
+/// from 22³ (10,648 cells, 1.13×) up. 8,192 sits in that gap. The
+/// 60×60×20 gate (72,000 cells) is 1.88× on the pool, faster than the
+/// 0.3.63 serial step, so it stays above the line.
+const DEFAULT_PAR_CELLS: usize = 8_192;
 
 thread_local! {
     static PAR_CELLS: Cell<usize> = const { Cell::new(DEFAULT_PAR_CELLS) };
@@ -37,8 +44,7 @@ thread_local! {
     /// chunks and a wrong offset on a later chunk fails the bit compare.
     static ROWS_PER_TASK: Cell<usize> = const { Cell::new(0) };
     static PAR_CHUNKS: Cell<u64> = const { Cell::new(0) };
-    /// Times the CPML correction took the parallel row split. Stays 0 while
-    /// `correct_h` / `correct_e` are the serial loops.
+    /// Times the CPML correction took the parallel row split.
     static PAR_CPML: Cell<u64> = const { Cell::new(0) };
 }
 

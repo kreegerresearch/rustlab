@@ -215,11 +215,39 @@ fn parallel_split_run_identity() {
 
 #[test]
 fn small_grid_stays_serial() {
-    yee::set_par_cells_threshold(32_768);
+    yee::set_par_cells_threshold(yee::default_par_cells());
     yee::reset_par_hits();
     let mut s = FdtdSim::new(8, 8, 8, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
     s.run(5, &mut never()).unwrap();
     assert_eq!(yee::par_hits(), 0, "a 512-cell grid entered rayon");
+}
+
+/// 20³ is 8,000 cells. The pool is tied with serial there and slower below,
+/// so the default threshold has to leave it on the serial loop.
+#[test]
+fn mesh_below_threshold_stays_serial() {
+    yee::set_par_cells_threshold(yee::default_par_cells());
+    yee::set_rows_per_task(0);
+    yee::reset_par_hits();
+    let mut s = FdtdSim::new(20, 20, 20, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    s.set_cpml(4, CpmlParams::default()).unwrap();
+    s.run(1, &mut never()).unwrap();
+    assert_eq!(yee::par_hits(), 0, "20³ (8000 cells) entered the pool");
+}
+
+/// 22³ is 10,648 cells, the first size where the pool is clearly faster.
+#[test]
+fn mesh_above_threshold_uses_the_pool() {
+    yee::set_par_cells_threshold(yee::default_par_cells());
+    yee::set_rows_per_task(0);
+    yee::reset_par_hits();
+    let mut s = FdtdSim::new(22, 22, 22, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
+    s.set_cpml(4, CpmlParams::default()).unwrap();
+    s.run(1, &mut never()).unwrap();
+    assert!(
+        yee::par_hits() > 0,
+        "22³ (10648 cells) stayed serial at the default threshold"
+    );
 }
 
 #[test]
@@ -267,21 +295,20 @@ fn cpml_correction_runs_on_the_pool() {
     });
 }
 
-/// 60×60×20 is the Phase 3 gate (72,000 cells). The pool made this mesh
-/// about twice as slow as the 0.3.63 serial step, so the default threshold
-/// has to leave it on the serial loop.
+/// 60×60×20 is the Phase 3 gate (72,000 cells). With the CPML correction on
+/// the same row split the pool is faster than the 0.3.63 serial step, so
+/// the default threshold has to leave this mesh on the pool.
 #[test]
-fn parent_gate_mesh_stays_serial() {
+fn parent_gate_mesh_uses_the_pool() {
     yee::set_par_cells_threshold(yee::default_par_cells());
     yee::set_rows_per_task(0);
     yee::reset_par_hits();
     let mut s = FdtdSim::new(60, 60, 20, 1e-3, 1e-3, 1e-3, DEFAULT_COURANT).unwrap();
     s.set_cpml(8, CpmlParams::default()).unwrap();
     s.run(1, &mut never()).unwrap();
-    assert_eq!(
-        yee::par_hits(),
-        0,
-        "60×60×20 entered the pool at the default threshold"
+    assert!(
+        yee::par_hits() > 0,
+        "60×60×20 stayed serial at the default threshold"
     );
 }
 

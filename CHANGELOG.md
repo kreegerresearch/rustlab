@@ -10,10 +10,10 @@ should re-validate against those entries when upgrading.
 
 ### Added
 - **Patch antenna.** `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md` put a finite ground and an edge-fed patch in air, with CPML on all six faces and the near-to-far box in the air above the board (20 mm). The lossy rerun builds a second grid; there is no reset. `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md` map the resonance over five widths with `parmap`.
-- **`fdtd3d(..., "threads", n)`.** `n` is `0` (the shared pool, the default) or `1` (serial). It composes with `"courant"` in either order. `fdtd_info(sim).threads` reports it. A grid of 32,768 cells or more updates the fields, and the near-to-far phasors, on the pool unless `threads` is 1.
+- **`fdtd3d(..., "threads", n)`.** `n` is `0` (the shared pool, the default) or `1` (serial). It composes with `"courant"` in either order. `fdtd_info(sim).threads` reports it. A grid of 8,192 cells or more updates the fields, the CPML correction, and the near-to-far phasors, on the pool unless `threads` is 1.
 
 ### Breaking / behavior changes
-- **Large FDTD grids step in parallel.** A grid of 32,768 cells or more runs the E and H updates, and the near-to-far accumulation, on the shared rayon pool. The port voltage and current, the probe record, the CPML auxiliaries, and the far-field phasors match a one-thread step bit for bit. `fdtd3d(..., "threads", 1)` keeps the old single-thread loop. A script that timed a large grid will see a different rate. The numbers do not change.
+- **Large FDTD grids step in parallel.** A grid of 8,192 cells or more runs the E and H updates, the CPML correction, and the near-to-far accumulation, on the shared rayon pool. Below that the step stays on the calling thread: on 4 threads the pool is slower at 4,096 cells and tied at 8,000. The port voltage and current, the probe record, the CPML auxiliaries, and the far-field phasors match a one-thread step bit for bit. `fdtd3d(..., "threads", 1)` keeps the single-thread loop. A script that timed a large grid will see a different rate. The numbers do not change.
 
 ## 0.3.63
 

@@ -6,9 +6,10 @@
 //! ([`FdtdSim::add_pec_volume`], [`FdtdSim::add_pec_face`]), a
 //! convolutional PML inside those walls ([`FdtdSim::set_cpml`]), and one
 //! lumped port ([`FdtdSim::add_port`], [`s11`]). The H and E curls run on
-//! the shared rayon pool once the grid is at least 32,768 cells, unless
-//! [`FdtdSim::set_threads`] forces one thread. Each row is the same
-//! function either way, so the fields stay bit-identical.
+//! the shared rayon pool once the grid is at least 8,192 cells, unless
+//! [`FdtdSim::set_threads`] forces one thread. The CPML correction uses
+//! the same row split. Each row is the same function either way, so the
+//! fields stay bit-identical.
 //! The material bake is in `media.rs`; the absorber is in `cpml.rs`;
 //! the port source and S11 are in `port.rs`.
 //!
