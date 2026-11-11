@@ -12,7 +12,7 @@ Three different quotients:
 
 With no port, gain and realized gain are `NaN`. They are also `NaN` when that power is not positive. `realized_gain = gain · (1 − |S11|²)` is how those two are defined. It is not a check that the pattern is right, and it is not `directivity · (1 − |S11|²)` once the grid has loss.
 
-v1 is a box in air, inside CPML on all six faces. The cells outside the box, and one cell inside it, are one lossless medium. A source, a port, or metal on that layer is an error. Each frequency needs at least ten cells per background wavelength. A ground, a substrate, and image theory are Phase 6. That geometry is not decided, and this notebook does not pick one.
+v1 is a box in air, inside CPML on all six faces. The cells outside the box, and one cell inside it, are one lossless medium. A source, a port, or metal on that layer is an error. Each frequency needs at least ten cells per background wavelength. A finite ground and a substrate, with the box still in air, are the patch in `patch_antenna.md`. The box does not sit on the ground, and there is no image theory.
 
 The default `"decay", "pulse"` refuses the pattern when the last tenth of the surface field, or of the port voltage or current, is still above `1e-3` of its peak. A tone that never dies is not a far field of a pulse.
 

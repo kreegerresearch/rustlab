@@ -1,7 +1,7 @@
 # Development Plan: Native 3-D FDTD (Yee + CPML + port + near-to-far)
 
 **Status:** in progress — Phase 0 complete (0.3.46, `laplacian_eps_3d`); Phase 1 complete (0.3.47, vacuum Yee); Phase 2 complete (0.3.48, materials and PEC); Phase 3 complete (0.3.51, CPML); Phase 4 complete (0.3.59, draft PR #142, unshipped; items 8 and 10 met, see `dev/plans/fdtd3d_phase4_review.md`)
-**Current phase:** 6 (parallel stepping and the patch capstone). Not started. Phase 5 shipped in provisional 0.3.61 on draft PR #143. Phase 6 geometry is decided (finite ground and substrate floating in air, CPML on six faces, closed NTFF box in air) and planned in `dev/plans/fdtd3d_phase6_impl.md`, which supersedes the Phase 6 section below where they differ. Do not begin implementation until Michael approves that brief.
+**Current phase:** 6 implemented in provisional 0.3.64 (edge feed, 20 mm vertical air, lesson mesh in the example, lossy rerun rebuilds the grid, `parmap` width sweep, parallel stepping). Phase 5 shipped in provisional 0.3.61 on draft PR #143. The brief is `dev/plans/fdtd3d_phase6_impl.md`, which supersedes the Phase 6 section below where they differ. `fdtd_reset` was not added.
 **Decisions:** recorded 2026-11-02 (see the bottom of this file). Phase 0 is the first implementation PR.
 **Asked by:** Michael, for a real microstrip patch lesson in `kreegerresearch/rustlab_em` (resonance, S11, 3-D far-field / gain)
 

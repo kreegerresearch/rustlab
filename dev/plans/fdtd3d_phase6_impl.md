@@ -344,7 +344,7 @@ Deliberately **not** added:
 
 - Refactor each half-step into a per-row function `h_row(k, i, …)` / `e_row(k, i, …)` that the serial loop and the parallel driver both call. One body, two drivers, so identity is structural.
 - Parallel driver: split each written field array into contiguous chunks of whole rows with `par_chunks_mut(nx * rows_per_task)` and zip the three components (`hx`, `hy`, `hz` together; then `ex`, `ey`, `ez`). The read-only arrays are shared slices. A chunk is a run of `(k, i)` rows; the row index is recovered from the chunk offset.
-- Granularity: start with whole k-planes as tasks (`nx·ny` cells: 3,600 on the parent's 60×60×20 gate grid, 11,220 on the reference mesh), merged with `with_min_len` so a task is at least ~16k cells. Tune with R2 rather than by guess. The chunk size never changes the bits.
+- Granularity: contiguous runs of whole rows, about 64k cells per task (`65_536 / nx` rows). A 16k target left the 4-thread reference step at 1.82×; 64k reached 1.89×. The chunk size does not change the bits. CPML stays serial.
 - The `ERow` / `HRow` arm (vacuum / lossless / lossy / scaled) is chosen per row exactly as now.
 - **CPML correction** (`correct_h` / `correct_e`): same per-row split over the slab rows. Each row owns its `q` (ψ) entries. Parallelise only if R2/R6 profiling shows it matters; it touches the slabs only.
 - Sources, the lumped port, probes, and `record_port`: serial, between the parallel regions (a handful of edges).
@@ -413,7 +413,7 @@ Follow `docs/agent-guide.md` § Script style for agents: flat script, comments t
 
 1. Design: TL `W`, `L`, `eps_eff`, `ΔL`. Print them and the TL+cell prediction for the staircased metal.
 2. `function sim = patch_sim(sigma)`: builds the floating ground, substrate, patch, CPML, port, NTFF (4 frequencies bracketing the expected dip, e.g. 2.34:0.02:2.40 GHz on 2 mm). Asserts the even-width / mirror-feed rule.
-3. Lossless run, 8000 steps: `fdtd_s11(sim, "nfft", 8*n)` (the default decay check on), dip, `|S11|` in dB.
+3. Lossless run. The port tail is under `1e-3` at 8000 steps. The near-to-far surface is not: on the lesson mesh `|E|` tail/peak is `1.886e-3` at 8000, `1.027e-3` at 14000, and `9.501e-4` at 16000. On the 1 mm mesh it is `3.603e-3` at 12000 and `8.213e-4` at 48000. The example runs 16000 steps, and the reference release test runs 48000, so `fdtd_farfield` can keep `"decay", "pulse"`. `fdtd_s11` uses `"nfft", 8*n`. Dip and `|S11|` in dB.
 4. `fdtd_farfield` on a 61 × 120 sphere at the armed frequency nearest the dip: D / G / G_r at broadside, the power balance, the pattern integral, the E- and H-plane cuts, front/back.
 5. Lossy run, same function with `sigma = 2*pi*f0*eps_r*eps0*0.02`: η, G = D + 10 log10 η.
 6. Gates C1b, C2, C3, C5–C10, L1, L4, L5 as `error()` checks. Print one summary table.
