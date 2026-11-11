@@ -1436,3 +1436,147 @@ P = parmap(@(k) one(k, 0), [0, 1]);
         "parallel kernel inside parmap diverged from threads = 1"
     );
 }
+
+fn patch_antenna_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/pde/patch_antenna.rlab");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Statement text with strings and comments removed, so a depth scan does
+/// not treat `%s` or a quoted `end` as syntax.
+fn bare_statement(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            while let Some(d) = chars.next() {
+                if d == '\\' {
+                    chars.next();
+                    continue;
+                }
+                if d == '"' {
+                    break;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        if c == '%' || c == '#' {
+            break;
+        }
+        out.push(c);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn block_open(stmt: &str) -> bool {
+    stmt.starts_with("function ")
+        || stmt == "if"
+        || stmt.starts_with("if ")
+        || stmt.starts_with("for ")
+        || stmt.starts_with("while ")
+        || stmt == "switch"
+        || stmt.starts_with("switch ")
+}
+
+fn block_end(stmt: &str) -> bool {
+    stmt == "end" || stmt.starts_with("end;") || stmt.starts_with("end ")
+}
+
+fn extract_function(src: &str, name: &str) -> String {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut started = false;
+    for line in src.lines() {
+        let stmt = bare_statement(line);
+        if !started {
+            if stmt.starts_with("function ") && stmt.contains(name) {
+                started = true;
+                depth = 1;
+                out.push(line);
+            }
+            continue;
+        }
+        if block_open(&stmt) {
+            depth += 1;
+        }
+        if block_end(&stmt) {
+            depth -= 1;
+        }
+        out.push(line);
+        if depth == 0 {
+            break;
+        }
+    }
+    assert!(
+        started && depth == 0,
+        "examples/pde/patch_antenna.rlab has no function {name}"
+    );
+    out.join("\n")
+}
+
+fn preset_fields(src: &str, name: &str) -> Evaluator {
+    let func = extract_function(src, "patch_preset");
+    eval(&format!(
+        "{func}\nm = patch_preset(\"{name}\");\n\
+         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps;\n\
+         gpad = m.gpad; air_xy = m.air_xy; air_z = m.air_z;\n\
+         npml = m.npml; margin = m.margin;\n"
+    ))
+}
+
+/// `quick` is the default and `full` is the 2 mm, 16 000-step lesson.
+/// Any other name errors and names both presets. This does not step a grid.
+#[test]
+fn patch_antenna_presets_accept_quick_and_full() {
+    let src = patch_antenna_source();
+    assert!(
+        src.lines()
+            .any(|line| bare_statement(line) == "preset = \"quick\";"),
+        "the default assignment is preset = \"quick\";"
+    );
+    assert!(
+        src.lines()
+            .any(|line| bare_statement(line) == "mesh = patch_preset(preset);"),
+        "the script runs the preset it names"
+    );
+
+    let quick = preset_fields(&src, "quick");
+    let full = preset_fields(&src, "full");
+    assert_eq!(scalar(&full, "dx"), 2e-3);
+    assert_eq!(scalar(&full, "dy"), 2e-3);
+    assert_eq!(scalar(&full, "nsub"), 2.0);
+    assert_eq!(scalar(&full, "nsteps"), 16_000.0);
+    assert_eq!(scalar(&full, "gpad"), 16e-3);
+    assert_eq!(scalar(&full, "air_xy"), 10e-3);
+    assert_eq!(scalar(&full, "air_z"), 20e-3);
+    assert_eq!(scalar(&full, "npml"), 8.0);
+    assert_eq!(scalar(&full, "margin"), 2.0);
+
+    let coarser = scalar(&quick, "dx") > scalar(&full, "dx")
+        || scalar(&quick, "nsub") < scalar(&full, "nsub")
+        || scalar(&quick, "nsteps") < scalar(&full, "nsteps");
+    assert!(
+        coarser,
+        "quick is the shorter mesh: dx {} nsub {} nsteps {}",
+        scalar(&quick, "dx"),
+        scalar(&quick, "nsub"),
+        scalar(&quick, "nsteps")
+    );
+    for name in ["dx", "dy", "nsub", "nsteps", "gpad", "air_xy", "air_z", "npml", "margin"] {
+        let v = scalar(&quick, name);
+        assert!(v.is_finite() && v > 0.0, "quick {name} = {v}");
+    }
+
+    let func = extract_function(&src, "patch_preset");
+    let err = run_err(&format!("{func}\npatch_preset(\"sideways\");\n"));
+    assert!(
+        err.contains("sideways"),
+        "the error should name the bad preset, got {err}"
+    );
+    assert!(
+        err.contains("quick") && err.contains("full"),
+        "the error should name both presets, got {err}"
+    );
+}
