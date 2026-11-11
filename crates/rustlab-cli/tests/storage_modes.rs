@@ -91,12 +91,31 @@ fn first_difference(a: &Outcome, b: &Outcome) -> String {
 
 #[test]
 fn examples_do_not_depend_on_array_storage() {
+    // Their stepping runs in Rust, so array storage mode does not affect
+    // them. Each one is long enough to push this test past the 30-minute
+    // cargo-test job. They still run once from dev/run-examples.sh and
+    // from notebook validation. Named files only.
+    const SKIP_LONG_FDTD: &[&str] = &["fdtd_sweep.rlab", "patch_antenna.rlab"];
     let mut scripts: Vec<PathBuf> = walk(&workspace_root().join("examples"))
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "rlab"))
         // Audio scripts stream raw PCM from stdin for as long as it lasts.
         .filter(|p| !p.components().any(|c| c.as_os_str() == "audio"))
         .collect();
+    for name in SKIP_LONG_FDTD {
+        assert!(
+            scripts
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some(*name)),
+            "{name} is on the storage-compare skip list but is not an example"
+        );
+    }
+    let before = scripts.len();
+    scripts.retain(|p| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        !SKIP_LONG_FDTD.contains(&name)
+    });
+    assert_eq!(before - scripts.len(), SKIP_LONG_FDTD.len());
     scripts.sort();
     assert!(scripts.len() > 50, "found only {} example scripts", scripts.len());
     // Scripts are independent; run them on all cores.
