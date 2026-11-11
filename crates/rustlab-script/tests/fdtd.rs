@@ -1400,9 +1400,39 @@ P = parmap(@(k) one(k), [0, 1]);
 d = max(abs(A(:) - P(:)));
 "#,
     );
-    assert_eq!(scalar(&ev, "d"), 0.0, "parmap and arrayfun diverged");
+    assert_eq!(
+        bits(&ev, "A"),
+        bits(&ev, "P"),
+        "parmap and arrayfun diverged"
+    );
     match ev.get("P") {
         Some(Value::Matrix(m)) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
         other => panic!("P: {other:?}"),
     }
+}
+
+/// `parmap` runs each trial on the global pool, and a grid above the cell
+/// threshold then steps on that same pool. The result matches `"threads", 1`.
+#[test]
+fn parmap_sweep_parallel_kernel_matches_threads_one() {
+    let ev = eval(
+        r#"
+function r = one(k, threads)
+    sim = fdtd3d(22, 22, 22, 1e-3, 1e-3, 1e-3, "threads", threads);
+    fdtd_cpml(sim, 4);
+    info = fdtd_info(sim);
+    fdtd_source(sim, "ez", 11, 11, 11, "soft", "gaussian", 20 * info.dt, 6 * info.dt);
+    fdtd_run(sim, 4 + k);
+    M = fdtd_slice(sim, "ez", "z", 11);
+    r = M(:);
+end
+S = arrayfun(@(k) one(k, 1), [0, 1]);
+P = parmap(@(k) one(k, 0), [0, 1]);
+"#,
+    );
+    assert_eq!(
+        bits(&ev, "S"),
+        bits(&ev, "P"),
+        "parallel kernel inside parmap diverged from threads = 1"
+    );
 }

@@ -1,0 +1,51 @@
+name: fdtd-release
+
+# The long FDTD release gates and the patch notebooks. Not on every pull
+# request: the reference mesh and the lossy balance take much longer than
+# the debug suite. Run it by hand, or wait for the weekly schedule.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 08:00 America/Los_Angeles (PST, UTC-8).
+    - cron: "0 16 * * 1"
+
+jobs:
+  release-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            pkg-config
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fdtd-release
+
+      - name: Release gates (ignored rustlab-dsp tests)
+        run: cargo test --release -p rustlab-dsp --lib -- --ignored
+
+      - name: Nested pool script test
+        run: cargo test --release -p rustlab-script --test fdtd parmap_sweep_parallel_kernel_matches_threads_one
+
+      - name: Build rustlab-notebook
+        run: cargo build --release -q -p rustlab-notebook --bin rustlab-notebook
+
+      - name: Render the patch notebooks with --strict
+        run: |
+          bin=target/release/rustlab-notebook
+          $bin render examples/notebooks/patch_antenna.md -o /tmp/patch_antenna.html --strict
+          $bin render examples/notebooks/fdtd_sweep.md -o /tmp/fdtd_sweep.html --strict

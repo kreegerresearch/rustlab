@@ -162,6 +162,37 @@ fn run_pair(mut serial: FdtdSim, mut parallel: FdtdSim, steps: usize) {
     assert!(bits(&fs.prad, &fp.prad), "prad");
 }
 
+/// A step that starts on a global-pool worker, the way `parmap` calls
+/// `fdtd_run`, stays on that pool. The worker count does not change, and
+/// the fields match one thread. Production `fdtd/` does not build a pool.
+#[test]
+fn parallel_kernel_inside_the_global_pool_matches_serial() {
+    let mut serial = sourced();
+    serial.set_threads(1).unwrap();
+    serial.run(8, &mut never()).unwrap();
+
+    let outside = rayon::current_num_threads();
+    let (tx, rx) = std::sync::mpsc::channel();
+    rayon::spawn(move || {
+        let idx = rayon::current_thread_index();
+        let inside = rayon::current_num_threads();
+        yee::set_par_cells_threshold(0);
+        yee::set_rows_per_task(2);
+        yee::reset_par_chunks();
+        let mut parallel = sourced();
+        parallel.run(8, &mut never()).unwrap();
+        tx.send((idx, inside, yee::par_chunks(), parallel)).unwrap();
+    });
+    let (idx, inside, chunks, parallel) = rx.recv().unwrap();
+    assert!(
+        idx.is_some(),
+        "the nested step was not running on a pool worker"
+    );
+    assert_eq!(inside, outside, "the nested step changed the pool size");
+    assert!(chunks > 0, "the nested step stayed serial");
+    same(&serial, &parallel);
+}
+
 fn with_pool(n: usize, f: impl FnOnce() + Send) {
     let pool = ThreadPoolBuilder::new().num_threads(n).build().unwrap();
     pool.install(f);

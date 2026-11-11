@@ -91,10 +91,14 @@ fn first_difference(a: &Outcome, b: &Outcome) -> String {
 
 #[test]
 fn examples_do_not_depend_on_array_storage() {
-    // Their stepping runs in Rust, so array storage mode does not affect
-    // them. Each one is long enough to push this test past the 30-minute
-    // cargo-test job. They still run once from dev/run-examples.sh and
-    // from notebook validation. Named files only.
+    // Both scripts also build ones3 / zeros3 / meshgrid / rect_mask and
+    // post-process in the script, so storage mode is not irrelevant. The
+    // conversions are exact, and this test only checks that the two modes
+    // agree. The five shorter FDTD examples still run in both modes. These
+    // two are long enough to push the job past 30 minutes (about 36 minutes
+    // with them, about 4 minutes without). They still run from
+    // dev/run-examples.sh and from notebook validation. Named files only.
+    // A script that error()s in both modes still counts as agreement.
     const SKIP_LONG_FDTD: &[&str] = &["fdtd_sweep.rlab", "patch_antenna.rlab"];
     let mut scripts: Vec<PathBuf> = walk(&workspace_root().join("examples"))
         .into_iter()

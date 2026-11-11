@@ -289,6 +289,15 @@ fn s11_cut(v: &[f64], i: &[f64], dt: f64) -> Cut {
     }
 }
 
+fn nearest_freq(freqs: &[f64], hz: f64) -> usize {
+    freqs
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (*a.1 - hz).abs().partial_cmp(&(*b.1 - hz).abs()).unwrap())
+        .unwrap()
+        .0
+}
+
 fn sphere(ff: &FarField, q: usize) -> f64 {
     let nt = ff.theta.len();
     let np = ff.phi.len();
@@ -686,34 +695,33 @@ fn substrate_loss_balances_accepted_minus_flux() {
     let mut lossy = build(&spec);
     let edges = lossy_edges(&lossy.sigma_cells, lossy.nx, lossy.ny, lossy.nz);
     let dt = lossy.sim.dt();
-    let mut end = vec![Complex::new(0.0, 0.0); edges.len()];
-    let q_near = spec
-        .freqs
-        .iter()
-        .enumerate()
-        .min_by(|a, b| {
-            (*a.1 - 2.38e9)
-                .abs()
-                .partial_cmp(&(*b.1 - 2.38e9).abs())
-                .unwrap()
-        })
-        .unwrap()
-        .0;
-    let w = 2.0 * PI * spec.freqs[q_near];
+    let mut end = vec![vec![Complex::new(0.0, 0.0); edges.len()]; spec.freqs.len()];
     let dv = lossy.dx * lossy.dy * lossy.dz;
     for _ in 0..spec.nsteps {
         lossy.sim.run(1, &mut never()).unwrap();
         let s = lossy.sim.steps() as f64;
-        let re = Complex::from_polar(dt, -w * s * dt);
-        for (p, &(comp, idx, _)) in edges.iter().enumerate() {
-            let en = field(&lossy.sim, comp)[idx];
-            end[p] += re * en;
+        for (q, &f) in spec.freqs.iter().enumerate() {
+            let re = Complex::from_polar(dt, -(2.0 * PI * f) * s * dt);
+            for (p, &(comp, idx, _)) in edges.iter().enumerate() {
+                end[q][p] += re * field(&lossy.sim, comp)[idx];
+            }
         }
     }
+
+    bare.sim.run(lossless.nsteps, &mut never()).unwrap();
+    let vb = bare.sim.port_voltage().to_vec();
+    let ib = bare.sim.port_current().to_vec();
+    let vl = lossy.sim.port_voltage().to_vec();
+    let il = lossy.sim.port_current().to_vec();
+    let cb = s11_cut(&vb, &ib, bare.sim.dt());
+    let cl = s11_cut(&vl, &il, lossy.sim.dt());
+    assert!((cl.dip_hz - cb.dip_hz).abs() / cb.dip_hz <= 0.005);
+    assert!(cl.min_s11 < cb.min_s11);
+    let q_near = nearest_freq(&spec.freqs, cl.dip_hz);
     let diss = 0.5
         * edges
             .iter()
-            .zip(end.iter())
+            .zip(end[q_near].iter())
             .map(|((_, _, sig), e)| sig * e.norm_sqr())
             .sum::<f64>()
         * dv;
@@ -727,21 +735,13 @@ fn substrate_loss_balances_accepted_minus_flux() {
     let rel = diss / gap - 1.0;
     let eta = ff.prad[q_near] / portp.accepted[q_near];
     eprintln!(
-        "lossy eta {eta:.3}  diss/gap - 1 = {rel:.3e}  edges {}",
+        "lossy bin {:.4} GHz (dip {:.4})  eta {eta:.3}  diss/gap - 1 = {rel:.3e}  edges {}",
+        spec.freqs[q_near] / 1e9,
+        cl.dip_hz / 1e9,
         edges.len()
     );
     assert!((0.40..=0.60).contains(&eta), "eta {eta}");
     assert!(rel.abs() <= 1e-2, "dissipation balance {rel}");
-
-    bare.sim.run(lossless.nsteps, &mut never()).unwrap();
-    let vb = bare.sim.port_voltage().to_vec();
-    let ib = bare.sim.port_current().to_vec();
-    let vl = lossy.sim.port_voltage().to_vec();
-    let il = lossy.sim.port_current().to_vec();
-    let cb = s11_cut(&vb, &ib, bare.sim.dt());
-    let cl = s11_cut(&vl, &il, lossy.sim.dt());
-    assert!((cl.dip_hz - cb.dip_hz).abs() / cb.dip_hz <= 0.005);
-    assert!(cl.min_s11 < cb.min_s11);
     let d_l = db10(directive_gain(
         ff.e_theta[q_near * th.len() * ph.len()],
         ff.e_phi[q_near * th.len() * ph.len()],
@@ -752,18 +752,7 @@ fn substrate_loss_balances_accepted_minus_flux() {
         .sim
         .far_field(&th, &ph, None, RecordDecay::Pulse)
         .unwrap();
-    let qb = ffb
-        .freqs
-        .iter()
-        .enumerate()
-        .min_by(|a, b| {
-            (*a.1 - cb.dip_hz)
-                .abs()
-                .partial_cmp(&(*b.1 - cb.dip_hz).abs())
-                .unwrap()
-        })
-        .unwrap()
-        .0;
+    let qb = nearest_freq(&ffb.freqs, cb.dip_hz);
     let d_b = db10(directive_gain(
         ffb.e_theta[qb * th.len() * ph.len()],
         ffb.e_phi[qb * th.len() * ph.len()],
