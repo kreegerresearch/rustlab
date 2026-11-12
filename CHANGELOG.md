@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.65
+
+### Fixed
+- **`notebook watch` WebGL plots.** A series longer than 10,000 points is a Plotly `scattergl` trace. On a watch page that trace showed "WebGL is not supported by your browser" even when the browser had WebGL. Static `render` HTML has no Content-Security-Policy, so the same figure worked there. The watch policy now sends `worker-src 'self' blob:` and `'unsafe-eval'` on `script-src`. regl, which `scattergl` uses, compiles its draw command with the `Function` constructor during context creation; CSP treats that as eval, Plotly catches the throw, and the overlay replaces the plot. `'unsafe-eval'` is what removes the overlay. `worker-src 'self' blob:` allows the blob workers Plotly's bundled mapbox-gl and maplibre create (`new Worker` on a `blob:` URL). Those workers are not on the `scattergl` or `surface` path. `style-src` is unchanged (`'self' 'unsafe-inline'`, no `blob:` and no unpkg): Plotly injects its rules with a `<style>` element, and a maplibre stylesheet request to unpkg stays blocked. The nonce and `'strict-dynamic'` are unchanged, so notebook prose still cannot inject a script. `'unsafe-eval'` means a script the page already allowed can turn a string into code; Plotly builds that string from its own command templates. See `docs/security.md`.
+
 ## 0.3.64
 
 ### Added
