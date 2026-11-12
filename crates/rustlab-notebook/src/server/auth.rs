@@ -245,4 +245,23 @@ mod tests {
         assert!(csp.contains("connect-src 'self' ws://127.0.0.1:* ws://localhost:*"));
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
     }
+
+    /// Plotly 2.35.0 feature-detects workers with `new Worker(URL.createObjectURL(blob))`.
+    /// With no `worker-src`, that URL falls back to `default-src 'self'` and is blocked.
+    #[test]
+    fn csp_allows_blob_workers_for_plotly_webgl() {
+        let csp = csp_header("abc");
+        assert!(
+            csp.contains("worker-src 'self' blob:"),
+            "watch CSP must allow blob workers; got {csp}"
+        );
+        assert!(
+            csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"),
+            "nonce and strict-dynamic stay; got {csp}"
+        );
+        assert!(
+            !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "inline scripts stay blocked; got {csp}"
+        );
+    }
 }
