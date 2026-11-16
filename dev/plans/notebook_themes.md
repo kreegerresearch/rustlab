@@ -5,9 +5,12 @@ Catppuccin builtins), F2 (luminance dark/light), F5 (`--rl-*` CSS custom
 properties), the user half of F8 (`~/.rustlabrc` `[notebook] theme`), and
 the font-role contrast pass (PR #57). Nothing in this revision is
 implemented.
-**Current phase:** Phase 1 (not started; waiting on Michael's answers to
-the open questions at the end).
-**Created:** 2026-09-13. **Revised:** 2026-11-13 against `main` at 0.3.65.
+**Current phase:** Phase 1 (not started). Michael settled six of the
+twelve open questions on 2026-11-16 (see
+[Decisions](#decisions-2026-11-16)); the six left open do not block
+Phase 1.
+**Created:** 2026-09-13. **Revised:** 2026-11-13 against `main` at 0.3.65;
+decisions recorded 2026-11-16.
 **Surfaces:** notebook HTML (`render`), `notebook watch`, LaTeX/PDF,
 Plotly and SVG plots inside notebooks, and a new embeddable HTML output.
 The committed `gallery/*.md` stays GitHub-styled; GitHub owns that CSS.
@@ -38,6 +41,7 @@ each phase is a separate PR with its own version bump (AGENTS.md Rule 12).
 - [6. Testing](#6-testing)
 - [7. Security](#7-security)
 - [8. Phases](#8-phases)
+- [Decisions (2026-11-16)](#decisions-2026-11-16)
 - [Open questions for Michael](#open-questions-for-michael)
 - [Appendix A: v1 feature map](#appendix-a-v1-feature-map)
 - [Appendix B: references](#appendix-b-references)
@@ -300,7 +304,7 @@ text             = "ink"
 
 [typography]
 body    = ["Charter", "Bitstream Charter", "Georgia", "serif"]
-heading = ["Inter", "system-ui", "sans-serif"]
+heading = ["system-ui", "Segoe UI", "Helvetica Neue", "Arial", "sans-serif"]
 measure = "72ch"
 
 [shape]
@@ -326,7 +330,10 @@ Rules:
 - Unknown keys are errors (`deny_unknown_fields`), with the file path
   and key. This matches how `rustlab-config` treats invalid values.
 - Colour values: `#RRGGBB`, `#RRGGBBAA`, or a palette name. Font values:
-  a list of family names (quoted on output) and generic families. Lengths:
+  a list of family names (quoted on output) and generic families. Fonts
+  are system stacks only (decision 2): a theme names families the
+  reader's machine may have and ends in a generic family. It cannot ship
+  or point at font files, and there is no `@font-face`. Lengths:
   a number with `px`, `rem`, `em`, or `ch`. Nothing else is accepted
   (§7 explains why).
 - Contrast is computed at load time for every role on every surface it is
@@ -339,19 +346,32 @@ Rules:
 
 ### 1.4 Where themes come from, and precedence
 
-Carried over from v1 (F4, F6, F8) unchanged except the project config
-location, which is an open question.
+Carried over from v1 (F4, F6, F8). The project config location is
+`rustlab.toml` at the project root (decision 5).
 
 1. `--theme NAME` / `--theme-file PATH` on the command line.
 2. Notebook frontmatter: `theme: course` (a name, never a path, so a
    notebook cannot read arbitrary files).
-3. Project config: recommended `.rustlab/config.toml` `[notebook] theme`
-   (the `.rustlab/` directory already holds the function cache).
+3. Project config: `rustlab.toml` `[notebook] theme`.
 4. User rc: `~/.rustlabrc` `[notebook] theme` (shipped).
-5. Default: `mocha`.
+5. Default: `mocha` (decision 1).
+
+**Finding `rustlab.toml`.** The project root is the nearest directory,
+starting at the rendered file's directory (or the input directory for a
+directory render, or the served directory for `watch`), that contains a
+`rustlab.toml`. The search walks up parent directories and stops at the
+first match or at the filesystem root. It does not use git and does not
+cross `$HOME` upwards. With no `rustlab.toml`, there is no project
+config. The file uses the same `[notebook]` table and value parsing as
+`~/.rustlabrc` (`rustlab-config`), so one schema covers both. In Phase 2
+it accepts only `[notebook] theme` and `[notebook] theme_dir`; other
+keys get the existing unknown-key warning. The function cache stays in
+`.rustlab/cache.db` and is not moved by this decision.
 
 Name lookup: builtins first for reserved names (`mocha`, `latte`,
-`paper`, …), then `./.rustlab/themes/NAME.toml`, then
+`paper`, …), then `<project root>/themes/NAME.toml` (or the directory
+`[notebook] theme_dir` names, relative to `rustlab.toml` and refused if
+it leaves the project root), then
 `$XDG_CONFIG_HOME/rustlab/themes/NAME.toml`. A user file cannot shadow a
 builtin; use a different name or `--theme-file`.
 
@@ -382,15 +402,17 @@ and a dark set). Pairs render as:
 ## 2. New built-in themes
 
 Four additions, each chosen for a context Catppuccin does not cover.
-All use system font stacks only (no font files shipped; see open
-question 2). Exact hex values are chosen during Phase 3 and must pass the
+All use system font stacks only; no font files are shipped (decision 2).
+A page therefore looks slightly different on macOS, Windows, and Linux,
+and each stack ends in a generic family so nothing breaks when the first
+names are missing. Exact hex values are chosen during Phase 3 and must pass the
 contrast tests before merge; the descriptions below are the brief.
 
 | Name | Kind | For | Look |
 | --- | --- | --- | --- |
 | `clean` | light/dark pair | General default candidate; blog posts, internal reports | Neutral grays (white / near-black page, `#1f2328`-ish ink), one blue accent, system sans, zebra tables, 6px radii. Low-chroma syntax colours. |
 | `paper` | light, with a print variant | Course handouts, lab reports, anything also printed | Off-white page, serif body (`Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif`), sans headings, 68–72ch measure, `rules` tables, deep-blue accent, small radii, no card shadows. Its PDF variant is the same design on white paper (§5). |
-| `docs` | light/dark pair | Notebooks published inside a documentation site | Compact spacing, system sans, indigo accent, card-style callouts with a left rule, rounded code panels. Designed to sit beside MkDocs Material, Docusaurus, or Starlight without looking foreign. |
+| `docs` | light/dark pair | Notebooks published inside a documentation site | Compact spacing, system sans, indigo accent, card-style callouts with a left rule, rounded code panels. Designed first to sit inside a typical Hugo docs theme and MkDocs (default and Material) without looking foreign (decision 6). |
 | `contrast` | light/dark pair | Accessibility, projectors, low vision | Body text at least 7:1 (WCAG AAA), every accent at least 7:1 on the page, links always underlined, visible 3px focus ring, table rules instead of faint stripes, nothing signalled by colour alone (diff bars keep their `+`/`−` gutter glyph). |
 
 Why these four: they cover the three places notebooks go that Catppuccin
@@ -403,9 +425,10 @@ token.
 are easy to add later as theme files under `docs/themes/` once Phase 2
 lands, without growing the binary or the test matrix.
 
-**Default theme:** recommendation is to keep `mocha` as the default.
-Switching to `clean` is a visible change to every downstream render
-(open question 1).
+**Default theme:** `mocha` stays the default (decision 1). No downstream
+render changes because of this plan unless the author picks a theme.
+`clean` is opt-in through `--theme`, frontmatter, `rustlab.toml`, or
+`~/.rustlabrc`.
 
 ---
 
@@ -430,8 +453,15 @@ helper for iframes is a later item (open question 11).
 
 ### 3.2 The fragment output
 
-New flag on the HTML format: `rustlab-notebook render nb.md --embed`
-(works for one file and for a directory). Output per notebook:
+A flag on the HTML format, `rustlab-notebook render nb.md --embed`
+(decision 3; there is no `--format html-fragment`). It works for one
+file and for a directory. `--embed` with `--format` other than `html` is
+an error that writes nothing, like `--index` and `--no-toc` today. The
+embed-only flags below (`--embed-toc`, `--id-prefix`,
+`--heading-offset`, `--strip-title`, `--asset-base`, `--no-assets`,
+`--no-katex`, `--no-plotly`) are refused without `--embed`.
+`--index` and `--no-toc` are refused with it, because a fragment has no
+page chrome. Output per notebook:
 
 ```html
 <div class="rl-notebook" id="rl-nb-intro" data-rl-theme="paper" data-rl-scheme="auto">
@@ -481,8 +511,10 @@ Supporting changes:
 - Rename the unprefixed classes to `rl-*`: `.prose` → `.rl-prose`,
   `.output` → `.rl-output`, `.error` → `.rl-error`, `.callout*` →
   `.rl-callout*`, and so on, including the watch client JavaScript and
-  gitdiff selectors that read them. This is the one breaking part
-  (open question 4). Standalone pages look the same afterwards.
+  gitdiff selectors that read them. Decision 4 approves the rename. It
+  is the one breaking part: standalone pages look the same afterwards,
+  but user CSS aimed at the old names stops matching. Phase 5 carries
+  the migration work in §3.3.1.
 - Replace the global `*` reset with a reset scoped to our own components
   (`:where(.rl-notebook) :where(.rl-cell, .rl-output, …)`), so embedded
   prose keeps the host's paragraph and list spacing.
@@ -493,6 +525,36 @@ Supporting changes:
   `pre { white-space: pre }`, `img { max-width: 100% }`, `h2::before`)
   by setting those properties explicitly on our own elements, and test
   against a deliberately aggressive host stylesheet (§6).
+
+#### 3.3.1 Class rename: migration and compatibility (Phase 5)
+
+- **One table, one source.** Phase 5 adds a rename table (old → new),
+  covering every class the HTML renderer, `watch` chrome, the cell
+  editor, the gitdiff view, and the WS client emit or query. The table
+  is a Rust constant, and a test asserts that no old name appears in
+  emitted HTML, CSS, or vendored JS (apart from the table itself).
+- **CHANGELOG.** A *Breaking / behavior changes* entry in Phase 5's
+  version, with the full old → new table and a `sed` one-liner for
+  user stylesheets.
+- **Who is affected.** Only people with their own CSS against notebook
+  output: custom stylesheets on rendered pages, and downstream sites
+  (`rustlab_em`, lesson sites) that target `.prose`, `.output`,
+  `.callout`, and similar. Rendered pages, gallery Markdown, LaTeX/PDF,
+  and JSON output change no visible pixels. `--format json` carries
+  block kinds, not class names, so its schema version does not change.
+- **No dual names by default.** Emitting both names doubles selectors
+  and keeps the global leaks scoping is meant to remove. One escape
+  hatch is still worth a decision during Phase 5: a
+  `--legacy-class-names` flag on `render` (one release, then removed)
+  that adds the old names next to the new ones on standalone pages
+  only, never on `--embed` output. Default is not to ship it unless a
+  downstream site asks before Phase 5 merges.
+- **Downstream check.** Before merge, search `rustlab_em` and the
+  lesson-site repos for the old selectors and list the hits in the
+  PR, so their owners can update in the same release window.
+- **Ids are not renamed in standalone mode.** Anchors such as
+  `#rl-error-N` and heading slugs keep working in old links. Prefixed
+  ids are `--embed` only (§3.2).
 
 **Alternative considered: Shadow DOM** (a `<rl-notebook>` custom element
 with an attached shadow root). Full two-way isolation, but host fonts and
@@ -571,15 +633,31 @@ mono = "var(--md-code-font-family, monospace)"
   `theme check` reports those roles as "unchecked: depends on the host"
   and checks the fallback literal instead. The Playwright test (§6)
   checks real values against fixture host pages.
-- Proposed presets, shipped as example files under `docs/themes/hosts/`
-  rather than as builtins: Material for MkDocs (`--md-*`), Docusaurus
-  (`--ifm-*`), Astro Starlight (`--sl-color-*`), and Bootstrap 5
-  (`--bs-*`). Which hosts matter is open question 9.
+- Presets ship as example files under `docs/themes/hosts/`, not as
+  builtins. The first target is a generic Hugo or MkDocs site
+  (decision 6), so Phase 7 ships these, in this order:
+  1. `hugo.toml`: generic Hugo. Hugo has no standard variable names,
+     because each theme defines its own. The preset is a template: a
+     short list of roles mapped to placeholder variables
+     (`--site-text`, `--site-accent`, `--site-bg`, `--site-code-bg`,
+     `--site-font`) with fallbacks. The guide shows how to define them
+     once in the site's CSS from the theme's own values. It also has
+     worked mappings for one or two widely used Hugo docs themes, picked
+     while writing Phase 7 and kept as comments, not separate presets.
+  2. `mkdocs.toml`: default MkDocs theme. It has few CSS variables, so
+     this is mostly `inherit` for fonts and text with fixed fallbacks.
+  3. `mkdocs-material.toml`: Material for MkDocs (`--md-*`), as in the
+     example above.
+  Docusaurus (`--ifm-*`), Astro Starlight (`--sl-color-*`), and
+  Bootstrap 5 (`--bs-*`) presets are later, on request.
 - Host dark mode: if the host toggles a class or attribute on `<html>`,
   the preset sets `data-rl-scheme` by a selector mapping in
   `rustlab-notebook.js` (for example, Material's
-  `[data-md-color-scheme="slate"]` means dark). Hosts whose variables
-  already flip in dark mode need nothing: the references follow.
+  `[data-md-color-scheme="slate"]` means dark). For Hugo, the generic
+  preset maps the common patterns (`html.dark`, `[data-theme="dark"]`,
+  `[data-bs-theme="dark"]`), and the guide shows how to add another.
+  Hosts whose variables already flip in dark mode need nothing: the
+  references follow.
 
 ### 3.6 How a site generator consumes it
 
@@ -587,20 +665,35 @@ All recipes assume `rustlab-notebook render notebooks/ --embed
 --asset-base /rustlab/ -o build/rustlab` and that the build copies
 `build/rustlab/assets/` to the site's static root. Each will be a short
 section in a new `docs/embedding.md` and a section in
-`docs/lesson-site-pattern.md`.
+`docs/lesson-site-pattern.md`. Hugo and MkDocs come first (decision 6):
+they get full worked examples in `docs/embedding.md`, a sample site
+under `docs/examples/embed/` that CI builds when the tools are present,
+and fixture host pages in the screenshot suite (§6). The other
+generators get shorter recipes.
 
-- **Hugo:** copy assets to `static/rustlab/`. A shortcode
+- **Hugo:** render into the site (`-o build/rustlab`), copy assets to
+  `static/rustlab/`. A shortcode
   `{{< notebook "intro" >}}` does `{{ readFile (printf
-  "build/rustlab/%s.html" .Get 0) | safeHTML }}`. CSS and JS go in the
-  base template once.
+  "build/rustlab/%s.html" .Get 0) | safeHTML }}`. The CSS `<link>` and
+  JS `<script>` go in the base template once (a `partials/head`
+  override). The guide covers the dark-mode mapping from §3.5, Hugo's
+  `markup.goldmark.renderer.unsafe` (not needed for the shortcode path),
+  and `hugo server` live reload with `rustlab-notebook render` on save.
+- **MkDocs (default and Material):** the `pymdownx.snippets` extension
+  (`--8<-- "build/rustlab/intro.html"`) with `md_in_html` off for that
+  include, or a short `hooks:` Python hook that inlines the fragment. CSS
+  and JS go in `extra_css` and `extra_javascript`. Material's instant
+  navigation swaps pages without a reload, so the guide shows the
+  `document$.subscribe` hook that re-runs `rustlab-notebook.js` on each
+  page; the script exposes `RustlabNotebook.hydrate(root)` for this.
 - **Jekyll:** fragments into `_includes/notebooks/`, assets into
   `assets/rustlab/`; `{% include notebooks/intro.html %}` in a page.
 - **Astro:** `import nb from '../build/rustlab/intro.html?raw'` and
   `<Fragment set:html={nb} />`. Astro's scoped styles do not apply to
   `set:html` content, which is fine: our CSS is already scoped. Sites
   that want components per block can read `--format json` instead.
-- **MkDocs / Docusaurus:** the snippets extension (`--8<--`) or an MDX
-  component that injects the fragment; or the zero-JavaScript path below.
+- **Docusaurus:** an MDX component that injects the fragment; or the
+  zero-JavaScript path below.
 - **Zero-JavaScript path:** `--format markdown` output (SVG plots, no
   Plotly) dropped into any Markdown-based generator, plus
   `rustlab-notebook.css` for tables and callouts. No interactivity, no
@@ -709,12 +802,14 @@ behaviour, then the code.
 | --- | --- | --- |
 | Golden files | Full HTML, LaTeX, and Markdown output for a fixture set (`quick_look.md`, a table, a callout of each kind, a failing cell, a plot, math) under each builtin theme. Phase 1 refactors must leave the four Catppuccin goldens unchanged except for additive `:root` lines. Regenerated with `UPDATE_GOLDEN=1`; reviewed in the PR diff. | `crates/rustlab-notebook/tests/golden/` |
 | Contrast matrix | Generalise `every_builtin_font_meets_wcag_aa_on_its_surfaces` to iterate over every registered theme, both sides of a pair, and the print variant. Add computed surfaces: table head and stripe (the same mix the CSS uses, computed with `blend_srgb`), callout fill, link on page, focus ring at 3:1, plot text on plot background, each colorway entry at 3:1 on the plot background (WCAG 1.4.11, graphical objects). `contrast` asserts 7:1 for text and accents. | `rustlab-plot/src/theme.rs` tests |
-| Theme files | Parse and resolve: inherit chains, cycle errors, unknown keys, bad hex, unknown palette names, unknown print font, pair resolution, precedence (CLI > frontmatter > project > rc > default), and the value grammar rejecting injection attempts (`red;}`, `</style>`, `url(…)`, `@import`, `expression(`). | `rustlab-plot` and `rustlab-notebook` unit tests |
+| Theme files | Parse and resolve: inherit chains, cycle errors, unknown keys, bad hex, unknown palette names, unknown print font, pair resolution, precedence (CLI > frontmatter > `rustlab.toml` > rc > default), `rustlab.toml` discovery (nearest ancestor wins, none found, `theme_dir` escaping the project root refused), font values with a `url(` or `@font-face` rejected, and the value grammar rejecting injection attempts (`red;}`, `</style>`, `url(…)`, `@import`, `expression(`). | `rustlab-plot` and `rustlab-notebook` unit tests |
+| CLI flags | `--embed` with a non-HTML format, embed-only flags without `--embed`, and `--index` / `--no-toc` with `--embed` are each refused before any file is written. | `crates/rustlab-notebook/tests/` |
+| Class rename | No old class name (from the Phase 5 rename table) appears in emitted HTML, CSS, or JS; watch client, cell editor, and gitdiff selectors still match their elements. | `render.rs` and `server/` tests |
 | Embed structure | Fragment has no `<html>`, `<head>`, `<body>`, or `<style>`; no `<script>` except `type="application/json"`; every id carries the prefix; two notebooks rendered into one host fixture have disjoint ids; plot JSON escapes `<`, `>`, `&`, U+2028, U+2029. | `crates/rustlab-notebook/tests/embed.rs` |
 | CSS scope lint | Parse the emitted `rustlab-notebook.css` (we generate it, so a small rule splitter is enough) and assert every selector starts with `:where(.rl-notebook)` and that no rule targets `html`, `body`, or `*` at top level. | same |
 | Plot JSON | Themed layouts contain no theme hex literals; explicit user colours survive; default colorway equals `SeriesColor::to_rgb` for the Catppuccin themes; SVG and Plotly agree on the colorway (cross-backend test, Rule 9). | `rustlab-plot` tests |
 | PDF | Preamble golden per print variant (`\definecolor` lines, font package, `booktabs` vs `\rowcolor`); compile each builtin's print variant in `rustlab-notebook validate -f pdf`. | `render_latex.rs` tests, `make validate-notebooks` |
-| Screenshots | Playwright with headless Chromium: each builtin theme × {standalone page, fragment inside three fixture host pages (plain, MkDocs-like, deliberately hostile CSS)} × {light, dark} × {1280px, 390px}. Pixel diff against committed baselines with a small tolerance. A scheme-switch test reads `gd._fullLayout.paper_bgcolor` before and after toggling `data-rl-scheme`. axe-core runs on each page, which catches contrast on real rendered surfaces, including inherit mode against the fixture hosts. | `dev/visual/` harness (pattern from `dev/plans/assets/notebook_git_diff_ux/mockup.mjs`), separate CI workflow |
+| Screenshots | Playwright with headless Chromium: each builtin theme × {standalone page, fragment inside four fixture host pages (a generic Hugo docs layout, MkDocs default, Material for MkDocs, deliberately hostile CSS)} × {light, dark} × {1280px, 390px}. Pixel diff against committed baselines with a small tolerance. A scheme-switch test reads `gd._fullLayout.paper_bgcolor` before and after toggling `data-rl-scheme`. axe-core runs on each page, which catches contrast on real rendered surfaces, including inherit mode against the fixture hosts. | `dev/visual/` harness (pattern from `dev/plans/assets/notebook_git_diff_ux/mockup.mjs`), separate CI workflow |
 
 The screenshot suite needs Node and a browser, so it runs in its own
 GitHub workflow on PRs that touch notebook rendering, not in
@@ -752,9 +847,8 @@ theme files are read from the discovery directories or the CLI path.
   inline figure scripts, so the only scripts left are the nonced chrome
   scripts and `'self'` assets. `'unsafe-eval'` and `worker-src blob:`
   stay because Plotly WebGL still needs them (0.3.65).
-- `font-src 'self'` already covers KaTeX fonts. If shipped theme fonts are
-  ever added (open question 2), they are served from `/assets/`, never
-  from a theme directory.
+- `font-src 'self'` already covers KaTeX fonts. Themes ship no font
+  files (decision 2), so the policy does not change for themes.
 - `frame-ancestors 'none'` stays: a watch page must not be framed.
 
 ### 7.3 Embedded output on someone else's site
@@ -797,12 +891,12 @@ next patch number at the time it merges.
 | --- | --- | --- | --- |
 | 0 | This plan | none | none |
 | 1 | Token model refactor: `ResolvedTheme`, owned `ThemeColors`, new token groups with values equal to today's literals, stylesheet reads them, golden-file harness. | Additive `:root` lines only | 0.3.66 |
-| 2 | Theme files: TOML schema, `inherits`, palette, value grammar, contrast warnings, `--theme-file`, `--strict`, `theme list/show/check`, discovery directories, frontmatter `theme:`, project config. (v1 F3, F4, F6, F8 project half.) | New flags and keys | 0.3.67 |
+| 2 | Theme files: TOML schema, `inherits`, palette, value grammar, contrast warnings, `--theme-file`, `--strict`, `theme list/show/check`, discovery directories, frontmatter `theme:`, project config in `rustlab.toml` (ancestor search, `[notebook] theme` and `theme_dir`). (v1 F3, F4, F6, F8 project half.) | New flags and keys | 0.3.67 |
 | 3 | Light/dark pairs, `--scheme`, `data-rl-scheme`, then the four new builtins (`clean`, `paper`, `docs`, `contrast`) and `catppuccin` pair. Screenshot and axe harness lands here, with baselines. | New themes | 0.3.68 |
 | 4 | Plot theming: colorway token, JSON figure blocks plus `rustlab-notebook.js` for static and watch, runtime template with probe resolution, scheme-switch relayout, SVG colorway parity, Mermaid check. | New themes' plots change colour; Catppuccin unchanged | 0.3.69 |
-| 5 | CSS split and scoping: notebook vs page CSS, `:where(.rl-notebook)`, `@layer rustlab`, `rl-` class renames, scoped reset, hostile-host hardening. | Standalone looks the same; class names change (breaking for custom CSS) | 0.3.70 |
-| 6 | `--embed` output: fragment, id prefixing, `--heading-offset`, `--strip-title`, `--embed-toc`, `.meta.json`, `--asset-base` with SRI, `--no-assets` / `--no-katex` / `--no-plotly`, `docs/embedding.md` with Hugo / Jekyll / Astro / MkDocs recipes and the CSP snippet, lesson-site-pattern update. | New output mode | 0.3.71 |
-| 7 | Inherit mode: `var()` references in theme files, host presets in `docs/themes/hosts/`, host dark-mode mapping, fixture-host screenshot tests. | New theme capability | 0.3.72 |
+| 5 | CSS split and scoping: notebook vs page CSS, `:where(.rl-notebook)`, `@layer rustlab`, `rl-` class renames with the rename table, CHANGELOG migration note, and downstream selector check (§3.3.1), scoped reset, hostile-host hardening. | Standalone looks the same; class names change (breaking for custom CSS) | 0.3.70 |
+| 6 | `--embed` flag on `render` (HTML only): fragment, id prefixing, `--heading-offset`, `--strip-title`, `--embed-toc`, `.meta.json`, `--asset-base` with SRI, `--no-assets` / `--no-katex` / `--no-plotly`, `docs/embedding.md` leading with Hugo and MkDocs (worked examples and a sample site), shorter Jekyll / Astro / Docusaurus recipes, the CSP snippet, lesson-site-pattern update. | New output mode | 0.3.71 |
+| 7 | Inherit mode: `var()` references in theme files, host presets in `docs/themes/hosts/` (generic Hugo, MkDocs, Material for MkDocs first), host dark-mode mapping, Hugo and MkDocs fixture-host screenshot tests. | New theme capability | 0.3.72 |
 | 8 | PDF parity: `[print]` sections, print font list, `rules` and `plain` tables via `booktabs`, `--pdf-theme`, print-variant contrast tests. | `paper` and light themes now theme the PDF; dark themes keep Latte | 0.3.73 |
 | 9 | Watch theme picker (v1 F7): menu of builtins and discovered themes, scheme toggle, optional `theme:` write to frontmatter under `--editable`. | New watch UI | 0.3.74 |
 
@@ -836,41 +930,74 @@ line at the top in sync.
 
 ---
 
+## Decisions (2026-11-16)
+
+Michael answered six of the open questions. The plan text above has been
+updated to match; each item names the sections it changed.
+
+1. **Default theme stays `mocha`.** (Was open question 1.) No downstream
+   render changes unless an author picks a theme. `clean` and the other
+   new themes are opt-in. Affects §1.4, §2.
+2. **Fonts: system font stacks only.** (Was open question 2.) No font
+   files are bundled, vendored, or referenced by themes; no
+   `@font-face`. Every stack ends in a generic family. `paper` and
+   `docs` will look slightly different across operating systems, which
+   is accepted. PDF print fonts are TeX Live packages (§5), not shipped
+   files, so this does not affect them. Affects §1.3, §2, §6, §7.2.
+3. **Embed output is a `--embed` flag on `render`.** (Was open question
+   3.) Not `--format html-fragment`. HTML format only; embed-only flags
+   need `--embed`, and `--index` / `--no-toc` are refused with it.
+   Affects §3.2, §6, Phase 6.
+4. **Rename notebook CSS classes to an `rl-` prefix.** (Was open
+   question 4.) Done in Phase 5 with a rename table, a CHANGELOG
+   migration note, a downstream selector check, and a decision during
+   Phase 5 on a one-release `--legacy-class-names` escape hatch
+   (§3.3.1). Affects §3.3, §6, Phase 5.
+5. **Project config is `rustlab.toml` at the project root.** (Was open
+   question 8.) Found by walking up from the notebook's directory;
+   project themes live in `<project root>/themes/` or `[notebook]
+   theme_dir`. The function cache stays in `.rustlab/`. Affects §1.4,
+   §6, Phase 2, Appendix A.
+6. **First host target is a generic Hugo or MkDocs site.** (Was open
+   question 9.) The embedding guide, sample site, inherit presets, and
+   fixture hosts lead with Hugo and MkDocs (default and Material).
+   Docusaurus, Starlight, and Bootstrap presets wait for a request.
+   Affects §2 (`docs` theme), §3.5, §3.6, §6, Phases 6–7.
+
 ## Open questions for Michael
 
-1. **Default theme.** Keep `mocha` (recommended; no downstream render
-   changes) or switch the default to `clean` (auto light/dark)?
-2. **Fonts.** System font stacks only (recommended for v1: zero bytes,
-   no licence notice), or vendor one OFL serif and one sans (for example
-   Source Serif 4 and Inter, roughly 0.3–1 MB in `assets/` and the
-   binary) so `paper` and `docs` look the same on every machine?
-3. **Embed flag shape.** `render --embed` on the HTML format
-   (recommended), or a separate `--format html-fragment`?
-4. **Breaking class renames.** Is it acceptable to rename the unprefixed
-   classes (`.prose`, `.output`, `.callout`, …) to `rl-*` in one release,
-   with a CHANGELOG migration note? The alternative is emitting both names
-   for a release, which doubles some selectors.
-5. **Catppuccin colorway.** Keep the matplotlib-like series cycle for the
+Questions 1–4, 8, and 9 are resolved (see
+[Decisions](#decisions-2026-11-16)); their numbers are kept so earlier
+references still line up. Six remain open. None blocks Phase 1; each
+names the phase that needs the answer.
+
+1. ~~**Default theme.**~~ Resolved: keep `mocha` (decision 1).
+2. ~~**Fonts.**~~ Resolved: system font stacks only (decision 2).
+3. ~~**Embed flag shape.**~~ Resolved: `render --embed` (decision 3).
+4. ~~**Breaking class renames.**~~ Resolved: rename to `rl-*`, with
+   migration notes in Phase 5 (decision 4).
+5. **Catppuccin colorway.** (Needed by Phase 4.) Keep the matplotlib-like series cycle for the
    four Catppuccin themes (recommended; no gallery SVG churn), or give
    them Catppuccin series colours and regenerate the gallery once?
-6. **PDF.** Is "light themes theme the PDF, dark themes keep Latte" the
-   right rule? Is the five-font print list enough?
-7. **Test tooling.** Hand-rolled golden files (recommended, no new
+6. **PDF.** (Needed by Phase 8.) Is "light themes theme the PDF, dark
+   themes keep Latte" the right rule? Is the five-font print list enough?
+7. **Test tooling.** (Needed by Phase 1 for goldens, Phase 3 for
+   screenshots.) Hand-rolled golden files (recommended, no new
    dependency) or the `insta` crate? Is a Node + Playwright workflow in CI
-   acceptable for screenshots and axe checks?
-8. **Project config location.** `.rustlab/config.toml` (recommended,
-   next to the cache) or a top-level `rustlab.toml`?
-9. **Which host sites matter?** What does the `rustlab_em` site (or the
-   site you have in mind) use: Hugo, Jekyll, Astro, MkDocs Material,
-   Docusaurus, or something hand-built? That decides which inherit
-   presets and recipes come first.
-10. **Mermaid theming.** In scope for Phase 4, or leave diagrams with the
-    renderer's default colours?
-11. **iframe resize helper.** Worth shipping a small `postMessage` script
-    so iframed notebooks size to their content, or document fixed heights
-    only?
-12. **CDN via `--asset-base`.** Allow an `https:` CDN prefix (with SRI
-    hashes), or restrict `--asset-base` to the host's own paths?
+   acceptable for screenshots and axe checks? Phase 1 proceeds with
+   hand-rolled goldens unless told otherwise.
+8. ~~**Project config location.**~~ Resolved: `rustlab.toml` at the
+   project root (decision 5).
+9. ~~**Which host sites matter?**~~ Resolved: a generic Hugo or MkDocs
+   site first (decision 6).
+10. **Mermaid theming.** (Needed by Phase 4.) In scope for Phase 4, or
+    leave diagrams with the renderer's default colours?
+11. **iframe resize helper.** (Needed by Phase 6.) Worth shipping a small
+    `postMessage` script so iframed notebooks size to their content, or
+    document fixed heights only?
+12. **CDN via `--asset-base`.** (Needed by Phase 6.) Allow an `https:`
+    CDN prefix (with SRI hashes), or restrict `--asset-base` to the
+    host's own paths?
 
 ---
 
@@ -887,7 +1014,7 @@ The v1 plan listed F1–F8. Where each one went:
 | F3 theme files | not started | Phase 2, extended with typography, shape, table, plot, pairs |
 | F4 discovery directories | not started | Phase 2 |
 | F6 frontmatter `theme:` | not started | Phase 2 |
-| F8 project default | not started | Phase 2 (location is open question 8) |
+| F8 project default | not started | Phase 2, in `rustlab.toml` at the project root (decision 5) |
 | F7 watch picker | not started | Phase 9 |
 
 v1 decisions that still hold: palette is separate from roles; `inherits`
@@ -900,7 +1027,10 @@ for the theme.
 - Quarto `brand.yml`: palette plus semantic colours, light and dark
   variants, typography. https://quarto.org/docs/authoring/brand.html
 - Catppuccin palette. https://github.com/catppuccin/palette
-- Material for MkDocs colour and font variables (`--md-*`).
+- Hugo shortcodes, `readFile`, and partial templates; MkDocs
+  `extra_css` / `extra_javascript`, hooks, and `pymdownx.snippets`.
+- Material for MkDocs colour and font variables (`--md-*`) and the
+  instant-navigation `document$` observable.
 - Infima / Docusaurus variables (`--ifm-*`); Astro Starlight (`--sl-*`).
 - WCAG 2.2: 1.4.3 (text, 4.5:1), 1.4.6 (enhanced, 7:1), 1.4.11 (non-text,
   3:1).
