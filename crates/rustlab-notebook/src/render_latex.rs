@@ -468,32 +468,32 @@ const PDF_PAPER: &str = "#ffffff";
 
 fn latex_palette(theme: &ThemeColors) -> String {
     // Blended once here. pdflatex has no alpha, so the tint is an opaque hex.
-    let header = blend_over_paper(theme.text, TABLE_HEADER_MIX);
-    let stripe = blend_over_paper(theme.text, TABLE_STRIPE_MIX);
-    let rule = blend_over_paper(theme.text, TABLE_RULE_MIX);
+    let header = blend_over_paper(theme.text.as_ref(), TABLE_HEADER_MIX);
+    let stripe = blend_over_paper(theme.text.as_ref(), TABLE_STRIPE_MIX);
+    let rule = blend_over_paper(theme.text.as_ref(), TABLE_RULE_MIX);
     let colors = [
-        ("rltext", theme.text.to_string()),
-        ("rldim", theme.text_dim.to_string()),
-        ("rlh1", theme.accent_primary.to_string()),
-        ("rlh2", theme.accent_secondary.to_string()),
-        ("rlh3", theme.accent_tertiary.to_string()),
-        ("rlrule", theme.accent_primary.to_string()),
-        ("rllink", theme.accent_secondary.to_string()),
-        ("rlkw", theme.syn_keyword.to_string()),
-        ("rlfn", theme.syn_function.to_string()),
-        ("rlnum", theme.syn_number.to_string()),
-        ("rlstr", theme.syn_string.to_string()),
-        ("rlcom", theme.syn_comment.to_string()),
-        ("rlop", theme.syn_operator.to_string()),
-        ("rlcodebg", theme.code_bg.to_string()),
-        ("rloutbg", theme.output_bg.to_string()),
-        ("rlpanel", theme.bg_secondary.to_string()),
+        ("rltext", theme.text.as_ref().to_string()),
+        ("rldim", theme.text_dim.as_ref().to_string()),
+        ("rlh1", theme.accent_primary.as_ref().to_string()),
+        ("rlh2", theme.accent_secondary.as_ref().to_string()),
+        ("rlh3", theme.accent_tertiary.as_ref().to_string()),
+        ("rlrule", theme.accent_primary.as_ref().to_string()),
+        ("rllink", theme.accent_secondary.as_ref().to_string()),
+        ("rlkw", theme.syn_keyword.as_ref().to_string()),
+        ("rlfn", theme.syn_function.as_ref().to_string()),
+        ("rlnum", theme.syn_number.as_ref().to_string()),
+        ("rlstr", theme.syn_string.as_ref().to_string()),
+        ("rlcom", theme.syn_comment.as_ref().to_string()),
+        ("rlop", theme.syn_operator.as_ref().to_string()),
+        ("rlcodebg", theme.code_bg.as_ref().to_string()),
+        ("rloutbg", theme.output_bg.as_ref().to_string()),
+        ("rlpanel", theme.bg_secondary.as_ref().to_string()),
         ("rlthead", header),
         ("rltstripe", stripe),
         ("rltrule", rule),
-        ("rlborder", theme.border.to_string()),
-        ("rlerrbg", theme.error_bg.to_string()),
-        ("rlerrfg", theme.error_text.to_string()),
+        ("rlborder", theme.border.as_ref().to_string()),
+        ("rlerrbg", theme.error_bg.as_ref().to_string()),
+        ("rlerrfg", theme.error_text.as_ref().to_string()),
     ];
     let mut out = String::new();
     for (name, hex) in colors {

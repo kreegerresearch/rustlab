@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.66
+
+### Added
+- **Notebook design tokens.** HTML notebook pages, the directory index, and `watch` chrome declare design tokens on `:root` after the existing 33 `--rl-*` color tokens. The new names cover the system font stacks (`--rl-font-body`, `--rl-font-heading`, `--rl-font-mono`), `--rl-font-size` (`medium`), `--rl-line-height` (`1.7`), `--rl-measure` (`960px`), radii (`3px` / `6px` / `8px`), `--rl-border-width` (`1px`), a six-step space scale (`0.5rem` through `2.5rem`), table header / stripe / rule mixes, callout and link colors, `--rl-focus-ring` (`auto`), eight plot-series colors, and one shadow. Rules that already used those literals now read the token and keep the old literal as the `var()` fallback. The painted page is unchanged. The default theme is still Mocha. Stacks are system fonts only (no font files, no `@font-face`). PDF and LaTeX stay Catppuccin Latte on white. Plotly and SVG still take colors from the palette directly; the plot tokens are declared for a later pass. The directory index keeps its `720px` column.
+
 ## 0.3.65
 
 ### Fixed

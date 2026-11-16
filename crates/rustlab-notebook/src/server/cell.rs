@@ -77,7 +77,7 @@ fn cell_style(c: &ThemeColors) -> String {
   .rl-cell-bar button {{
     font: 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-radius: 5px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: 5px;
     padding: 4px 9px; cursor: pointer;
   }}
   .rl-cell-bar button:hover {{ border-color: {accent}; }}
@@ -87,7 +87,7 @@ fn cell_style(c: &ThemeColors) -> String {
     max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }}
   main section.rl-block.rl-running {{
-    outline: 1px solid {accent}; outline-offset: 3px; border-radius: 2px;
+    outline: var(--rl-border-width, 1px) solid {accent}; outline-offset: 3px; border-radius: 2px;
     animation: rl-cell-pulse 1.2s ease-in-out infinite;
   }}
   @keyframes rl-cell-pulse {{
@@ -96,20 +96,20 @@ fn cell_style(c: &ThemeColors) -> String {
   }}
   main section.rl-block.rl-cell-stale {{ opacity: .65; }}
   main section.rl-block.rl-cell-editing {{
-    outline: 1px solid {border}; outline-offset: 3px; border-radius: 2px;
+    outline: var(--rl-border-width, 1px) solid {border}; outline-offset: 3px; border-radius: 2px;
   }}
   /* Replaces pre.source inside details.rl-src, so it shares the indent. */
   .rl-cell .rl-cell-editor {{ margin-left: 0; margin-right: 0; }}
-  .rl-cell-editor {{ border: 1px solid {border}; border-radius: 4px; margin: 4px 0; }}
+  .rl-cell-editor {{ border: var(--rl-border-width, 1px) solid {border}; border-radius: 4px; margin: 4px 0; }}
   .rl-cell-editor .CodeMirror {{
     height: auto; background: {code_bg}; color: {text};
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }}
-  .rl-cell-editor .CodeMirror-cursor {{ border-left: 1px solid {text}; }}
+  .rl-cell-editor .CodeMirror-cursor {{ border-left: var(--rl-border-width, 1px) solid {text}; }}
   .rl-cell-editor .CodeMirror-selected {{ background: {border}; }}
 {tokens}  #rl-cell-banner {{
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 99999;
-    background: {bg_secondary}; color: {text}; border-top: 1px solid {accent};
+    background: {bg_secondary}; color: {text}; border-top: var(--rl-border-width, 1px) solid {accent};
     text-align: center; padding: 6px 10px;
     font: 12px/1.4 -apple-system, system-ui, sans-serif;
   }}

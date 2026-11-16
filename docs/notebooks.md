@@ -1659,11 +1659,21 @@ yellow-gray defaults.
 
 HTML (notebook pages, the directory index, and `watch` chrome) emits the
 resolved palette on `:root` as `--rl-*` tokens — kebab-case of the
-`ThemeColors` fields (`bg_secondary` → `--rl-bg-secondary`). The page
-stylesheet prefers `var(--rl-bg, #1e1e2e)` (token first, literal
-fallback) so colors stay unchanged if a variable is missing. Plotly /
-SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`
-and `--rl-plot-grid` are declared for future chrome.
+`ThemeColors` fields (`bg_secondary` → `--rl-bg-secondary`). Those 33
+color names are unchanged. After them, the same `:root` block declares
+design tokens whose values are the literals the stylesheet already
+used: system font stacks (`--rl-font-body`, `--rl-font-heading`,
+`--rl-font-mono`; no font files and no `@font-face`), `--rl-font-size`
+(`medium`), `--rl-line-height` (`1.7` on prose), `--rl-measure`
+(`960px`; the index column stays `720px`), radii, a `1px` border, a
+six-step space scale, table mixes, callout and link colors,
+`--rl-focus-ring` (`auto`, declared and not applied), eight plot-series
+colors, and one shadow. A rule that reads a new token keeps the old
+literal as the `var()` fallback, so stripping the new declarations
+restores the previous stylesheet. The default theme is Mocha. Plotly /
+SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`,
+`--rl-plot-grid`, and `--rl-plot-1` … `--rl-plot-8` are declared for a
+later pass and do not restyle traces. PDF and LaTeX stay Latte on white.
 
 ## Output Formats
 
