@@ -6,6 +6,14 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.67
+
+### Fixed
+- **Linux builds no longer need fontconfig, FreeType, or libstdc++.** plotters' `ttf` text backend pulled `font-kit`, which needed `libfontconfig1-dev` at build time. Without `libfreetype-dev`, `freetype-sys` compiled its bundled FreeType as C++ and linked `-lstdc++`. With clang as `cc` (Ubuntu with GCC 13 plus a GCC 14 `libgcc`), the newest `/usr/lib/gcc/x86_64-linux-gnu/<N>/` had no `libstdc++.so`, and the release link failed with `rust-lld: error: unable to find library -lstdc++`. `rustlab-plot` now uses plotters' pure-Rust `ab_glyph` backend with Liberation Sans 2.1.5 compiled in (SIL OFL 1.1, `crates/rustlab-plot/fonts/`). Building needs only a C compiler and libc headers (`build-essential`, or `gcc glibc-devel` on Fedora) for bundled SQLite and BLAKE3. The README's claim that plotting needs no system libraries is now true, and the README lists those build packages. A new `minimal-linux-build` CI job builds in a bare `ubuntu:24.04` container without g++, pkg-config, or font headers, and fails if `font-kit`, `freetype-sys`, or `yeslogic-fontconfig-sys` re-enter the dependency graph.
+
+### Breaking / behavior changes
+- **Plot text uses one bundled font on every OS.** PNG, GIF, and viewer-raster text is drawn in Liberation Sans (Arial/Helvetica metrics) instead of the system's `sans-serif` (Helvetica on macOS, often DejaVu or Noto Sans on Linux, Arial on Windows). The font size is unchanged: the measured em is `size / 1.24`, the same as the old backend and as the SVG `font-size`. SVG files still name `font-family="sans-serif"`, so browsers and Inkscape (PDF) draw SVG text with their own font as before. Label widths now come from Liberation Sans, so the y-label gutter can move by a pixel and, rarely, an axis gets one fewer or one more tick than with your system font. On this Linux test machine (Noto Sans), 87 of the 132 example-notebook SVGs were byte-identical to 0.3.65's. Output is now the same on every machine, so committed SVG/PNG renders should be regenerated once; after that they stop drifting between macOS and Linux.
+
 ## 0.3.65
 
 ### Fixed
