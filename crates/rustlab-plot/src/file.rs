@@ -104,9 +104,10 @@ struct ThemePalette {
 impl ThemePalette {
     fn from(theme: &ThemeColors) -> Self {
         ThemePalette {
-            bg: parse_color_solid(theme.plot_bg).unwrap_or(RGBColor(255, 255, 255)),
-            text: parse_color_rgba(theme.text).unwrap_or(RGBAColor(0, 0, 0, 1.0)),
-            grid: parse_color_rgba(theme.plot_grid).unwrap_or(RGBAColor(100, 100, 100, 0.35)),
+            bg: parse_color_solid(theme.plot_bg.as_ref()).unwrap_or(RGBColor(255, 255, 255)),
+            text: parse_color_rgba(theme.text.as_ref()).unwrap_or(RGBAColor(0, 0, 0, 1.0)),
+            grid: parse_color_rgba(theme.plot_grid.as_ref())
+                .unwrap_or(RGBAColor(100, 100, 100, 0.35)),
         }
     }
 }
@@ -3858,19 +3859,19 @@ mod tests {
         for theme in [crate::Theme::Dark, crate::Theme::Light] {
             let colors = theme.colors();
             assert!(
-                parse_color_solid(colors.plot_bg).is_some(),
+                parse_color_solid(colors.plot_bg.as_ref()).is_some(),
                 "{theme:?} plot_bg {:?} must parse",
-                colors.plot_bg
+                colors.plot_bg.as_ref()
             );
             assert!(
-                parse_color_rgba(colors.text).is_some(),
+                parse_color_rgba(colors.text.as_ref()).is_some(),
                 "{theme:?} text {:?} must parse",
-                colors.text
+                colors.text.as_ref()
             );
             assert!(
-                parse_color_rgba(colors.plot_grid).is_some(),
+                parse_color_rgba(colors.plot_grid.as_ref()).is_some(),
                 "{theme:?} plot_grid {:?} must parse",
-                colors.plot_grid
+                colors.plot_grid.as_ref()
             );
         }
         // Spot-check one concrete value end-to-end.

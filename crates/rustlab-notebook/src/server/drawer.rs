@@ -152,8 +152,8 @@ body.rl-watch.has-files.no-toc.rl-source-open main {
   font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background: var(--rl-bg, #1e1e2e);
   color: var(--rl-text, #cdd6f4);
-  border: 1px solid var(--rl-border, #313244);
-  border-radius: 6px;
+  border: var(--rl-border-width, 1px) solid var(--rl-border, #313244);
+  border-radius: var(--rl-radius, 6px);
   padding: 5px 9px;
   cursor: pointer;
 }
@@ -171,7 +171,7 @@ body.rl-drawer-open .rl-drawer-toggle {
   align-items: center;
   padding: 0 0.6rem;
   background: var(--rl-bg-secondary, #181825);
-  border-bottom: 1px solid var(--rl-border, #313244);
+  border-bottom: var(--rl-border-width, 1px) solid var(--rl-border, #313244);
 }
 body.rl-watch:has(.rl-drawer-bar) main {
   padding-top: calc(var(--topbar-h) + 1.25rem);
@@ -198,7 +198,7 @@ body.rl-drawer-open #rl-drawer-scrim { opacity: 1; pointer-events: auto; }
   overflow: hidden;
   background: var(--rl-bg-secondary, #181825);
   color: var(--rl-text, #cdd6f4);
-  border-right: 1px solid var(--rl-border, #313244);
+  border-right: var(--rl-border-width, 1px) solid var(--rl-border, #313244);
   box-shadow: 8px 0 28px rgba(0, 0, 0, 0.45);
   transform: translateX(-105%);
   visibility: hidden;
@@ -226,7 +226,7 @@ body.rl-drawer-open #rl-drawer {
 }
 #rl-drawer nav.file-browser {
   max-height: 46vh;
-  border-bottom: 1px solid var(--rl-border, #313244);
+  border-bottom: var(--rl-border-width, 1px) solid var(--rl-border, #313244);
 }
 #rl-drawer nav.sidebar { flex: 1 1 auto; }
 body.rl-drawer-open .plot-container,

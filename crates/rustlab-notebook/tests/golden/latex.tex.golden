@@ -1,0 +1,300 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{margin=1in}
+% Only used when a line would otherwise stick out of the margin. A
+% heading sets it again; this covers body text and table cells.
+\setlength{\emergencystretch}{3em}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{newunicodechar}
+% Map common math / Greek / arrow Unicode characters that appear in
+% notebook prose and code-block output. Without these, pdflatex with
+% [utf8]{inputenc} rejects the character with "not set up for use".
+% Source: the failing characters observed across examples/notebooks/.
+% Math relations and operators
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{≡}{\ensuremath{\equiv}}
+\newunicodechar{≤}{\ensuremath{\le}}
+\newunicodechar{≥}{\ensuremath{\ge}}
+\newunicodechar{≠}{\ensuremath{\ne}}
+\newunicodechar{±}{\ensuremath{\pm}}
+\newunicodechar{∓}{\ensuremath{\mp}}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{÷}{\ensuremath{\div}}
+\newunicodechar{−}{\ensuremath{-}}
+\newunicodechar{∇}{\ensuremath{\nabla}}
+\newunicodechar{∂}{\ensuremath{\partial}}
+\newunicodechar{∞}{\ensuremath{\infty}}
+\newunicodechar{∫}{\ensuremath{\int}}
+\newunicodechar{∑}{\ensuremath{\sum}}
+\newunicodechar{∏}{\ensuremath{\prod}}
+\newunicodechar{√}{\ensuremath{\sqrt{}}}
+\newunicodechar{∠}{\ensuremath{\angle}}
+\newunicodechar{∩}{\ensuremath{\cap}}
+% Greek letters (lowercase + selected uppercase)
+\newunicodechar{α}{\ensuremath{\alpha}}
+\newunicodechar{β}{\ensuremath{\beta}}
+\newunicodechar{γ}{\ensuremath{\gamma}}
+\newunicodechar{Γ}{\ensuremath{\Gamma}}
+\newunicodechar{δ}{\ensuremath{\delta}}
+\newunicodechar{Δ}{\ensuremath{\Delta}}
+\newunicodechar{ε}{\ensuremath{\varepsilon}}
+\newunicodechar{η}{\ensuremath{\eta}}
+\newunicodechar{θ}{\ensuremath{\theta}}
+\newunicodechar{Θ}{\ensuremath{\Theta}}
+\newunicodechar{λ}{\ensuremath{\lambda}}
+\newunicodechar{Λ}{\ensuremath{\Lambda}}
+\newunicodechar{μ}{\ensuremath{\mu}}
+\newunicodechar{π}{\ensuremath{\pi}}
+\newunicodechar{Π}{\ensuremath{\Pi}}
+\newunicodechar{σ}{\ensuremath{\sigma}}
+\newunicodechar{Σ}{\ensuremath{\Sigma}}
+\newunicodechar{φ}{\ensuremath{\varphi}}
+\newunicodechar{Φ}{\ensuremath{\Phi}}
+\newunicodechar{ψ}{\ensuremath{\psi}}
+\newunicodechar{Ψ}{\ensuremath{\Psi}}
+\newunicodechar{Ω}{\ensuremath{\Omega}}
+\newunicodechar{ω}{\ensuremath{\omega}}
+% Arrows
+\newunicodechar{⇒}{\ensuremath{\Rightarrow}}
+\newunicodechar{⇔}{\ensuremath{\Leftrightarrow}}
+\newunicodechar{→}{\ensuremath{\to}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{↔}{\ensuremath{\leftrightarrow}}
+\newunicodechar{↗}{\ensuremath{\nearrow}}
+\newunicodechar{↘}{\ensuremath{\searrow}}
+\newunicodechar{↙}{\ensuremath{\swarrow}}
+\newunicodechar{↖}{\ensuremath{\nwarrow}}
+% Superscripts and units. Full 0–9 range so notebooks using subscript
+% / superscript notation (variable indexing, exponents, footnote
+% numerals) compile cleanly — pdflatex with [utf8]{inputenc} rejects
+% undeclared codepoints fatally, so partial coverage is brittle.
+\newunicodechar{⁰}{\ensuremath{^0}}
+\newunicodechar{¹}{\ensuremath{^1}}
+\newunicodechar{²}{\ensuremath{^2}}
+\newunicodechar{³}{\ensuremath{^3}}
+\newunicodechar{⁴}{\ensuremath{^4}}
+\newunicodechar{⁵}{\ensuremath{^5}}
+\newunicodechar{⁶}{\ensuremath{^6}}
+\newunicodechar{⁷}{\ensuremath{^7}}
+\newunicodechar{⁸}{\ensuremath{^8}}
+\newunicodechar{⁹}{\ensuremath{^9}}
+\newunicodechar{₀}{\ensuremath{_0}}
+\newunicodechar{₁}{\ensuremath{_1}}
+\newunicodechar{₂}{\ensuremath{_2}}
+\newunicodechar{₃}{\ensuremath{_3}}
+\newunicodechar{₄}{\ensuremath{_4}}
+\newunicodechar{₅}{\ensuremath{_5}}
+\newunicodechar{₆}{\ensuremath{_6}}
+\newunicodechar{₇}{\ensuremath{_7}}
+\newunicodechar{₈}{\ensuremath{_8}}
+\newunicodechar{₉}{\ensuremath{_9}}
+\newunicodechar{°}{\ensuremath{^{\circ}}}
+\newunicodechar{µ}{\ensuremath{\mu}}
+% Combining diacritics — combining chars overlay on the preceding
+% glyph, but as a `\newunicodechar` substitution they're already
+% standalone. Emit empty so pdflatex doesn't fatal; authors who need
+% true overlay (x̄, x̃, …) should use `$\bar{x}$` / `$\tilde{x}$`
+% in source rather than relying on Unicode combining sequences.
+\newunicodechar{̄}{}
+% Marks and check glyphs (commonly used in LLM/ML notebook output,
+% architecture diagrams, prose). `\checkmark` is provided by amssymb
+% (already loaded above).
+\newunicodechar{✓}{\ensuremath{\checkmark}}
+\newunicodechar{✗}{$\times$}
+% Punctuation, dashes, ellipsis
+\newunicodechar{§}{\S{}}
+\newunicodechar{·}{\ensuremath{\cdot}}
+\newunicodechar{—}{\textemdash{}}
+\newunicodechar{–}{\textendash{}}
+\newunicodechar{…}{\ensuremath{\ldots}}
+\newunicodechar{ï}{\"\i{}}
+% Box-drawing characters appear in REPL/console output AND in
+% architecture diagrams in ML/LLM lesson prose. Map to ASCII so the
+% layout reads sensibly through the LaTeX render (pdfTeX can't render
+% the actual box-drawing glyphs without a Unicode-aware font setup).
+\newunicodechar{─}{-}
+\newunicodechar{│}{|}
+\newunicodechar{┌}{+}
+\newunicodechar{┐}{+}
+\newunicodechar{└}{+}
+\newunicodechar{┘}{+}
+\newunicodechar{├}{+}
+\newunicodechar{┤}{+}
+\newunicodechar{┬}{+}
+\newunicodechar{┴}{+}
+\newunicodechar{┼}{+}
+\usepackage[table]{xcolor}
+\definecolor{rltext}{HTML}{4c4f69}
+\definecolor{rldim}{HTML}{56586a}
+\definecolor{rlh1}{HTML}{7113ec}
+\definecolor{rlh2}{HTML}{094dd3}
+\definecolor{rlh3}{HTML}{12747a}
+\definecolor{rlrule}{HTML}{7113ec}
+\definecolor{rllink}{HTML}{094dd3}
+\definecolor{rlkw}{HTML}{802cee}
+\definecolor{rlfn}{HTML}{0a55ea}
+\definecolor{rlnum}{HTML}{ad4001}
+\definecolor{rlstr}{HTML}{2d711e}
+\definecolor{rlcom}{HTML}{5e6376}
+\definecolor{rlop}{HTML}{116e74}
+\definecolor{rlcodebg}{HTML}{dce0e8}
+\definecolor{rloutbg}{HTML}{e6e9ef}
+\definecolor{rlpanel}{HTML}{e6e9ef}
+\definecolor{rlthead}{HTML}{ebecef}
+\definecolor{rltstripe}{HTML}{f4f4f6}
+\definecolor{rltrule}{HTML}{c9cad2}
+\definecolor{rlborder}{HTML}{ccd0da}
+\definecolor{rlerrbg}{HTML}{fce4e4}
+\definecolor{rlerrfg}{HTML}{c60e36}
+
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{fancyvrb}
+\usepackage{fvextra}
+\usepackage{sectsty}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xltabular}
+\usepackage[normalem]{ulem}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=rllink,urlcolor=rllink}
+% breaklines wraps at spaces; breakanywhere wraps a token that is still
+% wider than the panel (a printed line with no spaces).
+\DefineVerbatimEnvironment{rlverb}{Verbatim}{fontsize=\small,breaklines,breakanywhere}
+\tcbset{
+  rlbase/.style={
+    breakable,
+    enhanced,
+    arc=1.5mm,
+    boxrule=0.4pt,
+    leftrule=3pt,
+    left=2.2mm,
+    right=2mm,
+    top=1.1mm,
+    bottom=1.1mm,
+    before skip=0.2em,
+    after skip=0.2em,
+    colframe=rlborder,
+    overlay unbroken and first={
+      \draw[rlrule,line width=2.6pt] ([xshift=1.3pt]frame.north west) -- ([xshift=1.3pt]frame.south west);
+    },
+    overlay middle and last={
+      \draw[rlrule,line width=2.6pt] ([xshift=1.3pt]frame.north west) -- ([xshift=1.3pt]frame.south west);
+    },
+  },
+}
+\newtcolorbox{rlsource}{rlbase, colback=rlcodebg, colupper=rltext, after skip=0.28em}
+\newtcolorbox{rloutput}{rlbase, colback=rloutbg, colupper=rldim, before skip=0.22em}
+\newtcolorbox{rlerror}{rlbase, colback=rlerrbg, colupper=rlerrfg, colframe=rlerrfg, before skip=0.22em}
+\newtcolorbox{rlcallout}[2]{
+  breakable, enhanced, arc=1.5mm,
+  boxrule=0pt, leftrule=4pt,
+  colback=rlpanel, colframe=#1, coltitle=#1,
+  fonttitle=\bfseries\sffamily,
+  title={#2},
+  left=2.5mm, right=2.5mm, top=1.4mm, bottom=1.4mm,
+  before skip=0.75em, after skip=0.75em,
+}
+\newtcolorbox{rlexercise}{
+  breakable, enhanced, arc=2mm,
+  boxrule=0.6pt, colframe=rlborder, colback=rlpanel,
+  left=2.5mm, right=2.5mm, top=1.5mm, bottom=1.5mm,
+  before skip=0.9em, after skip=0.9em,
+}
+% emergencystretch lets a heading that is only a few points too wide
+% break at a zero-width point instead of running into the margin.
+\sectionfont{\color{rlh1}\normalfont\Large\bfseries\setlength{\emergencystretch}{3em}}
+\subsectionfont{\color{rlh2}\normalfont\large\bfseries\setlength{\emergencystretch}{3em}}
+\subsubsectionfont{\color{rlh3}\normalfont\normalsize\bfseries\setlength{\emergencystretch}{3em}}
+\setcounter{secnumdepth}{-1}
+\title{Sample}
+\date{}
+
+\begin{document}
+\color{rltext}
+\maketitle
+
+\hypertarget{sample}{}
+\section{Sample}
+
+A \href{https://example.com/notes}{link} and $E=mc^2$.
+
+\par\noindent
+\arrayrulecolor{rltrule}
+\begin{xltabular}{\linewidth}{>{\raggedright\arraybackslash\hspace{0pt}}X>{\raggedright\arraybackslash\hspace{0pt}}X}
+\specialrule{0.4pt}{0pt}{0.35ex}
+\rowcolor{rlthead}\textcolor{rlh1}{\textbf{a}} & \textcolor{rlh1}{\textbf{b}} \\
+\specialrule{0.4pt}{0.35ex}{0.45ex}
+\endhead
+1 & 2 \\
+\specialrule{0.4pt}{0.4ex}{0.25ex}
+\end{xltabular}
+\arrayrulecolor{black}
+\par
+
+\begin{rlcallout}{rlh2}{Note}
+Note body.
+
+\end{rlcallout}
+
+\begin{rlcallout}{rlh3}{Tip}
+Tip body.
+
+\end{rlcallout}
+
+\begin{rlcallout}{rlh1}{Important}
+Important body.
+
+\end{rlcallout}
+
+\begin{rlcallout}{rlerrfg}{Warning}
+Warning body.
+
+\end{rlcallout}
+
+\begin{rlcallout}{rlerrfg}{Caution}
+Caution body.
+
+\end{rlcallout}
+
+\noindent{\sffamily\footnotesize\textcolor{rldim}{rustlab}}\par\nopagebreak
+\begin{rlsource}
+{\ttfamily\setlength{\parindent}{0pt}\setlength{\parskip}{0pt}%
+\setlength{\rightskip}{0pt plus 1fil}\obeylines\obeyspaces
+x \textcolor{rlop}{=\hspace{0pt}} \textcolor{rlnum}{1}\textcolor{rlop}{:\hspace{0pt}}\textcolor{rlnum}{2}
+\textcolor{rlfn}{plot}(\hspace{0pt}x)\hspace{0pt}
+}
+
+\end{rlsource}
+
+\begin{rloutput}
+\begin{rlverb}
+ans = 1  2
+\end{rlverb}
+\end{rloutput}
+
+\begin{center}
+\includegraphics[width=0.9\textwidth]{plots/plot-1}\end{center}
+
+\noindent{\sffamily\footnotesize\textcolor{rldim}{rustlab}}\par\nopagebreak
+\begin{rlsource}
+{\ttfamily\setlength{\parindent}{0pt}\setlength{\parskip}{0pt}%
+\setlength{\rightskip}{0pt plus 1fil}\obeylines\obeyspaces
+\textcolor{rlfn}{error}(\hspace{0pt}\textcolor{rlstr}{"nope"})\hspace{0pt}
+}
+
+\end{rlsource}
+
+\begin{rlerror}
+\begin{rlverb}
+nope
+\end{rlverb}
+\end{rlerror}
+
+
+\end{document}

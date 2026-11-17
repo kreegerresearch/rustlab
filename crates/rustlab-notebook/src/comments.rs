@@ -2772,7 +2772,7 @@ pub(crate) fn comment_css() -> &'static str {
 .rl-cm-mark {
   background: var(--rl-cm-mark-bg, #554f4e);
   color: var(--rl-text, inherit);
-  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-bottom: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   padding: 0 0.05em;
 }
 .rl-cm-ref {
@@ -2823,8 +2823,8 @@ body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
 .rl-cm-card, .rl-cm-note, .rl-cm-blocknote {
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
-  border-radius: 6px;
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: var(--rl-radius, 6px);
   font-size: 0.85rem;
   line-height: 1.35;
   display: block;
@@ -2857,8 +2857,8 @@ body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
   position: absolute;
   left: -0.7rem;
   width: 0.7rem;
-  border-left: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
-  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-left: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-bottom: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   opacity: 0.55;
   pointer-events: none;
 }
@@ -2930,8 +2930,8 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   z-index: 400;
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
-  border-radius: 6px;
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: var(--rl-radius, 6px);
   padding: 0.25rem;
 }
 #rl-cm-menu button {
@@ -2972,7 +2972,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   font-size: 0.85rem;
   color: var(--rl-text);
   background: var(--rl-bg, var(--rl-bg-secondary));
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 4px;
 }
 #rl-cm-pop textarea {
@@ -2996,7 +2996,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   cursor: pointer;
   color: var(--rl-text);
   background: transparent;
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 4px;
   padding: 0.28rem 0.55rem;
 }
@@ -3015,7 +3015,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   text-align: center;
   background: transparent;
   color: var(--rl-text);
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 4px;
   font-size: 0.75rem;
   line-height: 1.2;
@@ -3052,7 +3052,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   height: 1.25rem;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border: var(--rl-border-width, 1px) solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 4px;
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
@@ -3105,9 +3105,9 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 .rl-cm-undo {
   position: fixed; right: 16px; bottom: 16px; z-index: 450;
   background: var(--rl-bg-secondary, #313244); color: var(--rl-text, #cdd6f4);
-  border: 1px solid var(--rl-border, #45475a); border-radius: 8px;
+  border: var(--rl-border-width, 1px) solid var(--rl-border, #45475a); border-radius: var(--rl-radius-lg, 8px);
   padding: 8px 12px; font: 13px/1.3 -apple-system, system-ui, sans-serif;
-  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  box-shadow: var(--rl-shadow, 0 8px 24px rgba(0,0,0,.25));
 }
 .rl-cm-undo button { margin-left: 8px; }
 .rl-cm-undo[hidden] { display: none; }

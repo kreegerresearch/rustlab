@@ -15,6 +15,11 @@ should re-validate against those entries when upgrading.
 ### Breaking / behavior changes
 - **`double` of a logical row is a `1×n` matrix.** `double(L)` of a `1×n` logical returned a 1-D vector, while every wider logical became a matrix. It now has the logical's shape, the same as `double` of a `1×n` double: `double([1, -2, 3] > 0)` prints as `Matrix(1x3)`, and `size` is still `[1, 3]`. A `1×1` logical is still a scalar. The same `1×n` matrix is what arithmetic with a scalar or a matrix gives (`(v > 0) + 0`), so it broadcasts against a column as MATLAB does (`[1; 2; 3] + (r > 0)` is `3×3`). Next to a 1-D vector a logical row is still a vector, so `x .* (x > 0)` keeps the type of `x`, and `[mask, 1]` concatenation is unchanged. Migration: a script that relied on the vector-only rule that an `n×1` column plus a length-`n` vector is element-wise, with the vector coming from `double(mask)` or `mask + scalar`, now gets the `n×n` result; use `mask(:)` or a transpose to pick the orientation.
 
+## 0.3.66
+
+### Added
+- **Notebook design tokens.** HTML notebook pages, the directory index, and `watch` chrome declare design tokens on `:root` after the existing 33 `--rl-*` color tokens. The new names cover the system font stacks (`--rl-font-body`, `--rl-font-heading`, `--rl-font-mono`), `--rl-font-size` (`medium`), `--rl-line-height` (`1.7`), `--rl-measure` (`960px`), radii (`3px` / `6px` / `8px`), `--rl-border-width` (`1px`), a six-step space scale (`0.5rem` through `2.5rem`), table header / stripe / rule mixes, callout and link colors, `--rl-focus-ring` (`auto`), eight plot-series colors, and one shadow. Rules that already used those literals now read the token and keep the old literal as the `var()` fallback. The painted page is unchanged. The default theme is still Mocha. Stacks are system fonts only (no font files, no `@font-face`). PDF and LaTeX stay Catppuccin Latte on white. Plotly and SVG still take colors from the palette directly; the plot tokens are declared for a later pass. The directory index keeps its `720px` column.
+
 ## 0.3.65
 
 ### Fixed
