@@ -48,6 +48,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `islogical(x)` | True for `bool` and for a logical array. False for numeric 0/1. `class` is `"bool"` or `"logical"`. `isa(x, "logical")` is true for both |
 | `A(mask)`, `M(rowMask, :)` | Logical mask subscript. The mask length must match the array (or that dimension). A one-element logical, and scalar `true` / `false`, select the first element or nothing. Selects trues in column-major order. A numeric 0/1 mask of the same length still works. `L(k)` stays a 1×1 logical |
 | `find(mask)` | 1-based column-major positions of true elements. `[I, J] = find(M)` on a logical matrix returns subscripts |
+| Logical in builtins | Numeric builtins and plots take a logical (or bool) as 0/1 doubles: `mean(m < 0)`, `std`, `abs`, `heatmap(m < 0)`, … `reshape`, `repmat`, `fliplr`, `sort`, `diag`, `min` / `max`, `cat` of logicals stay logical. `double(L)` keeps the shape (`1×n` → `1×n` matrix). `any(M)` / `all(M)` reduce each column |
 | `+=`, `-=`, `*=`, `/=` | Compound assignment: `x += 1` is equivalent to `x = x + 1` |
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |

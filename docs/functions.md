@@ -721,13 +721,14 @@ Returns `true` if all elements are nonzero.
 all([1, 2, 3])     # → true
 all([1, 0, 3])     # → false
 ```
-- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix is an error. An empty logical is `true` for `all` and `false` for `any`.
+- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix or logical array reduces down each column to a `1×cols` logical row, as in MATLAB (`all([1, 0; 1, 2])` is `[1 0]` logical). An empty logical is `true` for `all` and `false` for `any`.
 
 ### `any(v)`
 Returns `true` if any element is nonzero.
 ```
 any([0, 0, 3])     # → true
 any([0, 0, 0])     # → false
+any([0, 1; 0, 0])  # → 1×2 logical [0 1]
 ```
 
 ---
@@ -4457,7 +4458,9 @@ An array comparison is a logical array. A scalar comparison stays the bool `true
 
 `!=` is not-equal. `~=` is not a token. `!` is element-wise not (what MATLAB writes as `~`). There is no `&` or `|` token: `and`, `or`, and `xor` are element-wise, and `&&` / `||` stay scalar and short-circuit. A 1-element logical is truthy in `if`, `while`, `&&`, and `||`. A wider logical is an error there — reduce it with `any` or `all`.
 
-Arithmetic promotes a logical to double 0/1, and so does `double`. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
+Arithmetic promotes a logical to double 0/1, and so does `double`. `double(L)` has the shape of `L`: a `1×n` logical is a `1×n` matrix, the same as `double` of a `1×n` double, and a `1×1` logical is a scalar. In arithmetic with a 1-D vector, a logical row is a vector, so `x .* (x > 0)` stays a vector when `x` is one.
+
+Every numeric builtin takes a logical array or a bool as its 0/1 doubles, as MATLAB does: `mean(m < 0)`, `median`, `std`, `var`, `prod`, `cumsum`, `abs`, `sqrt`, `round`, `norm`, `diff`, `trapz`, `kron`, `dot`, `mod`, `mean(true)`, and the plots (`heatmap(m < 0)`, `imagesc`, `plot`, `surf`, `contour`, …) all work. The result is a double. `sum` counts trues. Shape functions keep the logical class: `reshape(L, m, n)`, `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `cat` / `horzcat` / `vertcat` of logicals, and `min` / `max` of logicals (with `[m, i] = max(L)`, `i` stays numeric). Mixing a logical with a double (`max(L, 0.5)`, `[L, m]`, `cat(1, L, m)`) gives a double. There is no rank-3 logical, so `cat(3, L, L)` and a 3-D `reshape` give 0/1 doubles. `any` / `all` of a matrix reduce down each column to a logical row. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
 
 Storage is one byte per element (`0` or `1`), row-major. A release scan of 1,000,000 flags (about one third set), best of five, counted trues in 364 µs on bytes and 92 µs on a packed bit vector, and listed the true positions in 1.10 ms and 695 µs. The byte form stays: each `get` is one load, and that is how MATLAB stores `logical`.
 
