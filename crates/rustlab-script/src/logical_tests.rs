@@ -202,7 +202,7 @@ fn elementwise_and_or_xor_and_not() {
 fn double_and_arithmetic_promote() {
     assert_eq!(re(&eval("a = double(true)"), "a"), 1.0);
     let ev = eval("a = double([true, false, true])");
-    assert!(matches!(val(&ev, "a"), Value::Vector(_)));
+    assert!(matches!(val(&ev, "a"), Value::Matrix(m) if m.dim() == (1, 3)));
     assert_eq!(crate::testutil::vec_re(&ev, "a"), vec![1.0, 0.0, 1.0]);
     assert_eq!(re(&eval("a = sum([true, false, true] + 0)"), "a"), 2.0);
     assert!(matches!(

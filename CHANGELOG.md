@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.67
+
+### Fixed
+- **Logical arrays in builtins.** Since logical arrays arrived (0.3.56), most builtins rejected them: `mean(m < 0)` was `mean: unsupported type logical`, `reshape(m > 0, 1, 4)` was `cannot reshape logical`, and `heatmap(m < 0)` was `expected matrix, got logical(2x2)`, while `sum(m < 0)` worked. Every numeric builtin now takes a logical array or a scalar `true` / `false` as its 0/1 doubles, as MATLAB does, and returns a double. This covers the reductions (`mean`, `median`, `std`, `var`, `prod`, `cumsum`, `trapz`, `cumtrapz`, `diff`, `norm`, `nnz`, `trace`, `dot`), element-wise math (`abs`, `sqrt`, `exp`, `round`, `floor`, `ceil`, `real`, `imag`, `mod`), `kron`, `inv`, `convolve`, `sprintf("%d", true)`, and the plots (`heatmap`, `imagesc`, `plot`, `stem`, `bar`, `surf`, `contour`, …). Shape functions keep the logical class when every data input is logical: `reshape` (with exactly the requested `m×n`, so `reshape(v, 3, 1)` of a logical row is a `3×1` logical), `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `min` / `max` (the index output of `[m, i] = max(L)` stays numeric), and `cat` / `horzcat` / `vertcat`. A logical mixed with a double (`max(L, 0.5)`, `cat(1, L, m)`) gives a double. There is no rank-3 logical: `cat(3, L, L)` and a 3-D `reshape` give 0/1 doubles. `size`, `numel`, `length`, `ndims`, `class`, `islogical`, `isa`, `sum`, `find`, `table`, `struct`, `save`, `disp`, and `print` still see the logical itself.
+- **`any` / `all` of a matrix.** A matrix with more than one row and column was an error (numeric or logical). It now reduces down each column to a `1×cols` logical row, as in MATLAB: `any([0, 1; 0, 0])` is logical `[0 1]`.
+
+### Breaking / behavior changes
+- **`double` of a logical row is a `1×n` matrix.** `double(L)` of a `1×n` logical returned a 1-D vector, while every wider logical became a matrix. It now has the logical's shape, the same as `double` of a `1×n` double: `double([1, -2, 3] > 0)` prints as `Matrix(1x3)`, and `size` is still `[1, 3]`. A `1×1` logical is still a scalar. The same `1×n` matrix is what arithmetic with a scalar or a matrix gives (`(v > 0) + 0`), so it broadcasts against a column as MATLAB does (`[1; 2; 3] + (r > 0)` is `3×3`). Next to a 1-D vector a logical row is still a vector, so `x .* (x > 0)` keeps the type of `x`, and `[mask, 1]` concatenation is unchanged. Migration: a script that relied on the vector-only rule that an `n×1` column plus a length-`n` vector is element-wise, with the vector coming from `double(mask)` or `mask + scalar`, now gets the `n×n` result; use `mask(:)` or a transpose to pick the orientation.
+
 ## 0.3.66
 
 ### Added
