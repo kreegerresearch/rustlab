@@ -1,0 +1,2903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sample</title>
+<script src="/assets/plotly.min.js"></script>
+<link rel="stylesheet" href="/assets/katex/katex.min.css">
+<script defer src="/assets/katex/katex.min.js"></script>
+<script defer src="/assets/katex/contrib/auto-render.min.js"></script>
+<script>
+// Page init. Lives in a real script element (not on* attributes) so it also
+// runs under the watch server's CSP, which forbids inline event handlers.
+// `defer` scripts finish before DOMContentLoaded, so KaTeX is loaded here.
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.renderMathInElement) {
+    renderMathInElement(document.body, {
+      delimiters: [
+        {left: '\\[', right: '\\]', display: true},
+        {left: '\\(', right: '\\)', display: false}
+      ]
+    });
+  }
+});
+// Sidebar toggle (narrow viewports). Delegated so it survives the live
+// server swapping the button on re-render.
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.closest && e.target.closest('button.nav-toggle')) {
+    const nav = document.querySelector('nav.sidebar');
+    if (nav) nav.classList.toggle('open');
+  }
+});
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--rl-bg, #303446);
+    color: var(--rl-text, #c6d0f5);
+    display: flex;
+    min-height: 100vh;
+  }
+  /* Height of the fixed topbar; the sidebar and main both clear it.
+     `--rl-*` tokens come from the resolved ThemeColors so chrome can
+     restyle without rewriting the whole stylesheet. Rules below use
+     var(--rl-…, <literal>) so missing tokens keep today's colors. */
+  :root {
+    --topbar-h: 2.6rem;
+    --rl-bg: #303446;
+    --rl-bg-secondary: #292c3c;
+    --rl-text: #c6d0f5;
+    --rl-text-dim: #aab2d1;
+    --rl-border: #414559;
+    --rl-border-subtle: #51576d;
+    --rl-accent-primary: #cda4e7;
+    --rl-accent-secondary: #98b3f0;
+    --rl-accent-tertiary: #85c1dc;
+    --rl-code-bg: #232634;
+    --rl-output-bg: #292c3c;
+    --rl-inline-code-bg: #414559;
+    --rl-error-bg: #1e0a0a;
+    --rl-error-text: #e78284;
+    --rl-plot-bg: #303446;
+    --rl-plot-grid: rgba(150,150,180,0.3);
+    --rl-syn-keyword: #ca9ee6;
+    --rl-syn-function: #8caaee;
+    --rl-syn-number: #ef9f76;
+    --rl-syn-string: #a6d189;
+    --rl-syn-comment: #868ca3;
+    --rl-syn-operator: #99d1db;
+    --rl-footer-text: #979caf;
+    --rl-cm-mark-bg: #545255;
+    --rl-cm-note-bg: #292c3c;
+    --rl-cm-note-border: #98b3f0;
+    --rl-dx-add-bar: #a6d189;
+    --rl-dx-mod-bar: #8caaee;
+    --rl-dx-del-bar: #ec9b9d;
+    --rl-dx-add-line: #222728;
+    --rl-dx-del-line: #2b242c;
+    --rl-dx-add-word: #4a5755;
+    --rl-dx-del-word: #594b59;
+    --rl-accent: var(--rl-accent-primary, #cda4e7);
+  }
+  /* ── Navigation sidebar (in-page TOC) ── */
+  nav.sidebar {
+    position: fixed;
+    top: var(--topbar-h);
+    left: var(--fb-w, 0px);
+    width: 220px;
+    height: calc(100vh - var(--topbar-h));
+    background: var(--rl-bg-secondary, #292c3c);
+    border-right: 1px solid var(--rl-border, #414559);
+    padding: 1.5rem 0;
+    overflow-y: auto;
+    /* Unbreakable content (a wide KaTeX formula) clips at the column edge
+       rather than painting over `main` or growing a stray h-scrollbar. */
+    overflow-x: hidden;
+    z-index: 100;
+    transition: transform 0.25s ease;
+  }
+  nav.sidebar .nav-title {
+    overflow-wrap: anywhere;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--rl-accent-primary, #cda4e7);
+    padding: 0 1rem 1rem;
+    border-bottom: 1px solid var(--rl-border, #414559);
+    margin-bottom: 0.5rem;
+  }
+  nav.sidebar a {
+    display: block;
+    padding: 0.4rem 1rem;
+    color: var(--rl-text-dim, #aab2d1);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background 0.15s, color 0.15s;
+    /* Headings can be long, and KaTeX typesets any inline math in them
+       (auto-render walks the whole body, sidebar included). Text wraps;
+       KaTeX output is internally nowrap, so an unbreakable formula wider
+       than the column is clipped by the sidebar's overflow-x instead —
+       it must never leak over the content. */
+    overflow-wrap: anywhere;
+  }
+  nav.sidebar .katex {
+    font-size: 0.95em;
+  }
+  nav.sidebar a:hover {
+    background: var(--rl-border, #414559);
+    color: var(--rl-text, #c6d0f5);
+  }
+  nav.sidebar a.h2 {
+    padding-left: 1.8rem;
+    font-size: 0.85rem;
+  }
+  nav.sidebar a.h3 {
+    padding-left: 2.6rem;
+    font-size: 0.8rem;
+  }
+  /* ── Hamburger toggle (hidden on desktop) ── */
+  .nav-toggle {
+    display: none;
+    position: fixed;
+    top: 0.7rem;
+    left: 0.7rem;
+    z-index: 200;
+    background: var(--rl-border, #414559);
+    border: 1px solid var(--rl-border-subtle, #51576d);
+    border-radius: 6px;
+    color: var(--rl-text, #c6d0f5);
+    font-size: 1.3rem;
+    width: 2.4rem;
+    height: 2.4rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  /* ── Main content ── */
+  main {
+    /* Centre the 960px column in the space right of the sidebar on wide
+       displays, never under it. An auto right margin does NOT do this:
+       with `flex: 1` the item fills the line before `max-width` clamps
+       it, and the freed space all lands on the single auto margin —
+       position unchanged, prose pinned against the sidebar. (Measured:
+       the auto-right-margin form left main at x=220 on a 1600px
+       viewport; this puts it at 320, like the old `margin: 0 auto`.) */
+    margin-left: max(220px, calc(50% - 480px));
+    flex: 1;
+    padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
+    max-width: 960px;
+    min-width: 0;
+  }
+  /* ── Topbar (between-notebook nav) ──
+     Fixed rather than sticky: it spans the full width above the sidebar, so
+     it cannot participate in the body's flex row. */
+  .topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--topbar-h);
+    z-index: 150;
+    background: var(--rl-bg-secondary, #292c3c);
+    border-bottom: 1px solid var(--rl-border, #414559);
+    padding: 0 1.2rem;
+    font-size: 0.85rem;
+    color: var(--rl-text-dim, #aab2d1);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .topbar a {
+    color: var(--rl-accent-secondary, #98b3f0);
+    text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar a:hover {
+    text-decoration: underline;
+  }
+  /* Prev/next flank the breadcrumb and yield space to it when cramped.
+     The Index link must NOT shrink: `overflow: hidden` gives every topbar
+     link a zero flex minimum, and on a narrow screen the crumb squeezed
+     "Index" — the one link back to the collection root — to a 5px sliver. */
+  .topbar a.index {
+    flex: 0 0 auto;
+  }
+  .topbar a.prev, .topbar a.next {
+    flex: 0 1 auto;
+    max-width: 22%;
+  }
+  .topbar a.next {
+    margin-left: auto;
+    text-align: right;
+  }
+  .topbar .crumb {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Claim the leftover width. Flex items default to min-width:auto and
+       refuse to shrink below their content, so without this the fixed-size
+       prev/next links won and the title — the one label saying where you
+       are — collapsed to nothing on a narrow screen. `.current` keeps
+       min-width:0 so it ellipsises instead. */
+    flex: 1 1 auto;
+  }
+  .topbar .sep {
+    color: var(--rl-text-dim, #aab2d1);
+  }
+  .topbar .current {
+    color: var(--rl-text, #c6d0f5);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  /* Present only when at least one code cell failed. Sits beside the
+     title and jumps to `#rl-error-1`. Batch HTML and watch share this
+     markup; watch syncs the top bar on a chrome change. */
+  .topbar a.rl-errors {
+    flex: 0 0 auto;
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--rl-error-text, #e78284);
+    border-radius: 999px;
+    color: var(--rl-error-text, #e78284);
+    background: var(--rl-error-bg, #1e0a0a);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .topbar a.rl-errors:hover {
+    text-decoration: underline;
+  }
+  /* Anchor targets must clear the fixed topbar. Without this a link scrolls
+     its target to y=0, which is behind the bar — the heading you clicked is
+     the one thing you cannot see. Applies to EVERY id, not just the
+     generated `heading-N` ones: explicit `{#anchor}` headings, footnote
+     back-references and block ids are all link targets too. */
+  [id] {
+    scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
+  }
+  /* No headings, no sidebar: the column centres in the full viewport.
+     A collection file browser, when present, adds `--fb-w` on the left
+     of the TOC (or in place of it, when there is no TOC). */
+  body.no-toc main {
+    margin-left: max(0px, calc(50% - 480px));
+  }
+  body.has-files main {
+    margin-left: max(calc(220px + var(--fb-w)), calc(50% - 480px));
+  }
+  body.has-files.no-toc main {
+    margin-left: max(var(--fb-w), calc(50% - 480px));
+  }
+  .prose {
+    line-height: 1.7;
+    margin-bottom: 1.5rem;
+  }
+  .prose h1 {
+    font-size: 1.8rem;
+    color: var(--rl-accent-primary, #cda4e7);
+    margin: 2rem 0 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--rl-border, #414559);
+  }
+  .prose h2 {
+    font-size: 1.4rem;
+    color: var(--rl-accent-secondary, #98b3f0);
+    margin: 1.8rem 0 0.8rem;
+  }
+  .prose h3 {
+    font-size: 1.15rem;
+    color: var(--rl-accent-tertiary, #85c1dc);
+    margin: 1.4rem 0 0.6rem;
+  }
+  .prose p {
+    margin-bottom: 1rem;
+  }
+  /* Prose/callout/exercise links. Without this, UA-default `#0000EE` /
+     visited `#551A8B` sit on the dark page background at ~2:1 contrast.
+     More-specific `.topbar a` / `.page-nav a` / `nav.sidebar a` keep
+     their own colors. */
+  .prose a, .callout a, .exercise a {
+    color: var(--rl-accent-secondary, #98b3f0);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }
+  .prose a:visited, .callout a:visited, .exercise a:visited {
+    color: var(--rl-accent-primary, #cda4e7);
+  }
+  .prose a:hover, .callout a:hover, .exercise a:hover {
+    color: var(--rl-accent-tertiary, #85c1dc);
+  }
+  .prose code {
+    background: var(--rl-inline-code-bg, #414559);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+  .prose table {
+    border-collapse: collapse;
+    margin: 1rem 0;
+  }
+  .prose th, .prose td {
+    border: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--rl-text, #c6d0f5) 30%, var(--rl-bg, #303446));
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+  }
+  .prose th {
+    background: color-mix(in srgb, var(--rl-text, #c6d0f5) 11%, var(--rl-bg, #303446));
+    color: var(--rl-accent-primary, #cda4e7);
+    font-weight: 600;
+    border-bottom: 1px solid color-mix(in srgb, var(--rl-text, #c6d0f5) 30%, var(--rl-bg, #303446));
+  }
+  .prose tbody tr:nth-child(even) td {
+    background: color-mix(in srgb, var(--rl-text, #c6d0f5) 6%, var(--rl-bg, #303446));
+  }
+  .prose img, .callout img {
+    max-width: 100%;
+    height: auto;
+  }
+  .missing-figure {
+    color: var(--rl-text-dim, #aab2d1);
+    font-style: italic;
+  }
+  .prose ul, .prose ol {
+    margin: 0.5rem 0 1rem 1.5rem;
+  }
+  .prose li {
+    margin-bottom: 0.3rem;
+  }
+  .prose blockquote {
+    border-left: 3px solid var(--rl-accent-primary, #cda4e7);
+    padding-left: 1rem;
+    color: var(--rl-text-dim, #aab2d1);
+    margin: 1rem 0;
+  }
+  .code-block {
+    margin-bottom: 1.5rem;
+  }
+  /* Source, printed output, and errors. The accent rule marks the cell.
+     Plots are siblings of this wrapper, so they stay full width. */
+  .rl-cell {
+    margin: 0.2rem 0 0.35rem 0.15rem;
+    padding: 0.05rem 0 0.05rem 0.85rem;
+    border-left: 3px solid var(--rl-accent-primary, #cda4e7);
+  }
+  /* A cell that failed. Same rule, error color, so the red pre is not
+     the only signal when the page is long. */
+  .rl-cell.rl-cell-error {
+    border-left-color: var(--rl-error-text, #e78284);
+  }
+  /* Language chip shared by rustlab cells and highlighted prose fences. */
+  .rl-lang {
+    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--rl-text-dim);
+    padding: 0.1rem 0 0.35rem;
+    user-select: none;
+  }
+  /* Source only. Open by default; collapsing leaves the summary, and
+     the `.rl-cell` rule still marks output that follows. */
+  .rl-src > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .rl-src > summary::-webkit-details-marker { display: none; }
+  .rl-src > summary::marker { content: ""; }
+  .rl-src > summary::before {
+    content: "▸";
+    display: inline-block;
+    width: 1.1em;
+    color: var(--rl-accent);
+  }
+  .rl-src[open] > summary::before {
+    content: "▾";
+  }
+  /* Prose fences (bash / python / toml / yaml / text). Same panel colors as a rustlab
+     cell: `.source` for code, `.output` for uncolored text. The accent
+     rule matches the PDF tcolorbox. */
+  .rl-fence {
+    margin: 0.35rem 0 1.1rem 0.15rem;
+    padding-left: 0.85rem;
+    border-left: 3px solid var(--rl-accent-primary, #cda4e7);
+  }
+  .rl-fence .output {
+    margin-top: 0;
+  }
+  .rl-fence code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+  .source {
+    background: var(--rl-code-bg, #232634);
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--rl-text, #c6d0f5);
+  }
+  .output {
+    background: var(--rl-output-bg, #292c3c);
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    margin-top: 0.5rem;
+    color: var(--rl-text-dim, #aab2d1);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+  /* Table display. Header wash, zebra, and rules are a mix of the theme
+     text color into the page background (11%, 6%, 30%). No extra stylesheet
+     and no CDN. */
+  table.rl-table {
+    border-collapse: collapse;
+    margin: 0.6rem 0 0.2rem;
+    background: var(--rl-output-bg, #292c3c);
+    color: var(--rl-text, #c6d0f5);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    border: 1px solid color-mix(in srgb, var(--rl-text, #c6d0f5) 30%, var(--rl-bg, #303446));
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  table.rl-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--rl-accent-primary, #cda4e7);
+    background: color-mix(in srgb, var(--rl-text, #c6d0f5) 11%, var(--rl-bg, #303446));
+    border-bottom: 1px solid color-mix(in srgb, var(--rl-text, #c6d0f5) 30%, var(--rl-bg, #303446));
+    padding: 0.4rem 0.8rem;
+  }
+  table.rl-table td {
+    padding: 0.3rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--rl-text, #c6d0f5) 30%, var(--rl-bg, #303446));
+    color: var(--rl-text, #c6d0f5);
+  }
+  table.rl-table td.rl-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  table.rl-table tr:last-child td {
+    border-bottom: none;
+  }
+  table.rl-table tbody tr:nth-child(even) td {
+    background: color-mix(in srgb, var(--rl-text, #c6d0f5) 6%, var(--rl-bg, #303446));
+  }
+  .error {
+    background: var(--rl-error-bg, #1e0a0a);
+    border: 1px solid var(--rl-error-text, #e78284);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    margin-top: 0.5rem;
+    color: var(--rl-error-text, #e78284);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+  }
+  .plot-container {
+    background: var(--rl-bg, #303446);
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 8px;
+    margin-top: 0.5rem;
+    height: 450px;
+  }
+  .plot-container > div {
+    width: 100%;
+    height: 100%;
+  }
+  footer {
+    color: var(--rl-footer-text, #979caf);
+    font-size: 0.8rem;
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rl-border, #414559);
+  }
+  .page-nav {
+    display: flex;
+    align-items: stretch;
+    gap: 0.5rem;
+    margin-top: 2.5rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--rl-border, #414559);
+  }
+  .page-nav a {
+    flex: 1 1 0;
+    padding: 0.7rem 1rem;
+    background: var(--rl-bg-secondary, #292c3c);
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 8px;
+    color: var(--rl-accent-secondary, #98b3f0);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background 0.15s, border-color 0.15s;
+    min-width: 0;
+  }
+  .page-nav a:hover {
+    background: var(--rl-border, #414559);
+    border-color: var(--rl-accent-secondary, #98b3f0);
+  }
+  .page-nav .label {
+    display: block;
+    color: var(--rl-text-dim, #aab2d1);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+  }
+  .page-nav .title {
+    display: block;
+    color: var(--rl-text, #c6d0f5);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .page-nav .prev { text-align: left; }
+  .page-nav .index { text-align: center; align-self: center; }
+  .page-nav .next { text-align: right; }
+  /* ── Syntax highlighting ── */
+  .syn-kw  { color: var(--rl-syn-keyword, #ca9ee6); }
+  .syn-fn  { color: var(--rl-syn-function, #8caaee); }
+  .syn-num { color: var(--rl-syn-number, #ef9f76); }
+  .syn-str { color: var(--rl-syn-string, #a6d189); }
+  .syn-com { color: var(--rl-syn-comment, #868ca3); font-style: italic; }
+  .syn-op  { color: var(--rl-syn-operator, #99d1db); }
+  /* ── Callout blocks ── */
+  .callout {
+    border-left: 4px solid;
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    margin: 1rem 0;
+  }
+  .callout-title {
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .callout-note {
+    border-color: var(--rl-accent-secondary, #98b3f0);
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .callout-note .callout-title { color: var(--rl-accent-secondary, #98b3f0); }
+  .callout-tip {
+    border-color: var(--rl-accent-tertiary, #85c1dc);
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .callout-tip .callout-title { color: var(--rl-accent-tertiary, #85c1dc); }
+  .callout-important {
+    border-color: var(--rl-accent-primary, #cda4e7);
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .callout-important .callout-title { color: var(--rl-accent-primary, #cda4e7); }
+  .callout-warning {
+    border-color: var(--rl-error-text, #e78284);
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .callout-warning .callout-title { color: var(--rl-error-text, #e78284); }
+  .callout-caution {
+    border-color: var(--rl-error-text, #e78284);
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .callout-caution .callout-title { color: var(--rl-error-text, #e78284); }
+  /* ── Interactive widgets ── */
+  .rl-widget {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 6px;
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .rl-widget-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    color: var(--rl-text, #c6d0f5);
+  }
+  .rl-widget-input {
+    flex: 1;
+    accent-color: var(--rl-accent-primary, #cda4e7);
+  }
+  .rl-widget-value {
+    font-variant-numeric: tabular-nums;
+    min-width: 4ch;
+    text-align: right;
+    color: var(--rl-accent-primary, #cda4e7);
+  }
+  .rl-widget-options {
+    flex-wrap: wrap;
+  }
+  .rl-widget-choice {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }
+  .rl-widget input[type="number"] {
+    flex: 0 0 auto;
+    width: 7rem;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 4px;
+    background: var(--rl-bg, #303446);
+    color: var(--rl-text, #c6d0f5);
+  }
+  .rl-widget input:disabled {
+    opacity: 0.65;
+    cursor: default;
+  }
+  .rl-widget-drives, .rl-widget-note, .rl-drive-note {
+    margin: 0 0 0.75rem;
+    padding: 0 0.9rem;
+    font-size: 0.8rem;
+    color: var(--rl-text-dim, #aab2d1);
+  }
+  .rl-widget-drives {
+    margin-top: -0.35rem;
+  }
+  .rl-widget-drives a {
+    color: var(--rl-accent-primary, #cda4e7);
+  }
+  /* Control panel folded into the code section, left of the plot.
+     Nested in column 1 so it does not fight the comments track. */
+  .rl-drive {
+    display: grid;
+    grid-template-columns: 16rem minmax(0, 1fr);
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 8px;
+    background: var(--rl-bg-secondary, #292c3c);
+    align-items: start;
+  }
+  .rl-drive-solo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rl-drive-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+  .rl-drive .rl-widget {
+    flex-direction: column;
+    align-items: stretch;
+    margin: 0;
+    padding: 0.15rem 0;
+    border: none;
+    background: transparent;
+    gap: 0.35rem;
+  }
+  .rl-drive .rl-widget-label {
+    white-space: normal;
+  }
+  .rl-drive .rl-widget-input[type="range"] {
+    width: 100%;
+  }
+  .rl-drive-plot {
+    min-width: 0;
+  }
+  .rl-drive-plot .plot-container {
+    margin-top: 0;
+  }
+  .rl-drive-note {
+    margin: 0.35rem 0 0;
+    padding: 0;
+  }
+  @keyframes rl-plot-flash {
+    0% { outline: 2px solid var(--rl-accent-primary, #cda4e7); outline-offset: 2px; }
+    100% { outline-color: transparent; }
+  }
+  .rl-plot-flash {
+    animation: rl-plot-flash 700ms ease-out 1;
+  }
+  @media (max-width: 799px) {
+    .rl-drive {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  /* ── Exercise / solution blocks ── */
+  .exercise {
+    border: 1px solid var(--rl-border, #414559);
+    border-radius: 8px;
+    padding: 1.2rem;
+    margin: 1.5rem 0;
+    background: var(--rl-bg-secondary, #292c3c);
+  }
+  .exercise-title {
+    font-weight: 700;
+    color: var(--rl-accent-primary, #cda4e7);
+    margin-bottom: 0.8rem;
+    font-size: 1.05rem;
+  }
+  .solution {
+    margin-top: 1rem;
+  }
+  .solution > summary {
+    cursor: pointer;
+    color: var(--rl-accent-secondary, #98b3f0);
+    font-weight: 600;
+    padding: 0.3rem 0;
+  }
+  /* ── Collapsible code output ── */
+  .code-details > summary {
+    cursor: pointer;
+    color: var(--rl-accent-secondary, #98b3f0);
+    font-weight: 600;
+    padding: 0.4rem 0;
+  }
+  /* ── Image grid ── */
+  .image-grid {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  /* ── Responsive: collapse sidebar on narrow screens ── */
+  @media (max-width: 768px) {
+    nav.sidebar {
+      transform: translateX(-100%);
+    }
+    nav.sidebar.open {
+      transform: translateX(0);
+    }
+    .nav-toggle {
+      display: block;
+    }
+    main {
+      margin-left: 0;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }
+    /* Leave room for the hamburger, which sits over the topbar's left
+       end. no-toc pages have no hamburger — don't reserve 3rem of the
+       narrowest layout for a button that doesn't exist. */
+    body:not(.no-toc) .topbar {
+      padding-left: 3rem;
+    }
+    /* The file browser overlays on a narrow screen (`--fb-w: 0` in its
+       own stylesheet) instead of reserving a second column beside the
+       off-canvas TOC. */
+    body.has-files main,
+    body.has-files.no-toc main {
+      margin-left: 0;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }
+    .topbar a.prev, .topbar a.next {
+      max-width: 28%;
+    }
+  }
+
+.rl-cm-mark {
+  background: var(--rl-cm-mark-bg, #554f4e);
+  color: var(--rl-text, inherit);
+  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  padding: 0 0.05em;
+}
+.rl-cm-ref {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--rl-accent-primary);
+  margin-left: 0.12em;
+  cursor: pointer;
+}
+.rl-cm-ref::before { content: "["; }
+.rl-cm-ref::after { content: "]"; }
+.rl-cm-ref-block { float: right; margin: 0 0 0.2rem 0.4rem; }
+.rl-cm-cellmark { display: flex; justify-content: flex-end; }
+p:has(> .rl-cm-ref-block:only-child) { margin: 0.2rem 0; }
+/* Right margin column inside each section. The prose shrinks so the
+   column stays, including a directory page (`body.has-files`) with the
+   file browser and the TOC. Cards are never in the paragraph. With
+   scripting off they stack in this column in document order. 14rem is
+   the default; a reader drag writes an inline width on `body`. */
+body.has-cm-margin { --rl-cm-col: 14rem; }
+body.has-cm-margin section.rl-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rl-cm-col, 14rem);
+  column-gap: 1rem;
+  align-items: start;
+}
+body.has-cm-margin section.rl-block > .rl-cm-margin {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
+  grid-column: 1;
+  min-width: 0;
+}
+.rl-cm-margin-label {
+  display: block;
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rl-text-dim, var(--rl-text));
+}
+.rl-cm-card, .rl-cm-note, .rl-cm-blocknote {
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  display: block;
+  margin: 0 0 0.55rem;
+  padding: 0.4rem 0.55rem 0.45rem;
+}
+.rl-cm-head { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; margin-bottom: 0.2rem; }
+.rl-cm-num { font-weight: 700; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); }
+.rl-cm-meta { opacity: 0.85; }
+.rl-cm-text { display: block; }
+.rl-cm-fold { display: block; }
+.rl-cm-card.rl-cm-clamped:not(.rl-cm-open) .rl-cm-fold {
+  max-height: calc(1.35em * 6);
+  overflow: hidden;
+}
+.rl-cm-more {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rl-accent-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.rl-cm-more[hidden] { display: none; }
+.rl-cm-link {
+  position: absolute;
+  left: -0.7rem;
+  width: 0.7rem;
+  border-left: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  opacity: 0.55;
+  pointer-events: none;
+}
+.rl-cm-link[hidden] { display: none; }
+.rl-cm-card.rl-cm-drift .rl-cm-num { font-size: 1rem; }
+.rl-cm-reply {
+  display: block;
+  margin: 0.35rem 0 0.15rem 0.75rem;
+  padding-left: 0.45rem;
+  border-left: 2px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+}
+.rl-cm-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+.rl-cm-mark.rl-cm-hot, .rl-cm-ref.rl-cm-hot {
+  outline: 2px solid var(--rl-accent-primary);
+  outline-offset: 1px;
+}
+.rl-cm-card.rl-cm-hot {
+  border-color: var(--rl-accent-primary);
+  box-shadow: -3px 0 0 var(--rl-accent-primary);
+}
+.rl-cm-warn { cursor: help; }
+.rl-comments-toggle { margin-left: 0.8rem; font-size: 0.85rem; white-space: nowrap; }
+.rl-cm-confirm { margin-left: 0.6rem; font-size: 0.8rem; }
+/* `!important` beats a dragged inline width on body. The collapsed
+   strip is only the wide layout, and it is declared first so this
+   rule still wins when Comments is unchecked. */
+@media (min-width: 800px) {
+  body.has-cm-margin.rl-cm-collapsed { --rl-cm-col: 2.5rem !important; }
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-fold,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-meta,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-actions,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-more,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-link,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-margin-label,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-reply { display: none; }
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-card {
+    padding: 0.2rem 0.15rem;
+    text-align: center;
+  }
+}
+body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px !important; }
+body:has(#rl-comments:not(:checked)) #rl-cm-sizer { display: none !important; }
+body:has(#rl-comments:not(:checked)) section.rl-block { column-gap: 0; }
+body:has(#rl-comments:not(:checked)) .rl-cm-margin,
+body:has(#rl-comments:not(:checked)) .rl-cm-ref,
+body:has(#rl-comments:not(:checked)) .rl-cm-cellmark { display: none; }
+body:has(#rl-comments:not(:checked)) .rl-cm-mark {
+  background: transparent;
+  border-bottom-color: transparent;
+  color: inherit;
+}
+@media (min-width: 800px) {
+  .rl-cm-margin-label { pointer-events: none; list-style: none; }
+  .rl-cm-margin-label::-webkit-details-marker { display: none; }
+  .rl-cm-margin-label::marker { content: ""; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: none; }
+}
+#rl-cm-menu, #rl-cm-pop {
+  position: fixed;
+  /* Above the TOC sidebar (100), the file browser (120, or 180 when the
+     narrow browser is open), the watch contents drawer (240), and the
+     top bar (150). The edit toolbar stays higher. */
+  z-index: 400;
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+#rl-cm-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--rl-text);
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  cursor: pointer;
+}
+/* Composer. Name on top, comment full width, actions in one row at
+   the right. Tokens are the theme roles, so mocha and latte both
+   keep 4.5:1 (accent fill with the page background as the label). */
+#rl-cm-pop {
+  width: min(20rem, calc(100vw - 16px));
+  padding: 0.65rem 0.7rem 0.6rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+#rl-cm-pop-ctx { margin: 0 0 0.45rem; font-size: 0.8rem; }
+#rl-cm-pop-ctx:empty { display: none; }
+#rl-cm-pop label {
+  display: block;
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  color: var(--rl-text);
+}
+#rl-cm-pop input, #rl-cm-pop textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--rl-text);
+  background: var(--rl-bg, var(--rl-bg-secondary));
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+}
+#rl-cm-pop textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+  margin: 0 0 0.55rem;
+}
+.rl-cm-pop-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+#rl-cm-pop .rl-cm-pop-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--rl-text);
+  background: transparent;
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  padding: 0.28rem 0.55rem;
+}
+#rl-cm-pop #rl-cm-go {
+  color: var(--rl-bg);
+  background: var(--rl-accent-primary);
+  border-color: var(--rl-accent-primary);
+  font-weight: 600;
+}
+/* `display` on the buttons above beats the user-agent `[hidden]` rule.
+   This selector is at least as specific and comes later. */
+#rl-cm-menu button[hidden], #rl-cm-pop button[hidden] { display: none; }
+.rl-cm-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  background: transparent;
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.1rem 0.4rem;
+}
+#rl-cm-menu button:hover, #rl-cm-menu button:focus,
+#rl-cm-pop button:hover, #rl-cm-pop button:focus,
+.rl-cm-actions button:hover, .rl-cm-actions button:focus {
+  border-color: var(--rl-cm-note-border, var(--rl-accent-secondary));
+  outline: none;
+}
+@media (pointer: coarse) {
+  #rl-cm-menu button, #rl-cm-pop button { padding: 0.55rem 0.7rem; }
+  .rl-cm-actions button { padding: 0.3rem 0.5rem; }
+}
+/* Drag handle on the column's left edge, in the 1rem gap, so it does
+   not cover the prose or a widget in column 1. The box is fixed; the
+   script parks it on the aside. */
+#rl-cm-sizer {
+  position: fixed;
+  top: var(--topbar-h, 2.6rem);
+  bottom: 0;
+  width: 12px;
+  z-index: 160;
+  pointer-events: none;
+}
+#rl-cm-sizer[hidden] { display: none; }
+#rl-cm-collapse, #rl-cm-resize { pointer-events: auto; }
+#rl-cm-collapse {
+  position: absolute;
+  top: 0.35rem;
+  left: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+#rl-cm-collapse:focus-visible {
+  outline: 2px solid var(--rl-accent-primary);
+  outline-offset: 1px;
+}
+#rl-cm-resize {
+  position: absolute;
+  top: 1.9rem;
+  bottom: 0;
+  left: 0;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+#rl-cm-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: var(--rl-cm-note-border, var(--rl-accent-secondary));
+}
+#rl-cm-resize:hover::after, #rl-cm-resize:focus-visible::after {
+  background: var(--rl-accent-primary);
+}
+#rl-cm-resize:focus-visible { outline: none; }
+/* A side column does not fit. Cards drop to a drawer at the bottom of
+   the section. They stay out of the paragraph. `!important` drops a
+   dragged width. The collapsed strip does not apply here. */
+@media (max-width: 799px) {
+  body.has-cm-margin { --rl-cm-col: 0px !important; }
+  #rl-cm-sizer { display: none !important; }
+  body.has-cm-margin section.rl-block { column-gap: 0; }
+  body.has-cm-margin section.rl-block > .rl-cm-margin {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 0.75rem;
+  }
+  .rl-cm-margin-label { pointer-events: auto; cursor: pointer; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: block; }
+}
+.rl-cm-undo {
+  position: fixed; right: 16px; bottom: 16px; z-index: 450;
+  background: var(--rl-bg-secondary, #313244); color: var(--rl-text, #cdd6f4);
+  border: 1px solid var(--rl-border, #45475a); border-radius: 8px;
+  padding: 8px 12px; font: 13px/1.3 -apple-system, system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.rl-cm-undo button { margin-left: 8px; }
+.rl-cm-undo[hidden] { display: none; }
+@media print {
+  .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; width: auto !important; }
+  .rl-cm-card.rl-cm-clamped .rl-cm-fold { max-height: none; overflow: visible; }
+  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo, .rl-cm-more, .rl-cm-link, #rl-cm-sizer { display: none !important; }
+}
+
+</style>
+<style>
+  #rl-toolbar {
+    position: fixed; top: 10px; right: 14px; z-index: 100000;
+    display: flex; gap: 6px; align-items: center;
+  }
+  /* Every served page carries the topbar; reserve room on its right so the
+     "Next" link and title don't slide under the fixed toolbar. This used to
+     be scoped to `body.topbar-layout`, which no longer exists — leaving the
+     toolbar sitting on top of the next-notebook link, unclickable. */
+  .topbar { padding-right: 9rem; }
+  #rl-toolbar { flex-wrap: wrap; justify-content: flex-end; max-width: min(70vw, 40rem); }
+  #rl-toolbar button {
+    font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 6px;
+    padding: 6px 11px; cursor: pointer;
+  }
+  #rl-toolbar button:hover { border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-toolbar button.active { background: var(--rl-accent-primary, #cda4e7); color: var(--rl-bg, #303446); border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-toolbar button[hidden] { display: none; }
+  #rl-toolbar button.rl-quiet { opacity: 0.72; padding: 4px 8px; }
+  .rl-more { position: relative; display: inline-flex; align-items: center; }
+  #rl-more-btn { min-width: 2rem; letter-spacing: 0.08em; }
+  .rl-diff-dot {
+    position: absolute; top: -1px; right: -1px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--rl-dx-mod-bar, var(--rl-accent-primary, #cda4e7)); pointer-events: none;
+  }
+  .rl-more-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 100002;
+    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+    min-width: 16rem; padding: 8px;
+    background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  }
+  #rl-toolbar #rl-diff-toggle {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: transparent; color: var(--rl-text, #c6d0f5);
+  }
+  #rl-toolbar #rl-diff-toggle.active { background: transparent; color: var(--rl-text, #c6d0f5); border-color: var(--rl-border, #414559); }
+  .rl-switch {
+    width: 28px; height: 16px; border-radius: 99px; flex: none; position: relative;
+    border: 1px solid var(--rl-border, #414559); background: var(--rl-bg, #303446);
+  }
+  .rl-switch::after {
+    content: ""; position: absolute; top: 1px; left: 1px;
+    width: 12px; height: 12px; border-radius: 50%; background: var(--rl-text, #c6d0f5);
+  }
+  #rl-diff-toggle[aria-checked="true"] .rl-switch { background: var(--rl-accent-primary, #cda4e7); border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-diff-toggle[aria-checked="true"] .rl-switch::after { left: 13px; background: var(--rl-bg, #303446); }
+  #rl-toolbar #rl-diff-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* In-panel switches stay full contrast. A disabled Show changes stays dim,
+     and the ⋯ button keeps .rl-quiet. */
+  #rl-toolbar #rl-more-panel .rl-quiet:not(:disabled),
+  #rl-toolbar .rl-menu-switch { opacity: 1; }
+  #rl-toolbar .rl-menu-switch {
+    position: relative;
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    box-sizing: border-box; text-align: left;
+    font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: transparent; color: var(--rl-text, #c6d0f5);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 6px 8px; cursor: pointer;
+  }
+  #rl-toolbar .rl-menu-switch input {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  #rl-comments:checked + .rl-switch { background: var(--rl-accent-primary, #cda4e7); border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-comments:checked + .rl-switch::after { left: 13px; background: var(--rl-bg, #303446); }
+  #rl-comments:focus-visible + .rl-switch {
+    outline: 2px solid var(--rl-accent-primary, #cda4e7); outline-offset: 2px;
+  }
+  #rl-cm-confirm:empty { display: none !important; }
+  #rl-cm-confirm:not(:empty) {
+    position: fixed; top: 46px; right: 14px; z-index: 100001; margin: 0;
+    padding: 4px 8px; max-width: 22rem;
+    background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 6px;
+    font: 12px/1.35 system-ui, sans-serif;
+  }
+  p.rl-git-note { margin: 0; font: 11px/1.35 system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1); }
+  body.rl-diff-on .rl-more-panel { width: 22rem; max-height: calc(100vh - 64px); overflow: auto; }
+  #rl-diff { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden], #rl-dx-other[hidden],
+  .rl-dx-opt[hidden], .rl-more-panel[hidden], #rl-diff-dot[hidden] { display: none !important; }
+  .rl-dx-hd {
+    margin: 8px 0 2px; font: 600 11px/1.2 system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  #rl-toolbar .rl-dx-opt {
+    display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px; align-items: start;
+    width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px;
+    background: transparent; color: var(--rl-text, #c6d0f5); border: 1px solid transparent;
+    font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  #rl-toolbar .rl-dx-opt:hover { border-color: var(--rl-border, #414559); }
+  #rl-toolbar .rl-dx-opt[aria-checked="true"] { border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-toolbar .rl-dx-opt:disabled { opacity: 0.55; cursor: not-allowed; }
+  .rl-dx-dot {
+    width: 10px; height: 10px; margin-top: 3px; border-radius: 50%;
+    border: 1.5px solid var(--rl-text-dim, #aab2d1); box-sizing: border-box;
+  }
+  .rl-dx-opt[aria-checked="true"] .rl-dx-dot { border-color: var(--rl-accent-primary, #cda4e7); background: var(--rl-accent-primary, #cda4e7); box-shadow: inset 0 0 0 2px var(--rl-bg-secondary, #292c3c); }
+  .rl-dx-t { font-weight: 600; }
+  .rl-dx-c { color: var(--rl-text-dim, #aab2d1); font-size: 12px; white-space: nowrap; }
+  .rl-dx-d { grid-column: 2 / 4; color: var(--rl-text-dim, #aab2d1); font-size: 12px; }
+  #rl-dx-other { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 4px 22px; }
+  #rl-diff input {
+    font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--rl-bg, #303446); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 6px;
+    padding: 4px 6px; width: 100%; box-sizing: border-box;
+  }
+  #rl-diff input:focus { border-color: var(--rl-accent-primary, #cda4e7); outline: none; }
+  .rl-diff-lab { font: 12px/1 system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1); display: flex; gap: 6px; align-items: center; }
+  .rl-dx-lab { width: 3.8rem; flex: none; }
+  .rl-diff-combo { position: relative; display: flex; flex: 1; min-width: 0; }
+  .rl-dx-arrow, .rl-dx-hint, .rl-dx-keys { margin: 0; font: 11px/1.35 system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1); }
+  .rl-dx-arrow { text-align: center; }
+  .rl-diff-menu {
+    margin: 0; padding: 2px; list-style: none;
+    max-height: 14rem; overflow: auto;
+    background: var(--rl-bg, #303446); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 6px;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .rl-diff-menu li { padding: 3px 6px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+  .rl-diff-menu li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rl-diff-menu li .rl-m { color: var(--rl-text-dim, #aab2d1); flex: none; }
+  .rl-diff-menu li[aria-selected="true"] { background: var(--rl-accent-primary, #cda4e7); color: var(--rl-bg, #303446); }
+  .rl-diff-menu li[aria-selected="true"] .rl-m { color: var(--rl-bg, #303446); }
+  .rl-diff-menu li.rl-diff-hint { color: var(--rl-text-dim, #aab2d1); cursor: default; }
+  .rl-diff-menu li.rl-dx-group {
+    cursor: default; padding-top: 6px; color: var(--rl-text-dim, #aab2d1);
+    font: 600 10px/1.2 system-ui, sans-serif; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  #rl-dx-list { list-style: none; margin: 0; padding: 0; font: 12px/1.35 system-ui, sans-serif; }
+  #rl-dx-list li {
+    display: grid; grid-template-columns: 4px 5.2rem 1fr; gap: 8px; align-items: center;
+    padding: 3px 6px; border-radius: 5px; cursor: pointer;
+  }
+  #rl-dx-list li:hover, #rl-dx-list li.rl-cur { background: var(--rl-bg, #303446); }
+  #rl-dx-list li:focus-visible { outline: 2px solid var(--rl-accent-primary, #cda4e7); outline-offset: -2px; }
+  #rl-dx-list li i { display: block; width: 4px; height: 14px; border-radius: 2px; }
+  #rl-dx-list li .rl-k { color: var(--rl-text-dim, #aab2d1); }
+  #rl-dx-list li.rl-empty { display: block; color: var(--rl-text-dim, #aab2d1); cursor: default; }
+  .rl-dx-keys kbd {
+    font: 11px ui-monospace, monospace; border: 1px solid var(--rl-border, #414559); border-radius: 3px; padding: 0 4px;
+  }
+  #rl-diff-banner {
+    position: fixed; top: 46px; right: 14px; z-index: 99999; margin: 0;
+    padding: 6px 10px; max-width: 30rem; text-align: left; cursor: pointer;
+    background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 8px;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  #rl-diff-banner:hover { border-color: var(--rl-accent-primary, #cda4e7); }
+  #rl-diff-banner .rl-k { color: var(--rl-text-dim, #aab2d1); }
+  #rl-diff-banner .rl-n { color: var(--rl-dx-mod-bar, var(--rl-accent-primary, #cda4e7)); font-weight: 600; }
+  .rl-diff-notice {
+    margin: 0 0 1rem; padding: 0.6rem 0.85rem;
+    background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-left: 4px solid var(--rl-accent-primary, #cda4e7);
+    border-radius: 6px;
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  /* Changes are a bar in the gutter left of the text. No wash, so body
+     text keeps its own colors. A code cell's accent rule is on its left
+     edge, so the bar sits a gutter further out. */
+  main .rl-dx { position: relative; }
+  main .rl-dx::before {
+    content: ""; position: absolute; left: -16px; top: 2px; bottom: 2px;
+    width: 4px; border-radius: 2px; pointer-events: none;
+  }
+  main section.rl-dx::before { left: -22px; }
+  main .rl-dx-add::before { background: var(--rl-dx-add-bar); }
+  main .rl-dx-mod::before { background: var(--rl-dx-mod-bar); }
+  main .rl-dx-del::before { background: var(--rl-dx-del-bar); }
+  main details.rl-dx-removed { margin: 0.6rem 0; }
+  main details.rl-dx-removed > summary {
+    cursor: pointer; list-style: none; color: var(--rl-text-dim, #aab2d1);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  main details.rl-dx-removed > summary::-webkit-details-marker { display: none; }
+  main details.rl-dx-removed > summary::before { content: "▸ "; color: var(--rl-dx-del-bar); }
+  main details.rl-dx-removed[open] > summary::before { content: "▾ "; }
+  main details.rl-dx-removed > summary b { color: var(--rl-text, #c6d0f5); font-weight: 600; }
+  main .rl-dx-gone {
+    text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }
+  main .rl-dx-gone pre { text-decoration: inherit; }
+  .rl-dx-note { margin: 4px 0 0; font: 12px/1.3 -apple-system, system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1); }
+  main pre.rl-dx-code code { display: block; }
+  main pre.rl-dx-code .rl-ln { display: block; white-space: pre-wrap; padding-right: 0.6em; }
+  main pre.rl-dx-code .rl-ln-g {
+    display: inline-block; width: 1.8em; text-align: center; color: var(--rl-text-dim, #aab2d1); user-select: none;
+  }
+  main pre.rl-dx-code .rl-ln-add { background: var(--rl-dx-add-line); box-shadow: inset 2px 0 0 var(--rl-dx-add-bar); }
+  main pre.rl-dx-code .rl-ln-del { background: var(--rl-dx-del-line); box-shadow: inset 2px 0 0 var(--rl-dx-del-bar); }
+  main pre.rl-dx-code .rl-ln-add .rl-ln-g { color: var(--rl-dx-add-bar); }
+  main pre.rl-dx-code .rl-ln-del .rl-ln-g { color: var(--rl-dx-del-bar); }
+  main pre.rl-dx-code .rl-ln-del { text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar); }
+  main details.rl-dx-src > summary { cursor: pointer; color: var(--rl-text-dim, #aab2d1); font: 12px/1.3 system-ui, sans-serif; }
+  /* Word marks. Prose words get a tint that keeps body text at 4.5:1, and
+     take the body text color so a link inside stays readable. Headings
+     and code keep their own colors and get a 2px line instead. */
+  main ins.rl-w, main del.rl-w {
+    color: var(--rl-text, #c6d0f5); border-radius: 3px; padding: 0 1px;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
+  main ins.rl-w { background: var(--rl-dx-add-word); text-decoration: none; }
+  main del.rl-w {
+    background: var(--rl-dx-del-word);
+    text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }
+  main ins.rl-w a, main del.rl-w a { color: inherit; }
+  main ins.rl-w-all { padding: 1px 2px; }
+  main :is(h1, h2, h3, h4, h5, h6) :is(ins, del).rl-w,
+  main pre.rl-dx-code :is(ins, del).rl-w,
+  main .rl-dx-srcview :is(ins, del).rl-w {
+    background: none; color: inherit; padding: 0; border-radius: 0;
+    text-decoration-thickness: 2px; text-underline-offset: 3px;
+  }
+  main :is(h1, h2, h3, h4, h5, h6) ins.rl-w,
+  main pre.rl-dx-code ins.rl-w,
+  main .rl-dx-srcview ins.rl-w {
+    text-decoration-line: underline; text-decoration-color: var(--rl-dx-add-bar);
+  }
+  main :is(h1, h2, h3, h4, h5, h6) del.rl-w {
+    text-decoration-line: line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }
+  main pre.rl-dx-code del.rl-w, main .rl-dx-srcview del.rl-w {
+    text-decoration-line: underline line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }
+  /* Source view: the unified diff of the .md. */
+  main .rl-dx-srcview {
+    margin: 3rem 0 1rem; overflow: hidden;
+    background: var(--rl-code-bg, var(--rl-code-bg, #232634)); color: var(--rl-text, #c6d0f5);
+    border: 1px solid var(--rl-border, #414559); border-radius: 8px;
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  main .rl-dx-srcview .rl-dx::before { display: none; }
+  main .rl-dx-fh {
+    padding: 8px 12px; border-bottom: 1px solid var(--rl-border, #414559); background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text-dim, #aab2d1);
+    font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  main .rl-dx-hunk { padding: 3px 12px; background: var(--rl-bg-secondary, #292c3c); color: var(--rl-text-dim, #aab2d1); font-size: 12px; }
+  main .rl-dx-l { display: grid; grid-template-columns: 3.4em 3.4em 1.8em 1fr; }
+  main .rl-dx-n { color: var(--rl-text-dim, #aab2d1); text-align: right; padding-right: 6px; user-select: none; }
+  main .rl-dx-s { text-align: center; color: var(--rl-text-dim, #aab2d1); user-select: none; }
+  main .rl-dx-x { white-space: pre-wrap; word-break: break-word; padding-right: 12px; }
+  main .rl-dx-l-add { background: var(--rl-dx-add-line); box-shadow: inset 2px 0 0 var(--rl-dx-add-bar); }
+  main .rl-dx-l-del { background: var(--rl-dx-del-line); box-shadow: inset 2px 0 0 var(--rl-dx-del-bar); }
+  main .rl-dx-l-add .rl-dx-s { color: var(--rl-dx-add-bar); }
+  main .rl-dx-l-del .rl-dx-s { color: var(--rl-dx-del-bar); }
+  main .rl-dx-none { padding: 8px 12px; }
+  .rl-dx-seg { display: inline-flex; align-self: flex-start; border: 1px solid var(--rl-border, #414559); border-radius: 6px; overflow: hidden; }
+  #rl-toolbar .rl-dx-seg button {
+    border: 0; border-radius: 0; background: transparent; color: var(--rl-text, #c6d0f5); padding: 4px 12px;
+  }
+  #rl-toolbar .rl-dx-seg button[aria-checked="true"] { background: var(--rl-accent-primary, #cda4e7); color: var(--rl-bg, #303446); font-weight: 600; }
+  .fb-git {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-left: 6px; background: var(--rl-dx-mod-bar, currentColor); vertical-align: middle;
+  }
+  body { --rl-pane-w: min(760px, max(360px, 42vw)); }
+  /* A comment column needs the pane narrower, or the fixed pane paints
+     over the margin. The column starts at 14rem and can be dragged;
+     the pane gives up width. */
+  body.has-cm-margin { --rl-pane-w: min(560px, max(280px, 32vw)); }
+  #rl-source-pane {
+    position: fixed; top: 0; right: 0; height: 100vh;
+    width: var(--rl-pane-w); min-width: 0; max-width: var(--rl-pane-w);
+    background: var(--rl-code-bg, #232634); border-left: 1px solid var(--rl-border, #414559);
+    z-index: 99998; display: flex; flex-direction: column;
+    transform: translateX(101%); transition: transform .18s ease;
+    box-shadow: -8px 0 24px rgba(0,0,0,.25);
+  }
+  body.rl-source-open #rl-source-pane { transform: translateX(0); }
+  /* With the pane open, main's viewport-centring margin (50% of the FULL
+     width) would ignore the pane and squeeze the content against it —
+     pin the margin to the pane width instead. */
+  body.rl-source-open main { margin-left: 220px; margin-right: var(--rl-pane-w); max-width: none; }
+  body.no-toc.rl-source-open main { margin-left: 0; }
+  body.has-files.rl-source-open main { margin-left: calc(220px + var(--fb-w, 16.5rem)); }
+  body.has-files.no-toc.rl-source-open main { margin-left: var(--fb-w, 16.5rem); }
+  #rl-source-head {
+    padding: 9px 14px; border-bottom: 1px solid var(--rl-border, #414559);
+    font: 12px/1.3 -apple-system, system-ui, sans-serif; color: var(--rl-text-dim, #aab2d1);
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  }
+  #rl-source-status { color: var(--rl-text-dim, #aab2d1); font-size: 11px; }
+  #rl-source-body { flex: 1; overflow: auto; min-height: 0; }
+  #rl-source-pre {
+    margin: 0; padding: 12px 14px; white-space: pre-wrap; word-break: break-word;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--rl-text, #c6d0f5);
+  }
+  #rl-editor-host { height: 100%; }
+  @media (max-width: 768px) {
+    body.rl-source-open main { margin-right: 0; }
+    #rl-source-pane { width: 100vw; max-width: none; min-width: 0; }
+  }
+</style>
+<style>
+
+body.rl-watch { --topbar-h: 2.6rem; --fb-w: 0px; }
+body.rl-watch.has-files,
+body.rl-watch.has-files:has(nav.file-browser > details.fb-root:not([open])) { --fb-w: 0px; }
+body.rl-watch main,
+body.rl-watch.has-files main,
+body.rl-watch.no-toc main,
+body.rl-watch.has-files.no-toc main {
+  margin-left: max(0px, calc(50% - 480px));
+}
+body.rl-watch.rl-source-open main,
+body.rl-watch.has-files.rl-source-open main,
+body.rl-watch.no-toc.rl-source-open main,
+body.rl-watch.has-files.no-toc.rl-source-open main {
+  margin-left: 0;
+  margin-right: var(--rl-pane-w, 0px);
+  max-width: none;
+}
+.rl-drawer-toggle {
+  flex: none;
+  margin-right: 0.45rem;
+  font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--rl-bg, #1e1e2e);
+  color: var(--rl-text, #cdd6f4);
+  border: 1px solid var(--rl-border, #313244);
+  border-radius: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+body.rl-drawer-open .rl-drawer-toggle {
+  background: var(--rl-accent-primary, #cba6f7);
+  color: var(--rl-bg, #1e1e2e);
+  border-color: var(--rl-accent-primary, #cba6f7);
+}
+.rl-drawer-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--topbar-h);
+  z-index: 320;
+  display: flex;
+  align-items: center;
+  padding: 0 0.6rem;
+  background: var(--rl-bg-secondary, #181825);
+  border-bottom: 1px solid var(--rl-border, #313244);
+}
+body.rl-watch:has(.rl-drawer-bar) main {
+  padding-top: calc(var(--topbar-h) + 1.25rem);
+}
+#rl-drawer-scrim {
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0; right: 0; bottom: 0;
+  z-index: 230;
+  background: rgba(17, 17, 27, 0.28);
+  opacity: 0;
+  pointer-events: none;
+}
+body.rl-drawer-open #rl-drawer-scrim { opacity: 1; pointer-events: auto; }
+#rl-drawer {
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0;
+  bottom: 0;
+  width: min(22rem, 88vw);
+  z-index: 240;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--rl-bg-secondary, #181825);
+  color: var(--rl-text, #cdd6f4);
+  border-right: 1px solid var(--rl-border, #313244);
+  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.45);
+  transform: translateX(-105%);
+  visibility: hidden;
+  pointer-events: none;
+}
+body.rl-drawer-open #rl-drawer {
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+}
+#rl-drawer:focus { outline: none; }
+#rl-drawer nav.file-browser,
+#rl-drawer nav.sidebar {
+  position: static;
+  top: auto;
+  left: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  transform: none;
+  box-shadow: none;
+  border-right: 0;
+  flex: 0 1 auto;
+  overflow: auto;
+}
+#rl-drawer nav.file-browser {
+  max-height: 46vh;
+  border-bottom: 1px solid var(--rl-border, #313244);
+}
+#rl-drawer nav.sidebar { flex: 1 1 auto; }
+body.rl-drawer-open .plot-container,
+body.rl-drawer-open main h1,
+body.rl-drawer-open main h2,
+body.rl-drawer-open main h3 {
+  margin-left: var(--rl-drawer-cover, 0px);
+}
+body.rl-drawer-open .plot-container {
+  width: calc(100% - var(--rl-drawer-cover, 0px));
+  max-width: calc(100% - var(--rl-drawer-cover, 0px));
+}
+@media (max-width: 768px) {
+  body.rl-watch main,
+  body.rl-watch.has-files main,
+  body.rl-watch.no-toc main,
+  body.rl-watch.has-files.no-toc main,
+  body.rl-watch.rl-source-open main,
+  body.rl-watch.has-files.rl-source-open main {
+    margin-left: 0;
+    margin-right: 0;
+  }
+  #rl-drawer nav.file-browser { transform: none; width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #rl-drawer { transition: none; }
+}
+
+</style>
+</head>
+<body class="rl-watch">
+<header class="topbar"><button type="button" id="rl-drawer-toggle" class="rl-drawer-toggle" aria-expanded="false" aria-controls="rl-drawer" title="Contents (\)">Contents</button><span class="crumb"><span class="current">Sample</span><a class="rl-errors" href="#rl-error-1">1 error</a></span><span id="rl-cm-confirm" class="rl-cm-confirm" role="status"></span></header>
+
+
+<script>
+(function () {
+  var box = document.getElementById('rl-comments');
+  if (!box) return;
+  function apply() {
+    try {
+      var v = sessionStorage.getItem('rl-comments-visible');
+      if (v === '0') box.checked = false;
+      else if (v === '1') box.checked = true;
+    } catch (e) {}
+    var c = document.getElementById('rl-cm-confirm');
+    if (!c) return;
+    try {
+      var msg = sessionStorage.getItem('rl-cm-confirm');
+      var until = parseInt(sessionStorage.getItem('rl-cm-confirm-until') || '0', 10);
+      if (msg && Date.now() < until && !box.checked) c.textContent = msg;
+      else c.textContent = '';
+    } catch (e) {}
+  }
+  apply();
+  box.addEventListener('change', function () {
+    try { sessionStorage.setItem('rl-comments-visible', box.checked ? '1' : '0'); } catch (e) {}
+    if (box.checked) {
+      var c = document.getElementById('rl-cm-confirm');
+      if (c) c.textContent = '';
+      try { sessionStorage.removeItem('rl-cm-confirm'); } catch (e) {}
+    }
+  });
+  var prev = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prev) prev();
+    box = document.getElementById('rl-comments');
+    if (box) apply();
+    var menu = document.getElementById('rl-cm-menu');
+    var pop = document.getElementById('rl-cm-pop');
+    if (menu) menu.hidden = true;
+    if (pop) pop.hidden = true;
+  };
+})();
+</script>
+<div id="rl-drawer-scrim" class="rl-drawer-scrim"></div>
+<div id="rl-drawer" class="rl-drawer" role="dialog" aria-modal="false" aria-label="Contents" aria-hidden="true" tabindex="-1">
+<nav class="sidebar">
+  <div class="nav-title">Sample</div>
+  <a href="#sample" class="h1">Sample</a>
+</nav></div>
+<main>
+<section class="rl-block" id="b-fdaad3a8">
+<div class="prose">
+<h1 id="sample">Sample</h1>
+<p>A <a href="https://example.com/notes">link</a> and \(E=mc^2\).</p>
+<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>
+<tr><td>1</td><td>2</td></tr>
+</tbody></table>
+</div>
+</section>
+<section class="rl-block" id="b-24753391">
+<div class="callout callout-note">
+<div class="callout-title">Note</div>
+<p>Note body.</p>
+</div>
+</section>
+<section class="rl-block" id="b-8cc9ed35">
+<div class="callout callout-tip">
+<div class="callout-title">Tip</div>
+<p>Tip body.</p>
+</div>
+</section>
+<section class="rl-block" id="b-77a9f38a">
+<div class="callout callout-important">
+<div class="callout-title">Important</div>
+<p>Important body.</p>
+</div>
+</section>
+<section class="rl-block" id="b-a01cb8d4">
+<div class="callout callout-warning">
+<div class="callout-title">Warning</div>
+<p>Warning body.</p>
+</div>
+</section>
+<section class="rl-block" id="b-082daacb">
+<div class="callout callout-caution">
+<div class="callout-title">Caution</div>
+<p>Caution body.</p>
+</div>
+</section>
+<section class="rl-block" id="b-967469f5" data-code-idx="0" data-src-kind="code">
+<div class="code-block">
+<div class="rl-cell">
+<details class="rl-src" open>
+<summary class="rl-lang">rustlab</summary>
+<pre class="source"><code>x <span class="syn-op">=</span> <span class="syn-num">1</span><span class="syn-op">:</span><span class="syn-num">2</span>
+<span class="syn-fn">plot</span>(x)</code></pre>
+</details>
+<pre class="output">ans = 1  2</pre>
+</div>
+<div class="plot-container" style="height: 450px">
+<div id="plot-1"></div>
+<script>
+var data_plot_1 = [{ x: [0,1], y: [0,1], type: "scatter", mode: "lines", name: "", line: { color: "rgb(31,119,180)", dash: "solid" }, xaxis: "x", yaxis: "y", showlegend: false },
+];
+var layout_plot_1 = {
+  paper_bgcolor: "#303446",
+  plot_bgcolor: "#303446",
+  font: { color: "#c6d0f5" },
+  xaxis: { domain: [0.0400, 0.9600], anchor: "y", automargin: true, ticklabelstandoff: 6, title: { text: "", standoff: 10, font: { color: "#c6d0f5", size: 13 } }, showgrid: true, gridcolor: "rgba(150,150,180,0.3)" },
+yaxis: { domain: [0.0400, 0.9600], anchor: "x", automargin: true, ticklabelstandoff: 6, title: { text: "", standoff: 10, font: { color: "#c6d0f5", size: 13 } }, showgrid: true, gridcolor: "rgba(150,150,180,0.3)" },
+  annotations: [],
+  margin: { t: 28, b: 64, l: 78, r: 36 },
+  barmode: "group",
+};
+Plotly.newPlot("plot-1", data_plot_1, layout_plot_1, { responsive: true });
+</script>
+
+</div>
+</div>
+</section>
+<section class="rl-block" id="b-04ff1426" data-code-idx="1" data-src-kind="code">
+<div class="code-block" id="rl-error-1">
+<div class="rl-cell rl-cell-error">
+<details class="rl-src" open>
+<summary class="rl-lang">rustlab</summary>
+<pre class="source"><code><span class="syn-fn">error</span>(<span class="syn-str">&quot;nope&quot;</span>)</code></pre>
+</details>
+<pre class="error">nope</pre>
+</div>
+</div>
+</section>
+<footer>Generated by rustlab-notebook</footer>
+</main>
+<div id="rl-cm-sizer" hidden>
+<button type="button" id="rl-cm-collapse" aria-pressed="false" aria-label="Collapse comments">‹</button>
+<div id="rl-cm-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Comments column width" aria-valuemin="160" aria-valuemax="640" aria-valuenow="224"></div>
+</div>
+<script>
+(function () {
+  var mq = window.matchMedia('(max-width: 799px)');
+  function clearPos(cards) {
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].style.position = '';
+      cards[i].style.top = '';
+      cards[i].style.left = '';
+      cards[i].style.right = '';
+      cards[i].style.width = '';
+      cards[i].classList.remove('rl-cm-drift');
+      cards[i].removeAttribute('data-cm-slot');
+      var line = cards[i].querySelector('.rl-cm-link');
+      if (line) line.hidden = true;
+    }
+    var asides = document.querySelectorAll('.rl-cm-margin');
+    for (var a = 0; a < asides.length; a++) asides[a].style.minHeight = '';
+  }
+  function refTopOf(card) {
+    var anchorId = card.getAttribute('data-cm-anchor');
+    var ref = anchorId ? document.getElementById(anchorId) : null;
+    return ref ? (ref.getBoundingClientRect().top + window.scrollY) : 0;
+  }
+  function fitClamp(card) {
+    var fold = card.querySelector('.rl-cm-fold');
+    var more = card.querySelector('.rl-cm-more');
+    if (!fold || !more) return;
+    if (card.classList.contains('rl-cm-open')) {
+      more.hidden = false;
+      more.textContent = 'less';
+      return;
+    }
+    more.textContent = 'more';
+    if (card.classList.contains('rl-cm-clamped')) {
+      more.hidden = false;
+      return;
+    }
+    var lh = parseFloat(window.getComputedStyle(fold).lineHeight);
+    if (!(lh > 0)) lh = 18;
+    if (fold.scrollHeight > lh * 6 + 2) {
+      card.classList.add('rl-cm-clamped');
+      more.hidden = false;
+    }
+  }
+  function linkToMarker(card, drift) {
+    var line = card.querySelector('.rl-cm-link');
+    if (!line) {
+      line = document.createElement('span');
+      line.className = 'rl-cm-link';
+      line.setAttribute('aria-hidden', 'true');
+      card.appendChild(line);
+    }
+    if (drift > 14) {
+      line.hidden = false;
+      card.classList.add('rl-cm-drift');
+      line.style.top = (-drift) + 'px';
+      line.style.height = drift + 'px';
+    } else {
+      line.hidden = true;
+      card.classList.remove('rl-cm-drift');
+    }
+  }
+  function placeNotes() {
+    var cards = document.querySelectorAll('.rl-cm-card');
+    // A partial reload swaps the section, not the body class. The column
+    // exists exactly while a margin aside is in the page.
+    document.body.classList.toggle('has-cm-margin', !!document.querySelector('.rl-cm-margin'));
+    var box = document.getElementById('rl-comments');
+    if (!cards.length || mq.matches || (box && !box.checked)) {
+      clearPos(cards);
+      placeSizer();
+      return;
+    }
+    var gap = 8;
+    var cursor = -1;
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var aside = card.closest('.rl-cm-margin');
+      if (!aside) continue;
+      fitClamp(card);
+      var refTop = refTopOf(card);
+      var asideTop = aside.getBoundingClientRect().top + window.scrollY;
+      var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
+      // `top` is relative to this aside. A later pass can keep the same
+      // document Y while the aside has moved (the previous section grew),
+      // so the slot is the relative offset. Otherwise the card stays
+      // parked on the stale `top` and drifts off its marker.
+      var top = Math.max(0, topDoc - asideTop);
+      var placed = asideTop + top;
+      var slot = String(Math.round(top));
+      if (card.getAttribute('data-cm-slot') !== slot) {
+        card.setAttribute('data-cm-slot', slot);
+        card.style.position = 'absolute';
+        card.style.left = '0';
+        card.style.right = '0';
+        card.style.width = '';
+        card.style.top = top + 'px';
+      }
+      linkToMarker(card, placed - refTop);
+      cursor = placed + card.offsetHeight + gap;
+    }
+    var asides = document.querySelectorAll('.rl-cm-margin');
+    for (var a = 0; a < asides.length; a++) {
+      var asideEl = asides[a];
+      var kids = asideEl.querySelectorAll('.rl-cm-card');
+      var bottom = 0;
+      for (var k = 0; k < kids.length; k++) {
+        if (kids[k].style.position !== 'absolute') continue;
+        var t = parseFloat(kids[k].style.top) || 0;
+        bottom = Math.max(bottom, t + kids[k].offsetHeight);
+      }
+      var mh = bottom ? (bottom + 'px') : '';
+      if (asideEl.style.minHeight !== mh) asideEl.style.minHeight = mh;
+    }
+    placeSizer();
+  }
+  function rootPx() {
+    var fs = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+    return fs > 0 ? fs : 16;
+  }
+  function bounds() {
+    var rem = rootPx();
+    var min = 10 * rem;
+    var max = window.innerWidth * 0.4;
+    if (!(max > min)) max = min;
+    return { min: min, max: max, def: 14 * rem };
+  }
+  function collapsed() {
+    return document.body.classList.contains('rl-cm-collapsed');
+  }
+  function currentWidth() {
+    var col = parseFloat(document.body.style.getPropertyValue('--rl-cm-col'));
+    if (col > 0) return col;
+    var aside = document.querySelector('.rl-cm-margin');
+    var w = aside ? aside.getBoundingClientRect().width : 0;
+    if (w > 0) return w;
+    return bounds().def;
+  }
+  function applyWidth(px, persist) {
+    var b = bounds();
+    if (px < b.min) px = b.min;
+    if (px > b.max) px = b.max;
+    px = Math.round(px);
+    document.body.style.setProperty('--rl-cm-col', px + 'px');
+    var sep = document.getElementById('rl-cm-resize');
+    if (sep) {
+      sep.setAttribute('aria-valuemin', String(Math.round(b.min)));
+      sep.setAttribute('aria-valuemax', String(Math.round(b.max)));
+      sep.setAttribute('aria-valuenow', String(px));
+    }
+    if (persist) {
+      try { localStorage.setItem('rl-cm-col-px', String(px)); } catch (e) {}
+    }
+    return px;
+  }
+  function clearWidth() {
+    document.body.style.removeProperty('--rl-cm-col');
+    try { localStorage.removeItem('rl-cm-col-px'); } catch (e) {}
+    var sep = document.getElementById('rl-cm-resize');
+    if (sep) {
+      var b = bounds();
+      sep.setAttribute('aria-valuemin', String(Math.round(b.min)));
+      sep.setAttribute('aria-valuemax', String(Math.round(b.max)));
+      sep.setAttribute('aria-valuenow', String(Math.round(b.def)));
+    }
+  }
+  function setCollapsed(on, persist) {
+    document.body.classList.toggle('rl-cm-collapsed', !!on);
+    var btn = document.getElementById('rl-cm-collapse');
+    if (btn) {
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.setAttribute('aria-label', on ? 'Expand comments' : 'Collapse comments');
+      btn.textContent = on ? '\u203a' : '\u2039';
+    }
+    if (persist) {
+      try {
+        if (on) localStorage.setItem('rl-cm-collapsed', '1');
+        else localStorage.removeItem('rl-cm-collapsed');
+      } catch (e) {}
+    }
+  }
+  function placeSizer() {
+    var sizer = document.getElementById('rl-cm-sizer');
+    if (!sizer) return;
+    var box = document.getElementById('rl-comments');
+    var aside = document.querySelector('.rl-cm-margin');
+    if (mq.matches || !aside || (box && !box.checked)) {
+      sizer.hidden = true;
+      return;
+    }
+    sizer.hidden = false;
+    sizer.style.left = (aside.getBoundingClientRect().left - 6) + 'px';
+  }
+  function restoreColumn() {
+    var saved = null;
+    var fold = false;
+    try {
+      saved = localStorage.getItem('rl-cm-col-px');
+      fold = localStorage.getItem('rl-cm-collapsed') === '1';
+    } catch (e) {}
+    if (saved != null) {
+      var n = parseFloat(saved);
+      if (n > 0) applyWidth(n, false);
+    }
+    setCollapsed(fold, false);
+  }
+  function bindSizer() {
+    var sep = document.getElementById('rl-cm-resize');
+    var btn = document.getElementById('rl-cm-collapse');
+    if (sep && !sep.getAttribute('data-cm-bound')) {
+      sep.setAttribute('data-cm-bound', '1');
+      var drag = null;
+      sep.addEventListener('pointerdown', function (ev) {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        var aside = document.querySelector('.rl-cm-margin');
+        var startWidth = collapsed()
+          ? (aside ? aside.getBoundingClientRect().width : bounds().def)
+          : currentWidth();
+        drag = { x: ev.clientX, w: startWidth, fromCollapsed: collapsed() };
+        try { sep.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+      sep.addEventListener('pointermove', function (ev) {
+        if (!drag) return;
+        if (drag.fromCollapsed) {
+          setCollapsed(false, true);
+          drag.fromCollapsed = false;
+        }
+        applyWidth(drag.w + (drag.x - ev.clientX), false);
+        schedule();
+      });
+      function endDrag(ev) {
+        if (!drag) return;
+        drag = null;
+        var n = parseFloat(document.body.style.getPropertyValue('--rl-cm-col'));
+        if (n > 0) applyWidth(n, true);
+        try { sep.releasePointerCapture(ev.pointerId); } catch (e) {}
+        schedule();
+      }
+      sep.addEventListener('pointerup', endDrag);
+      sep.addEventListener('pointercancel', endDrag);
+      sep.addEventListener('keydown', function (ev) {
+        var step = null;
+        if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') step = 16;
+        else if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') step = -16;
+        else if (ev.key === 'Home') step = 'min';
+        else if (ev.key === 'End') step = 'max';
+        if (step == null) return;
+        ev.preventDefault();
+        if (collapsed()) setCollapsed(false, true);
+        var b = bounds();
+        var cur = currentWidth();
+        var next = step === 'min' ? b.min : step === 'max' ? b.max : cur + step;
+        applyWidth(next, true);
+        schedule();
+      });
+      sep.addEventListener('dblclick', function () {
+        setCollapsed(false, true);
+        clearWidth();
+        schedule();
+      });
+    }
+    if (btn && !btn.getAttribute('data-cm-bound')) {
+      btn.setAttribute('data-cm-bound', '1');
+      btn.addEventListener('click', function () {
+        setCollapsed(!collapsed(), true);
+        schedule();
+      });
+    }
+  }
+  function hot(id, on) {
+    if (!id) return;
+    var card = document.getElementById(id);
+    if (card) card.classList.toggle('rl-cm-hot', on);
+    var anchor = card && card.getAttribute('data-cm-anchor');
+    var ref = anchor && document.getElementById(anchor);
+    if (ref) ref.classList.toggle('rl-cm-hot', on);
+    var marks = document.querySelectorAll('.rl-cm-mark[aria-describedby="' + id + '"]');
+    for (var i = 0; i < marks.length; i++) marks[i].classList.toggle('rl-cm-hot', on);
+  }
+  function cardIdOf(el) {
+    if (el.classList.contains('rl-cm-card')) return el.id;
+    return el.getAttribute('data-cm-for') || el.getAttribute('aria-describedby');
+  }
+  function bindHot() {
+    var nodes = document.querySelectorAll('.rl-cm-card, .rl-cm-ref, .rl-cm-mark[aria-describedby]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.getAttribute('data-cm-bound')) continue;
+      el.setAttribute('data-cm-bound', '1');
+      (function (node) {
+        function set(on) { hot(cardIdOf(node), on); }
+        node.addEventListener('pointerenter', function () { set(true); });
+        node.addEventListener('pointerleave', function () { set(false); });
+        node.addEventListener('focusin', function () { set(true); });
+        node.addEventListener('focusout', function () { set(false); });
+      })(el);
+    }
+  }
+  function bindMore() {
+    var btns = document.querySelectorAll('.rl-cm-more');
+    for (var i = 0; i < btns.length; i++) {
+      var btn = btns[i];
+      if (btn.getAttribute('data-cm-bound')) continue;
+      btn.setAttribute('data-cm-bound', '1');
+      btn.addEventListener('click', function (ev) {
+        var card = ev.currentTarget.closest('.rl-cm-card');
+        if (!card) return;
+        var open = card.classList.toggle('rl-cm-open');
+        ev.currentTarget.textContent = open ? 'less' : 'more';
+        card.removeAttribute('data-cm-slot');
+        schedule();
+      });
+    }
+  }
+  var raf = 0;
+  function schedule() {
+    if (raf) return;
+    raf = requestAnimationFrame(function () {
+      raf = 0;
+      bindHot();
+      bindMore();
+      placeNotes();
+    });
+  }
+  restoreColumn();
+  bindSizer();
+  schedule();
+  window.addEventListener('resize', schedule);
+  window.addEventListener('load', schedule);
+  if (window.ResizeObserver) {
+    var main = document.querySelector('main');
+    if (main) new ResizeObserver(schedule).observe(main);
+  }
+  if (mq.addEventListener) mq.addEventListener('change', schedule);
+  var box = document.getElementById('rl-comments');
+  if (box) box.addEventListener('change', schedule);
+  var prev = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prev) prev();
+    schedule();
+  };
+})();
+</script><div id="rl-toolbar"><div id="rl-more" class="rl-more"><button id="rl-more-btn" type="button" class="rl-quiet" aria-expanded="false" aria-haspopup="true" aria-controls="rl-more-panel" aria-label="More" title="More">⋯</button><span id="rl-diff-dot" class="rl-diff-dot" hidden></span><div id="rl-more-panel" class="rl-more-panel" hidden role="region" aria-label="More"><label class="rl-comments-toggle rl-menu-switch"><input type="checkbox" id="rl-comments" role="switch" checked><span class="rl-switch" aria-hidden="true"></span>Comments</label><button id="rl-diff-toggle" type="button" class="rl-quiet" role="switch" aria-checked="false" disabled aria-disabled="true" data-rl-git="off"><span class="rl-switch" aria-hidden="true"></span>Show changes</button><p class="rl-git-note">Git diff is off. Pass --git-diff to compare a repository you trust.</p><div id="rl-diff" hidden><p class="rl-dx-hd" id="rl-dx-cmp-hd">Compare</p><div id="rl-dx-presets" role="radiogroup" aria-labelledby="rl-dx-cmp-hd"><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="uncommitted"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Uncommitted changes</span><span class="rl-dx-c"></span><span class="rl-dx-d">Your edits since the last commit</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="branch" hidden><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">This branch vs main</span><span class="rl-dx-c"></span><span class="rl-dx-d">Everything on this branch since it left main, like a pull request</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="last"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Last commit</span><span class="rl-dx-c"></span><span class="rl-dx-d">What the most recent commit changed</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="custom"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Other…</span><span class="rl-dx-c"></span><span class="rl-dx-d">Pick any two branches, tags or commits</span></button></div><div id="rl-dx-other" hidden><label class="rl-diff-lab"><span class="rl-dx-lab">base</span><span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Base: compare from" aria-expanded="false" aria-controls="rl-diff-base-list"></span></label><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox" aria-label="Base"></ul><p class="rl-dx-arrow">↓ changes from base to compare ↓</p><label class="rl-diff-lab"><span class="rl-dx-lab">compare</span><span class="rl-diff-combo"><input id="rl-diff-compare" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare: compare to" aria-expanded="false" aria-controls="rl-diff-compare-list"></span></label><ul id="rl-diff-compare-list" class="rl-diff-menu" hidden role="listbox" aria-label="Compare"></ul><p class="rl-dx-hint">Typing filters the list. A sha or <code>HEAD~3</code> works too.</p></div><p class="rl-dx-hd" id="rl-dx-view-hd">View</p><div class="rl-dx-seg" role="radiogroup" aria-labelledby="rl-dx-view-hd"><button type="button" role="radio" aria-checked="true" data-view="rendered">Rendered</button><button type="button" role="radio" aria-checked="false" data-view="source">Source</button></div><p class="rl-dx-hd" id="rl-dx-list-hd">Changes</p><ul id="rl-dx-list" aria-labelledby="rl-dx-list-hd"></ul><p class="rl-dx-keys"><kbd>[</kbd> <kbd>]</kbd> previous / next change</p></div></div></div><button id="rl-source-toggle" title="Show notebook source">Source</button></div><button id="rl-diff-banner" type="button" hidden></button>
+<aside id="rl-source-pane" aria-hidden="true">
+  <div id="rl-source-head"><span id="rl-source-name">source</span><span id="rl-source-status"></span></div>
+  <div id="rl-source-body"><pre id="rl-source-pre"></pre></div>
+</aside>
+<script>
+(() => {
+  // Directory pages are /n/<relative-path>. The internal slug (for
+  // /raw/ and /save/) is the rl-slug meta. A single-segment URL still
+  // works when that meta is absent. The index has neither.
+  function notebookSlug() {
+    const meta = document.querySelector('meta[name="rl-slug"]');
+    if (meta && meta.content) return meta.content;
+    const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
+    return m ? m[1] : null;
+  }
+  const slug = notebookSlug();
+  if (!slug) return;
+  // Encode each segment. encodeURIComponent(slug) would turn `/` into
+  // `%2F` and miss the wildcard route.
+  function encodeSlug(s) {
+    return String(s).split('/').map(encodeURIComponent).join('/');
+  }
+  const EDITABLE = false;
+  const toggle = document.getElementById('rl-source-toggle');
+  const pane = document.getElementById('rl-source-pane');
+  const status = document.getElementById('rl-source-status');
+  const saveBtn = document.getElementById('rl-source-save');
+  let open = false;
+  let cm = null;
+
+  function setStatus(t) { if (status) status.textContent = t; }
+
+  async function fetchSource() {
+    const r = await fetch('/raw/' + encodeSlug(slug), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.text();
+  }
+
+  // ── Read-only pane ────────────────────────────────────────────────
+  async function loadReadonly() {
+    const pre = document.getElementById('rl-source-pre');
+    try { pre.textContent = await fetchSource(); }
+    catch (e) { pre.textContent = '(failed to load source: ' + e + ')'; }
+  }
+
+  // ── Editor (CodeMirror, editable mode) ────────────────────────────
+  async function ensureEditor() {
+    if (cm || typeof CodeMirror === 'undefined') return;
+    let text = '';
+    try { text = await fetchSource(); }
+    catch (e) { setStatus('load failed'); }
+    cm = CodeMirror(document.getElementById('rl-editor-host'), {
+      value: text, mode: 'markdown', lineNumbers: true, lineWrapping: true,
+      extraKeys: { 'Cmd-S': save, 'Ctrl-S': save },
+    });
+    cm.setSize('100%', '100%');
+  }
+
+  async function save() {
+    if (!cm) return;
+    setStatus('saving…');
+    try {
+      const r = await fetch('/save/' + encodeSlug(slug), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/markdown' },
+        body: cm.getValue(),
+      });
+      if (r.ok) { cm.markClean(); setStatus('saved ✓'); }
+      else { setStatus('save failed (' + r.status + ')'); }
+    } catch (e) { setStatus('save failed'); }
+    setTimeout(() => { if ((status || {}).textContent === 'saved ✓') setStatus(''); }, 1800);
+  }
+
+  async function setOpen(v) {
+    // Mutual exclusion with the inline cell editor (see cell.rs): both
+    // write the same file, so refuse to open over unsaved cell edits.
+    if (v && window.__rlCellDirty && window.__rlCellDirty()) {
+      const orig = toggle.textContent;
+      toggle.textContent = 'unsaved cell edits!';
+      setTimeout(() => { toggle.textContent = orig; }, 1800);
+      return;
+    }
+    open = v;
+    document.body.classList.toggle('rl-source-open', open);
+    toggle.classList.toggle('active', open);
+    pane.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (saveBtn) saveBtn.hidden = !open;
+    if (!open) return;
+    if (EDITABLE) { await ensureEditor(); if (cm) cm.refresh(); }
+    else { await loadReadonly(); }
+  }
+
+  toggle.addEventListener('click', () => setOpen(!open));
+  if (saveBtn) saveBtn.addEventListener('click', save);
+  // Global Ctrl/Cmd-S also saves while the pane is open (covers focus
+  // outside the editor; CodeMirror's extraKeys covers focus inside).
+  if (EDITABLE) {
+    document.addEventListener('keydown', (e) => {
+      if (open && (e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault(); save();
+      }
+    });
+  }
+
+  // Read-only panes refresh on re-render; the editor keeps its buffer.
+  // Chain whatever the page already registered (comment placement). This
+  // script is injected last, so a plain assignment would drop that hook
+  // and a saved comment would stay in document order until a resize.
+  var prevAfter = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = () => {
+    if (prevAfter) prevAfter();
+    if (open && !EDITABLE) loadReadonly();
+  };
+  // Veto the WS-client's reconnect hard-reload while the editor has
+  // unsaved changes, so a transient disconnect can't discard them.
+  window.__rlBlockReload = () => EDITABLE && cm != null && !cm.isClean();
+})();
+</script>
+<script>
+function rlDiffFilter(items, query) {
+  var q = String(query || '').toLowerCase();
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!q || String(it.label).toLowerCase().indexOf(q) !== -1 || String(it.value).toLowerCase().indexOf(q) !== -1) {
+      out.push(it);
+    }
+  }
+  return out;
+}
+function rlDiffRefOk(s) {
+  if (!s || s.length > 256 || s.charAt(0) === '-' || s.indexOf('..') !== -1) return false;
+  return /^[A-Za-z0-9._/^~@{}+-]+$/.test(s);
+}
+function rlDiffChoose(matches, query, highlight, armed) {
+  var typed = String(query || '').trim();
+  var hi = highlight | 0;
+  if ((armed || typed) && matches.length && hi >= 0 && hi < matches.length) {
+    return matches[hi].value;
+  }
+  if (typed && matches.length === 0 && rlDiffRefOk(typed)) return typed;
+  return null;
+}
+function rlMoreMark(diffOn, commentsOff) {
+  var bits = [];
+  if (diffOn) bits.push('changes on');
+  if (commentsOff) bits.push('comments off');
+  return {
+    dot: bits.length > 0,
+    label: bits.length ? ('More, ' + bits.join(', ')) : 'More'
+  };
+}
+var RL_PRESETS = ['uncommitted', 'branch', 'last', 'custom'];
+// A saved or body choice in one shape: {changes, base, compare}. The
+// 0.3.12 shape {diff, base} meant before/after and still restores.
+function rlDiffNorm(p) {
+  if (!p) return null;
+  var view = p.view === 'source' ? 'source' : '';
+  if (p.changes) {
+    if (RL_PRESETS.indexOf(p.changes) === -1) return null;
+    if (p.changes !== 'custom') return { changes: p.changes, base: '', compare: '', view: view };
+    var b = p.base || 'HEAD';
+    var c = p.compare || '';
+    if (!rlDiffRefOk(b) || (c && !rlDiffRefOk(c))) return null;
+    return { changes: 'custom', base: b, compare: c, view: view };
+  }
+  if (p.diff) {
+    if (!rlDiffRefOk(p.diff) || (p.base && !rlDiffRefOk(p.base))) return null;
+    if (p.diff === 'HEAD' && !p.base) return { changes: 'uncommitted', base: '', compare: '', view: view };
+    return { changes: 'custom', base: p.diff, compare: p.base || '', view: view };
+  }
+  return null;
+}
+// What to do on load. `query` is the page's own diff keys; `body` is the
+// comparison the server rendered (null when the page is plain).
+function rlDiffPrefApply(query, body, saved) {
+  var q = query || {};
+  if (q.changes === 'off' || (!q.changes && q.diff === 'off')) return { action: 'store-off' };
+  if (q.changes || q.diff) return { action: 'store-on', pref: rlDiffNorm(body) };
+  if (body) return { action: 'keep', pref: rlDiffNorm(body) };
+  if (saved && saved.on) {
+    var pref = rlDiffNorm(saved);
+    if (!pref) return { action: 'none' };
+    return { action: 'navigate', pref: pref };
+  }
+  return { action: 'none' };
+}
+// The page URL for a choice. `null` turns changes off. Old keys go, so
+// a link only ever carries one scheme.
+function rlDiffUrl(href, pref) {
+  var u = new URL(href);
+  u.searchParams.delete('diff');
+  u.searchParams.delete('base');
+  u.searchParams.delete('compare');
+  u.searchParams.delete('view');
+  if (!pref) {
+    u.searchParams.set('changes', 'off');
+    return u.toString();
+  }
+  u.searchParams.set('changes', pref.changes);
+  if (pref.changes === 'custom') {
+    u.searchParams.set('base', pref.base || 'HEAD');
+    if (pref.compare) u.searchParams.set('compare', pref.compare);
+  }
+  if (pref.view === 'source') u.searchParams.set('view', 'source');
+  return u.toString();
+}
+function rlRelTime(then, now) {
+  var s = Math.max(0, (now | 0) - (then | 0));
+  if (!then) return '';
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  var d = Math.floor(s / 86400);
+  if (d < 60) return d === 1 ? '1 day ago' : d + ' days ago';
+  var m = Math.floor(d / 30);
+  if (m < 24) return m + ' months ago';
+  return Math.floor(d / 365) + ' years ago';
+}
+function rlDxCount(entry) {
+  if (!entry) return '';
+  if (typeof entry.count === 'number') {
+    return entry.count === 0 ? 'no changes' : entry.count === 1 ? '1 change' : entry.count + ' changes';
+  }
+  return entry.note || '';
+}
+(function () {
+  if (typeof document === 'undefined') return;
+  var toggle = document.getElementById('rl-diff-toggle');
+  if (!toggle) return;
+  var gitOn = toggle.getAttribute('data-rl-git') === 'on';
+  var moreBtn = document.getElementById('rl-more-btn');
+  var panel = document.getElementById('rl-more-panel');
+  var dot = document.getElementById('rl-diff-dot');
+  var chip = document.getElementById('rl-diff-banner');
+  var other = document.getElementById('rl-dx-other');
+  var baseIn = document.getElementById('rl-diff-base');
+  var cmpIn = document.getElementById('rl-diff-compare');
+  var baseList = document.getElementById('rl-diff-base-list');
+  var cmpList = document.getElementById('rl-diff-compare-list');
+  var listEl = document.getElementById('rl-dx-list');
+  var listHd = document.getElementById('rl-dx-list-hd');
+  var PREF = 'rl-diff-pref';
+  var OPEN = 'rl-dx-open';
+  function slug() {
+    var meta = document.querySelector('meta[name="rl-slug"]');
+    if (meta && meta.content) return meta.content;
+    var m = location.pathname.match(/^\/n\/(.+?)\/?$/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  function readPref() {
+    try {
+      var raw = sessionStorage.getItem(PREF);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) { return null; }
+  }
+  function store(pref) {
+    try {
+      sessionStorage.setItem(PREF, JSON.stringify(pref ? {
+        on: true, changes: pref.changes, base: pref.base || '', compare: pref.compare || '',
+        view: pref.view || ''
+      } : { on: false }));
+    } catch (err) {}
+  }
+  function on() {
+    return document.body.classList.contains('rl-diff-on');
+  }
+  function bodyPref() {
+    if (!on()) return null;
+    var d = document.body.dataset;
+    return {
+      changes: d.rlChanges || 'uncommitted', base: d.rlBase || '', compare: d.rlCompare || '',
+      view: d.rlView === 'source' ? 'source' : ''
+    };
+  }
+  function go(pref) {
+    store(pref);
+    location.assign(rlDiffUrl(location.href, pref));
+  }
+  (function restore() {
+    if (!gitOn) return;
+    var q = new URLSearchParams(location.search);
+    var decision = rlDiffPrefApply(
+      { changes: q.get('changes'), diff: q.get('diff') }, bodyPref(), readPref());
+    if (decision.action === 'store-off') store(null);
+    else if (decision.action === 'store-on' || decision.action === 'keep') {
+      if (decision.pref) store(decision.pref);
+    } else if (decision.action === 'navigate') go(decision.pref);
+  })();
+
+  function menuOpen() { return !!(panel && !panel.hidden); }
+  function setMenu(open) {
+    if (!panel || !moreBtn) return;
+    panel.hidden = !open;
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      loadCounts();
+      var first = panel.querySelector('[aria-checked="true"].rl-dx-opt') || toggle;
+      if (first && first.focus) first.focus();
+    }
+  }
+  if (moreBtn && panel) {
+    moreBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setMenu(!menuOpen());
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !menuOpen()) return;
+      setMenu(false);
+      moreBtn.focus();
+    });
+    document.addEventListener('click', function (ev) {
+      if (!menuOpen()) return;
+      if (panel.contains(ev.target) || moreBtn.contains(ev.target)) return;
+      if (chip && chip.contains(ev.target)) return;
+      setMenu(false);
+    });
+  }
+  if (chip) {
+    chip.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setMenu(!menuOpen());
+    });
+  }
+  function syncMoreMark() {
+    var box = document.getElementById('rl-comments');
+    var mark = rlMoreMark(on(), !!(box && !box.checked));
+    if (dot) dot.hidden = !mark.dot;
+    if (moreBtn) {
+      moreBtn.setAttribute('aria-label', mark.label);
+      moreBtn.title = mark.label;
+    }
+  }
+  syncMoreMark();
+  toggle.addEventListener('click', function () {
+    if (!gitOn) return;
+    if (on()) { go(null); return; }
+    var saved = rlDiffNorm(readPref());
+    go(saved || { changes: 'uncommitted', base: '', compare: '', view: '' });
+  });
+
+  // ── Presets ────────────────────────────────────────────────────────
+  var current = bodyPref();
+  var opts = Array.prototype.slice.call(document.querySelectorAll('.rl-dx-opt'));
+  function optFor(key) {
+    for (var i = 0; i < opts.length; i++) if (opts[i].getAttribute('data-preset') === key) return opts[i];
+    return null;
+  }
+  opts.forEach(function (b) {
+    var key = b.getAttribute('data-preset');
+    b.setAttribute('aria-checked', current && current.changes === key ? 'true' : 'false');
+    b.addEventListener('click', function () {
+      if (key === 'custom') {
+        opts.forEach(function (o) { o.setAttribute('aria-checked', o === b ? 'true' : 'false'); });
+        showOther();
+        if (baseIn) baseIn.focus();
+        return;
+      }
+      if (current && current.changes === key) return;
+      go({ changes: key, base: '', compare: '', view: current ? current.view : '' });
+    });
+  });
+  var counted = false;
+  function loadCounts() {
+    if (counted || !gitOn || !on()) return;
+    counted = true;
+    var box = document.getElementById('rl-comments');
+    var url = '/git/changes?slug=' + encodeURIComponent(slug()) + (box && !box.checked ? '&cm=0' : '');
+    fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || data.error) return;
+      var u = optFor('uncommitted');
+      if (u) u.querySelector('.rl-dx-c').textContent = rlDxCount(data.uncommitted);
+      var br = optFor('branch');
+      if (br && data.branch && !data.branch.hidden && data.default) {
+        br.hidden = false;
+        br.querySelector('.rl-dx-t').textContent = 'This branch vs ' + data.default;
+        br.querySelector('.rl-dx-d').textContent = 'Everything on ' + (data.current || 'this branch') +
+          ' since it left ' + data.default + ', like a pull request';
+        br.querySelector('.rl-dx-c').textContent = data.branch.disabled ? '' : rlDxCount(data.branch);
+        if (data.branch.disabled) {
+          br.disabled = true;
+          br.querySelector('.rl-dx-d').textContent = data.branch.disabled;
+        }
+      }
+      var last = optFor('last');
+      if (last && data.last) {
+        if (data.last.disabled) {
+          last.disabled = true;
+          last.querySelector('.rl-dx-c').textContent = '—';
+          last.querySelector('.rl-dx-d').textContent = data.last.disabled;
+        } else {
+          last.querySelector('.rl-dx-c').textContent = rlDxCount(data.last);
+        }
+      }
+    }).catch(function () {});
+  }
+  if (current && current.changes === 'branch') { var b0 = optFor('branch'); if (b0) b0.hidden = false; }
+  Array.prototype.forEach.call(document.querySelectorAll('.rl-dx-seg [data-view]'), function (b) {
+    var v = b.getAttribute('data-view') === 'source' ? 'source' : '';
+    b.setAttribute('aria-checked', (current ? current.view : '') === v ? 'true' : 'false');
+    b.addEventListener('click', function () {
+      if (!current || current.view === v) return;
+      go({ changes: current.changes, base: current.base, compare: current.compare, view: v });
+    });
+  });
+
+  // ── Other…: base and compare ───────────────────────────────────────
+  function mount(input, list, which) {
+    if (!input || !list) return { setItems: function () {}, value: function () { return ''; } };
+    var items = [];
+    var filtering = false;
+    var highlight = 0;
+    var armed = false;
+    function committed() { return input.getAttribute('data-value') || ''; }
+    function labelOf(value) {
+      for (var i = 0; i < items.length; i++) if (items[i].value === value) return items[i].label;
+      return value;
+    }
+    function query() { return filtering ? input.value : ''; }
+    function rows() { return rlDiffFilter(items, query()); }
+    function close(restore) {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      if (restore) input.value = labelOf(committed());
+      filtering = false;
+      armed = false;
+    }
+    function render() {
+      var found = rows();
+      list.textContent = '';
+      if (!found.length) {
+        var hint = document.createElement('li');
+        hint.className = 'rl-diff-hint';
+        var typed = input.value.trim();
+        hint.textContent = (typed && rlDiffRefOk(typed)) ? ('use ' + typed) : 'no match';
+        list.appendChild(hint);
+      } else {
+        if (highlight >= found.length) highlight = found.length - 1;
+        if (highlight < 0) highlight = 0;
+        var group = null;
+        found.forEach(function (it, i) {
+          if (it.group && it.group !== group) {
+            group = it.group;
+            var g = document.createElement('li');
+            g.className = 'rl-dx-group';
+            g.setAttribute('role', 'presentation');
+            g.textContent = group;
+            list.appendChild(g);
+          }
+          var li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          var name = document.createElement('span');
+          name.textContent = it.label;
+          li.appendChild(name);
+          if (it.meta) {
+            var meta = document.createElement('span');
+            meta.className = 'rl-m';
+            meta.textContent = it.meta;
+            li.appendChild(meta);
+          }
+          if (i === highlight) li.setAttribute('aria-selected', 'true');
+          li.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            pick(it.value);
+          });
+          list.appendChild(li);
+        });
+        var sel = list.querySelector('[aria-selected="true"]');
+        if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+      }
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+    function pick(value) {
+      var base = which === 'base' ? value : (baseCombo.value() || 'HEAD');
+      var cmp = which === 'compare' ? value : cmpCombo.value();
+      if (current && current.changes === 'custom' && value === committed()) { close(true); return; }
+      go({ changes: 'custom', base: base || 'HEAD', compare: cmp || '', view: current ? current.view : '' });
+    }
+    input.addEventListener('focus', function () {
+      filtering = false;
+      armed = false;
+      highlight = 0;
+      var all = rlDiffFilter(items, '');
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].value === committed()) { highlight = i; break; }
+      }
+      input.select();
+      render();
+    });
+    input.addEventListener('input', function () {
+      filtering = true;
+      armed = false;
+      highlight = 0;
+      render();
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        var n = rows().length;
+        if (!n || list.hidden) { render(); return; }
+        highlight += e.key === 'ArrowDown' ? 1 : -1;
+        if (highlight < 0) highlight = 0;
+        if (highlight >= n) highlight = n - 1;
+        armed = true;
+        render();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        var chosen = rlDiffChoose(rows(), query(), highlight, armed);
+        if (chosen === null) {
+          var typed = input.value.trim();
+          if (filtering && typed && rlDiffRefOk(typed) && !rows().length) chosen = typed;
+        }
+        if (chosen === null) return;
+        pick(chosen);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!list.hidden) {
+          e.stopPropagation();
+          close(true);
+        }
+      }
+    });
+    input.addEventListener('blur', function () {
+      setTimeout(function () { close(true); }, 0);
+    });
+    return {
+      value: committed,
+      setItems: function (next, value) {
+        items = next;
+        input.setAttribute('data-value', value);
+        // The list can arrive after the field took focus; show it then.
+        if (document.activeElement === input && !filtering) {
+          input.value = labelOf(value);
+          render();
+          input.select();
+          return;
+        }
+        close(false);
+        input.value = labelOf(value);
+      }
+    };
+  }
+  var baseCombo = mount(baseIn, baseList, 'base');
+  var cmpCombo = mount(cmpIn, cmpList, 'compare');
+  var refsLoaded = false;
+  function fill(data) {
+    var now = Math.floor(Date.now() / 1000);
+    var shared = [];
+    ((data && data.branches) || []).forEach(function (b) {
+      shared.push({ value: b.name, label: b.name, group: 'Branches', meta: b.current ? 'current' : rlRelTime(b.date, now) });
+    });
+    shared.push({ value: 'HEAD', label: 'HEAD', group: 'Branches', meta: 'last commit' });
+    ((data && data.tags) || []).forEach(function (t) {
+      shared.push({ value: t.name, label: t.name, group: 'Tags', meta: rlRelTime(t.date, now) });
+    });
+    ((data && data.commits) || []).forEach(function (c) {
+      shared.push({ value: c.rev, label: c.label, group: 'Recent commits', meta: rlRelTime(c.date, now) });
+    });
+    var base = (current && current.changes === 'custom' && current.base) || 'HEAD';
+    var cmp = (current && current.changes === 'custom' && current.compare) || '';
+    var baseItems = shared.slice();
+    if (!baseItems.some(function (it) { return it.value === base; })) baseItems.push({ value: base, label: base, group: '' });
+    var cmpItems = [{ value: '', label: 'Working copy (your files)', group: '' }].concat(shared);
+    if (cmp && !cmpItems.some(function (it) { return it.value === cmp; })) cmpItems.push({ value: cmp, label: cmp, group: '' });
+    baseCombo.setItems(baseItems, base);
+    cmpCombo.setItems(cmpItems, cmp);
+  }
+  function showOther() {
+    if (!other) return;
+    other.hidden = false;
+    if (refsLoaded || !gitOn) return;
+    refsLoaded = true;
+    var base = (current && current.changes === 'custom' && current.base) || 'HEAD';
+    var cmp = (current && current.changes === 'custom' && current.compare) || '';
+    if (baseIn) { baseIn.setAttribute('data-value', base); baseIn.value = base; }
+    if (cmpIn) { cmpIn.setAttribute('data-value', cmp); cmpIn.value = cmp || 'Working copy (your files)'; }
+    fetch('/git/refs').then(function (r) { return r.json(); }).then(fill).catch(function () {});
+  }
+  if (current && current.changes === 'custom') showOther();
+
+  // ── The changes on this page ───────────────────────────────────────
+  var BAR = { added: 'var(--rl-dx-add-bar)', modified: 'var(--rl-dx-mod-bar)', removed: 'var(--rl-dx-del-bar)' };
+  function changes() {
+    return Array.prototype.slice.call(document.querySelectorAll('main [data-rl-dx]'));
+  }
+  function mark(i) {
+    if (!listEl) return;
+    Array.prototype.forEach.call(listEl.children, function (li, k) {
+      li.classList.toggle('rl-cur', k === i);
+    });
+  }
+  function jump(el, i) {
+    el.scrollIntoView({ block: 'center' });
+    mark(i);
+  }
+  function buildList() {
+    if (!listEl) return;
+    var list = changes();
+    listEl.textContent = '';
+    if (listHd) listHd.textContent = list.length === 1 ? '1 change' : list.length ? list.length + ' changes' : 'Changes';
+    if (!list.length) {
+      var none = document.createElement('li');
+      none.className = 'rl-empty';
+      none.textContent = on() ? 'Nothing changed on this page.' : '';
+      listEl.appendChild(none);
+      return;
+    }
+    list.forEach(function (el, i) {
+      var kind = el.getAttribute('data-rl-dx');
+      var li = document.createElement('li');
+      li.tabIndex = 0;
+      var bar = document.createElement('i');
+      bar.style.background = BAR[kind] || 'currentColor';
+      var k = document.createElement('span');
+      k.className = 'rl-k';
+      k.textContent = kind;
+      var w = document.createElement('span');
+      w.textContent = el.getAttribute('data-rl-where') || '';
+      li.appendChild(bar);
+      li.appendChild(k);
+      li.appendChild(w);
+      li.addEventListener('click', function () { jump(el, i); });
+      li.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(el, i); }
+      });
+      listEl.appendChild(li);
+    });
+  }
+  if (on()) buildList();
+  function fullyVisible(el) {
+    var r = el.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= window.innerHeight;
+  }
+  function step(dir) {
+    var list = changes();
+    if (!list.length) return;
+    var cur = -1;
+    list.forEach(function (el, i) {
+      if (el.getBoundingClientRect().top < 80) cur = i;
+    });
+    var i = cur + dir;
+    if (dir > 0) { while (i < list.length && fullyVisible(list[i])) i++; }
+    else { while (i >= 0 && fullyVisible(list[i])) i--; }
+    if (i < 0) i = 0;
+    if (i >= list.length) i = list.length - 1;
+    jump(list[i], i);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (!on()) return;
+    if (e.key !== '[' && e.key !== ']') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('input, textarea, select, .CodeMirror')) return;
+    e.preventDefault();
+    step(e.key === ']' ? 1 : -1);
+  });
+
+  // Removed blocks stay open or closed across the reload a live edit does.
+  function openSet() {
+    try { return JSON.parse(sessionStorage.getItem(OPEN) || '[]'); } catch (err) { return []; }
+  }
+  function keepOpen() {
+    var ids = openSet();
+    Array.prototype.forEach.call(document.querySelectorAll('main details.rl-dx-removed'), function (d) {
+      if (ids.indexOf(d.id) !== -1) d.open = true;
+      d.addEventListener('toggle', function () {
+        var now = openSet().filter(function (x) { return x !== d.id; });
+        if (d.open) now.push(d.id);
+        try { sessionStorage.setItem(OPEN, JSON.stringify(now.slice(-64))); } catch (err) {}
+      });
+    });
+  }
+  if (on()) keepOpen();
+
+  var KEYS = ['changes', 'diff', 'base', 'compare', 'view', 'cm'];
+  document.addEventListener('click', function (ev) {
+    if (!on()) return;
+    var a = ev.target && ev.target.closest && ev.target.closest('a');
+    if (!a || a.target === '_blank') return;
+    var href = a.getAttribute('href');
+    if (!href || href.charAt(0) === '#') return;
+    var url;
+    try { url = new URL(a.href, location.href); } catch (err) { return; }
+    if (url.origin !== location.origin) return;
+    if (!(url.pathname === '/' || url.pathname.indexOf('/n/') === 0)) return;
+    var cur = new URLSearchParams(location.search);
+    KEYS.forEach(function (k) {
+      if (cur.get(k) && !url.searchParams.get(k)) url.searchParams.set(k, cur.get(k));
+    });
+    if (url.toString() !== a.href) {
+      ev.preventDefault();
+      location.assign(url.toString());
+    }
+  });
+
+  var box = document.getElementById('rl-comments');
+  if (box) {
+    box.addEventListener('change', function () {
+      syncMoreMark();
+      if (!on()) return;
+      var u = new URL(location.href);
+      u.searchParams.set('cm', box.checked ? '1' : '0');
+      location.assign(u.toString());
+    });
+  }
+
+  function paint() {
+    var el = document.getElementById('rl-git-files');
+    if (!el) return;
+    var data;
+    try { data = JSON.parse(el.textContent || '{"files":[]}'); } catch (err) { return; }
+    var files = data.files || [];
+    Array.prototype.forEach.call(document.querySelectorAll('a.fb-link'), function (a) {
+      var href = a.getAttribute('href') || '';
+      var pub = href.replace(/^\/n\//, '');
+      var hit = null;
+      files.forEach(function (f) {
+        var p = String(f.path || '').replace(/\\/g, '/');
+        if (p === pub || p === pub + '.md' || p.endsWith('/' + pub) || p.endsWith('/' + pub + '.md')) hit = f;
+      });
+      var old = a.querySelector('.fb-git');
+      if (old) old.remove();
+      if (!hit) return;
+      var d = document.createElement('span');
+      d.className = 'fb-git';
+      d.title = hit.label || hit.status || 'changed';
+      a.appendChild(d);
+    });
+  }
+  paint();
+  var prevAfter = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prevAfter) prevAfter();
+    paint();
+  };
+})();
+
+</script>
+<script>
+function rlDrawerAction(ev) {
+  if (!ev) return 'ignore';
+  if (ev.type === 'keydown') {
+    if (ev.typing || ev.meta || ev.ctrl || ev.alt) return 'ignore';
+    if (ev.key === '\\') return ev.open ? 'close' : 'open';
+    if (ev.key === 'Escape') {
+      if (!ev.open || ev.menu) return 'ignore';
+      return 'close';
+    }
+    return 'ignore';
+  }
+  if (ev.type === 'click') {
+    if (ev.where === 'toggle') return ev.open ? 'close' : 'open';
+    if (!ev.open) return 'ignore';
+    if (ev.where === 'file' || ev.where === 'section' || ev.where === 'scrim' || ev.where === 'outside') return 'close';
+    return 'ignore';
+  }
+  return 'ignore';
+}
+function rlDrawerInitialOpen(search) {
+  return /(?:^|[?&])contents=open(?:&|$)/.test(String(search || ''));
+}
+function rlDrawerCoverPx(drawerRight, contentLeft, viewportWidth) {
+  if (!(viewportWidth > 768)) return 0;
+  var n = drawerRight - contentLeft;
+  if (!(n > 8)) return 0;
+  return Math.ceil(n + 12);
+}
+function rlDrawerWhere(node) {
+  if (!node || !node.closest) return 'outside';
+  if (node.closest('#rl-drawer-toggle')) return 'toggle';
+  if (node.closest('#rl-drawer-scrim')) return 'scrim';
+  if (node.closest('#rl-drawer a.fb-link')) return 'file';
+  if (node.closest('#rl-drawer nav.sidebar a')) return 'section';
+  if (node.closest('#rl-drawer summary')) return 'folder';
+  if (node.closest('#rl-drawer')) return 'inside';
+  return 'outside';
+}
+
+(function () {
+  if (typeof document === 'undefined' || !document.getElementById) return;
+  var drawer = document.getElementById('rl-drawer');
+  var toggle = document.getElementById('rl-drawer-toggle');
+  if (!drawer || !toggle) return;
+  function menuOpen() {
+    var menu = document.getElementById('rl-cm-menu');
+    var pop = document.getElementById('rl-cm-pop');
+    return (menu && !menu.hidden) || (pop && !pop.hidden);
+  }
+  function typingTarget(node) {
+    return !!(node && node.closest && node.closest('input, textarea, select, [contenteditable="true"], .CodeMirror'));
+  }
+  function openNow() {
+    return document.body.classList.contains('rl-drawer-open');
+  }
+  function place() {
+    var open = openNow();
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (!open) {
+      document.body.style.removeProperty('--rl-drawer-cover');
+      return;
+    }
+    var main = document.querySelector('main');
+    var left = 0;
+    if (main) {
+      var box = main.getBoundingClientRect();
+      var pad = parseFloat(window.getComputedStyle(main).paddingLeft) || 0;
+      left = box.left + pad;
+    }
+    var cover = rlDrawerCoverPx(drawer.getBoundingClientRect().right, left, window.innerWidth);
+    document.body.style.setProperty('--rl-drawer-cover', cover + 'px');
+  }
+  function setOpen(open, focus) {
+    document.body.classList.toggle('rl-drawer-open', open);
+    place();
+    if (focus === 'drawer' && drawer) drawer.focus();
+    else if (focus === 'toggle' && toggle) toggle.focus();
+  }
+  document.addEventListener('click', function (e) {
+    var where = rlDrawerWhere(e.target);
+    var action = rlDrawerAction({ type: 'click', where: where, open: openNow() });
+    if (action === 'open') setOpen(true, 'drawer');
+    else if (action === 'close') setOpen(false, where === 'toggle' ? 'toggle' : null);
+  });
+  document.addEventListener('keydown', function (e) {
+    var action = rlDrawerAction({
+      type: 'keydown',
+      key: e.key,
+      typing: typingTarget(e.target),
+      meta: e.metaKey,
+      ctrl: e.ctrlKey,
+      alt: e.altKey,
+      open: openNow(),
+      menu: menuOpen()
+    });
+    if (action === 'ignore') return;
+    e.preventDefault();
+    if (action === 'open') setOpen(true, 'drawer');
+    else if (action === 'close') setOpen(false, 'toggle');
+  }, true);
+  window.addEventListener('resize', place);
+  if (rlDrawerInitialOpen(location.search)) setOpen(true, null);
+  else place();
+  var prev = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prev) prev();
+    drawer = document.getElementById('rl-drawer');
+    toggle = document.getElementById('rl-drawer-toggle');
+    if (drawer && toggle) place();
+  };
+})();
+
+</script>
+</body>
+</html>

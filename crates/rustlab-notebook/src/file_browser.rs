@@ -206,7 +206,7 @@ pub fn styles(theme: &ThemeColors) -> String {
     height: calc(100vh - var(--topbar-h, 0px));
     background: {bg};
     color: {text};
-    border-right: 1px solid {border};
+    border-right: var(--rl-border-width, 1px) solid {border};
     overflow: auto;
     z-index: 120;
   }}
@@ -233,7 +233,7 @@ pub fn styles(theme: &ThemeColors) -> String {
     font-weight: 700;
     color: {accent};
     padding: 0.9rem 0.85rem 0.7rem;
-    border-bottom: 1px solid {border};
+    border-bottom: var(--rl-border-width, 1px) solid {border};
   }}
   nav.file-browser > details.fb-root:not([open]) > .fb-summary {{
     border-bottom: 0;
