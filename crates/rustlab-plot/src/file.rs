@@ -38,6 +38,7 @@ fn measure_px<DB>(area: &DrawingArea<DB, plotters::coord::Shift>, text: &str, si
 where
     DB: DrawingBackend,
 {
+    crate::font::ensure_registered();
     let style: TextStyle = ("sans-serif", size).into_text_style(area);
     style
         .font
@@ -347,6 +348,7 @@ pub fn render_panel_to_rgba(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, PlotError> {
+    crate::font::ensure_registered();
     let palette = ThemePalette::from(theme);
     let rgb_len = rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
         PlotError::FileOutput(rustlab_core::variable_too_large(
@@ -398,6 +400,7 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
+    crate::font::ensure_registered();
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     root.fill(&palette.bg).map_err(err)?;
 

@@ -6,6 +6,7 @@ pub(crate) mod decimate;
 pub mod error;
 pub mod figure;
 pub mod file;
+pub mod font;
 pub mod html;
 pub mod live;
 pub mod plot_abort;
