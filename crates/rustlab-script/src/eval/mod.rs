@@ -3417,16 +3417,62 @@ impl Evaluator {
             vals.into_iter().map(Value::widen_int).collect()
         };
 
+        // Logical widening, the same rule as MATLAB: a numeric builtin sees a
+        // logical array or a bool as its 0/1 doubles. Builtins in
+        // LOGICAL_AWARE_BUILTINS see the raw logical. A class-preserving
+        // builtin (LOGICAL_PRESERVING_BUILTINS) whose data arguments are all
+        // logical gets a logical result back.
+        let mut relogical = false;
+        let vals: Vec<Value> = if !LOGICAL_AWARE_BUILTINS.contains(&name)
+            && vals
+                .iter()
+                .any(|v| matches!(v, Value::Logical(_) | Value::Bool(_)))
+        {
+            relogical =
+                LOGICAL_PRESERVING_BUILTINS.contains(&name) && Self::logical_data_args(name, &vals);
+            vals.into_iter().map(Value::widen_logical).collect()
+        } else {
+            vals
+        };
+
         let _cancel_scope = self.cancel.as_ref().map(builtin_cancel::enter);
-        if !self.profiler.is_enabled() {
-            return self.builtins.call_with_nargout(name, vals, nargout);
+        let result = if !self.profiler.is_enabled() {
+            self.builtins.call_with_nargout(name, vals, nargout)
+        } else {
+            let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
+            self.profiler.enter(name);
+            let result = self.builtins.call_with_nargout(name, vals, nargout);
+            let out = result.as_ref().map_or(0, Self::value_bytes);
+            self.profiler.exit(name, in_bytes, out);
+            result
+        };
+        if relogical {
+            result.map(Value::relogical)
+        } else {
+            result
         }
-        let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
-        self.profiler.enter(name);
-        let result = self.builtins.call_with_nargout(name, vals, nargout);
-        let out = result.as_ref().map_or(0, Self::value_bytes);
-        self.profiler.exit(name, in_bytes, out);
-        result
+    }
+
+    /// Whether every data argument of a class-preserving builtin is a
+    /// logical array or a bool. `cat` skips its dimension. The second
+    /// argument of `min` / `max` is data unless it is the `[]` placeholder.
+    /// The size and order arguments of the shape functions are not data.
+    fn logical_data_args(name: &str, vals: &[Value]) -> bool {
+        let is_logical = |v: &Value| matches!(v, Value::Logical(_) | Value::Bool(_));
+        let is_empty = |v: &Value| match v {
+            Value::Matrix(m) => m.len() == 0,
+            Value::Vector(x) => x.len() == 0,
+            _ => false,
+        };
+        match name {
+            "cat" => vals.len() > 1 && vals[1..].iter().all(is_logical),
+            "horzcat" | "vertcat" => vals.iter().all(is_logical),
+            "min" | "max" => {
+                vals.first().is_some_and(is_logical)
+                    && vals.get(1).is_none_or(|v| is_empty(v) || is_logical(v))
+            }
+            _ => vals.first().is_some_and(is_logical),
+        }
     }
 
     /// `true` / `false` still hold a scalar bool. `true(m)` and `true(m, n)`
@@ -4923,6 +4969,65 @@ const INT_AWARE_BUILTINS: &[&str] = &[
     "print",
     "fprintf",
     "sprintf",
+];
+
+/// Builtins that receive a logical array or a bool as itself. Every other builtin
+/// gets its 0/1 doubles (see `call_builtin_tracked_nargout`).
+const LOGICAL_AWARE_BUILTINS: &[&str] = &[
+    // Class and type queries.
+    "class",
+    "islogical",
+    "isa",
+    "isinteger",
+    "iscell",
+    "ischar",
+    "isstruct",
+    "issparse",
+    // Conversions and logical operators.
+    "logical",
+    "double",
+    "and",
+    "or",
+    "xor",
+    // Logical-specific paths: `sum` counts trues, `find` returns logical
+    // values, `reshape` keeps the logical class and the requested shape.
+    "sum",
+    "find",
+    "reshape",
+    // `any` / `all` reduce a logical array directly.
+    "any",
+    "all",
+    // Shape queries (no copy).
+    "size",
+    "numel",
+    "length",
+    "len",
+    "ndims",
+    "height",
+    "width",
+    // Containers, storage and printing keep the class.
+    "table",
+    "struct",
+    "save",
+    "disp",
+    "print",
+];
+
+/// Builtins that return a logical when their data arguments are logical, as
+/// MATLAB's do: shape functions, `sort`, `min` / `max`, `cat`.
+const LOGICAL_PRESERVING_BUILTINS: &[&str] = &[
+    "repmat",
+    "fliplr",
+    "squeeze",
+    "permute",
+    "transpose",
+    "diag",
+    "sort",
+    "min",
+    "max",
+    "cat",
+    "horzcat",
+    "vertcat",
 ];
 
 const IMPURE_BUILTINS: &[&str] = &[

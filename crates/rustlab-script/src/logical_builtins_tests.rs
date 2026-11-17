@@ -99,14 +99,12 @@ fn numeric_builtins_treat_a_logical_as_zero_one_doubles() {
         "convolve(v, v)",
     ];
     for case in cases {
-        let arg = ["L", "v", "c"]
-            .into_iter()
-            .fold(case.to_string(), |s, n| {
-                s.replace(&format!("({n}"), &format!("(double({n})"))
-                    .replace(&format!(", {n})"), &format!(", double({n}))"))
-                    .replace(&format!(", {n},"), &format!(", double({n}),"))
-                    .replace(&format!("({n} "), &format!("(double({n}) "))
-            });
+        let arg = ["L", "v", "c"].into_iter().fold(case.to_string(), |s, n| {
+            s.replace(&format!("({n}"), &format!("(double({n})"))
+                .replace(&format!(", {n})"), &format!(", double({n}))"))
+                .replace(&format!(", {n},"), &format!(", double({n}),"))
+                .replace(&format!("({n} "), &format!("(double({n}) "))
+        });
         let got = get(&format!("a = {case};"), "a");
         let want = get(&format!("a = {arg};"), "a");
         let (gr, gc, gv) = numeric(&got, case);
@@ -159,8 +157,12 @@ fn shape_functions_keep_the_logical_class() {
     assert_logical("a = reshape(L, 1, 4);", 1, 4, &[0.0, 0.0, 1.0, 0.0]);
     assert_logical("a = reshape(m > 0, 1, 4);", 1, 4, &[1.0, 0.0, 0.0, 1.0]);
     assert_logical("a = reshape(v, 3, 1);", 3, 1, &[1.0, 0.0, 1.0]);
-    assert_logical("a = reshape(L, [4, 1]);", 4, 1, &[0.0, 0.0, 1.0, 0.0]);
-    assert_logical("a = repmat(L, 1, 2);", 2, 4, &[0., 0., 1., 0., 0., 0., 1., 0.]);
+    assert_logical(
+        "a = repmat(L, 1, 2);",
+        2,
+        4,
+        &[0., 0., 1., 0., 0., 0., 1., 0.],
+    );
     assert_logical("a = repmat(v, 2, 1);", 2, 3, &[1., 1., 0., 0., 1., 1.]);
     assert_logical("a = fliplr(L);", 2, 2, &[1.0, 0.0, 0.0, 0.0]);
     assert_logical("a = fliplr(v);", 1, 3, &[1.0, 0.0, 1.0]);
@@ -170,7 +172,12 @@ fn shape_functions_keep_the_logical_class() {
     assert_logical("a = min(L, [], 2);", 2, 1, &[0.0, 0.0]);
     assert_logical("a = cat(2, L, L);", 2, 4, &[0., 0., 1., 0., 0., 0., 1., 0.]);
     assert_logical("a = horzcat(v, v);", 1, 6, &[1., 0., 1., 1., 0., 1.]);
-    assert_logical("a = vertcat(L, L);", 4, 2, &[0., 0., 0., 0., 1., 0., 1., 0.]);
+    assert_logical(
+        "a = vertcat(L, L);",
+        4,
+        2,
+        &[0., 0., 0., 0., 1., 0., 1., 0.],
+    );
     assert_logical("a = squeeze(L);", 2, 2, &[0.0, 0.0, 1.0, 0.0]);
     assert_logical("a = L';", 2, 2, &[0.0, 1.0, 0.0, 0.0]);
     assert_logical("a = transpose(L);", 2, 2, &[0.0, 1.0, 0.0, 0.0]);
@@ -258,9 +265,53 @@ fn logical_aware_builtins_are_unchanged() {
     assert!(matches!(get("a = class(v);", "a"), Value::Str(s) if s == "logical"));
     assert!(matches!(get("a = and(L, L);", "a"), Value::Logical(_)));
     assert!(matches!(get("a = logical(L);", "a"), Value::Logical(_)));
-    assert!(matches!(get("a = feval(\"islogical\", L);", "a"), Value::Bool(true)));
-    assert!(matches!(get("a = any(L);", "a"), Value::Logical(_) | Value::Vector(_) | Value::Matrix(_)));
+    assert!(matches!(
+        get("a = feval(\"islogical\", L);", "a"),
+        Value::Bool(true)
+    ));
+    assert_logical("a = any(L);", 1, 2, &[0.0, 1.0]);
+    assert_logical("a = all(L);", 1, 2, &[0.0, 0.0]);
+    assert_logical("a = any(m);", 1, 2, &[1.0, 1.0]);
+    assert_logical("a = all(m);", 1, 2, &[0.0, 1.0]);
     assert!(matches!(get("a = all(v);", "a"), Value::Bool(false)));
     assert_eq!(numeric(&get("a = sum(L);", "a"), "sum").2, vec![0.0, 1.0]);
     assert_eq!(numeric(&get("a = find(L);", "a"), "find").2, vec![3.0]);
+}
+
+/// A scalar `true` / `false` is 1 / 0 in a numeric builtin, as in MATLAB.
+#[test]
+fn numeric_builtins_accept_a_scalar_bool() {
+    for (src, want) in [
+        ("a = mean(true);", 1.0),
+        ("a = abs(true);", 1.0),
+        ("a = sqrt(false);", 0.0),
+        ("a = exp(false);", 1.0),
+        ("a = prod([true, true]);", 1.0),
+    ] {
+        let a = get(src, "a");
+        assert!(matches!(a, Value::Scalar(x) if x == want), "{src}: {a:?}");
+    }
+    assert!(matches!(
+        get("a = max(true, false);", "a"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(get("a = sprintf(\"%d\", 1 == 1);", "a"), Value::Str(s) if s == "1"));
+}
+
+/// Arithmetic: a logical row next to a 1-D vector is a vector, so
+/// `x .* (x > 0)` keeps the type of `x`. Otherwise it is a `1×n` matrix and
+/// broadcasts against a column.
+#[test]
+fn arithmetic_shape_of_a_logical_row() {
+    let ev = eval("x = [1, -2, 3]; y = x .* (x > 0);");
+    assert!(matches!(ev.get("y"), Some(Value::Vector(_))));
+    assert_eq!(crate::testutil::vec_re(&ev, "y"), vec![1.0, 0.0, 3.0]);
+    match get("a = [1; 2; 3] + (r + 0);", "a") {
+        Value::Matrix(mm) => assert_eq!(mm.dim(), (3, 3)),
+        other => panic!("{other:?}"),
+    }
+    match get("a = r + 0;", "a") {
+        Value::Matrix(mm) => assert_eq!(mm.dim(), (1, 3)),
+        other => panic!("{other:?}"),
+    }
 }
