@@ -36,6 +36,20 @@ Open Font License (a common misconception). The single KaTeX
 Each vendored directory has a `VENDOR.md` documenting upstream
 URL, version, and contents.
 
+## Bundled font — `rustlab-plot`
+
+`rustlab-plot` embeds one font with `include_bytes!` and uses it for all
+plot text (SVG measurement, PNG / GIF rasters, viewer rasters):
+
+| Asset | Version | Upstream | License | Vendored at |
+|---|---|---|---|---|
+| Liberation Sans Regular (`LiberationSans-Regular.ttf`, unmodified) | 2.1.5 | https://github.com/liberationfonts/liberation-fonts | SIL Open Font License 1.1 — see `crates/rustlab-plot/fonts/OFL.txt` | `crates/rustlab-plot/fonts/` |
+
+The file is shipped unmodified. At run time `src/font.rs` registers an
+in-memory copy with rescaled vertical metrics (ascender/descender) so
+plotters' text size convention holds; the copy is never written out or
+distributed as a font. Reserved Font Name: "Liberation".
+
 ## Cargo dependencies
 
 Regular Cargo dependencies (the Rust crates pulled in via

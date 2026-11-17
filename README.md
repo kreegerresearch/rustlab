@@ -57,8 +57,36 @@ The binary lands in `~/.cargo/bin/rustlab`, which is already on `PATH` if you in
 
 ---
 
-> **No system libraries required on any platform.** All plotting dependencies are
-> pure Rust — no `libfreetype`, `libfontconfig`, or other C libraries needed.
+### System packages
+
+Plotting needs no system libraries. Plot text (SVG layout, PNG, GIF, viewer
+rasters) uses Liberation Sans, which is compiled into the binary, so there is
+no fontconfig, FreeType, or C++ standard library to install, and plots use
+the same font on every OS.
+
+Building does need a C compiler and the C library headers: the bundled
+SQLite (function cache) and BLAKE3 hashing compile a little C. macOS gets
+these from the Xcode Command Line Tools (`xcode-select --install`). On Linux:
+
+| Distro | Command |
+|---|---|
+| Ubuntu / Debian | `sudo apt-get install build-essential` (or just `gcc libc6-dev`, plus `make` for `make install`) |
+| Fedora | `sudo dnf install gcc glibc-devel make` |
+
+No C++ compiler, `pkg-config`, `libfontconfig1-dev`, or `libfreetype-dev` is
+needed. The `rustlab` and `rustlab-notebook` binaries link only libc, libm,
+and libgcc_s. `rustlab-viewer` opens a window with the desktop's X11 or
+Wayland and OpenGL libraries, loaded at run time; nothing is needed at build
+time. PDF notebook output also needs `pdflatex` (or `tectonic`) and
+`inkscape`; see [docs/notebooks.md](docs/notebooks.md).
+
+> **Before 0.3.68, Linux builds** needed
+> `libfontconfig1-dev`, and also `libfreetype-dev` to avoid
+> `rust-lld: error: unable to find library -lstdc++`. Without
+> `libfreetype-dev`, `freetype-sys` compiled its bundled FreeType as C++ and
+> linked libstdc++. When `cc` is clang, it uses the newest
+> `/usr/lib/gcc/x86_64-linux-gnu/<N>/` directory, which may hold `libgcc`
+> but no `libstdc++.so`. Upgrading removes both requirements.
 
 After either option, verify with:
 

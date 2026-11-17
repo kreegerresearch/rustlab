@@ -519,12 +519,16 @@ cargo install --path crates/rustlab-cli   # → ~/.cargo/bin/rustlab
 > `make install` handles this automatically. If you copy the binary manually, run:
 > `codesign --sign - --force <destination>/rustlab`
 
-> **Linux note:** Building `rustlab-plot` needs `libfontconfig1-dev`
-> and `libfreetype-dev` on the system (`apt-get install
-> libfontconfig1-dev libfreetype-dev pkg-config`). The `plotters/ttf`
-> feature pulls in `font-kit` → `yeslogic-fontconfig-sys` /
-> `freetype-sys`, both of which link against system libraries; the
-> macOS SDK provides them implicitly.
+> **Linux note:** The build needs only a C compiler and libc headers
+> (`build-essential`, or `gcc libc6-dev`) for bundled SQLite and BLAKE3.
+> `rustlab-plot` uses plotters' pure-Rust `ab_glyph` text backend with the
+> bundled Liberation Sans (`crates/rustlab-plot/src/font.rs`). Do not turn
+> on plotters' `ttf` feature. It pulls `font-kit`, which needs
+> `libfontconfig1-dev`, and without `libfreetype-dev` it compiles FreeType as
+> C++ and links `-lstdc++`. That link fails under clang with
+> `rust-lld: error: unable to find library -lstdc++` when the newest GCC
+> directory has no `libstdc++.so`. `.github/workflows/minimal-linux-build.yml`
+> builds in a bare container and rejects those crates in `cargo tree`.
 
 ### Octave numerical comparison
 
@@ -965,6 +969,7 @@ rustlab run examples/dsp/lowpass.rlab   # must exit 0 with a plot
 
 **Key files:**
 - `src/ascii.rs` — `plot_real`, `plot_complex`, `stem_real`, and the shared `draw_subplots(f, subplots, rows, cols)` helper used by both `render_figure_terminal` and `LiveFigure::redraw`.
+- `src/font.rs` — the plot font. plotters' `ab_glyph` backend resolves only registered families; `ensure_registered()` (called by `render_to_backend`, `render_panel_to_rgba`, `measure_px`) registers the bundled `fonts/LiberationSans-Regular.ttf` (OFL, `fonts/OFL.txt`) as `"sans-serif"`. The registered copy has `hhea` / `OS/2` ascender − descender rescaled to 1.24 × unitsPerEm so ab_glyph's em equals `size / 1.24`, the SVG `font-size` and the old `ttf` backend's em; without that, text measured ~11% wide and axes lost ticks.
 - `src/live.rs` — `LiveFigure` struct implementing the `LivePlot` trait: `new(rows, cols)`, `update_panel(idx, x, y)`, `set_panel_labels(idx, title, xlabel, ylabel)`, `redraw()`. `Drop` impl restores the terminal.
 - `src/figure.rs` — `FigureState`, `FIGURE` thread-local, and the multi-figure store (`FigureStore`). `figure_new()`, `figure_new_html(path)`, `figure_switch(id)` manage figure handles. Each figure tracks its own `FigureOutput` mode (Terminal, Html, or Viewer). The swap approach keeps a single active `FIGURE` workspace with inactive figures stored in a HashMap.
 - `src/html.rs` — `render_figure_html(path)`: exports current FIGURE state to an HTML file that loads the vendored Plotly bundle from a sibling `assets/plotly.min.js` (written once per output directory; not a CDN, not inlined). Also provides HTML figure mode (`set_html_figure_path`, `sync_html_file`, `html_figure_active`) where `figure("file.html")` causes all subsequent plot commands to auto-update the HTML file instead of rendering to the terminal. `saveanim` HTML uses the same sibling file.
