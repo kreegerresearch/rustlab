@@ -46,6 +46,8 @@ pub mod purity;
 #[cfg(test)]
 mod edge_cases;
 #[cfg(test)]
+mod logical_builtins_tests;
+#[cfg(test)]
 mod logical_tests;
 #[cfg(test)]
 mod math_audit;
