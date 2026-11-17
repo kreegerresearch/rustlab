@@ -2204,10 +2204,9 @@ impl Value {
         }
     }
 
-    /// Arithmetic promotes a logical array to double `0` / `1`. A `1×1`
-    /// logical becomes a scalar. A single row becomes a real vector. A
-    /// single column stays an `n×1` real matrix. Anything wider stays a
-    /// real matrix.
+    /// `double(a)`: the logical array as `0` / `1` doubles of the same
+    /// shape. A `1×1` logical becomes a scalar; every other shape, a single
+    /// row included, is a real matrix of that shape.
     pub(crate) fn logical_as_double(a: &LogicalArray) -> Value {
         let data: Vec<f64> = a
             .as_slice()
@@ -2217,12 +2216,83 @@ impl Value {
         if a.rows() == 1 && a.cols() == 1 {
             return Value::Scalar(data.first().copied().unwrap_or(0.0));
         }
-        if a.rows() == 1 {
-            return Value::real_vector(Array1::from_vec(data));
-        }
         Value::real_matrix(
             Array2::from_shape_vec((a.rows(), a.cols()), data).expect("logical shape"),
         )
+    }
+
+    /// [`Self::logical_as_double`], except a single row becomes a 1-D real
+    /// vector. Arithmetic with a vector operand and `[…]` concatenation use
+    /// it, so `x .* (x > 0)` stays a vector when `x` is one.
+    pub(crate) fn logical_as_double_row_vector(a: &LogicalArray) -> Value {
+        if a.rows() == 1 && a.cols() != 1 {
+            let data: Vec<f64> = a
+                .as_slice()
+                .iter()
+                .map(|&b| if b != 0 { 1.0 } else { 0.0 })
+                .collect();
+            return Value::real_vector(Array1::from_vec(data));
+        }
+        Self::logical_as_double(a)
+    }
+
+    /// A builtin argument: a logical array or a bool becomes its `0` / `1`
+    /// doubles.
+    pub(crate) fn widen_logical(v: Value) -> Value {
+        match v {
+            Value::Logical(a) => Self::logical_as_double(&a),
+            Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            other => other,
+        }
+    }
+
+    /// The result of a class-preserving builtin (`reshape`, `sort`, `max`,
+    /// …) called on logical data, as a logical again. Only a real result
+    /// whose every element is exactly `0` or `1` converts; a scalar is a
+    /// `bool`. For a multi-output call only the first output converts
+    /// (`[m, i] = max(L)` keeps `i` numeric).
+    pub(crate) fn relogical(v: Value) -> Value {
+        fn bit(z: &C64) -> Option<bool> {
+            if z.im != 0.0 {
+                return None;
+            }
+            if z.re == 0.0 {
+                Some(false)
+            } else if z.re == 1.0 {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        match v {
+            Value::Scalar(x) if x == 0.0 || x == 1.0 => Value::Bool(x == 1.0),
+            Value::Vector(ref x) => {
+                let flags: Option<Vec<bool>> = x.iter().map(bit).collect();
+                match flags.and_then(|f| LogicalArray::row(f).ok()) {
+                    Some(a) => Value::Logical(a),
+                    None => v,
+                }
+            }
+            Value::Matrix(ref m) => {
+                let (rows, cols) = m.dim();
+                let flags: Option<Vec<bool>> = (0..rows)
+                    .flat_map(|i| (0..cols).map(move |j| (i, j)))
+                    .map(|(i, j)| bit(&m[[i, j]]))
+                    .collect();
+                match flags.and_then(|f| LogicalArray::from_flags(f, rows, cols).ok()) {
+                    Some(a) => Value::Logical(a),
+                    None => v,
+                }
+            }
+            Value::Tuple(mut items) => {
+                if let Some(first) = items.first_mut() {
+                    let taken = std::mem::replace(first, Value::None);
+                    *first = Self::relogical(taken);
+                }
+                Value::Tuple(items)
+            }
+            other => other,
+        }
     }
 
     /// `n×1` column compared with a length-`n` vector, the pairs
@@ -2512,16 +2582,18 @@ impl Value {
 
         // Coerce bool and logical operands to numeric 0/1 for arithmetic.
         // `true + 1` is 2. `sum` of a comparison counts trues itself.
-        let lhs = match lhs {
+        // A logical row next to a 1-D vector becomes a vector, so the pair
+        // keeps the vector rules; otherwise it is a matrix like `double`.
+        let promote = |v: Value, partner_is_vector: bool| match v {
             Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            Value::Logical(a) if partner_is_vector => Self::logical_as_double_row_vector(&a),
             Value::Logical(a) => Self::logical_as_double(&a),
             other => other,
         };
-        let rhs = match rhs {
-            Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
-            Value::Logical(a) => Self::logical_as_double(&a),
-            other => other,
-        };
+        let lhs_vec = matches!(lhs, Value::Vector(_));
+        let rhs_vec = matches!(rhs, Value::Vector(_));
+        let lhs = promote(lhs, rhs_vec);
+        let rhs = promote(rhs, lhs_vec);
 
         // String concatenation
         if let (Value::Str(a), Value::Str(b)) = (&lhs, &rhs) {
@@ -3243,7 +3315,7 @@ impl Value {
                 row.into_iter()
                     .map(|v| match v {
                         Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
-                        Value::Logical(a) => Self::logical_as_double(&a),
+                        Value::Logical(a) => Self::logical_as_double_row_vector(&a),
                         other => other,
                     })
                     .collect()

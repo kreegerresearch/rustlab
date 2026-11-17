@@ -356,7 +356,7 @@ fn plotly_stress_text_does_not_overlap_in_chrome() {
         ));
     }
     let html = PAGE_HTML
-        .replace("@@BG@@", theme.plot_bg)
+        .replace("@@BG@@", theme.plot_bg.as_ref())
         .replace("@@BODY@@", &body);
     let page = dir.join("index.html");
     std::fs::write(&page, html).unwrap();

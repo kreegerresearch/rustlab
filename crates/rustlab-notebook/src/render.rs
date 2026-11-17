@@ -1002,6 +1002,7 @@ pub fn render_html_nonced(
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
     let c = theme;
+    let resolved = rustlab_plot::ResolvedTheme::from_colors(c);
     let mut page = format!(
         r##"<!DOCTYPE html>
 <html lang="en">
@@ -1040,7 +1041,8 @@ document.addEventListener('click', (e) => {{
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   html {{ color-scheme: {color_scheme}; }}
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: {font_body};
+    font-size: {font_size};
     background: {bg};
     color: {text};
     display: flex;
@@ -1063,8 +1065,8 @@ document.addEventListener('click', (e) => {{
     width: 220px;
     height: calc(100vh - var(--topbar-h));
     background: {bg_secondary};
-    border-right: 1px solid {border};
-    padding: 1.5rem 0;
+    border-right: {border_width} solid {border};
+    padding: {space_4} 0;
     overflow-y: auto;
     /* Unbreakable content (a wide KaTeX formula) clips at the column edge
        rather than painting over `main` or growing a stray h-scrollbar. */
@@ -1077,13 +1079,13 @@ document.addEventListener('click', (e) => {{
     font-size: 1.1rem;
     font-weight: 700;
     color: {accent_primary};
-    padding: 0 1rem 1rem;
-    border-bottom: 1px solid {border};
-    margin-bottom: 0.5rem;
+    padding: 0 {space_3} {space_3};
+    border-bottom: {border_width} solid {border};
+    margin-bottom: {space_1};
   }}
   nav.sidebar a {{
     display: block;
-    padding: 0.4rem 1rem;
+    padding: 0.4rem {space_3};
     color: {text_dim};
     text-decoration: none;
     font-size: 0.9rem;
@@ -1118,8 +1120,8 @@ document.addEventListener('click', (e) => {{
     left: 0.7rem;
     z-index: 200;
     background: {border};
-    border: 1px solid {border_subtle};
-    border-radius: 6px;
+    border: {border_width} solid {border_subtle};
+    border-radius: {radius};
     color: {text};
     font-size: 1.3rem;
     width: 2.4rem;
@@ -1138,8 +1140,8 @@ document.addEventListener('click', (e) => {{
        viewport; this puts it at 320, like the old `margin: 0 auto`.) */
     margin-left: max(220px, calc(50% - 480px));
     flex: 1;
-    padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
-    max-width: 960px;
+    padding: calc(var(--topbar-h) + {space_5}) {space_6} {space_5};
+    max-width: {measure};
     min-width: 0;
   }}
   /* ── Topbar (between-notebook nav) ──
@@ -1153,13 +1155,13 @@ document.addEventListener('click', (e) => {{
     height: var(--topbar-h);
     z-index: 150;
     background: {bg_secondary};
-    border-bottom: 1px solid {border};
+    border-bottom: {border_width} solid {border};
     padding: 0 1.2rem;
     font-size: 0.85rem;
     color: {text_dim};
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: {space_2};
   }}
   .topbar a {{
     color: {accent_secondary};
@@ -1189,7 +1191,7 @@ document.addEventListener('click', (e) => {{
   .topbar .crumb {{
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: {space_1};
     min-width: 0;
     /* Claim the leftover width. Flex items default to min-width:auto and
        refuse to shrink below their content, so without this the fixed-size
@@ -1215,7 +1217,7 @@ document.addEventListener('click', (e) => {{
     flex: 0 0 auto;
     margin-left: 0.35rem;
     padding: 0.05rem 0.45rem;
-    border: 1px solid {error_text};
+    border: {border_width} solid {error_text};
     border-radius: 999px;
     color: {error_text};
     background: {error_bg};
@@ -1232,7 +1234,7 @@ document.addEventListener('click', (e) => {{
      generated `heading-N` ones: explicit `{{#anchor}}` headings, footnote
      back-references and block ids are all link targets too. */
   [id] {{
-    scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
+    scroll-margin-top: calc(var(--topbar-h) + {space_2});
   }}
   /* No headings, no sidebar: the column centres in the full viewport.
      A collection file browser, when present, adds `--fb-w` on the left
@@ -1247,15 +1249,15 @@ document.addEventListener('click', (e) => {{
     margin-left: max(var(--fb-w), calc(50% - 480px));
   }}
   .prose {{
-    line-height: 1.7;
-    margin-bottom: 1.5rem;
+    line-height: {line_height};
+    margin-bottom: {space_4};
   }}
   .prose h1 {{
     font-size: 1.8rem;
     color: {accent_primary};
-    margin: 2rem 0 1rem;
+    margin: {space_5} 0 {space_3};
     padding-bottom: 0.4rem;
-    border-bottom: 1px solid {border};
+    border-bottom: {border_width} solid {border};
   }}
   .prose h2 {{
     font-size: 1.4rem;
@@ -1268,19 +1270,19 @@ document.addEventListener('click', (e) => {{
     margin: 1.4rem 0 0.6rem;
   }}
   .prose p {{
-    margin-bottom: 1rem;
+    margin-bottom: {space_3};
   }}
   /* Prose/callout/exercise links. Without this, UA-default `#0000EE` /
      visited `#551A8B` sit on the dark page background at ~2:1 contrast.
      More-specific `.topbar a` / `.page-nav a` / `nav.sidebar a` keep
      their own colors. */
   .prose a, .callout a, .exercise a {{
-    color: {accent_secondary};
+    color: {link};
     text-decoration: underline;
     text-underline-offset: 0.15em;
   }}
   .prose a:visited, .callout a:visited, .exercise a:visited {{
-    color: {accent_primary};
+    color: {link_visited};
   }}
   .prose a:hover, .callout a:hover, .exercise a:hover {{
     color: {accent_tertiary};
@@ -1288,27 +1290,27 @@ document.addEventListener('click', (e) => {{
   .prose code {{
     background: {inline_code_bg};
     padding: 0.15rem 0.4rem;
-    border-radius: 3px;
+    border-radius: {radius_sm};
     font-size: 0.9em;
   }}
   .prose table {{
     border-collapse: collapse;
-    margin: 1rem 0;
+    margin: {space_3} 0;
   }}
   .prose th, .prose td {{
     border: none;
-    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
-    padding: 0.5rem 0.8rem;
+    border-bottom: {border_width} solid {table_rule};
+    padding: {space_1} 0.8rem;
     text-align: left;
   }}
   .prose th {{
-    background: color-mix(in srgb, {text} 11%, {bg});
+    background: {table_head};
     color: {accent_primary};
     font-weight: 600;
-    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
+    border-bottom: {border_width} solid {table_rule};
   }}
   .prose tbody tr:nth-child(even) td {{
-    background: color-mix(in srgb, {text} 6%, {bg});
+    background: {table_stripe};
   }}
   .prose img, .callout img {{
     max-width: 100%;
@@ -1319,19 +1321,19 @@ document.addEventListener('click', (e) => {{
     font-style: italic;
   }}
   .prose ul, .prose ol {{
-    margin: 0.5rem 0 1rem 1.5rem;
+    margin: {space_1} 0 {space_3} {space_4};
   }}
   .prose li {{
     margin-bottom: 0.3rem;
   }}
   .prose blockquote {{
     border-left: 3px solid {accent_primary};
-    padding-left: 1rem;
+    padding-left: {space_3};
     color: {text_dim};
-    margin: 1rem 0;
+    margin: {space_3} 0;
   }}
   .code-block {{
-    margin-bottom: 1.5rem;
+    margin-bottom: {space_4};
   }}
   /* Source, printed output, and errors. The accent rule marks the cell.
      Plots are siblings of this wrapper, so they stay full width. */
@@ -1388,23 +1390,23 @@ document.addEventListener('click', (e) => {{
   }}
   .source {{
     background: {code_bg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 1rem;
+    border: {border_width} solid {border};
+    border-radius: {radius};
+    padding: {space_3};
     overflow-x: auto;
-    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-family: {font_mono};
     font-size: 0.85rem;
     line-height: 1.5;
     color: {text};
   }}
   .output {{
     background: {output_bg};
-    border: 1px solid {border};
-    border-radius: 6px;
-    padding: 0.8rem 1rem;
-    margin-top: 0.5rem;
+    border: {border_width} solid {border};
+    border-radius: {radius};
+    padding: 0.8rem {space_3};
+    margin-top: {space_1};
     color: {text_dim};
-    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-family: {font_mono};
     font-size: 0.85rem;
     white-space: pre-wrap;
     line-height: 1.5;
@@ -1417,23 +1419,23 @@ document.addEventListener('click', (e) => {{
     margin: 0.6rem 0 0.2rem;
     background: {output_bg};
     color: {text};
-    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-family: {font_mono};
     font-size: 0.85rem;
-    border: 1px solid color-mix(in srgb, {text} 30%, {bg});
-    border-radius: 6px;
+    border: {border_width} solid {table_rule};
+    border-radius: {radius};
     overflow: hidden;
   }}
   table.rl-table th {{
     text-align: left;
     font-weight: 600;
     color: {accent_primary};
-    background: color-mix(in srgb, {text} 11%, {bg});
-    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
+    background: {table_head};
+    border-bottom: {border_width} solid {table_rule};
     padding: 0.4rem 0.8rem;
   }}
   table.rl-table td {{
     padding: 0.3rem 0.8rem;
-    border-bottom: 1px solid color-mix(in srgb, {text} 30%, {bg});
+    border-bottom: {border_width} solid {table_rule};
     color: {text};
   }}
   table.rl-table td.rl-num {{
@@ -1444,24 +1446,24 @@ document.addEventListener('click', (e) => {{
     border-bottom: none;
   }}
   table.rl-table tbody tr:nth-child(even) td {{
-    background: color-mix(in srgb, {text} 6%, {bg});
+    background: {table_stripe};
   }}
   .error {{
     background: {error_bg};
-    border: 1px solid {error_text};
-    border-radius: 6px;
-    padding: 0.8rem 1rem;
-    margin-top: 0.5rem;
+    border: {border_width} solid {error_text};
+    border-radius: {radius};
+    padding: 0.8rem {space_3};
+    margin-top: {space_1};
     color: {error_text};
-    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-family: {font_mono};
     font-size: 0.85rem;
     white-space: pre-wrap;
   }}
   .plot-container {{
     background: {bg};
-    border: 1px solid {border};
-    border-radius: 8px;
-    margin-top: 0.5rem;
+    border: {border_width} solid {border};
+    border-radius: {radius_lg};
+    margin-top: {space_1};
     height: 450px;
   }}
   .plot-container > div {{
@@ -1472,23 +1474,23 @@ document.addEventListener('click', (e) => {{
     color: {footer_text};
     font-size: 0.8rem;
     margin-top: 3rem;
-    padding-top: 1rem;
-    border-top: 1px solid {border};
+    padding-top: {space_3};
+    border-top: {border_width} solid {border};
   }}
   .page-nav {{
     display: flex;
     align-items: stretch;
-    gap: 0.5rem;
-    margin-top: 2.5rem;
+    gap: {space_1};
+    margin-top: {space_6};
     padding-top: 1.2rem;
-    border-top: 1px solid {border};
+    border-top: {border_width} solid {border};
   }}
   .page-nav a {{
     flex: 1 1 0;
-    padding: 0.7rem 1rem;
+    padding: 0.7rem {space_3};
     background: {bg_secondary};
-    border: 1px solid {border};
-    border-radius: 8px;
+    border: {border_width} solid {border};
+    border-radius: {radius_lg};
     color: {accent_secondary};
     text-decoration: none;
     font-size: 0.9rem;
@@ -1527,49 +1529,49 @@ document.addEventListener('click', (e) => {{
   /* ── Callout blocks ── */
   .callout {{
     border-left: 4px solid;
-    border-radius: 6px;
-    padding: 1rem 1.2rem;
-    margin: 1rem 0;
+    border-radius: {radius};
+    padding: {space_3} 1.2rem;
+    margin: {space_3} 0;
   }}
   .callout-title {{
     font-weight: 700;
-    margin-bottom: 0.5rem;
+    margin-bottom: {space_1};
     font-size: 0.95rem;
   }}
   .callout-note {{
-    border-color: {accent_secondary};
-    background: {bg_secondary};
+    border-color: {callout_note};
+    background: {callout_bg};
   }}
-  .callout-note .callout-title {{ color: {accent_secondary}; }}
+  .callout-note .callout-title {{ color: {callout_note}; }}
   .callout-tip {{
-    border-color: {accent_tertiary};
-    background: {bg_secondary};
+    border-color: {callout_tip};
+    background: {callout_bg};
   }}
-  .callout-tip .callout-title {{ color: {accent_tertiary}; }}
+  .callout-tip .callout-title {{ color: {callout_tip}; }}
   .callout-important {{
-    border-color: {accent_primary};
-    background: {bg_secondary};
+    border-color: {callout_important};
+    background: {callout_bg};
   }}
-  .callout-important .callout-title {{ color: {accent_primary}; }}
+  .callout-important .callout-title {{ color: {callout_important}; }}
   .callout-warning {{
-    border-color: {error_text};
-    background: {bg_secondary};
+    border-color: {callout_warning};
+    background: {callout_bg};
   }}
-  .callout-warning .callout-title {{ color: {error_text}; }}
+  .callout-warning .callout-title {{ color: {callout_warning}; }}
   .callout-caution {{
-    border-color: {error_text};
-    background: {bg_secondary};
+    border-color: {callout_caution};
+    background: {callout_bg};
   }}
-  .callout-caution .callout-title {{ color: {error_text}; }}
+  .callout-caution .callout-title {{ color: {callout_caution}; }}
   /* ── Interactive widgets ── */
   .rl-widget {{
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin: 0.75rem 0;
+    gap: {space_2};
+    margin: {space_2} 0;
     padding: 0.6rem 0.9rem;
-    border: 1px solid {border};
-    border-radius: 6px;
+    border: {border_width} solid {border};
+    border-radius: {radius};
     background: {bg_secondary};
   }}
   .rl-widget-label {{
@@ -1602,7 +1604,7 @@ document.addEventListener('click', (e) => {{
     flex: 0 0 auto;
     width: 7rem;
     padding: 0.2rem 0.4rem;
-    border: 1px solid {border};
+    border: {border_width} solid {border};
     border-radius: 4px;
     background: {bg};
     color: {text};
@@ -1612,7 +1614,7 @@ document.addEventListener('click', (e) => {{
     cursor: default;
   }}
   .rl-widget-drives, .rl-widget-note, .rl-drive-note {{
-    margin: 0 0 0.75rem;
+    margin: 0 0 {space_2};
     padding: 0 0.9rem;
     font-size: 0.8rem;
     color: {text_dim};
@@ -1628,11 +1630,11 @@ document.addEventListener('click', (e) => {{
   .rl-drive {{
     display: grid;
     grid-template-columns: 16rem minmax(0, 1fr);
-    gap: 0.75rem;
-    margin: 0.75rem 0;
-    padding: 0.75rem;
-    border: 1px solid {border};
-    border-radius: 8px;
+    gap: {space_2};
+    margin: {space_2} 0;
+    padding: {space_2};
+    border: {border_width} solid {border};
+    border-radius: {radius_lg};
     background: {bg_secondary};
     align-items: start;
   }}
@@ -1684,10 +1686,10 @@ document.addEventListener('click', (e) => {{
   }}
   /* ── Exercise / solution blocks ── */
   .exercise {{
-    border: 1px solid {border};
-    border-radius: 8px;
+    border: {border_width} solid {border};
+    border-radius: {radius_lg};
     padding: 1.2rem;
-    margin: 1.5rem 0;
+    margin: {space_4} 0;
     background: {bg_secondary};
   }}
   .exercise-title {{
@@ -1697,7 +1699,7 @@ document.addEventListener('click', (e) => {{
     font-size: 1.05rem;
   }}
   .solution {{
-    margin-top: 1rem;
+    margin-top: {space_3};
   }}
   .solution > summary {{
     cursor: pointer;
@@ -1715,8 +1717,8 @@ document.addEventListener('click', (e) => {{
   /* ── Image grid ── */
   .image-grid {{
     display: grid;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
+    gap: {space_1};
+    margin-top: {space_1};
   }}
   /* ── Responsive: collapse sidebar on narrow screens ── */
   @media (max-width: 768px) {{
@@ -1731,7 +1733,7 @@ document.addEventListener('click', (e) => {{
     }}
     main {{
       margin-left: 0;
-      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+      padding: calc(var(--topbar-h) + {space_3}) {space_3} {space_5};
     }}
     /* Leave room for the hamburger, which sits over the topbar's left
        end. no-toc pages have no hamburger — don't reserve 3rem of the
@@ -1745,7 +1747,7 @@ document.addEventListener('click', (e) => {{
     body.has-files main,
     body.has-files.no-toc main {{
       margin-left: 0;
-      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+      padding: calc(var(--topbar-h) + {space_3}) {space_3} {space_5};
     }}
     .topbar a.prev, .topbar a.next {{
       max-width: 28%;
@@ -1772,7 +1774,7 @@ document.addEventListener('click', (e) => {{
         body = body,
         color_scheme = c.color_scheme(),
         theme_vars = {
-            let vars = c.css_custom_properties();
+            let vars = resolved.css_custom_properties();
             if comment_mode.show || comment_mode.toggle.is_some() || comment_mode.annotate {
                 vars
             } else {
@@ -1784,6 +1786,32 @@ document.addEventListener('click', (e) => {{
                     .join("\n")
             }
         },
+        font_body = resolved.font_body_css(),
+        font_mono = resolved.font_mono_css(),
+        font_size = resolved.font_size_css(),
+        line_height = resolved.line_height_css(),
+        measure = resolved.measure_css(),
+        radius = resolved.radius_css(),
+        radius_sm = resolved.radius_sm_css(),
+        radius_lg = resolved.radius_lg_css(),
+        border_width = resolved.border_width_css(),
+        space_1 = resolved.space_css(1),
+        space_2 = resolved.space_css(2),
+        space_3 = resolved.space_css(3),
+        space_4 = resolved.space_css(4),
+        space_5 = resolved.space_css(5),
+        space_6 = resolved.space_css(6),
+        table_head = resolved.table_head_css(),
+        table_stripe = resolved.table_stripe_css(),
+        table_rule = resolved.table_rule_css(),
+        callout_note = resolved.callout_note_css(),
+        callout_tip = resolved.callout_tip_css(),
+        callout_important = resolved.callout_important_css(),
+        callout_warning = resolved.callout_warning_css(),
+        callout_caution = resolved.callout_caution_css(),
+        callout_bg = resolved.callout_bg_css(),
+        link = resolved.link_css(),
+        link_visited = resolved.link_visited_css(),
         bg = c.css_var("bg"),
         bg_secondary = c.css_var("bg-secondary"),
         text = c.css_var("text"),
@@ -4629,12 +4657,12 @@ mod tests {
                 assert!(html.contains(class), "{theme:?} missing {class}");
             }
             for (role, hex) in [
-                ("syn-keyword", colors.syn_keyword),
-                ("syn-function", colors.syn_function),
-                ("syn-string", colors.syn_string),
-                ("syn-number", colors.syn_number),
-                ("syn-comment", colors.syn_comment),
-                ("syn-operator", colors.syn_operator),
+                ("syn-keyword", colors.syn_keyword.as_ref()),
+                ("syn-function", colors.syn_function.as_ref()),
+                ("syn-string", colors.syn_string.as_ref()),
+                ("syn-number", colors.syn_number.as_ref()),
+                ("syn-comment", colors.syn_comment.as_ref()),
+                ("syn-operator", colors.syn_operator.as_ref()),
             ] {
                 assert!(
                     html.contains(&format!("--rl-{role}: {hex};")),
@@ -4821,19 +4849,22 @@ mod tests {
         // is ~1.75:1. Every theme's link colors, including Latte, must
         // clear 4.5:1 on the page and on the border (page-nav hover).
         let dark = Theme::Dark.colors();
-        let unvisited = rustlab_plot::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
+        let unvisited =
+            rustlab_plot::contrast_ratio(dark.accent_secondary.as_ref(), dark.bg.as_ref())
+                .unwrap_or(0.0);
         assert!(
             unvisited >= 4.5,
             "dark unvisited link contrast {unvisited:.2} < 4.5 ({} on {})",
-            dark.accent_secondary,
-            dark.bg
+            dark.accent_secondary.as_ref(),
+            dark.bg.as_ref()
         );
-        let visited = rustlab_plot::contrast_ratio(dark.accent_primary, dark.bg).unwrap_or(0.0);
+        let visited = rustlab_plot::contrast_ratio(dark.accent_primary.as_ref(), dark.bg.as_ref())
+            .unwrap_or(0.0);
         assert!(
             visited >= 4.5,
             "dark visited link contrast {visited:.2} < 4.5 ({} on {})",
-            dark.accent_primary,
-            dark.bg
+            dark.accent_primary.as_ref(),
+            dark.bg.as_ref()
         );
         let ua = rustlab_plot::contrast_ratio("#0000EE", "#1e1e2e").unwrap_or(99.0);
         assert!(
@@ -4841,8 +4872,12 @@ mod tests {
             "UA-default blue on Mocha should fail WCAG — if this passes, the regression test is stale"
         );
         let light = Theme::Light.colors();
-        for (surface, bg) in [("page", light.bg), ("border", light.border)] {
-            let v = rustlab_plot::contrast_ratio(light.accent_secondary, bg).unwrap_or(0.0);
+        for (surface, bg) in [
+            ("page", light.bg.as_ref()),
+            ("border", light.border.as_ref()),
+        ] {
+            let v =
+                rustlab_plot::contrast_ratio(light.accent_secondary.as_ref(), bg).unwrap_or(0.0);
             assert!(
                 v >= 4.5,
                 "latte unvisited link on {surface} contrast {v:.2} < 4.5"
@@ -4870,8 +4905,10 @@ mod tests {
                 "{name}: missing color-scheme: {expected}"
             );
             if c.is_dark() {
-                let u = rustlab_plot::contrast_ratio(c.accent_secondary, c.bg).unwrap_or(0.0);
-                let v = rustlab_plot::contrast_ratio(c.accent_primary, c.bg).unwrap_or(0.0);
+                let u = rustlab_plot::contrast_ratio(c.accent_secondary.as_ref(), c.bg.as_ref())
+                    .unwrap_or(0.0);
+                let v = rustlab_plot::contrast_ratio(c.accent_primary.as_ref(), c.bg.as_ref())
+                    .unwrap_or(0.0);
                 assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
                 assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
             }

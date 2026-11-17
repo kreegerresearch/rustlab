@@ -80,7 +80,7 @@ Wayland and OpenGL libraries, loaded at run time; nothing is needed at build
 time. PDF notebook output also needs `pdflatex` (or `tectonic`) and
 `inkscape`; see [docs/notebooks.md](docs/notebooks.md).
 
-> **Before 0.3.67, Linux builds** needed
+> **Before 0.3.68, Linux builds** needed
 > `libfontconfig1-dev`, and also `libfreetype-dev` to avoid
 > `rust-lld: error: unable to find library -lstdc++`. Without
 > `libfreetype-dev`, `freetype-sys` compiled its bundled FreeType as C++ and

@@ -8884,10 +8884,44 @@ fn builtin_trace(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// reshape(A, m, n) — reshape A (vector or matrix) into an m×n matrix (column-major order)
-fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// `reshape` of a logical array stays logical and takes exactly the
+/// requested `m × n` shape (column-major order, as for doubles).
+fn reshape_logical(
+    a: &rustlab_core::LogicalArray,
+    m: usize,
+    n: usize,
+) -> Result<Value, ScriptError> {
+    require_elems("reshape", &[m, n], rustlab_core::ELEM_U8)?;
+    if a.len() != m * n {
+        return Err(ScriptError::type_err(format!(
+            "reshape: cannot reshape {} elements into {m}×{n} (= {} elements)",
+            a.len(),
+            m * n
+        )));
+    }
+    let mut flags = vec![false; m * n];
+    for k in 0..a.len() {
+        let bit = a.get_column_major(k).unwrap_or(false);
+        let (r, c) = (k % m, k / m);
+        flags[r * n + c] = bit;
+    }
+    rustlab_core::LogicalArray::from_flags(flags, m, n)
+        .map(Value::Logical)
+        .map_err(|e| ScriptError::runtime(e.to_string()))
+}
+
+fn builtin_reshape(mut args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
     let m = count_arg(&args[1])?;
     let n = count_arg(&args[2])?;
+    if let Value::Logical(a) = &args[0] {
+        if args.len() == 3 {
+            return reshape_logical(a, m, n);
+        }
+        // No rank-3 logical type: a 3-D reshape gives 0/1 doubles.
+        let src = std::mem::replace(&mut args[0], Value::None);
+        args[0] = Value::widen_logical(src);
+    }
     let p = if args.len() == 4 {
         Some(count_arg(&args[3])?)
     } else {
@@ -11389,39 +11423,48 @@ fn fmt_general(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
 
 fn builtin_all(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("all", &args, 1)?;
-    match &args[0] {
-        Value::Bool(b) => Ok(Value::Bool(*b)),
-        Value::Scalar(n) => Ok(Value::Bool(*n != 0.0)),
-        Value::Vector(v) => Ok(Value::Bool(v.iter().all(|c| c.re != 0.0 || c.im != 0.0))),
-        // A 1×N row is the matrix form of a vector. An N×1 column is the
-        // same element list. Wider matrices still error (no dim argument).
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
-            Ok(Value::Bool(m.iter().all(|c| c.re != 0.0 || c.im != 0.0)))
-        }
-        Value::Logical(a) if a.rows() <= 1 || a.cols() <= 1 => {
-            Ok(Value::Bool(a.as_slice().iter().all(|&b| b != 0)))
-        }
-        other => Err(ScriptError::type_err(format!(
-            "all: expected vector, 1-d matrix, logical, or scalar, got {}",
-            other.type_name()
-        ))),
-    }
+    all_any("all", &args[0], true)
 }
 
 fn builtin_any(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("any", &args, 1)?;
-    match &args[0] {
+    all_any("any", &args[0], false)
+}
+
+/// `all` (`every = true`) or `any`. A scalar or a vector (a 1×N row or an
+/// N×1 column included) gives one bool. A wider matrix or logical array
+/// reduces down each column to a `1×cols` logical row, as in MATLAB.
+fn all_any(name: &str, v: &Value, every: bool) -> Result<Value, ScriptError> {
+    let fold = |mut bits: Box<dyn Iterator<Item = bool> + '_>| {
+        if every {
+            bits.all(|b| b)
+        } else {
+            bits.any(|b| b)
+        }
+    };
+    let nz = |c: &C64| c.re != 0.0 || c.im != 0.0;
+    let per_column = |rows: usize, cols: usize, bit: &dyn Fn(usize, usize) -> bool| {
+        let flags: Vec<bool> = (0..cols)
+            .map(|c| fold(Box::new((0..rows).map(|r| bit(r, c)))))
+            .collect();
+        rustlab_core::LogicalArray::row(flags)
+            .map(Value::Logical)
+            .map_err(|e| ScriptError::runtime(e.to_string()))
+    };
+    match v {
         Value::Bool(b) => Ok(Value::Bool(*b)),
         Value::Scalar(n) => Ok(Value::Bool(*n != 0.0)),
-        Value::Vector(v) => Ok(Value::Bool(v.iter().any(|c| c.re != 0.0 || c.im != 0.0))),
+        Value::Vector(x) => Ok(Value::Bool(fold(Box::new(x.iter().map(nz))))),
         Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
-            Ok(Value::Bool(m.iter().any(|c| c.re != 0.0 || c.im != 0.0)))
+            Ok(Value::Bool(fold(Box::new(m.iter().map(nz)))))
         }
-        Value::Logical(a) if a.rows() <= 1 || a.cols() <= 1 => {
-            Ok(Value::Bool(a.as_slice().iter().any(|&b| b != 0)))
-        }
+        Value::Matrix(m) => per_column(m.nrows(), m.ncols(), &|r, c| nz(&m[[r, c]])),
+        Value::Logical(a) if a.rows() <= 1 || a.cols() <= 1 => Ok(Value::Bool(fold(Box::new(
+            a.as_slice().iter().map(|&b| b != 0),
+        )))),
+        Value::Logical(a) => per_column(a.rows(), a.cols(), &|r, c| a.get(r, c).unwrap_or(false)),
         other => Err(ScriptError::type_err(format!(
-            "any: expected vector, 1-d matrix, logical, or scalar, got {}",
+            "{name}: expected a scalar, vector, matrix, or logical array, got {}",
             other.type_name()
         ))),
     }

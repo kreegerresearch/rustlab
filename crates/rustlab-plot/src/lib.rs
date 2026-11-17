@@ -65,7 +65,7 @@ pub use plot_abort::{
 pub use rustlab_proto::{default_socket_path, socket_path_for_name};
 pub use theme::{
     builtin_theme_names, contrast_ratio, default_theme, parse_theme, relative_luminance,
-    set_default_theme, theme_colors, Theme, ThemeColors,
+    set_default_theme, theme_colors, ResolvedTheme, Theme, ThemeColors, ThemeMode,
 };
 pub use vendor::{html_loads_remote_script_or_style, PLOTLY_JS};
 #[cfg(feature = "viewer")]
