@@ -1039,10 +1039,7 @@ mod tests {
         // removed under another test between its render and its hash rename.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!(
-            "rustlab_md_plots_{}_{n}",
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("rustlab_md_plots_{}_{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
     }
