@@ -3368,6 +3368,13 @@ impl Value {
         }
 
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
+        // Real scalars and real-stored blocks only: the matrix is real too.
+        let all_real = rows.iter().flatten().all(|v| match v {
+            Value::Scalar(_) => true,
+            Value::Vector(v) => Shared::is_real(v),
+            Value::Matrix(m) => Shared::is_real(m),
+            _ => false,
+        });
 
         for row in &rows {
             if row.is_empty() {
@@ -3449,6 +3456,12 @@ impl Value {
                 }
             }
             let nrows = all_rows.len();
+            if all_real {
+                let flat: Vec<f64> = all_rows.into_iter().flatten().map(|z| z.re).collect();
+                let mat =
+                    Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
+                return Ok(Value::real_matrix(mat));
+            }
             let flat: Vec<C64> = all_rows.into_iter().flatten().collect();
             let mat = Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
             Ok(Value::Matrix(mat.into()))

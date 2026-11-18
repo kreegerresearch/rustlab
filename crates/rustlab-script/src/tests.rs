@@ -21593,6 +21593,50 @@ mod michael_bug_batch {
         close(cell(&ev, "back", 0, 0), 1.0);
     }
 
+    /// `convolve` and `repmat` of real inputs, and a multi-row literal of real
+    /// entries, are real-stored (MATLAB: real), so writing them into a real matrix or
+    /// multiplying a real matrix by them does not promote it.
+    #[test]
+    fn convolve_and_matrix_literals_of_real_entries_are_real_stored() {
+        use crate::eval::shared::{set_real_storage, Shared};
+        set_real_storage(Some(true));
+        let ev = eval(
+            "v = convolve([1, -2, 3], [-1, 1]);
+             c = zeros(2, 4);
+             c(1, :) = v;
+             w = convolve([1, 2], [1j, 1]);
+             P = [1 1; 1 0];
+             Q = [P, [2; 3]];
+             Z = [1 2; 3 4j];
+             R = repmat(P, 1, 3);",
+        );
+        set_real_storage(None);
+        match ev.get("v") {
+            Some(Value::Vector(v)) => assert!(Shared::is_real(v), "convolve is complex-stored"),
+            other => panic!("v: {other:?}"),
+        }
+        match ev.get("c") {
+            Some(Value::Matrix(m)) => assert!(Shared::is_real(m), "c was promoted"),
+            other => panic!("c: {other:?}"),
+        }
+        assert_eq!(vec_re(&ev, "v"), vec![-1.0, 3.0, -5.0, 3.0]);
+        for (name, real) in [("P", true), ("Q", true), ("Z", false), ("R", true)] {
+            match ev.get(name) {
+                Some(Value::Matrix(m)) => assert_eq!(Shared::is_real(m), real, "{name}"),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert_eq!(cell(&ev, "Q", 1, 2), 3.0);
+        assert_eq!(cell(&ev, "P", 1, 1), 0.0);
+        match ev.get("w") {
+            Some(Value::Vector(w)) => {
+                assert!(!Shared::is_real(w));
+                assert_eq!(w[0], num_complex::Complex::new(0.0, 1.0));
+            }
+            other => panic!("w: {other:?}"),
+        }
+    }
+
     /// Two-argument `max` / `min` on real-stored operands gives the same bits
     /// as the complex path (NaN loses, ties keep the first operand, `-0` vs
     /// `+0` keeps the first) and keeps real storage.

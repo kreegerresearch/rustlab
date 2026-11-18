@@ -697,6 +697,12 @@ fn builtin_convolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let h = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let result = convolve(&x, &h)?;
+    // Real inputs give a real result (MATLAB `conv`). The imaginary parts
+    // are signed zeros from `re·0` terms; the real parts are kept as is.
+    let real = |v: &CVector| v.iter().all(|z| z.im == 0.0);
+    if real(&x) && real(&h) {
+        return Ok(Value::real_vector(result.mapv(|z| z.re)));
+    }
     Ok(Value::Vector(result.into()))
 }
 
@@ -9161,6 +9167,13 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("repmat", &args, 3)?;
     let reps_r = count_arg(&args[1])?;
     let reps_c = count_arg(&args[2])?;
+    // Tiling copies values, so a real input gives a real-stored result.
+    let real_in = match &args[0] {
+        Value::Matrix(m) => Shared::is_real(m),
+        Value::Vector(v) => Shared::is_real(v),
+        Value::Scalar(_) => true,
+        _ => false,
+    };
     // Normalise to a matrix block
     let block: CMatrix = match &args[0] {
         Value::Matrix(m) => (**m).clone(),
@@ -9195,6 +9208,9 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
                 }
             }
         }
+    }
+    if real_in {
+        return Ok(Value::real_matrix(out.mapv(|z| z.re)));
     }
     Ok(Value::Matrix(out.into()))
 }
