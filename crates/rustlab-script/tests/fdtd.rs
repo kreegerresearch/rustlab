@@ -1511,22 +1511,95 @@ fn extract_function(src: &str, name: &str) -> String {
     }
     assert!(
         started && depth == 0,
-        "examples/pde/patch_antenna.rlab has no function {name}"
+        "example script has no function {name}"
     );
     out.join("\n")
+}
+
+/// The notebook's one rustlab cell is the example script, so the notebook
+/// cannot keep a heavier default than the script after either is edited.
+#[test]
+fn patch_antenna_notebook_cell_is_the_example_script() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/notebooks/patch_antenna.md");
+    let nb =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let start = nb
+        .find("```rustlab\n")
+        .expect("notebook has a rustlab cell")
+        + "```rustlab\n".len();
+    let len = nb[start..].find("\n```").expect("rustlab cell is closed");
+    let cell = &nb[start..start + len];
+    assert_eq!(
+        cell.trim_end(),
+        patch_antenna_source().trim_end(),
+        "examples/notebooks/patch_antenna.md and examples/pde/patch_antenna.rlab differ"
+    );
+}
+
+fn example_source(rel: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// The sweep notebook's cell is `examples/pde/fdtd_sweep.rlab`. `quick` is
+/// the default: fewer, shorter trials than `full`, one core per trial.
+#[test]
+fn fdtd_sweep_presets_and_notebook_cell() {
+    let src = example_source("examples/pde/fdtd_sweep.rlab");
+    let nb = example_source("examples/notebooks/fdtd_sweep.md");
+    let start = nb
+        .find("```rustlab\n")
+        .expect("notebook has a rustlab cell")
+        + "```rustlab\n".len();
+    let len = nb[start..].find("\n```").expect("rustlab cell is closed");
+    assert_eq!(
+        nb[start..start + len].trim_end(),
+        src.trim_end(),
+        "examples/notebooks/fdtd_sweep.md and examples/pde/fdtd_sweep.rlab differ"
+    );
+    assert!(
+        src.lines().any(|l| l.trim() == "preset = \"quick\";"),
+        "the default assignment is preset = \"quick\";"
+    );
+    let func = extract_function(&src, "sweep_preset");
+    let fields = |name: &str| {
+        eval(&format!(
+            "{func}\nm = sweep_preset(\"{name}\");\n\
+             nsub = m.nsub; nsteps = m.nsteps; nw = length(m.widths); threads = m.threads;\n"
+        ))
+    };
+    let quick = fields("quick");
+    let full = fields("full");
+    assert_eq!(scalar(&quick, "nsub"), 1.0);
+    assert_eq!(scalar(&quick, "nsteps"), 5_000.0);
+    assert_eq!(scalar(&quick, "nw"), 3.0);
+    assert_eq!(scalar(&quick, "threads"), 1.0);
+    assert_eq!(scalar(&full, "nsub"), 2.0);
+    assert_eq!(scalar(&full, "nsteps"), 8_000.0);
+    assert_eq!(scalar(&full, "nw"), 5.0);
+    assert_eq!(scalar(&full, "threads"), 0.0);
+    let err = run_err(&format!("{func}\nsweep_preset(\"sideways\");\n"));
+    assert!(
+        err.contains("sideways") && err.contains("quick") && err.contains("full"),
+        "{err}"
+    );
 }
 
 fn preset_fields(src: &str, name: &str) -> Evaluator {
     let func = extract_function(src, "patch_preset");
     eval(&format!(
         "{func}\nm = patch_preset(\"{name}\");\n\
-         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps;\n\
+         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps; nlossy = m.nlossy;\n\
          gpad = m.gpad; air_xy = m.air_xy; air_z = m.air_z;\n\
          npml = m.npml; margin = m.margin;\n"
     ))
 }
 
-/// `quick` is the default and `full` is the 2 mm, 16 000-step lesson.
+/// `quick` is the default and `full` is the 2 mm, 16 000-step lesson. The
+/// lossy rerun decays faster, so each preset gives it fewer steps.
 /// Any other name errors and names both presets. This does not step a grid.
 #[test]
 fn patch_antenna_presets_accept_quick_and_full() {
@@ -1551,6 +1624,9 @@ fn patch_antenna_presets_accept_quick_and_full() {
     assert_eq!(scalar(&full, "dy"), 2e-3);
     assert_eq!(scalar(&full, "nsub"), 2.0);
     assert_eq!(scalar(&full, "nsteps"), 16_000.0);
+    assert_eq!(scalar(&full, "nlossy"), 8_000.0);
+    assert_eq!(scalar(&quick, "nsteps"), 8_000.0);
+    assert_eq!(scalar(&quick, "nlossy"), 5_000.0);
     assert_eq!(scalar(&full, "gpad"), 16e-3);
     assert_eq!(scalar(&full, "air_xy"), 10e-3);
     assert_eq!(scalar(&full, "air_z"), 20e-3);
@@ -1568,7 +1644,7 @@ fn patch_antenna_presets_accept_quick_and_full() {
         scalar(&quick, "nsteps")
     );
     for name in [
-        "dx", "dy", "nsub", "nsteps", "gpad", "air_xy", "air_z", "npml", "margin",
+        "dx", "dy", "nsub", "nsteps", "nlossy", "gpad", "air_xy", "air_z", "npml", "margin",
     ] {
         let v = scalar(&quick, name);
         assert!(v.is_finite() && v > 0.0, "quick {name} = {v}");
