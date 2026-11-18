@@ -448,6 +448,20 @@ impl Evaluator {
             None => val,
         };
 
+        // A logical right-hand side keeps the target's class (MATLAB): a
+        // numeric target stores 0/1. One row becomes a 1-D vector, as in
+        // arithmetic, so `D(:, t) = b > a` fills a column whatever the
+        // orientation of `b > a`. A logical target, or no target yet, takes
+        // the logical write path below.
+        let val = match val {
+            Value::Logical(a)
+                if !matches!(self.env.get(name.as_str()), None | Some(Value::Logical(_))) =>
+            {
+                Value::logical_as_double_row_vector(&a)
+            }
+            v => v,
+        };
+
         // Evaluate indices with `end` bound the same way reads do.
         // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
         // bind `end` per axis. A single index binds `end` to the

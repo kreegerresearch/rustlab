@@ -21593,6 +21593,124 @@ mod michael_bug_batch {
         close(cell(&ev, "back", 0, 0), 1.0);
     }
 
+    /// Two-argument `max` / `min` on real-stored operands gives the same bits
+    /// as the complex path (NaN loses, ties keep the first operand, `-0` vs
+    /// `+0` keeps the first) and keeps real storage.
+    #[test]
+    fn two_arg_minmax_real_storage_matches_complex_path() {
+        use crate::eval::shared::{set_real_storage, Shared};
+        let src = "a = reshape([1, 0, -0, 2, NaN, 3, 4, NaN, 5, -7, NaN, 1], 2, 6);
+             b = reshape([2, -1, 0, 2, 1, 9, NaN, 3, 5, -8, NaN, 0], 2, 6);
+             va = [1, -0, NaN, 4, 5, NaN];
+             vb = [-1, 2, 9, 3, -8, 0];
+             r1 = max(a, b); r2 = min(a, b);
+             r3 = max(a, 0.5); r4 = min(-1, b);
+             r5 = max(va, vb); r6 = min(va, 2);
+             r7 = max(3, vb);";
+        set_real_storage(Some(true));
+        let real = eval(src);
+        set_real_storage(Some(false));
+        let complex = eval(src);
+        set_real_storage(None);
+        for name in ["a", "b", "va", "vb"] {
+            match real.get(name) {
+                Some(Value::Matrix(m)) => assert!(Shared::is_real(m), "input {name} is complex-stored"),
+                Some(Value::Vector(m)) => assert!(Shared::is_real(m), "input {name} is complex-stored"),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        for name in ["r1", "r2", "r3", "r4", "r5", "r6", "r7"] {
+            let (x, y) = (real.get(name).unwrap(), complex.get(name).unwrap());
+            let bits = |v: &Value| -> (String, Vec<u64>) {
+                match v {
+                    Value::Matrix(m) => ("matrix".into(), m.iter().flat_map(|c| [c.re.to_bits(), c.im.to_bits()]).collect()),
+                    Value::Vector(m) => ("vector".into(), m.iter().flat_map(|c| [c.re.to_bits(), c.im.to_bits()]).collect()),
+                    other => panic!("{name}: {other:?}"),
+                }
+            };
+            assert_eq!(bits(x), bits(y), "{name}");
+            match x {
+                Value::Matrix(m) => assert!(Shared::is_real(m), "{name} not real-stored"),
+                Value::Vector(m) => assert!(Shared::is_real(m), "{name} not real-stored"),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// `'` of real data is real (MATLAB). A complex-stored literal such as
+    /// `[1; -1]` has `+0` imaginary parts; conjugating them gave `-0`, so a
+    /// write of `sym'` into a real matrix promoted the whole target.
+    #[test]
+    fn transposed_real_source_keeps_target_real() {
+        use crate::eval::shared::{set_real_storage, Shared};
+        set_real_storage(Some(true));
+        let ev = eval(
+            "sym = [1; -1];
+             C0 = zeros(4, 2);
+             C0(1, :) = sym';
+             C1 = zeros(4, 3);
+             C1(2:3, :) = [1, 2; 3, 4; 5, 6]';
+             C2 = zeros(2, 4);
+             C2(:, 2) = (1:2)';",
+        );
+        set_real_storage(None);
+        for name in ["C0", "C1", "C2"] {
+            match ev.get(name) {
+                Some(Value::Matrix(m)) => assert!(Shared::is_real(m), "{name} was promoted"),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert_eq!(cell(&ev, "C0", 0, 0), 1.0);
+        assert_eq!(cell(&ev, "C0", 0, 1), -1.0);
+        assert_eq!(cell(&ev, "C0", 1, 0), 0.0);
+        assert_eq!(cell(&ev, "C1", 1, 0), 1.0);
+        assert_eq!(cell(&ev, "C1", 1, 1), 3.0);
+        assert_eq!(cell(&ev, "C1", 1, 2), 5.0);
+        assert_eq!(cell(&ev, "C1", 2, 0), 2.0);
+        assert_eq!(cell(&ev, "C1", 2, 2), 6.0);
+        assert_eq!(cell(&ev, "C2", 0, 1), 1.0);
+        assert_eq!(cell(&ev, "C2", 1, 1), 2.0);
+    }
+
+    /// MATLAB stores a logical right-hand side as 0/1 in a double target:
+    /// `D(:, t) = b > a` writes a numeric column and `D` stays double.
+    #[test]
+    fn logical_rhs_into_numeric_target_is_zero_one() {
+        let ev = eval(
+            "a = [1; 2; 3];
+             b = [3; 2; 1];
+             D = zeros(3, 2);
+             D(:, 2) = b > a;
+             E = zeros(2, 3);
+             E(2, :) = [true, false, true];
+             v = zeros(1, 4);
+             v(2:3) = [true, true];
+             w = zeros(1, 3);
+             w([1, 3]) = logical([1, 0]);
+             r = [3, 2, 1] > [1, 2, 3];
+             C = zeros(3, 2);
+             C(:, 1) = r;",
+        );
+        assert_eq!(shape(&ev, "D"), (3, 2));
+        assert_eq!(cell(&ev, "D", 0, 1), 1.0);
+        assert_eq!(cell(&ev, "D", 1, 1), 0.0);
+        assert_eq!(cell(&ev, "D", 2, 1), 0.0);
+        assert_eq!(cell(&ev, "D", 0, 0), 0.0);
+        assert_eq!(cell(&ev, "E", 1, 0), 1.0);
+        assert_eq!(cell(&ev, "E", 1, 1), 0.0);
+        assert_eq!(cell(&ev, "E", 1, 2), 1.0);
+        assert_eq!(vec_re(&ev, "v"), vec![0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(vec_re(&ev, "w"), vec![1.0, 0.0, 0.0]);
+        assert_eq!(cell(&ev, "C", 0, 0), 1.0);
+        assert_eq!(cell(&ev, "C", 1, 0), 0.0);
+        assert_eq!(cell(&ev, "C", 2, 0), 0.0);
+        assert!(
+            matches!(ev.get("D"), Some(Value::Matrix(_))),
+            "D stays numeric, got {:?}",
+            ev.get("D")
+        );
+    }
+
     #[test]
     fn matrix_linear_and_logical_assignment() {
         let ev = eval(
