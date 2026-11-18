@@ -6,25 +6,63 @@ title: A patch antenna on a finite ground
 
 The patch and its ground are metal sheets on a 1.6 mm substrate of $\varepsilon_r = 4.4$. Air surrounds that board, and CPML sits on all six faces of the mesh. The near-to-far box is in the air, not on the ground, so the pattern is the finite-ground pattern. There is no image theory.
 
-The mesh is 2 mm in the plane and 0.8 mm through the substrate. Vertical air is 20 mm. A 10 mm gap above the patch puts the box in the reactive field and the pattern integral reads about 2% high; that case is a release diagnostic, not this notebook. The feed is a 50 $\Omega$ series port on the first metal node of the centre row.
+The mesh is 2 mm in the plane. Vertical air is 20 mm. A 10 mm gap above the patch puts the box in the reactive field and the pattern integral reads about 2% high; that case is a release diagnostic, not this notebook. The feed is a 50 $\Omega$ series port on the first metal node of the centre row.
 
-The port voltage has died by 8,000 steps. The field on the near-to-far box is slower: at 8,000 steps its tail is $1.9\times 10^{-3}$ of the peak, and at 16,000 steps it is under $10^{-3}$. The run is 16,000 steps so `fdtd_farfield` can keep the pulse check.
+## Presets
 
-The lossy rerun builds a new grid with $\sigma = 2\pi f_0 \varepsilon_r \varepsilon_0 \tan\delta$ at $\tan\delta = 0.02$. Nothing is reset. Directivity should stay put. Gain should fall by about $10\log_{10}\eta$, with $\eta$ near one half.
+The first line of the cell picks the mesh. The default, `preset = "quick"`, puts one 1.6 mm cell through the substrate and runs in about ten seconds on four cores. `preset = "full"` is two 0.8 mm cells through the substrate. It takes about two and a half times as long and moves the dip from 2.358 GHz to 2.375 GHz, closer to the 1 mm reference at 2.437 GHz; directivity is 6.92 dBi on quick and 6.94 dBi on full. Edit that line to `"full"` to run it.
 
-The edge resistance is an independent check on that efficiency. At a dip that sits near a real impedance, $R = 50(1+|\Gamma|)/(1-|\Gamma|)$. On this mesh the minima are 206 $\Omega$ with no loss ($|S_{11}| = 0.610$) and 101 $\Omega$ at $\tan\delta = 0.02$ ($|S_{11}| = 0.339$), so the ratio is 0.491. The flux divided by the accepted port power is $\eta = 0.489$. The two come from different paths, and they agree.
+| preset | substrate cells | cells | lossless steps | lossy steps |
+|---|---:|---:|---:|---:|
+| `quick` (default) | 1 | 186,120 | 8,000 | 5,000 |
+| `full` | 2 | 285,120 | 16,000 | 8,000 |
+
+The port voltage dies well before either step count. The field on the near-to-far box is slower, and it sets the length: `fdtd_farfield` refuses a surface tail above $10^{-3}$ of the peak. On quick the lossless tail is $7.0\times 10^{-4}$ at 8,000 steps and $9.2\times 10^{-4}$ at 7,000. The lossy grid decays faster: $7.7\times 10^{-4}$ at 5,000 steps. An 11,000-step run of the quick mesh prints the same dip, $|S_{11}|$, directivity, gains, front-to-back ratio, pattern integral, and lossy efficiency. Only the power balance moves, from $4\times 10^{-9}$ to $-4\times 10^{-6}$, inside its $10^{-2}$ gate.
+
+## Loss
+
+The lossy rerun builds a new grid with $\sigma = 2\pi f_0 \varepsilon_r \varepsilon_0 \tan\delta$ at $\tan\delta = 0.02$. Nothing is reset. Directivity should stay put. Gain should fall by about $10\log_{10}\eta$, with $\eta$ near one half. Only broadside is evaluated for the lossy pattern: the flux and the accepted power do not depend on the angle grid.
+
+The edge resistance is an independent check on that efficiency. At a dip that sits near a real impedance, $R = 50(1+|\Gamma|)/(1-|\Gamma|)$. On the quick mesh the minima are 206 $\Omega$ with no loss ($|S_{11}| = 0.610$) and 101 $\Omega$ at $\tan\delta = 0.02$ ($|S_{11}| = 0.336$), so the ratio is 0.487. The flux divided by the accepted port power is $\eta = 0.486$. The two come from different paths, and they agree.
 
 The script stops if a gate misses. The numbers it prints are the measurement.
 
 ```rustlab
-# Patch antenna on a finite ground, floating in air.
-# Demonstrates: fdtd_media, fdtd_pec, fdtd_cpml, fdtd_port, fdtd_s11,
-# fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
-#
-# 2 mm lesson mesh. The 1 mm comparison with the Phase 4 reference is a
-# release test, not this script. Vertical air is 20 mm so the near-to-far
-# box is out of the reactive field above the patch. The feed is the edge
-# feed: the first metal node of the centre row, a 50 ohm series port.
+% Patch antenna on a finite ground, floating in air.
+% Demonstrates: fdtd_media, fdtd_pec, fdtd_cpml, fdtd_port, fdtd_s11,
+% fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
+%
+% preset is "quick" or "full". quick is the default: one cell through the
+% 1.6 mm substrate, 8 000 lossless steps and 5 000 lossy steps. The dip and
+% the directivity are approximate. full is the 2 mm lesson mesh, two cells
+% through the substrate, 16 000 lossless steps and 8 000 lossy steps, about
+% two and a half times the run time. Each step count is where the
+% near-to-far box has decayed under the 1e-3 pulse check with margin; the
+% lossy grid decays faster. The 1 mm comparison with the Phase 4 reference
+% is a release test, not this script. Vertical air is 20 mm so the
+% near-to-far box is out of the reactive field above the patch. The feed
+% is the edge feed: the first metal node of the centre row, a 50 ohm series
+% port.
+
+preset = "quick";
+
+function mesh = patch_preset(name)
+    switch name
+        case "quick"
+            fprintf("quick preset: one cell through the substrate, 8000 + 5000 steps. The dip and directivity are approximate.\n");
+            mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 1, ...
+                "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
+                "npml", 8, "margin", 2, "nsteps", 8000, "nlossy", 5000);
+        case "full"
+            mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 2, ...
+                "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
+                "npml", 8, "margin", 2, "nsteps", 16000, "nlossy", 8000);
+        otherwise
+            error(sprintf("unknown preset %s: use quick or full", name));
+    end
+end
+
+mesh = patch_preset(preset);
 
 c0 = 299792458;
 mu0 = 1.25663706212e-6;
@@ -41,16 +79,16 @@ L = c0 / (2 * f0 * sqrt(ee)) - 2 * dL;
 fprintf("design  L = %.2f mm   W = %.2f mm   eps_eff = %.4f   dL = %.3f mm\n", ...
     L * 1e3, W * 1e3, ee, dL * 1e3);
 
-function sim = patch_sim(sigma, L, W, f0, eps_r)
-    dx = 2e-3;
-    dy = 2e-3;
-    nsub = 2;
+function sim = patch_sim(mesh, sigma, L, W, f0, eps_r)
+    dx = mesh.dx;
+    dy = mesh.dy;
+    nsub = mesh.nsub;
     dz = 1.6e-3 / nsub;
-    gpad = 16e-3;
-    air_xy = 10e-3;
-    air_z = 20e-3;
-    npml = 8;
-    margin = 2;
+    gpad = mesh.gpad;
+    air_xy = mesh.air_xy;
+    air_z = mesh.air_z;
+    npml = mesh.npml;
+    margin = mesh.margin;
     ngx = 2 * round((L / 2 + gpad) / dx);
     ngy = 2 * round((W / 2 + gpad) / dy);
     nax = round(air_xy / dx);
@@ -107,8 +145,8 @@ function s = dip_of(sim)
 end
 
 sigma = 2 * pi * f0 * eps_r * eps0 * tand;
-lossless = patch_sim(0, L, W, f0, eps_r);
-out = fdtd_run(lossless, 16000);
+lossless = patch_sim(mesh, 0, L, W, f0, eps_r);
+out = fdtd_run(lossless, mesh.nsteps);
 fprintf("lossless  %.1f s   %.1f Mcell/s   %d cells\n", out.seconds, out.cell_rate / 1e6, ...
     fdtd_info(lossless).nx * fdtd_info(lossless).ny * fdtd_info(lossless).nz);
 rec = fdtd_record(lossless);
@@ -132,11 +170,12 @@ a_max = max(a(wide));
 fprintf("dip %.4f GHz   |S11| %.3f (%.1f dB)   max |S11| %.4f\n", ...
     f_dip / 1e9, a_dip, 20 * log10(a_dip), a_max);
 
-# The staircased metal is the node span. One extra cell is the Yee edge
-# sitting half a cell outside each end, which is what the TL check uses.
-dx = 2e-3;
-Lm = 28e-3;
-Wm = 36e-3;
+% The staircased metal is the node span. One extra cell is the Yee edge
+% sitting half a cell outside each end, which is what the TL check uses.
+dx = mesh.dx;
+dy = mesh.dy;
+Lm = 2 * floor(L / (2 * dx)) * dx;
+Wm = 2 * floor(W / (2 * dy)) * dy;
 w_eff = Wm + dx;
 ee_m = (eps_r + 1) / 2 + (eps_r - 1) / 2 / sqrt(1 + 12 * h / w_eff);
 dL_m = 0.412 * h * (ee_m + 0.3) * (w_eff / h + 0.264) / ((ee_m - 0.258) * (w_eff / h + 0.8));
@@ -195,24 +234,28 @@ if abs(g0 - d0) > 0.05
     error(sprintf("lossless gain and directivity differ by %.3f dB", g0 - d0));
 end
 
-lossy = patch_sim(sigma, L, W, f0, eps_r);
-fdtd_run(lossy, 16000);
+lossy = patch_sim(mesh, sigma, L, W, f0, eps_r);
+fdtd_run(lossy, mesh.nlossy);
 s1 = dip_of(lossy);
 f1 = s1.frequencies;
 a1 = abs(sij(s1, 1, 1));
-k1 = argmin(a1(band));
-f1_dip = f1(band(k1));
-pat1 = fdtd_farfield(lossy, th, ph);
+% The lossy record is shorter, so its frequency grid is not the lossless one.
+band1 = find(and(f1 > 1.8e9, f1 < 3.2e9));
+k1 = argmin(a1(band1));
+f1_dip = f1(band1(k1));
+% Only broadside is read here. Flux and accepted power do not depend on the
+% angle grid, so one direction gives the same efficiency and dBi values.
+pat1 = fdtd_farfield(lossy, 0, 0);
 q1 = argmin(abs(pat1.freq - f1_dip));
 eta = pat1.prad(q1) / pat1.paccepted(q1);
 d1 = pat1.directivity_dBi(q1, 1, 1);
 g1 = pat1.gain_dBi(q1, 1, 1);
 fprintf("lossy    dip %.4f GHz   |S11| %.3f   eta %.3f   D %.2f dBi   G %.2f dBi\n", ...
-    f1_dip / 1e9, a1(band(k1)), eta, d1, g1);
+    f1_dip / 1e9, a1(band1(k1)), eta, d1, g1);
 if abs(f1_dip / f_dip - 1) > 0.005
     error("loss moved the dip");
 end
-if a1(band(k1)) >= a_dip
+if a1(band1(k1)) >= a_dip
     error("loss did not deepen the match");
 end
 if eta < 0.40 || eta > 0.60

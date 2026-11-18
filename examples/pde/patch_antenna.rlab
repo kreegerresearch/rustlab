@@ -3,9 +3,12 @@
 % fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
 %
 % preset is "quick" or "full". quick is the default: one cell through the
-% 1.6 mm substrate and 11 000 steps. The dip and the directivity are
-% approximate. full is the 2 mm lesson mesh, two cells through the
-% substrate, 16 000 steps. The 1 mm comparison with the Phase 4 reference
+% 1.6 mm substrate, 8 000 lossless steps and 5 000 lossy steps. The dip and
+% the directivity are approximate. full is the 2 mm lesson mesh, two cells
+% through the substrate, 16 000 lossless steps and 8 000 lossy steps, about
+% two and a half times the run time. Each step count is where the
+% near-to-far box has decayed under the 1e-3 pulse check with margin; the
+% lossy grid decays faster. The 1 mm comparison with the Phase 4 reference
 % is a release test, not this script. Vertical air is 20 mm so the
 % near-to-far box is out of the reactive field above the patch. The feed
 % is the edge feed: the first metal node of the centre row, a 50 ohm series
@@ -16,14 +19,14 @@ preset = "quick";
 function mesh = patch_preset(name)
     switch name
         case "quick"
-            fprintf("quick preset: one cell through the substrate, 11000 steps. The dip and directivity are approximate.\n");
+            fprintf("quick preset: one cell through the substrate, 8000 + 5000 steps. The dip and directivity are approximate.\n");
             mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 1, ...
                 "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
-                "npml", 8, "margin", 2, "nsteps", 11000);
+                "npml", 8, "margin", 2, "nsteps", 8000, "nlossy", 5000);
         case "full"
             mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 2, ...
                 "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
-                "npml", 8, "margin", 2, "nsteps", 16000);
+                "npml", 8, "margin", 2, "nsteps", 16000, "nlossy", 8000);
         otherwise
             error(sprintf("unknown preset %s: use quick or full", name));
     end
@@ -202,23 +205,27 @@ if abs(g0 - d0) > 0.05
 end
 
 lossy = patch_sim(mesh, sigma, L, W, f0, eps_r);
-fdtd_run(lossy, mesh.nsteps);
+fdtd_run(lossy, mesh.nlossy);
 s1 = dip_of(lossy);
 f1 = s1.frequencies;
 a1 = abs(sij(s1, 1, 1));
-k1 = argmin(a1(band));
-f1_dip = f1(band(k1));
-pat1 = fdtd_farfield(lossy, th, ph);
+% The lossy record is shorter, so its frequency grid is not the lossless one.
+band1 = find(and(f1 > 1.8e9, f1 < 3.2e9));
+k1 = argmin(a1(band1));
+f1_dip = f1(band1(k1));
+% Only broadside is read here. Flux and accepted power do not depend on the
+% angle grid, so one direction gives the same efficiency and dBi values.
+pat1 = fdtd_farfield(lossy, 0, 0);
 q1 = argmin(abs(pat1.freq - f1_dip));
 eta = pat1.prad(q1) / pat1.paccepted(q1);
 d1 = pat1.directivity_dBi(q1, 1, 1);
 g1 = pat1.gain_dBi(q1, 1, 1);
 fprintf("lossy    dip %.4f GHz   |S11| %.3f   eta %.3f   D %.2f dBi   G %.2f dBi\n", ...
-    f1_dip / 1e9, a1(band(k1)), eta, d1, g1);
+    f1_dip / 1e9, a1(band1(k1)), eta, d1, g1);
 if abs(f1_dip / f_dip - 1) > 0.005
     error("loss moved the dip");
 end
-if a1(band(k1)) >= a_dip
+if a1(band1(k1)) >= a_dip
     error("loss did not deepen the match");
 end
 if eta < 0.40 || eta > 0.60
