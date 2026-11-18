@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use crate::render;
 use crate::surface::{Surface3dData, SurfaceCamera};
-use crate::view::{bounds_action, zoom_factor_from_scroll, AxisLimits, BoundsAction, PanelView};
+use crate::view::{
+    bounds_action, expand_to_aspect, zoom_factor_from_scroll, AxisLimits, BoundsAction, PanelView,
+};
 
 /// Pre-rendered heatmap image ready for egui display.
 pub struct HeatmapImage {
@@ -593,6 +595,17 @@ impl FigureWindow {
                                         let (y0, y1) = match panel.ylim {
                                             (Some(a), Some(b)) => (a, b),
                                             _ => (*cur.range_y().start(), *cur.range_y().end()),
+                                        };
+                                        let ((x0, x1), (y0, y1)) = if panel.axis_equal {
+                                            let f = plot_ui.transform().frame();
+                                            expand_to_aspect(
+                                                (x0, x1),
+                                                (y0, y1),
+                                                f.width() as f64,
+                                                f.height() as f64,
+                                            )
+                                        } else {
+                                            ((x0, x1), (y0, y1))
                                         };
                                         plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                                             [x0, y0],
