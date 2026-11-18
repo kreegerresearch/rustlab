@@ -961,9 +961,6 @@ where
     use plotters::style::text_anchor::{HPos, Pos, VPos};
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     const PAD: u32 = 8;
-    const LEGEND_FONT: u32 = 14;
-    const ROW_H: u32 = 20;
-    const SAMPLE_W: u32 = 22;
 
     let RGBColor(br, bgc, bb) = palette.bg;
     let RGBAColor(tr, tg, tb, _) = palette.text;
@@ -984,17 +981,24 @@ where
     };
     let top = PAD + caption_h;
 
+    // Text scales with the chart so it stays legible when LaTeX shrinks a
+    // 900 px panel to the text width. The legend never drops below the
+    // labels or the old 14 px.
+    let legend_font = smith::svg_label_font_px(panel_h.saturating_sub(top + PAD) as f64).max(14);
+    let row_h = (legend_font as f64 * 1.45).round() as u32;
+    let sample_w = (legend_font as f64 * 1.6).round() as u32;
+
     let entries: Vec<&crate::figure::Series> =
         sp.series.iter().filter(|s| !s.label.is_empty()).collect();
     let legend_w = entries
         .iter()
-        .map(|s| measure_px(panel, &s.label, LEGEND_FONT))
+        .map(|s| measure_px(panel, &s.label, legend_font))
         .max()
-        .map_or(0, |w| w + SAMPLE_W + 3 * PAD);
+        .map_or(0, |w| w + sample_w + 3 * PAD);
     let legend_h = if entries.is_empty() {
         0
     } else {
-        entries.len() as u32 * ROW_H + PAD
+        entries.len() as u32 * row_h + PAD
     };
     let avail_h = panel_h.saturating_sub(top + PAD);
     let avail_w = panel_w.saturating_sub(2 * PAD);
@@ -1028,7 +1032,8 @@ where
     }
 
     let square = panel.clone().shrink((chart_x, top), (side, side));
-    let half = smith::view_half_width(side as f64);
+    let label_font = smith::svg_label_font_px(side as f64);
+    let half = smith::view_half_width_for(side as f64, label_font as f64);
     let scale = side as f64 / (2.0 * half);
     let mut chart = ChartBuilder::on(&square)
         .build_cartesian_2d(-half..half, -half..half)
@@ -1045,12 +1050,12 @@ where
 
     let label_color = rgb(colors.label);
     let mut label_style: TextStyle =
-        ("sans-serif", smith::LABEL_FONT_PX, &label_color).into_text_style(panel);
+        ("sans-serif", label_font, &label_color).into_text_style(panel);
     label_style.pos = Pos::new(HPos::Left, VPos::Top);
     let to_px = |x: f64, y: f64| ((x + half) * scale, (half - y) * scale);
-    for l in smith::grid_labels_at(grid, scale) {
-        let w = measure_px(panel, &l.text, smith::LABEL_FONT_PX) as f64;
-        let (left, t, _, _) = smith::label_box(&l, to_px, w, smith::LABEL_FONT_PX as f64);
+    for l in smith::grid_labels_at_sized(grid, scale, label_font as f64) {
+        let w = measure_px(panel, &l.text, label_font) as f64;
+        let (left, t, _, _) = smith::label_box(&l, to_px, w, label_font as f64);
         square
             .draw_text(
                 &l.text,
@@ -1107,29 +1112,29 @@ where
             )
         };
         let mut text_style: TextStyle =
-            ("sans-serif", LEGEND_FONT, &palette.text).into_text_style(panel);
+            ("sans-serif", legend_font, &palette.text).into_text_style(panel);
         text_style.pos = Pos::new(HPos::Left, VPos::Center);
         for (k, s) in entries.iter().enumerate() {
-            let cy = (ly + k as u32 * ROW_H + ROW_H / 2) as i32;
+            let cy = (ly + k as u32 * row_h + row_h / 2) as i32;
             let x0 = lx as i32;
             let color = s.color.to_plotters();
             match s.kind {
                 PlotKind::Line => panel
                     .draw(&PathElement::new(
-                        vec![(x0, cy), (x0 + SAMPLE_W as i32, cy)],
+                        vec![(x0, cy), (x0 + sample_w as i32, cy)],
                         color.stroke_width(2),
                     ))
                     .map_err(err)?,
                 _ => panel
                     .draw(&Circle::new(
-                        (x0 + SAMPLE_W as i32 / 2, cy),
+                        (x0 + sample_w as i32 / 2, cy),
                         4,
                         color.filled(),
                     ))
                     .map_err(err)?,
             }
             panel
-                .draw_text(&s.label, &text_style, (x0 + (SAMPLE_W + PAD) as i32, cy))
+                .draw_text(&s.label, &text_style, (x0 + (sample_w + PAD) as i32, cy))
                 .map_err(err)?;
         }
     }
@@ -2848,6 +2853,54 @@ mod tests {
             }
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    /// A one-panel figure is 900 px wide and LaTeX sets it at 0.9 of a
+    /// 6.3 in text width, about 0.45 pt per px. Grid labels and legend
+    /// entries must reach 7 pt there.
+    #[test]
+    fn smith_svg_text_is_readable_when_set_in_a_pdf() {
+        let path = tmp_path("_smith_pdf_size.svg");
+        smith_panel(crate::smith::SmithGrid::Impedance);
+        FIGURE.with(|f| f.borrow_mut().hold = true);
+        push_xy_line(
+            vec![0.0, 0.2],
+            vec![0.0, 0.4],
+            "S11",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|f| f.borrow_mut().hold = false);
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        let pt_per_px = 0.9 * 6.3 * 72.0 / 900.0;
+        for t in ["+j1.0", "-j5.0", "2.0", "S11"] {
+            let px = text_font_size(&svg, t);
+            assert!(
+                px * pt_per_px >= 7.0,
+                "{t}: {px} px is {:.1} pt",
+                px * pt_per_px
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `font-size` of the first `<text>` whose content is `t`, unrounded.
+    fn text_font_size(svg: &str, t: &str) -> f64 {
+        for chunk in svg.split("<text").skip(1) {
+            let Some(end) = chunk.find("</text>") else {
+                continue;
+            };
+            let tag = &chunk[..end];
+            if tag[tag.find('>').map_or(0, |i| i + 1)..].trim() != t {
+                continue;
+            }
+            let k = tag.find("font-size=\"").expect("font-size");
+            let rest = &tag[k + 11..];
+            return rest[..rest.find('"').unwrap()].parse().unwrap();
+        }
+        panic!("no <text> {t}");
     }
 
     /// Font size of the first `<text>` whose content is `t`.

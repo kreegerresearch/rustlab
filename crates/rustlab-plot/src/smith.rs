@@ -80,14 +80,35 @@ pub const ARC_RESOLUTION: usize = 192;
 /// pixels; see [`view_half_width`].
 pub const VIEW_HALF_WIDTH: f64 = 1.15;
 
-/// Label font size in pixels.
+/// Label font size in pixels for backends that draw at screen size (HTML,
+/// viewer). The SVG/PNG backend scales it with the chart; see
+/// [`svg_label_font_px`].
 pub const LABEL_FONT_PX: u32 = 11;
 
-/// Gap in pixels between a label and the point it names.
-pub const LABEL_GAP_PX: f64 = 4.0;
+/// Gap between a label and the point it names, per pixel of font size.
+const GAP_PER_FONT_PX: f64 = 4.0 / 11.0;
 
-/// Room in pixels kept around the unit circle for the reactance labels.
-pub const LABEL_MARGIN_PX: f64 = 38.0;
+/// Room kept around the unit circle for the reactance labels, per pixel of
+/// font size.
+const MARGIN_PER_FONT_PX: f64 = 38.0 / 11.0;
+
+/// Gap in pixels between a label and the point it names at `font` px.
+pub fn label_gap_px(font: f64) -> f64 {
+    GAP_PER_FONT_PX * font
+}
+
+/// Room in pixels kept around the unit circle at `font` px.
+pub fn label_margin_px(font: f64) -> f64 {
+    MARGIN_PER_FONT_PX * font
+}
+
+/// SVG/PNG label size for a chart `side_px` wide. A notebook panel is
+/// 900 × 500 and LaTeX sets it at about 0.45 pt per px, so a full-size
+/// chart (side ≈ 450) needs ~20 px for 7 pt print text. Small charts
+/// keep 11 px.
+pub fn svg_label_font_px(side_px: f64) -> u32 {
+    (side_px * 0.045).round().clamp(LABEL_FONT_PX as f64, 22.0) as u32
+}
 
 /// `Γ = (z − 1) / (z + 1)` for normalised `z = r + jx`.
 pub fn z_to_gamma(r: f64, x: f64) -> (f64, f64) {
@@ -104,7 +125,12 @@ pub fn gamma_to_z(gr: f64, gi: f64) -> (f64, f64) {
 /// Half-width of the view square that leaves `LABEL_MARGIN_PX` pixels
 /// around the unit circle when the square is `side_px` pixels wide.
 pub fn view_half_width(side_px: f64) -> f64 {
-    let usable = side_px - 2.0 * LABEL_MARGIN_PX;
+    view_half_width_for(side_px, LABEL_FONT_PX as f64)
+}
+
+/// [`view_half_width`] for labels `font` pixels high.
+pub fn view_half_width_for(side_px: f64, font: f64) -> f64 {
+    let usable = side_px - 2.0 * label_margin_px(font);
     if usable <= side_px * 0.25 {
         // Too small to keep a pixel margin: fall back to a fixed fraction.
         return 4.0 / 3.0;
@@ -296,6 +322,12 @@ pub struct SmithLabel {
 /// with its impedance values only, so the two families do not print on top
 /// of each other.
 pub fn grid_labels(grid: SmithGrid) -> Vec<SmithLabel> {
+    grid_labels_sized(grid, LABEL_FONT_PX as f64)
+}
+
+/// [`grid_labels`] with offsets for labels `font` pixels high.
+pub fn grid_labels_sized(grid: SmithGrid, font: f64) -> Vec<SmithLabel> {
+    let gap = label_gap_px(font);
     let sign = match grid {
         SmithGrid::Admittance => -1.0,
         SmithGrid::Impedance | SmithGrid::Immittance => 1.0,
@@ -308,15 +340,15 @@ pub fn grid_labels(grid: SmithGrid) -> Vec<SmithLabel> {
         // The offset keeps a 4 px marker at the crossing (the matched load
         // sits on the 1.0 label's crossing) clear of the text.
         let (h, dx) = if sign > 0.0 {
-            (HAnchor::Right, -LABEL_GAP_PX * 1.25)
+            (HAnchor::Right, -gap * 1.25)
         } else {
-            (HAnchor::Left, LABEL_GAP_PX * 1.25)
+            (HAnchor::Left, gap * 1.25)
         };
         out.push(SmithLabel {
             x: sign * gx,
             y: 0.0,
             dx_px: dx,
-            dy_px: LABEL_GAP_PX * 1.25,
+            dy_px: gap * 1.25,
             h,
             v: VAnchor::Bottom,
             text: format_grid_value(r),
@@ -347,8 +379,8 @@ pub fn grid_labels(grid: SmithGrid) -> Vec<SmithLabel> {
             out.push(SmithLabel {
                 x: gx,
                 y: gy,
-                dx_px: LABEL_GAP_PX * gx,
-                dy_px: LABEL_GAP_PX * gy,
+                dx_px: gap * gx,
+                dy_px: gap * gy,
                 h,
                 v,
                 text,
@@ -358,16 +390,22 @@ pub fn grid_labels(grid: SmithGrid) -> Vec<SmithLabel> {
     out
 }
 
-/// Chart scale in pixels per unit of Γ below which only the `1.0` and
-/// `±j1.0` labels are kept; the grid values are a third of a unit apart on
-/// the real axis, too close for three-character labels.
-pub const FULL_LABELS_MIN_PX_PER_UNIT: f64 = 72.0;
+/// Chart scale in pixels per unit of Γ, per pixel of font size, below
+/// which only the `1.0` and `±j1.0` labels are kept; the grid values are a
+/// third of a unit apart on the real axis, too close for three-character
+/// labels.
+pub const FULL_LABELS_MIN_PX_PER_UNIT_PER_FONT_PX: f64 = 72.0 / 11.0;
 
 /// [`grid_labels`] thinned for a chart drawn at `px_per_unit` pixels per
 /// unit of Γ.
 pub fn grid_labels_at(grid: SmithGrid, px_per_unit: f64) -> Vec<SmithLabel> {
-    let all = grid_labels(grid);
-    if px_per_unit >= FULL_LABELS_MIN_PX_PER_UNIT {
+    grid_labels_at_sized(grid, px_per_unit, LABEL_FONT_PX as f64)
+}
+
+/// [`grid_labels_at`] for labels `font` pixels high.
+pub fn grid_labels_at_sized(grid: SmithGrid, px_per_unit: f64, font: f64) -> Vec<SmithLabel> {
+    let all = grid_labels_sized(grid, font);
+    if px_per_unit >= FULL_LABELS_MIN_PX_PER_UNIT_PER_FONT_PX * font {
         return all;
     }
     all.into_iter()
@@ -740,15 +778,23 @@ mod tests {
 
     /// Approximate Liberation Sans advance at `LABEL_FONT_PX`, generous so
     /// the overlap check errs on the safe side.
-    fn text_w(s: &str) -> f64 {
-        s.chars().count() as f64 * LABEL_FONT_PX as f64 * 0.62
+    fn text_w(s: &str, font: f64) -> f64 {
+        s.chars().count() as f64 * font * 0.62
     }
 
     #[test]
     fn labels_do_not_overlap_and_fit_the_view() {
         // From a 2×3 subplot grid up to a full-page chart.
-        for side in [120.0, 150.0, 190.0, 220.0, 300.0, 480.0, 800.0] {
-            let half = view_half_width(side);
+        for (side, font) in [120.0, 150.0, 190.0, 220.0, 300.0, 450.0, 480.0, 800.0]
+            .into_iter()
+            .flat_map(|side| {
+                [
+                    (side, LABEL_FONT_PX as f64),
+                    (side, svg_label_font_px(side) as f64),
+                ]
+            })
+        {
+            let half = view_half_width_for(side, font);
             let scale = side / (2.0 * half);
             let to_px = |x: f64, y: f64| (side / 2.0 + x * scale, side / 2.0 - y * scale);
             for mode in [
@@ -756,19 +802,19 @@ mod tests {
                 SmithGrid::Admittance,
                 SmithGrid::Immittance,
             ] {
-                let boxes: Vec<_> = grid_labels_at(mode, scale)
+                let boxes: Vec<_> = grid_labels_at_sized(mode, scale, font)
                     .iter()
                     .map(|l| {
                         (
                             l.text.clone(),
-                            label_box(l, to_px, text_w(&l.text), LABEL_FONT_PX as f64),
+                            label_box(l, to_px, text_w(&l.text, font), font),
                         )
                     })
                     .collect();
                 for (t, b) in &boxes {
                     assert!(
                         b.0 >= 0.0 && b.1 >= 0.0 && b.2 <= side && b.3 <= side,
-                        "side {side}: {t} {b:?} leaves the view"
+                        "side {side}, font {font}: {t} {b:?} leaves the view"
                     );
                 }
                 for i in 0..boxes.len() {
@@ -777,13 +823,20 @@ mod tests {
                         let overlap = a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3;
                         assert!(
                             !overlap,
-                            "side {side}: {} {a:?} overlaps {} {b:?}",
+                            "side {side}, font {font}: {} {a:?} overlaps {} {b:?}",
                             boxes[i].0, boxes[j].0
                         );
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn svg_label_font_scales_with_the_chart() {
+        assert_eq!(svg_label_font_px(120.0), LABEL_FONT_PX);
+        assert!(svg_label_font_px(450.0) >= 20);
+        assert_eq!(svg_label_font_px(2000.0), 22);
     }
 
     #[test]
