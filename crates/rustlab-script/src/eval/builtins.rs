@@ -1,3 +1,4 @@
+use rustlab_core::Sum0;
 use super::shared::Shared;
 use crate::error::ScriptError;
 use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
@@ -9650,15 +9651,15 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 2.0
             };
             let n = if p == 1.0 {
-                v.iter().map(|c| c.norm()).sum::<f64>()
+                v.iter().map(|c| c.norm()).sum0()
             } else if p == 2.0 {
-                v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt()
+                v.iter().map(|c| c.norm_sqr()).sum0().sqrt()
             } else if p == f64::INFINITY {
                 v.iter().map(|c| c.norm()).fold(0.0_f64, f64::max)
             } else {
                 v.iter()
                     .map(|c| c.norm().powf(p))
-                    .sum::<f64>()
+                    .sum0()
                     .powf(1.0 / p)
             };
             Ok(Value::Scalar(n))
@@ -9673,19 +9674,19 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             } {
                 Some(p) => p,
                 None => {
-                    let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+                    let n = m.iter().map(|c| c.norm_sqr()).sum0().sqrt();
                     return Ok(Value::Scalar(n));
                 }
             };
             let n = if p == 1.0 {
                 // Maximum absolute column sum.
                 (0..m.ncols())
-                    .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+                    .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum0())
                     .fold(0.0_f64, f64::max)
             } else if p == f64::INFINITY {
                 // Maximum absolute row sum.
                 (0..m.nrows())
-                    .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+                    .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum0())
                     .fold(0.0_f64, f64::max)
             } else if p == 2.0 {
                 // Largest singular value only. A full SVD also builds every
@@ -9707,12 +9708,12 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 2.0
             };
             let n = if p == 1.0 {
-                sv.entries.iter().map(|(_, c)| c.norm()).sum::<f64>()
+                sv.entries.iter().map(|(_, c)| c.norm()).sum0()
             } else if p == 2.0 {
                 sv.entries
                     .iter()
                     .map(|(_, c)| c.norm_sqr())
-                    .sum::<f64>()
+                    .sum0()
                     .sqrt()
             } else if p == f64::INFINITY {
                 sv.entries
@@ -9723,7 +9724,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 sv.entries
                     .iter()
                     .map(|(_, c)| c.norm().powf(p))
-                    .sum::<f64>()
+                    .sum0()
                     .powf(1.0 / p)
             };
             Ok(Value::Scalar(n))
@@ -9875,11 +9876,11 @@ fn builtin_cond(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn induced_norm(m: &CMatrix, columns: bool) -> f64 {
     if columns {
         (0..m.ncols())
-            .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+            .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum0())
             .fold(0.0_f64, f64::max)
     } else {
         (0..m.nrows())
-            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum0())
             .fold(0.0_f64, f64::max)
     }
 }
@@ -10166,7 +10167,7 @@ fn matrix_expm(a: &CMatrix) -> Result<CMatrix, String> {
 
     // 1-norm (largest column sum of absolute values)
     let norm1: f64 = (0..n)
-        .map(|j| (0..n).map(|i| a[[i, j]].norm()).sum::<f64>())
+        .map(|j| (0..n).map(|i| a[[i, j]].norm()).sum0())
         .fold(0.0_f64, f64::max);
 
     // Scale so ||A/2^s||_1 <= theta_6 (Higham 2008, Table A.1)
@@ -13278,7 +13279,7 @@ fn builtin_gelu_grad(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn layernorm_slice_inplace(slice: &mut [C64], eps: f64) {
     let n = slice.len() as f64;
     let mean: C64 = slice.iter().copied().sum::<C64>() / n;
-    let variance: f64 = slice.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / n;
+    let variance: f64 = slice.iter().map(|&x| (x - mean).norm_sqr()).sum0() / n;
     let std_dev = (variance + eps).sqrt();
     for x in slice.iter_mut() {
         *x = (*x - mean) / std_dev;
@@ -14290,7 +14291,7 @@ fn hermitian_eigh(g: &Array2<C64>) -> Result<(Vec<f64>, Array2<C64>), ScriptErro
 fn normalize_column(a: &mut Array2<C64>, col: usize) {
     let nrm = (0..a.nrows())
         .map(|r| a[[r, col]].norm_sqr())
-        .sum::<f64>()
+        .sum0()
         .sqrt();
     if nrm > 0.0 {
         for r in 0..a.nrows() {
@@ -14327,7 +14328,7 @@ fn complete_orthonormal(a: &mut Array2<C64>, filled: &[bool]) {
                     cand[r] -= dot * a[[r, c]];
                 }
             }
-            let nrm = cand.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            let nrm = cand.iter().map(|z| z.norm_sqr()).sum0().sqrt();
             if nrm > 1e-10 {
                 for r in 0..rows {
                     a[[r, col]] = cand[r] / nrm;

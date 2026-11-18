@@ -1,6 +1,7 @@
 //! `xcorr` and `xcov`. The sums live in `rustlab-dsp`; this module reads
 //! script values without widening real storage and packs the lag axis.
 
+use rustlab_core::Sum0;
 use super::shared::Shared;
 use super::value::Value;
 use crate::error::ScriptError;
@@ -418,7 +419,7 @@ fn demean_samples(s: Samples) -> Samples {
             if v.is_empty() {
                 return Samples::Real(v);
             }
-            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            let mean = v.iter().sum0() / v.len() as f64;
             Samples::Real(v.into_iter().map(|x| x - mean).collect())
         }
         Samples::Complex(v) => {

@@ -7,6 +7,7 @@
 //! A complex conjugate pair comes out of one 2×2 block of the Schur form,
 //! so the pair is exactly conjugate and real eigenvalues are exactly real.
 
+use crate::Sum0;
 use super::MAX_ITER_PER_EIGENVALUE;
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
@@ -56,7 +57,7 @@ fn orthes(h: &mut Array2<f64>, v: &mut Array2<f64>) {
     let high = n - 1;
     let mut ort = vec![0.0; n];
     for m in 1..high {
-        let scale: f64 = (m..=high).map(|i| h[[i, m - 1]].abs()).sum();
+        let scale: f64 = (m..=high).map(|i| h[[i, m - 1]].abs()).sum0();
         if scale == 0.0 {
             continue;
         }
@@ -72,13 +73,13 @@ fn orthes(h: &mut Array2<f64>, v: &mut Array2<f64>) {
         hh -= ort[m] * g;
         ort[m] -= g;
         for j in m..n {
-            let f = (m..=high).rev().map(|i| ort[i] * h[[i, j]]).sum::<f64>() / hh;
+            let f = (m..=high).rev().map(|i| ort[i] * h[[i, j]]).sum0() / hh;
             for i in m..=high {
                 h[[i, j]] -= f * ort[i];
             }
         }
         for i in 0..=high {
-            let f = (m..=high).rev().map(|j| ort[j] * h[[i, j]]).sum::<f64>() / hh;
+            let f = (m..=high).rev().map(|j| ort[j] * h[[i, j]]).sum0() / hh;
             for j in m..=high {
                 h[[i, j]] -= f * ort[j];
             }
@@ -96,7 +97,7 @@ fn orthes(h: &mut Array2<f64>, v: &mut Array2<f64>) {
                 ort[i] = h[[i, m - 1]];
             }
             for j in m..=high {
-                let g = (m..=high).map(|i| ort[i] * v[[i, j]]).sum::<f64>();
+                let g = (m..=high).map(|i| ort[i] * v[[i, j]]).sum0();
                 // Double division avoids possible underflow.
                 let g = (g / ort[m]) / h[[m, m - 1]];
                 for i in m..=high {
@@ -419,8 +420,8 @@ fn hqr2(
             h[[nu, nu - 1]] = 0.0;
             h[[nu, nu]] = 1.0;
             for i in (0..nu.saturating_sub(1)).rev() {
-                let ra: f64 = (l..=nu).map(|j| h[[i, j]] * h[[j, nu - 1]]).sum();
-                let sa: f64 = (l..=nu).map(|j| h[[i, j]] * h[[j, nu]]).sum();
+                let ra: f64 = (l..=nu).map(|j| h[[i, j]] * h[[j, nu - 1]]).sum0();
+                let sa: f64 = (l..=nu).map(|j| h[[i, j]] * h[[j, nu]]).sum0();
                 w = h[[i, i]] - p;
                 if e[i] < 0.0 {
                     z = w;

@@ -1,3 +1,4 @@
+use rustlab_core::Sum0;
 use crate::error::DspError;
 use ndarray::Array1;
 use num_complex::Complex;
@@ -104,8 +105,8 @@ impl IirFilter {
         };
 
         // Steady-state DC gain
-        let sum_b: f64 = b.iter().sum();
-        let sum_a: f64 = a.iter().sum();
+        let sum_b: f64 = b.iter().sum0();
+        let sum_a: f64 = a.iter().sum0();
         let kdc = if sum_a.abs() > 1e-300 {
             sum_b / sum_a
         } else {

@@ -26,6 +26,7 @@
 //! - Golub & Van Loan, *Matrix Computations* (4th ed.) §10.1
 //!   (symmetric Lanczos), §10.5 (Arnoldi).
 
+use crate::Sum0;
 use thiserror::Error;
 
 pub mod arnoldi;
@@ -418,7 +419,7 @@ fn run_lanczos_real(
             }
         }
         // Normalize and store.
-        let nrm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let nrm: f64 = v.iter().map(|x| x * x).sum0().sqrt();
         if nrm > 0.0 {
             for r in 0..n_rows {
                 vectors[[r, k]] = Complex::new(v[r] / nrm, 0.0);
@@ -430,7 +431,7 @@ fn run_lanczos_real(
             .iter()
             .zip(&v)
             .map(|(av_i, v_i)| (av_i - ritz_vals[i] * v_i).powi(2))
-            .sum::<f64>()
+            .sum0()
             .sqrt()
             / nrm.max(1e-300);
         max_residual = max_residual.max(res);
@@ -507,7 +508,7 @@ fn run_arnoldi_with_matvec(
                 v[r] += coef * basis[j][r];
             }
         }
-        let nrm: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+        let nrm: f64 = v.iter().map(|c| c.norm_sqr()).sum0().sqrt();
         if nrm > 0.0 {
             for r in 0..n_rows {
                 vectors[[r, k]] = v[r] / nrm;
@@ -518,7 +519,7 @@ fn run_arnoldi_with_matvec(
             .iter()
             .zip(&v)
             .map(|(av_i, v_i)| (av_i - ritz_vals[i] * v_i).norm_sqr())
-            .sum::<f64>()
+            .sum0()
             .sqrt()
             / nrm.max(1e-300);
         max_residual = max_residual.max(res);

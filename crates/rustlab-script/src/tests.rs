@@ -21728,6 +21728,27 @@ mod michael_bug_batch {
         assert!(zero.contains("index"), "{zero}");
     }
 
+    /// Norms of empty arrays are +0 (MATLAB), in every form that sums.
+    #[test]
+    fn empty_norms_are_plus_zero() {
+        let ev = eval(
+            "e = zeros(1, 0);
+             n1 = norm(e);
+             n2 = norm(e, 1);
+             n3 = norm(e, \"fro\");
+             n4 = norm(zeros(0, 3), 1);
+             n5 = norm(zeros(3, 0), Inf);
+             n6 = norm(zeros(3, 0), \"fro\");
+             s = sparsevec(zeros(1, 0), zeros(1, 0), 3);
+             n7 = norm(s);
+             n8 = norm(s, 1);
+             n9 = norm(spzeros(3, 3), 1);",
+        );
+        for name in ["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9"] {
+            assert_eq!(scalar(&ev, name).to_bits(), 0.0f64.to_bits(), "{name} is -0");
+        }
+    }
+
     /// The Frobenius norm of a sparse matrix with no stored entries is +0,
     /// as in MATLAB, not the -0 an empty floating-point sum starts from.
     #[test]
