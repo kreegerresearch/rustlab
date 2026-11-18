@@ -1,14 +1,18 @@
 # Patch width sweep on the 2 mm mesh.
 # Demonstrates: parmap over an fdtd3d builder. Each trial builds its own
-# grid and steps it with the preset's "threads" value: 1 keeps a trial on
-# one core, 0 steps it on the shared rayon pool.
+# grid and steps it with the preset's "threads" value: 0 steps it on the
+# shared rayon pool, 1 would keep a trial on one core.
 #
 # preset is "quick" or "full". quick is the default: one cell through the
-# 1.6 mm substrate, 5 000 steps, three widths (28:8:44 mm), one core per
-# trial. full is two cells through the substrate, 8 000 steps, five widths
-# (28:4:44 mm) on the shared pool, about three times the run time. Both
-# records are about 18 ns, long enough for the widest patch to pass the
-# 1e-3 pulse check in fdtd_s11.
+# 1.6 mm substrate, 4 500 steps (about 16 ns), three widths (28:8:44 mm),
+# 10 mm of air above and below the board and 4 mm beside the ground. The
+# sweep reads only S11, so the air the patch notebook keeps for its
+# near-to-far box is not needed: 20 mm above and 10 mm beside give the same
+# resonances to 0.1 MHz on this mesh. full is two cells through the
+# substrate, 8 000 steps, five widths (28:4:44 mm), 20 mm and 10 mm of air,
+# about eight times the run time. Each record is long enough for the widest
+# patch to pass the 1e-3 pulse check in fdtd_s11 (4.6e-4 at 4 500 steps on
+# quick).
 #
 # The ground and the mesh stay the size of the 38 mm design. Only the
 # patch width changes, and the length stays 28 mm. NTFF is off: the
@@ -19,15 +23,17 @@ preset = "quick";
 function m = sweep_preset(name)
     switch name
         case "quick"
-            m = struct("nsub", 1, "nsteps", 5000, "widths", 28e-3:8e-3:44e-3, "threads", 1);
+            m = struct("nsub", 1, "nsteps", 4500, "widths", 28e-3:8e-3:44e-3, ...
+                "air_z", 10e-3, "air_xy", 4e-3, "threads", 0);
         case "full"
-            m = struct("nsub", 2, "nsteps", 8000, "widths", 28e-3:4e-3:44e-3, "threads", 0);
+            m = struct("nsub", 2, "nsteps", 8000, "widths", 28e-3:4e-3:44e-3, ...
+                "air_z", 20e-3, "air_xy", 10e-3, "threads", 0);
         otherwise
             error(sprintf("unknown preset %s: use quick or full", name));
     end
 end
 
-function r = patch_res(Wm, nsub, nsteps, threads)
+function r = patch_res(Wm, nsub, nsteps, air_z, air_xy, threads)
     eps_r = 4.4;
     h = 1.6e-3;
     f0 = 2.4e9;
@@ -38,8 +44,8 @@ function r = patch_res(Wm, nsub, nsteps, threads)
     margin = 2;
     ngx = 2 * round((Lm / 2 + 16e-3) / dx);
     ngy = 2 * round((19e-3 + 16e-3) / dx);
-    nax = round(10e-3 / dx);
-    naz = round(20e-3 / dz);
+    nax = round(air_xy / dx);
+    naz = round(air_z / dz);
     nx = ngx + 2 * (npml + margin + nax);
     ny = ngy + 2 * (npml + margin + nax);
     nz = nsub + 2 * (npml + margin + naz);
@@ -85,8 +91,10 @@ widths = m.widths;
 nsub = m.nsub;
 nsteps = m.nsteps;
 threads = m.threads;
+air_z = m.air_z;
+air_xy = m.air_xy;
 tic;
-R = parmap(@(w) patch_res(w, nsub, nsteps, threads), widths);
+R = parmap(@(w) patch_res(w, nsub, nsteps, air_z, air_xy, threads), widths);
 fprintf("parmap over %d widths on %d threads: %.1f s\n", length(widths), nproc(), toc);
 
 f_model = zeros(1, length(widths));

@@ -10,29 +10,37 @@ The resonance and the match should both fall as the patch gets wider. Each reson
 
 ## Presets
 
-The `preset` line near the top of the cell picks the run. Both records are about 18 ns, which is where the widest patch passes the $10^{-3}$ pulse check in `fdtd_s11`. The narrow and the middle patch have decayed long before that.
+The `preset` line near the top of the cell picks the run.
 
-| preset | substrate cells | steps | widths | stepping |
-|---|---:|---:|---|---|
-| `quick` (default) | 1 | 5,000 | 28, 36, 44 mm | `"threads", 1`: one core per trial |
-| `full` | 2 | 8,000 | 28 to 44 mm, step 4 mm | shared pool |
+| preset | substrate cells | steps | widths | air above / beside | cells per trial |
+|---|---:|---:|---|---|---:|
+| `quick` (default) | 1 | 4,500 | 28, 36, 44 mm | 10 mm / 4 mm | 106,920 |
+| `full` | 2 | 8,000 | 28 to 44 mm, step 4 mm | 20 mm / 10 mm | 285,120 |
 
-The quick sweep takes about ten seconds on four cores, and its 36 mm trial prints the same dip as the quick patch notebook. Edit the line to `preset = "full";` for five widths on the two-cell substrate, about three and a half times as long.
+The step count is set by the widest patch, which rings longest: at 4,500 quick steps its port tail is $4.6\times 10^{-4}$ of the peak, under the $10^{-3}$ pulse check in `fdtd_s11`. The narrow patch has decayed by 3,000.
 
-The `"threads"` choice is the lesson in parallel stepping. With three trials on four cores, each trial on its own core is faster than three trials sharing the pool: 9.7 s against 12.4 s on the machine that measured it, with bit-identical results. With five trials, more than the cores, the full preset steps on the shared pool so no core sits idle once the first trials finish.
+The sweep reads only $S_{11}$. The patch notebook keeps 20 mm of air above the board and 10 mm beside the ground so its near-to-far box sits outside the reactive field; this sweep has no near-to-far box. On the quick mesh, 10 mm above and 4 mm beside give the same three resonances to 0.1 MHz and the same $|S_{11}|$ to 0.001 as 20 mm and 10 mm, with 43% fewer cells.
+
+Quick takes about five seconds on four cores. Its resonances are 2.3815, 2.3577, and 2.3418 GHz against the model's 2.3733, 2.3559, and 2.3436 GHz: +0.35%, +0.08%, and −0.08%. Edit the line to `preset = "full";` for five widths on the two-cell substrate, about eight times as long.
+
+Both presets step each trial on the shared pool (`"threads", 0`). Passing `"threads", 1` to `fdtd3d` keeps a trial on one core instead. With three quick trials on four cores the shared pool was faster here, 5.1 s against 6.2 s, and the result is bit-identical either way.
 
 ```rustlab
 # Patch width sweep on the 2 mm mesh.
 # Demonstrates: parmap over an fdtd3d builder. Each trial builds its own
-# grid and steps it with the preset's "threads" value: 1 keeps a trial on
-# one core, 0 steps it on the shared rayon pool.
+# grid and steps it with the preset's "threads" value: 0 steps it on the
+# shared rayon pool, 1 would keep a trial on one core.
 #
 # preset is "quick" or "full". quick is the default: one cell through the
-# 1.6 mm substrate, 5 000 steps, three widths (28:8:44 mm), one core per
-# trial. full is two cells through the substrate, 8 000 steps, five widths
-# (28:4:44 mm) on the shared pool, about three times the run time. Both
-# records are about 18 ns, long enough for the widest patch to pass the
-# 1e-3 pulse check in fdtd_s11.
+# 1.6 mm substrate, 4 500 steps (about 16 ns), three widths (28:8:44 mm),
+# 10 mm of air above and below the board and 4 mm beside the ground. The
+# sweep reads only S11, so the air the patch notebook keeps for its
+# near-to-far box is not needed: 20 mm above and 10 mm beside give the same
+# resonances to 0.1 MHz on this mesh. full is two cells through the
+# substrate, 8 000 steps, five widths (28:4:44 mm), 20 mm and 10 mm of air,
+# about eight times the run time. Each record is long enough for the widest
+# patch to pass the 1e-3 pulse check in fdtd_s11 (4.6e-4 at 4 500 steps on
+# quick).
 #
 # The ground and the mesh stay the size of the 38 mm design. Only the
 # patch width changes, and the length stays 28 mm. NTFF is off: the
@@ -43,15 +51,17 @@ preset = "quick";
 function m = sweep_preset(name)
     switch name
         case "quick"
-            m = struct("nsub", 1, "nsteps", 5000, "widths", 28e-3:8e-3:44e-3, "threads", 1);
+            m = struct("nsub", 1, "nsteps", 4500, "widths", 28e-3:8e-3:44e-3, ...
+                "air_z", 10e-3, "air_xy", 4e-3, "threads", 0);
         case "full"
-            m = struct("nsub", 2, "nsteps", 8000, "widths", 28e-3:4e-3:44e-3, "threads", 0);
+            m = struct("nsub", 2, "nsteps", 8000, "widths", 28e-3:4e-3:44e-3, ...
+                "air_z", 20e-3, "air_xy", 10e-3, "threads", 0);
         otherwise
             error(sprintf("unknown preset %s: use quick or full", name));
     end
 end
 
-function r = patch_res(Wm, nsub, nsteps, threads)
+function r = patch_res(Wm, nsub, nsteps, air_z, air_xy, threads)
     eps_r = 4.4;
     h = 1.6e-3;
     f0 = 2.4e9;
@@ -62,8 +72,8 @@ function r = patch_res(Wm, nsub, nsteps, threads)
     margin = 2;
     ngx = 2 * round((Lm / 2 + 16e-3) / dx);
     ngy = 2 * round((19e-3 + 16e-3) / dx);
-    nax = round(10e-3 / dx);
-    naz = round(20e-3 / dz);
+    nax = round(air_xy / dx);
+    naz = round(air_z / dz);
     nx = ngx + 2 * (npml + margin + nax);
     ny = ngy + 2 * (npml + margin + nax);
     nz = nsub + 2 * (npml + margin + naz);
@@ -109,8 +119,10 @@ widths = m.widths;
 nsub = m.nsub;
 nsteps = m.nsteps;
 threads = m.threads;
+air_z = m.air_z;
+air_xy = m.air_xy;
 tic;
-R = parmap(@(w) patch_res(w, nsub, nsteps, threads), widths);
+R = parmap(@(w) patch_res(w, nsub, nsteps, air_z, air_xy, threads), widths);
 fprintf("parmap over %d widths on %d threads: %.1f s\n", length(widths), nproc(), toc);
 
 f_model = zeros(1, length(widths));

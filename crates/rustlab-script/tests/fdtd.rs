@@ -1545,7 +1545,8 @@ fn example_source(rel: &str) -> String {
 }
 
 /// The sweep notebook's cell is `examples/pde/fdtd_sweep.rlab`. `quick` is
-/// the default: fewer, shorter trials than `full`, one core per trial.
+/// the default: fewer, shorter trials than `full`, on a mesh with less air
+/// (the sweep reads only S11). `full` keeps the patch notebook's geometry.
 #[test]
 fn fdtd_sweep_presets_and_notebook_cell() {
     let src = example_source("examples/pde/fdtd_sweep.rlab");
@@ -1568,19 +1569,24 @@ fn fdtd_sweep_presets_and_notebook_cell() {
     let fields = |name: &str| {
         eval(&format!(
             "{func}\nm = sweep_preset(\"{name}\");\n\
-             nsub = m.nsub; nsteps = m.nsteps; nw = length(m.widths); threads = m.threads;\n"
+             nsub = m.nsub; nsteps = m.nsteps; nw = length(m.widths); threads = m.threads;\n\
+             air_z = m.air_z; air_xy = m.air_xy;\n"
         ))
     };
     let quick = fields("quick");
     let full = fields("full");
     assert_eq!(scalar(&quick, "nsub"), 1.0);
-    assert_eq!(scalar(&quick, "nsteps"), 5_000.0);
+    assert_eq!(scalar(&quick, "nsteps"), 4_500.0);
     assert_eq!(scalar(&quick, "nw"), 3.0);
-    assert_eq!(scalar(&quick, "threads"), 1.0);
+    assert_eq!(scalar(&quick, "threads"), 0.0);
+    assert_eq!(scalar(&quick, "air_z"), 10e-3);
+    assert_eq!(scalar(&quick, "air_xy"), 4e-3);
     assert_eq!(scalar(&full, "nsub"), 2.0);
     assert_eq!(scalar(&full, "nsteps"), 8_000.0);
     assert_eq!(scalar(&full, "nw"), 5.0);
     assert_eq!(scalar(&full, "threads"), 0.0);
+    assert_eq!(scalar(&full, "air_z"), 20e-3);
+    assert_eq!(scalar(&full, "air_xy"), 10e-3);
     let err = run_err(&format!("{func}\nsweep_preset(\"sideways\");\n"));
     assert!(
         err.contains("sideways") && err.contains("quick") && err.contains("full"),
