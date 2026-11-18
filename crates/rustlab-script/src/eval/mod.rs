@@ -538,6 +538,17 @@ impl Evaluator {
             vals
         };
 
+        // A logical target stays logical (MATLAB), and so does a new variable
+        // first written with a logical value: `x(3) = true`.
+        let logical_target = match self.env.get(name.as_str()) {
+            Some(Value::Logical(_)) => true,
+            None => matches!(val, Value::Bool(_) | Value::Logical(_)) && idx_vals.len() <= 2,
+            _ => false,
+        };
+        if logical_target {
+            return self.assign_logical(name, &idx_vals, &val, *suppress);
+        }
+
         if (*suppress || !self.echo_enabled())
             && self.try_real_index_assign(name, &idx_vals, &val).is_some()
         {
@@ -1033,6 +1044,91 @@ impl Evaluator {
     /// out-of-range indices and growth, so the complex paths below keep
     /// their behavior and error messages. The caller skips it when the
     /// assignment echoes.
+    /// `L(i) = v` / `L(i, j) = v` into a logical array, MATLAB rules: a
+    /// number is true when nonzero (NaN and complex values are errors), a
+    /// write past the end grows the array with `false`, and a linear index
+    /// past the end of a matrix that is not a vector is an error.
+    fn assign_logical(
+        &mut self,
+        name: &str,
+        idx: &[Value],
+        val: &Value,
+        suppress: bool,
+    ) -> Result<(), ScriptError> {
+        let rhs = LogicalRhs::from_value(val)?;
+        let (nr, nc) = match self.env.get(name) {
+            Some(Value::Logical(a)) => (a.rows(), a.cols()),
+            _ => (0, 0),
+        };
+        // Every check runs before the array is touched, so a refused write
+        // leaves the variable as it was.
+        let (writes, need): (Vec<(usize, usize)>, (usize, usize)) = match idx {
+            [i, j] => {
+                let rows = logical_dim_positions(i, nr)?;
+                let cols = logical_dim_positions(j, nc)?;
+                rhs.check_region(rows.len(), cols.len())?;
+                let need_r = rows.iter().map(|&r| r + 1).max().unwrap_or(0).max(nr);
+                let need_c = cols.iter().map(|&c| c + 1).max().unwrap_or(0).max(nc);
+                let pairs = cols
+                    .iter()
+                    .flat_map(|&c| rows.iter().map(move |&r| (r, c)))
+                    .collect();
+                (pairs, (need_r, need_c))
+            }
+            [i] => {
+                let total = nr * nc;
+                let positions = match i {
+                    Value::All => (0..total).collect(),
+                    Value::Logical(_) | Value::Bool(_) => matrix_linear_positions(i, nr, nc)?,
+                    other => logical_dim_positions(other, usize::MAX)?,
+                };
+                rhs.check_count(positions.len())?;
+                let end = positions.iter().map(|&p| p + 1).max().unwrap_or(0);
+                let need = if end <= total {
+                    (nr, nc)
+                } else if nr <= 1 {
+                    (1, end.max(nc))
+                } else if nc == 1 {
+                    (end, 1)
+                } else {
+                    return Err(ScriptError::runtime(format!(
+                        "index assignment: attempt to grow array along ambiguous dimension \
+                         (linear index {end} into a {nr}x{nc} logical array)"
+                    )));
+                };
+                let rows = need.0.max(1);
+                (positions.iter().map(|&p| (p % rows, p / rows)).collect(), need)
+            }
+            _ => {
+                return Err(ScriptError::runtime(
+                    "index assignment: a logical array takes one or two subscripts".to_string(),
+                ))
+            }
+        };
+        if !matches!(self.env.get(name), Some(Value::Logical(_))) {
+            let empty =
+                LogicalArray::filled(0, 0, false).map_err(|e| ScriptError::runtime(e.to_string()))?;
+            self.set_env(name, Value::Logical(empty));
+        }
+        let echo = !suppress && self.echo_enabled();
+        let Some(Value::Logical(a)) = self.env.get_mut(name) else {
+            unreachable!()
+        };
+        if need != (nr, nc) {
+            *a = a
+                .resized(need.0, need.1)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+        }
+        for (k, &(r, c)) in writes.iter().enumerate() {
+            a.set(r, c, rhs.at(k));
+        }
+        if echo {
+            let (r, c) = (a.rows(), a.cols());
+            output::script_println(&format!("{}(...) = (logical {}×{} updated)", name, r, c));
+        }
+        Ok(())
+    }
+
     fn try_real_index_assign(&mut self, name: &str, idx: &[Value], val: &Value) -> Option<()> {
         #[derive(Clone, Copy)]
         enum Src<'a> {
@@ -4716,6 +4812,137 @@ fn scalar_logical_assign_positions(bit: bool, total: usize) -> Result<Vec<usize>
         ));
     }
     Ok(vec![0])
+}
+
+/// The right-hand side of a write into a logical array, as flags in
+/// column-major order. `Fill` is one value for every target element.
+enum LogicalRhs {
+    Fill(bool),
+    Data {
+        flags: Vec<bool>,
+        rows: usize,
+        cols: usize,
+    },
+}
+
+impl LogicalRhs {
+    fn flag(x: f64, im: f64) -> Result<bool, ScriptError> {
+        if im != 0.0 {
+            return Err(ScriptError::runtime(
+                "index assignment: complex values cannot be converted to logical".to_string(),
+            ));
+        }
+        if x.is_nan() {
+            return Err(ScriptError::runtime(
+                "index assignment: NaN cannot be converted to logical".to_string(),
+            ));
+        }
+        Ok(x != 0.0)
+    }
+
+    fn from_value(val: &Value) -> Result<Self, ScriptError> {
+        let data = |flags: Vec<bool>, rows: usize, cols: usize| {
+            if flags.len() == 1 {
+                LogicalRhs::Fill(flags[0])
+            } else {
+                LogicalRhs::Data { flags, rows, cols }
+            }
+        };
+        Ok(match val {
+            Value::Bool(b) => LogicalRhs::Fill(*b),
+            Value::Scalar(x) => LogicalRhs::Fill(Self::flag(*x, 0.0)?),
+            Value::Complex(c) => LogicalRhs::Fill(Self::flag(c.re, c.im)?),
+            Value::Logical(a) => data(
+                (0..a.len()).map(|k| a.get_column_major(k).unwrap_or(false)).collect(),
+                a.rows(),
+                a.cols(),
+            ),
+            Value::Vector(v) => data(
+                v.iter().map(|c| Self::flag(c.re, c.im)).collect::<Result<_, _>>()?,
+                1,
+                v.len(),
+            ),
+            Value::Matrix(m) => {
+                let (r, c) = (m.nrows(), m.ncols());
+                let mut flags = Vec::with_capacity(r * c);
+                for j in 0..c {
+                    for i in 0..r {
+                        let z = m[[i, j]];
+                        flags.push(Self::flag(z.re, z.im)?);
+                    }
+                }
+                data(flags, r, c)
+            }
+            other => match other.to_scalar() {
+                Ok(x) => LogicalRhs::Fill(Self::flag(x, 0.0)?),
+                Err(_) => {
+                    return Err(ScriptError::runtime(format!(
+                        "index assignment: cannot store {} in a logical array",
+                        other.type_name()
+                    )))
+                }
+            },
+        })
+    }
+
+    fn at(&self, k: usize) -> bool {
+        match self {
+            LogicalRhs::Fill(b) => *b,
+            LogicalRhs::Data { flags, .. } => flags[k],
+        }
+    }
+
+    fn check_count(&self, n: usize) -> Result<(), ScriptError> {
+        match self {
+            LogicalRhs::Data { flags, .. } if flags.len() != n => Err(ScriptError::runtime(format!(
+                "index assignment: dimension mismatch, {} values for {} positions",
+                flags.len(),
+                n
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// The region `nr × nc` takes a value of the same shape, or any vector of
+    /// the same length when the region is one row or one column (MATLAB).
+    fn check_region(&self, nr: usize, nc: usize) -> Result<(), ScriptError> {
+        let LogicalRhs::Data { flags, rows, cols } = self else {
+            return Ok(());
+        };
+        let same_shape = (*rows, *cols) == (nr, nc);
+        let vectors = (nr == 1 || nc == 1) && (*rows == 1 || *cols == 1) && flags.len() == nr * nc;
+        if same_shape || vectors {
+            Ok(())
+        } else {
+            Err(ScriptError::runtime(format!(
+                "index assignment: dimension mismatch, {rows}x{cols} value for a {nr}x{nc} region"
+            )))
+        }
+    }
+}
+
+/// 0-based positions for one subscript of a logical-array write. A numeric
+/// subscript may point past `n` (the array grows); a mask selects within `n`.
+fn logical_dim_positions(idx: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
+    let one = |x: f64| Value::one_based_to_zero_pub(x).map_err(ScriptError::runtime);
+    match idx {
+        Value::All => Ok((0..n).collect()),
+        Value::Logical(_) | Value::Bool(_) => {
+            Value::resolve_index_dim_public(idx, n).map_err(ScriptError::runtime)
+        }
+        Value::Scalar(x) => Ok(vec![one(*x)?]),
+        Value::Vector(v) => v.iter().map(|c| one(c.re)).collect(),
+        Value::Matrix(m) => {
+            let mut out = Vec::with_capacity(m.len());
+            for j in 0..m.ncols() {
+                for i in 0..m.nrows() {
+                    out.push(one(m[[i, j]].re)?);
+                }
+            }
+            Ok(out)
+        }
+        other => Value::resolve_index_dim_public(other, n).map_err(ScriptError::runtime),
+    }
 }
 
 fn matrix_linear_positions(idx: &Value, nr: usize, nc: usize) -> Result<Vec<usize>, ScriptError> {

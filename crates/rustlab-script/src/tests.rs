@@ -21637,6 +21637,97 @@ mod michael_bug_batch {
         }
     }
 
+    fn logical_of(ev: &Evaluator, name: &str) -> rustlab_core::LogicalArray {
+        match ev.get(name) {
+            Some(Value::Logical(a)) => a.clone(),
+            other => panic!("{name} is not logical: {other:?}"),
+        }
+    }
+
+    fn flags(a: &rustlab_core::LogicalArray) -> Vec<Vec<u8>> {
+        (0..a.rows())
+            .map(|r| (0..a.cols()).map(|c| u8::from(a.get(r, c).unwrap())).collect())
+            .collect()
+    }
+
+    /// Indexed assignment into a logical array keeps it logical (MATLAB).
+    /// Numbers convert: nonzero is true, zero is false.
+    #[test]
+    fn logical_target_element_region_and_mask_writes() {
+        let ev = eval(
+            "L = false(2, 3);
+             L(1, 1) = true;
+             L(2, 3) = 1;
+             L(:, 2) = [true; true];
+             A = false(2, 3);
+             A(:, 3) = [0, 5];
+             A(2, :) = true;
+             A(1, 2) = 0;
+             B = [true, false, true, true];
+             B(B) = false;
+             C = false(1, 4);
+             C([2, 4]) = [1, 1];
+             C(1:2) = true;
+             D = false(2, 2);
+             D(:) = [1, 0, 0, 1];
+             E = false(3, 3);
+             E(2, 2) = [1 > 0];
+             F = false(2, 2);
+             F(1:2, 1:2) = [true, false; false, true];
+             isl = islogical(A);",
+        );
+        assert_eq!(flags(&logical_of(&ev, "L")), vec![vec![1, 1, 0], vec![0, 1, 1]]);
+        assert_eq!(flags(&logical_of(&ev, "A")), vec![vec![0, 0, 0], vec![1, 1, 1]]);
+        assert_eq!(flags(&logical_of(&ev, "B")), vec![vec![0, 0, 0, 0]]);
+        assert_eq!(flags(&logical_of(&ev, "C")), vec![vec![1, 1, 0, 1]]);
+        // `D(:)` fills column-major.
+        assert_eq!(flags(&logical_of(&ev, "D")), vec![vec![1, 0], vec![0, 1]]);
+        assert!(logical_of(&ev, "E").get(1, 1).unwrap());
+        assert_eq!(flags(&logical_of(&ev, "F")), vec![vec![1, 0], vec![0, 1]]);
+        assert!(matches!(ev.get("isl"), Some(Value::Bool(true))));
+    }
+
+    /// Writing past the end grows a logical array with `false`. A row grows
+    /// along its columns, a column along its rows, and two subscripts grow
+    /// both. A new variable assigned a logical value is logical.
+    #[test]
+    fn logical_target_grows_with_false() {
+        let ev = eval(
+            "R = false(1, 2);
+             R(5) = true;
+             K = false(2, 1);
+             K(4) = 1;
+             M = true(2, 2);
+             M(3, 4) = true;
+             x(3) = true;
+             y(2, 2) = true;",
+        );
+        assert_eq!(flags(&logical_of(&ev, "R")), vec![vec![0, 0, 0, 0, 1]]);
+        assert_eq!(flags(&logical_of(&ev, "K")), vec![vec![0], vec![0], vec![0], vec![1]]);
+        assert_eq!(
+            flags(&logical_of(&ev, "M")),
+            vec![vec![1, 1, 0, 0], vec![1, 1, 0, 0], vec![0, 0, 0, 1]]
+        );
+        assert_eq!(flags(&logical_of(&ev, "x")), vec![vec![0, 0, 1]]);
+        assert_eq!(flags(&logical_of(&ev, "y")), vec![vec![0, 0], vec![0, 1]]);
+    }
+
+    /// MATLAB refuses NaN and complex values for a logical target, a linear
+    /// index past the end of a matrix, and a region of the wrong shape.
+    #[test]
+    fn logical_target_errors_match_matlab() {
+        let nan = eval_err("L = false(2, 2); L(1) = NaN;");
+        assert!(nan.contains("NaN"), "{nan}");
+        let cplx = eval_err("L = false(2, 2); L(1) = 1j;");
+        assert!(cplx.contains("omplex"), "{cplx}");
+        let grow = eval_err("L = false(2, 2); L(7) = true;");
+        assert!(grow.contains("ambiguous"), "{grow}");
+        let shape = eval_err("L = false(2, 3); L(:, 1) = [true, false, true];");
+        assert!(shape.to_lowercase().contains("mismatch"), "{shape}");
+        let zero = eval_err("L = false(2, 2); L(0) = true;");
+        assert!(zero.contains("index"), "{zero}");
+    }
+
     /// The Frobenius norm of a sparse matrix with no stored entries is +0,
     /// as in MATLAB, not the -0 an empty floating-point sum starts from.
     #[test]
