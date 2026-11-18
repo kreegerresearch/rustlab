@@ -3711,6 +3711,7 @@ smith(0.5 + 0.3*j)                    % one value, drawn as a marker
 smith("amp.s2p")                      % convenience: smith() + sparameters() in one call
 smith(s, "grid", "Y")                 % admittance grid (constant-G circles + constant-B arcs)
 smith(s, "grid", "ZY")                % immittance overlay (both Z and Y grids)
+smith(gamma_vec, "Color", "m")        % trace colour (MATLAB-style; see marker)
 ```
 
 Grid modes:
@@ -3728,7 +3729,14 @@ Rules:
 - A value outside the drawn square is clipped, and `smith` prints `smith: warning: N of M S21 values lie outside the chart (largest |Γ| = …)`. A transmission term such as `S21` of an amplifier is the usual cause — plot it with `rfplot`. `NaN` values break the trace.
 - A later `plot` (or any other plot without `hold on`) replaces the chart and autoscales again.
 
-`marker(gamma, label)` drops a labelled scatter point on the active Smith axes. The label appears in the legend, which is drawn beside the chart. Chart cardinal points are good things to mark:
+`marker(gamma, label)` drops a labelled scatter point on the active Smith axes. The label appears in the legend, which is drawn beside the chart. `"Color", c` sets its colour, MATLAB-style: a letter or name (`"r"`, `"red"`), `"#rrggbb"`, or an `[r g b]` triplet in [0, 1]. The pair may follow `gamma` directly (`marker(g, "Color", [0 0.5 1])`, no label) or the label. `smith(..., "Color", c)` takes the same values and colours every trace of that call, so a marker can match its trace:
+
+```
+smith(g25, "Color", "c")
+marker(g25(1), "25 ohm at DC", "Color", "c")
+```
+
+Chart cardinal points are good things to mark:
 
 ```
 marker(0,  "matched")    % chart centre — Γ = 0, perfect match
@@ -3742,7 +3750,7 @@ marker(gl * exp(-2j * pi/2), "λ/4: z = 0.5")               % -1/3
 
 Moving toward the generator along a lossless line multiplies Γ by $e^{-2j\beta\ell}$, a clockwise turn about the centre; a series inductor moves a point clockwise along its constant-r circle and a series capacitor counter-clockwise.
 
-**Backends.** Each backend draws the grid itself from `rustlab_plot::smith`, in colours taken from the plot theme (labels at least 4.5:1 contrast on the background): SVG/PNG and LaTeX/PDF (via SVG) with the legend beside or below the chart so it never covers the grid, HTML/Plotly with hidden axes and the labels as annotations, the live `rustlab-viewer` with hidden axes and the labels drawn in the plot, and animations through those two paths. The terminal draws the grid without labels and keeps `Re(Γ)` / `Im(Γ)` axes. In a small subplot (under about 72 pixels per unit of Γ) only the `1.0` and `±j1.0` labels are drawn so they cannot collide.
+**Backends.** Each backend draws the grid itself from `rustlab_plot::smith`, in colours taken from the plot theme (labels at least 4.5:1 contrast on the background): SVG/PNG and LaTeX/PDF (via SVG) with the legend beside or below the chart so it never covers the grid, HTML/Plotly with hidden axes and the labels as annotations, the live `rustlab-viewer` with hidden axes and the labels drawn in the plot, and animations through those two paths. The terminal draws the grid without labels and keeps `Re(Γ)` / `Im(Γ)` axes. SVG/PNG labels and legend text scale with the chart (about 20 px on a full 900 × 500 panel, at least 11 px), so they stay about 7 pt when LaTeX sets the plot at the text width. A chart too small for every label at its size (under about 6.5 label heights per unit of Γ) keeps only `1.0` and `±j1.0` so labels cannot collide.
 
 ### `rfplot(...)` — magnitude / phase / group-delay vs frequency
 

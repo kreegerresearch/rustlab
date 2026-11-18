@@ -413,7 +413,7 @@ Phases 1–2: data type, Touchstone I/O, accessors, parameter-set conversions, c
 | `smith(gamma)` / `smith(0.5 + 0.1*j)` | Plot a raw complex reflection-coefficient Vector, or one value as a marker |
 | `smith("file.s2p")` | Convenience: load Touchstone and plot |
 | `smith(..., "grid", "Z" \| "Y" \| "ZY")` | Grid mode: impedance (default), admittance, or immittance overlay |
-| `marker(gamma)` / `marker(gamma, "label")` | Drop a labelled scatter point on the active Smith axes |
+| `marker(gamma)` / `marker(gamma, "label")` / `marker(..., "Color", c)` | Drop a labelled scatter point on the active Smith axes; `c` is a name, letter, `#rrggbb`, or `[r g b]` in [0, 1] (same `"Color"` option on `smith`) |
 
 **Network plots vs frequency** (log-x axis; uses semilogx internally)
 
