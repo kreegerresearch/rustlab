@@ -6,6 +6,26 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.69
+
+### Added
+- **Notebook run-time budget.** `make notebook-budget` (`dev/notebook-budget.py`) renders every notebook in the repo (`examples/notebooks/`, `docs/` pages with rustlab cells, notebook test fixtures, `README.md`) with default settings in a release build, prints wall time and peak memory, and fails when one takes longer than 20 s (`NOTEBOOK_BUDGET=S` to change). The `notebook-budget` CI workflow runs it on every pull request and writes the table to the job summary. The target is a few seconds per notebook; 10 s is the "slow" line, and the budget is twice that so runner variance does not flake.
+
+### Fixed
+- **`D(:, t) = b > a` works again.** Since 0.3.67 a comparison is a logical array, and an indexed assignment into a numeric target rejected it (`right-hand side must be scalar, complex, vector, or matrix; got logical`). The Viterbi notebook had seven failing cells because of it. A logical right-hand side now stores 0/1 and the target stays double, as in MATLAB. A one-row logical is a 1-D vector there, as in arithmetic, so it fills a column or a row.
+- **Sparse `norm(S)` / `norm(S, "fro")` of a matrix with no stored entries is `0`, not `-0`.**
+- **Real data stays real-stored** through `'` (conjugate transpose of complex storage whose imaginary parts are all `+0`), `convolve` of real inputs, `repmat` of a real input, multi-row matrix literals of real entries (`[1 1; 1 0]`), and two-argument `max` / `min` of real arrays. Values are unchanged; before, `C0(1, :) = sym'` promoted all of `C0` to complex storage (the conjugate flipped `+0` imaginary parts to `-0`), and every later product and comparison on it paid for complex arithmetic.
+
+### Performance
+- **Near-to-far accumulation is one pass per step for every armed frequency**, not one pass per frequency. Bit-identical (a golden-hash test pins the old accumulator); a 4-frequency `fdtd_ntff` on the patch mesh steps about 25% faster.
+- **Slow notebooks** (release build, 4 cores): `patch_antenna` 47 s → 11 s, `fdtd_sweep` 36 s → 9.7 s, `dielectric` 2.6 s and 3.0 GB → 0.08 s and 33 MB, `comm/viterbi_fec` 64 s (once its cells ran again) → 10 s.
+
+### Breaking / behavior changes
+- **`examples/notebooks/patch_antenna.md` and `examples/pde/patch_antenna.rlab`** share one script. The default `preset = "quick"` (one substrate cell) runs 8,000 lossless and 5,000 lossy steps instead of 11,000 each; `"full"` runs 16,000 and 8,000. The notebook used to run the full mesh with 16,000 steps twice; it now defaults to quick and documents `"full"`. Every quick number the script prints is unchanged except the power balance (`4e-9` → `-4e-6`, gate `1e-2`). The lossy far field is evaluated at broadside only (the efficiency and dBi values it reads do not depend on the angle grid), and the lossy band is taken from the lossy record's own frequency grid.
+- **`fdtd_sweep`** gains `quick` / `full` presets. Quick (default): one substrate cell, 5,000 steps, widths 28:8:44 mm, `"threads", 1` per trial. Full: the previous two-cell, 8,000-step, five-width sweep on the shared pool. Quick resonances are 2.3791 / 2.3577 / 2.3434 GHz, within 0.25% of the TL model.
+- **`comm/viterbi_fec`** decodes each BER point's 40 frames in one call to a new `viterbi_frames` (path metrics as a 64 × F matrix). The single-frame `viterbi` used in the explanation is unchanged. Frame and bit counts are the same, but each parmap task now draws one point's frames, so the BER tables and the coding-gain figures move within Monte Carlo noise (coding gain at 1e-4 within 0.25 dB; soft-decision gain 2.17 → 2.25 dB). Regenerate any committed render.
+- **`dielectric`** checks the `eps = 1` identity with `norm(A_eps_unit - A_lap, "fro")` on the sparse matrices instead of densifying both (10,000 × 10,000).
+
 ## 0.3.68
 
 ### Fixed

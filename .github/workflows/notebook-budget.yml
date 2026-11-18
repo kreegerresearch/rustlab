@@ -1,0 +1,40 @@
+name: notebook-budget
+
+# Time the default render of every notebook in the repo (examples, docs,
+# notebook test fixtures) in a release build and fail when one exceeds its
+# budget. Runs on every pull request, not only notebook paths: an
+# interpreter or builtin change can slow a notebook without touching it.
+# The budget and its headroom are explained in dev/notebook-budget.py.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: notebook-budget
+
+      - name: Build rustlab-notebook (release)
+        run: cargo build --locked --release -q -p rustlab-notebook --bin rustlab-notebook
+
+      - name: Render every notebook against the budget
+        run: python3 dev/notebook-budget.py --budget 20 --report notebook-times.md
+
+      - name: Timing table in the job summary
+        if: always()
+        run: test -f notebook-times.md && cat notebook-times.md >> "$GITHUB_STEP_SUMMARY" || true

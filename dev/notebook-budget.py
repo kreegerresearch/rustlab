@@ -10,9 +10,11 @@ Notebooks: every `.md` under examples/notebooks/, plus every `.md` under
 docs/ and crates/rustlab-notebook/tests/fixtures/ that has a rustlab cell,
 plus the root README.md.
 
-Budget: `--budget` seconds per notebook (default 15). The target is a few
-seconds; 10 s is the "slow" line, and the budget leaves headroom over it so
-a slower CI runner does not flake.
+Budget: `--budget` seconds per notebook (default 20). The target is a few
+seconds on a 4-core CI runner and 10 s is the "slow" line. The heaviest
+notebooks (the FDTD patch runs and the Viterbi BER sweep) sit just under it,
+so the budget is twice that line: runner speed varies by tens of percent,
+while the regressions this guards against were 35 to 64 s.
 
 Usage (from the repo root, after a release build):
     python3 dev/notebook-budget.py [--bin PATH] [--budget S] [--report FILE] [NOTEBOOK...]
@@ -42,7 +44,7 @@ def default_notebooks():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bin", default=str(REPO / "target" / "release" / "rustlab-notebook"))
-    ap.add_argument("--budget", type=float, default=15.0)
+    ap.add_argument("--budget", type=float, default=20.0)
     ap.add_argument("--report", help="also write the table to this file (markdown)")
     ap.add_argument("notebooks", nargs="*", type=Path)
     args = ap.parse_args()

@@ -1261,7 +1261,7 @@ Approximate stopband attenuation by window:
 | Kaiser (auto β) | user-specified |
 
 ### `convolve(x, h)`
-Linear convolution. Output length = `len(x) + len(h) − 1`.
+Linear convolution. Output length = `len(x) + len(h) − 1`. Real inputs give a real result, as MATLAB `conv` does.
 ```
 y = convolve(signal, h)
 ```

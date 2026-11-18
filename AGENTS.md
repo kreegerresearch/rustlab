@@ -466,6 +466,17 @@ cargo doc --workspace --no-deps --open
 cargo run -p rustlab-cli --bin rustlab -- run examples/dsp/lowpass.rlab
 ```
 
+### Notebook run-time budget
+
+`make notebook-budget` (`dev/notebook-budget.py`, the `notebook-budget` CI
+workflow on every PR) renders every notebook in the repo with default
+settings in a release build and fails when one takes longer than 20 s
+(`NOTEBOOK_BUDGET=S`). Aim for a few seconds per notebook on a 4-core
+runner; 10 s is slow. A heavy setting that is worth teaching goes behind a
+documented opt-in (the `preset = "quick"` / `"full"` pattern in
+`patch_antenna` and `fdtd_sweep`), and the default stays fast. Do not raise
+the budget to make a slow notebook pass, and do not skip cells.
+
 ### Testing dependencies
 
 `cargo test` is the only requirement for the standard test suite. Higher-tier
