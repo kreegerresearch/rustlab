@@ -37,7 +37,7 @@ title("Relative permittivity ε_r")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/dielectric/plot-1-bb488bfa.svg)
+![plot 1](plots/dielectric/plot-1-bf7930c6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -77,7 +77,7 @@ title("Potential V — point charge in vacuum next to dielectric slab")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/dielectric/plot-2-563c24e7.svg)
+![plot 2](plots/dielectric/plot-2-f050c39f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -114,7 +114,7 @@ title("|E| with field arrows — interface jump at j = 50")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/dielectric/plot-3-cdc31b22.svg)
+![plot 3](plots/dielectric/plot-3-7f4762df.svg)
 
 <!-- rustlab:output-end -->
 
@@ -132,7 +132,7 @@ clf                                            % text-only cell: clear the
 eps_unit = ones(ny, nx);
 A_eps_unit = laplacian_eps_2d(eps_unit, dx, dy);
 A_lap     = laplacian_2d(nx, ny, dx, dy);
-print(norm(full(A_eps_unit) - full(A_lap), "fro"))    % → 0
+print(norm(A_eps_unit - A_lap, "fro"))    % → 0, without densifying either matrix
 ```
 
 <!-- rustlab:output-start -->
