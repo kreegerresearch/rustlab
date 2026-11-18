@@ -80,7 +80,10 @@ fn main() {
                 let _ = curl_2d(&fx, &fy, dx, dy).unwrap();
             }));
         }
-        println!("{:>10} {:>14.3} {:>14.3} {:>14.3}", n, t_grad, t_div, t_curl);
+        println!(
+            "{:>10} {:>14.3} {:>14.3} {:>14.3}",
+            n, t_grad, t_div, t_curl
+        );
     }
 
     println!();

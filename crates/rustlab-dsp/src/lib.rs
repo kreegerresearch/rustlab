@@ -1,5 +1,4 @@
 pub mod convolution;
-pub mod xcorr;
 pub mod error;
 pub mod fdtd;
 pub mod fft;
@@ -16,11 +15,12 @@ pub mod wavelet;
 pub mod welch;
 pub mod welch_stream;
 pub mod window;
+pub mod xcorr;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod math_audit;
+#[cfg(test)]
+mod tests;
 
 pub use fft::{fft, fft_n, fftfreq, fftshift, ifft, ifft_n, FftTransform};
 pub use fir::design::{fir_bandpass, fir_highpass, fir_lowpass, FirFilter};

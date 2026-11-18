@@ -271,8 +271,7 @@ pub fn divergence_2d(fx: &CMatrix, fy: &CMatrix, dx: f64, dy: f64) -> Result<CMa
         for j in 1..nx - 1 {
             out_row[j] = (fx_row[j + 1] - fx_row[j - 1]) * dxc;
         }
-        out_row[nx - 1] =
-            (fx_row[nx - 1] * 3.0 - fx_row[nx - 2] * 4.0 + fx_row[nx - 3]) * dxc;
+        out_row[nx - 1] = (fx_row[nx - 1] * 3.0 - fx_row[nx - 2] * 4.0 + fx_row[nx - 3]) * dxc;
 
         // y-derivative contribution depending on row position.
         let dyc = inv_2dy;
@@ -343,8 +342,7 @@ pub fn curl_2d(fx: &CMatrix, fy: &CMatrix, dx: f64, dy: f64) -> Result<CMatrix, 
         for j in 1..nx - 1 {
             out_row[j] = (fy_row[j + 1] - fy_row[j - 1]) * dxc;
         }
-        out_row[nx - 1] =
-            (fy_row[nx - 1] * 3.0 - fy_row[nx - 2] * 4.0 + fy_row[nx - 3]) * dxc;
+        out_row[nx - 1] = (fy_row[nx - 1] * 3.0 - fy_row[nx - 2] * 4.0 + fy_row[nx - 3]) * dxc;
 
         // − d/dy of fx → subtract
         let dyc = inv_2dy;
@@ -423,8 +421,8 @@ fn d_along_axis_3d(f: &CTensor3, axis: usize, h: f64) -> CTensor3 {
         0 => {
             for j in 0..n {
                 for k in 0..p {
-                    out[[0, j, k]] = (f[[1, j, k]] * 4.0 - f[[0, j, k]] * 3.0 - f[[2, j, k]])
-                        * inv_2h;
+                    out[[0, j, k]] =
+                        (f[[1, j, k]] * 4.0 - f[[0, j, k]] * 3.0 - f[[2, j, k]]) * inv_2h;
                     for i in 1..m - 1 {
                         out[[i, j, k]] = (f[[i + 1, j, k]] - f[[i - 1, j, k]]) * inv_2h;
                     }
@@ -437,8 +435,8 @@ fn d_along_axis_3d(f: &CTensor3, axis: usize, h: f64) -> CTensor3 {
         1 => {
             for i in 0..m {
                 for k in 0..p {
-                    out[[i, 0, k]] = (f[[i, 1, k]] * 4.0 - f[[i, 0, k]] * 3.0 - f[[i, 2, k]])
-                        * inv_2h;
+                    out[[i, 0, k]] =
+                        (f[[i, 1, k]] * 4.0 - f[[i, 0, k]] * 3.0 - f[[i, 2, k]]) * inv_2h;
                     for j in 1..n - 1 {
                         out[[i, j, k]] = (f[[i, j + 1, k]] - f[[i, j - 1, k]]) * inv_2h;
                     }
@@ -451,8 +449,8 @@ fn d_along_axis_3d(f: &CTensor3, axis: usize, h: f64) -> CTensor3 {
         2 => {
             for i in 0..m {
                 for j in 0..n {
-                    out[[i, j, 0]] = (f[[i, j, 1]] * 4.0 - f[[i, j, 0]] * 3.0 - f[[i, j, 2]])
-                        * inv_2h;
+                    out[[i, j, 0]] =
+                        (f[[i, j, 1]] * 4.0 - f[[i, j, 0]] * 3.0 - f[[i, j, 2]]) * inv_2h;
                     for k in 1..p - 1 {
                         out[[i, j, k]] = (f[[i, j, k + 1]] - f[[i, j, k - 1]]) * inv_2h;
                     }

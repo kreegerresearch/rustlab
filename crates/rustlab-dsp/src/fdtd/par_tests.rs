@@ -189,6 +189,38 @@ fn run_pair(mut serial: FdtdSim, mut parallel: FdtdSim, steps: usize) {
     assert!(bits(&fs.prad, &fp.prad), "prad");
 }
 
+fn ntff_hash(s: &FdtdSim) -> u64 {
+    let (e, h, d) = s.ntff_snapshot().expect("NTFF armed");
+    let mut x: u64 = 0xcbf2_9ce4_8422_2325;
+    let words = e
+        .iter()
+        .chain(h.iter())
+        .flat_map(|c| [c.re.to_bits(), c.im.to_bits()])
+        .chain(d.iter().map(|v| v.to_bits()));
+    for w in words {
+        x ^= w;
+        x = x.wrapping_mul(0x0100_0000_01b3);
+    }
+    x
+}
+
+/// FNV-1a of the near-to-far accumulators of `radiated` after 60 steps,
+/// recorded with the pass-per-frequency accumulator. The one-pass version
+/// must give the same bits, serial and on the pool.
+const NTFF_GOLDEN: u64 = 10284614868721381944;
+
+#[test]
+fn ntff_accumulators_match_the_per_frequency_golden() {
+    let mut serial = radiated();
+    serial.set_threads(1).unwrap();
+    serial.run(60, &mut never()).unwrap();
+    assert_eq!(ntff_hash(&serial), NTFF_GOLDEN, "serial");
+    let mut parallel = radiated();
+    yee::set_par_cells_threshold(0);
+    parallel.run(60, &mut never()).unwrap();
+    assert_eq!(ntff_hash(&parallel), NTFF_GOLDEN, "parallel");
+}
+
 /// A step that starts on a global-pool worker, the way `parmap` calls
 /// `fdtd_run`, stays on that pool. The worker count does not change, and
 /// the fields match one thread. Production `fdtd/` does not build a pool.
