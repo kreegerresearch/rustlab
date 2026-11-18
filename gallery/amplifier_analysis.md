@@ -66,7 +66,7 @@ rfplot(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/amplifier_analysis/plot-1-d021e799.svg)
+![plot 1](plots/amplifier_analysis/plot-1-bf68db48.svg)
 
 <!-- rustlab:output-end -->
 
@@ -91,7 +91,7 @@ title("Forward gain |S21| in dB")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/amplifier_analysis/plot-2-53c0ca9c.svg)
+![plot 2](plots/amplifier_analysis/plot-2-df58b2a2.svg)
 
 <!-- rustlab:output-end -->
 
@@ -102,7 +102,7 @@ title("S21 phase (wrapped, degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/amplifier_analysis/plot-3-ccdf945f.svg)
+![plot 3](plots/amplifier_analysis/plot-3-44c29227.svg)
 
 <!-- rustlab:output-end -->
 
@@ -116,7 +116,7 @@ title("S21 unwrapped phase (degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/amplifier_analysis/plot-4-4dc99b8f.svg)
+![plot 4](plots/amplifier_analysis/plot-4-0fe05005.svg)
 
 <!-- rustlab:output-end -->
 
@@ -130,7 +130,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-02df3555.svg)
+![plot 5](plots/amplifier_analysis/plot-5-6c68094e.svg)
 
 <!-- rustlab:output-end -->
 
@@ -315,19 +315,36 @@ rs = in_circles.radii;
 for k = 1:len(f)
   smith_circle(cs(k), real(rs(k)))
 end
-title("S11, S22 with input stability circles overlaid")
+title("Input stability circles: none reaches the chart")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/amplifier_analysis/plot-6-a0363a0a.svg)
+![plot 6](plots/amplifier_analysis/plot-6-1ecde7d2.svg)
 
 <!-- rustlab:output-end -->
 
-For this LNA the input stability circles lie entirely outside the unit
-disk — the geometric witness of unconditional stability. (If a circle
-crossed into the unit disk, sources with reflections inside that
-intersection would drive `|Γout| > 1` at that frequency, i.e.
-oscillation.)
+For this LNA no circle reaches the chart: every input stability circle
+lies wholly outside the unit disk, so `smith_circle` draws nothing (it
+draws only the part of a circle inside $|\Gamma| = 1$, where passive
+terminations live). That is the geometric witness of unconditional
+stability. The margin is $|C_S| - R_S$, the distance from the origin to
+the nearest point of each circle:
+
+```rustlab
+fprintf("min over f of |C_S| - R_S = %.3f (> 1: the circle misses the chart)\n", ...
+        min(abs(cs) - real(rs)))
+```
+
+<!-- rustlab:output-start -->
+```text
+min over f of |C_S| - R_S = 1.423 (> 1: the circle misses the chart)
+```
+
+<!-- rustlab:output-end -->
+
+If a circle crossed into the unit disk, sources with reflections inside
+that intersection would drive `|Γout| > 1` at that frequency, i.e.
+oscillation.
 
 ## Constant-gain circles
 
@@ -342,20 +359,17 @@ clf
 smith(s)
 marker(0, "matched")
 
-% At 3 GHz (MAG ≈ 11.7 dB), draw circles at 10 dB and 11 dB.
-% (Stash struct fields in scalars first — `struct.field(k)` parses as a
-% call to a function named `field`, not as field-access + index.)
+% At 3 GHz (MAG ≈ 11.7 dB), draw circles at 10 dB and 11 dB. Struct
+% fields index directly: g10.centres(3) is the 3 GHz centre.
 g10 = gain_circles(s, 10);
 g11 = gain_circles(s, 11);
-c10 = g10.centres;  r10 = g10.radii;
-c11 = g11.centres;  r11 = g11.radii;
-smith_circle(c10(3), real(r10(3)), "10 dB")
-smith_circle(c11(3), real(r11(3)), "11 dB")
+smith_circle(g10.centres(3), real(g10.radii(3)), "10 dB")
+smith_circle(g11.centres(3), real(g11.radii(3)), "11 dB")
 title("Gain circles at 3 GHz (MAG ≈ 11.7 dB)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 7](plots/amplifier_analysis/plot-7-7a169d6f.svg)
+![plot 7](plots/amplifier_analysis/plot-7-3d52840c.svg)
 
 <!-- rustlab:output-end -->
 
@@ -411,7 +425,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 8](plots/amplifier_analysis/plot-8-f712cd46.svg)
+![plot 8](plots/amplifier_analysis/plot-8-52afb63a.svg)
 
 <!-- rustlab:output-end -->
 

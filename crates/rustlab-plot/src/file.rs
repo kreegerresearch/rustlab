@@ -47,6 +47,113 @@ where
         .unwrap_or_else(|_| (text.chars().count() as u32).saturating_mul(size) / 2)
 }
 
+/// Width in pixels of `text` in the bundled sans-serif at `size`.
+#[cfg(test)]
+pub(crate) fn measure_text_px(text: &str, size: u32) -> u32 {
+    crate::font::ensure_registered();
+    ("sans-serif", size as f64)
+        .into_font()
+        .box_size(text)
+        .map(|(w, _)| w)
+        .unwrap_or_else(|_| (text.chars().count() as u32).saturating_mul(size) / 2)
+}
+
+/// Clip the segment `a`–`b` to the box (Liang–Barsky). Endpoints inside the
+/// box are returned unchanged.
+fn clip_segment(
+    a: (f64, f64),
+    b: (f64, f64),
+    (x0, x1, y0, y1): (f64, f64, f64, f64),
+) -> Option<((f64, f64), (f64, f64))> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let mut t0 = 0.0_f64;
+    let mut t1 = 1.0_f64;
+    for (p, q) in [
+        (-dx, a.0 - x0),
+        (dx, x1 - a.0),
+        (-dy, a.1 - y0),
+        (dy, y1 - a.1),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                t0 = t0.max(r);
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                t1 = t1.min(r);
+            }
+        }
+    }
+    let p = if t0 > 0.0 {
+        (a.0 + t0 * dx, a.1 + t0 * dy)
+    } else {
+        a
+    };
+    let q = if t1 < 1.0 {
+        (a.0 + t1 * dx, a.1 + t1 * dy)
+    } else {
+        b
+    };
+    Some((p, q))
+}
+
+/// Split a polyline at non-finite samples and clip it to the box
+/// `(x0, x1, y0, y1)`.
+///
+/// plotters clamps an out-of-range or NaN vertex onto the edge of the
+/// plotting area, so an unclipped line that leaves the view is drawn along
+/// the frame and a NaN gap becomes a stroke to the corner. MATLAB breaks a
+/// line at NaN and clips it at the axes; so does this.
+pub(crate) fn clip_polyline(
+    pts: &[(f64, f64)],
+    bounds: (f64, f64, f64, f64),
+) -> Vec<Vec<(f64, f64)>> {
+    let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut cur: Vec<(f64, f64)> = Vec::new();
+    let flush = |cur: &mut Vec<(f64, f64)>, runs: &mut Vec<Vec<(f64, f64)>>| {
+        if cur.len() >= 2 {
+            runs.push(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let finite = a.0.is_finite() && a.1.is_finite() && b.0.is_finite() && b.1.is_finite();
+        match if finite {
+            clip_segment(a, b, bounds)
+        } else {
+            None
+        } {
+            Some((p, q)) => {
+                if cur.last() != Some(&p) {
+                    flush(&mut cur, &mut runs);
+                    cur.push(p);
+                }
+                cur.push(q);
+            }
+            None => flush(&mut cur, &mut runs),
+        }
+    }
+    flush(&mut cur, &mut runs);
+    runs
+}
+
+fn in_bounds((x, y): (f64, f64), (x0, x1, y0, y1): (f64, f64, f64, f64)) -> bool {
+    let tx = 1e-9 * (x1 - x0).abs();
+    let ty = 1e-9 * (y1 - y0).abs();
+    x.is_finite() && y.is_finite() && x >= x0 - tx && x <= x1 + tx && y >= y0 - ty && y <= y1 + ty
+}
+
 /// Wrap `text` so each line is at most `max_px` wide. Explicit newlines are
 /// kept. A single word wider than the panel is left intact.
 fn wrap_px<DB>(
@@ -422,6 +529,10 @@ where
             render_surface_to_backend(panel.clone(), sf, &caption, palette)?;
             continue;
         }
+        if let Some(grid) = sp.smith {
+            render_smith_to_panel(panel, sp, grid, palette)?;
+            continue;
+        }
         // Heatmap and/or contour/quiver/streamline rendering — they share a
         // chart so they overlay correctly under hold on.
         if sp.heatmap.is_some()
@@ -663,36 +774,35 @@ where
                     .copied()
                     .zip(s.y_data.iter().copied())
                     .collect();
-
-                if s.style == LineStyle::Dashed {
-                    // Simulate dashed by drawing every other segment.
-                    // Attach the legend annotation to the *first* segment
-                    // so the legend gets exactly one entry per series.
-                    let mut draw_seg = true;
-                    let mut first = true;
-                    for pair in pts.windows(2) {
-                        if draw_seg {
-                            let anno = chart
-                                .draw_series(LineSeries::new(vec![pair[0], pair[1]], color))
-                                .map_err(err)?;
-                            if first && has_label {
-                                anno.label(label.clone()).legend(move |(x, y)| {
-                                    PathElement::new(vec![(x, y), (x + 20, y)], color)
-                                });
-                                first = false;
-                            }
+                let runs = clip_polyline(&pts, (x_lo, x_hi, y_lo, y_hi));
+                let mut labelled = !has_label;
+                for run in &runs {
+                    let segs: Vec<Vec<(f64, f64)>> = if s.style == LineStyle::Dashed {
+                        // Simulate dashed by drawing every other segment.
+                        run.windows(2).step_by(2).map(|p| p.to_vec()).collect()
+                    } else {
+                        vec![run.clone()]
+                    };
+                    for seg in segs {
+                        let anno = chart
+                            .draw_series(LineSeries::new(seg, color))
+                            .map_err(err)?;
+                        if !labelled {
+                            // Exactly one legend entry per series.
+                            anno.label(label.clone()).legend(move |(x, y)| {
+                                PathElement::new(vec![(x, y), (x + 20, y)], color)
+                            });
+                            labelled = true;
                         }
-                        draw_seg = !draw_seg;
                     }
-                } else {
-                    let anno = chart
-                        .draw_series(LineSeries::new(pts, color))
-                        .map_err(err)?;
-                    if has_label {
-                        anno.label(label).legend(move |(x, y)| {
-                            PathElement::new(vec![(x, y), (x + 20, y)], color)
-                        });
-                    }
+                }
+                if !labelled {
+                    // Nothing of the series is in view; keep its legend entry.
+                    chart
+                        .draw_series(LineSeries::new(Vec::<(f64, f64)>::new(), color))
+                        .map_err(err)?
+                        .label(label)
+                        .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
                 }
             }
             PlotKind::Stem => {
@@ -793,12 +903,14 @@ where
                     .map_err(err)?;
             }
             PlotKind::Scatter => {
+                let bounds = (x_lo, x_hi, y_lo, y_hi);
                 let anno = chart
                     .draw_series(
                         s.x_data
                             .iter()
                             .copied()
                             .zip(s.y_data.iter().copied())
+                            .filter(|&p| in_bounds(p, bounds))
                             .map(|(x, y)| Circle::new((x, y), 4, rgb.filled())),
                     )
                     .map_err(err)?;
@@ -827,6 +939,204 @@ where
             .position(SeriesLabelPosition::UpperRight)
             .draw()
             .map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Draw a Smith chart panel: the grid and its value labels from
+/// [`crate::smith`], the series as reflection coefficients clipped to the
+/// view, the title above, and the legend beside or below the chart so it
+/// never covers the grid.
+fn render_smith_to_panel<DB>(
+    panel: &DrawingArea<DB, plotters::coord::Shift>,
+    sp: &SubplotState,
+    grid: crate::smith::SmithGrid,
+    palette: &ThemePalette,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    use crate::smith;
+    use plotters::style::text_anchor::{HPos, Pos, VPos};
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
+    const PAD: u32 = 8;
+
+    let RGBColor(br, bgc, bb) = palette.bg;
+    let RGBAColor(tr, tg, tb, _) = palette.text;
+    let colors = smith::SmithColors::for_theme((br, bgc, bb), (tr, tg, tb));
+    let rgb = |c: (u8, u8, u8)| RGBColor(c.0, c.1, c.2);
+
+    let (panel_w, panel_h) = panel.dim_in_pixel();
+    let title_lines = wrap_px(
+        panel,
+        &sp.title,
+        22,
+        panel_w.saturating_sub(2 * PAD).max(40),
+    );
+    let caption_h = if title_lines.is_empty() {
+        0
+    } else {
+        8 + 26 * title_lines.len() as u32
+    };
+    let top = PAD + caption_h;
+
+    // Text scales with the chart so it stays legible when LaTeX shrinks a
+    // 900 px panel to the text width. The legend never drops below the
+    // labels or the old 14 px.
+    let legend_font = smith::svg_label_font_px(panel_h.saturating_sub(top + PAD) as f64).max(14);
+    let row_h = (legend_font as f64 * 1.45).round() as u32;
+    let sample_w = (legend_font as f64 * 1.6).round() as u32;
+
+    let entries: Vec<&crate::figure::Series> =
+        sp.series.iter().filter(|s| !s.label.is_empty()).collect();
+    let legend_w = entries
+        .iter()
+        .map(|s| measure_px(panel, &s.label, legend_font))
+        .max()
+        .map_or(0, |w| w + sample_w + 3 * PAD);
+    let legend_h = if entries.is_empty() {
+        0
+    } else {
+        entries.len() as u32 * row_h + PAD
+    };
+    let avail_h = panel_h.saturating_sub(top + PAD);
+    let avail_w = panel_w.saturating_sub(2 * PAD);
+    let side_right = avail_h.min(avail_w.saturating_sub(legend_w));
+    let side_below = avail_h.saturating_sub(legend_h).min(avail_w);
+    let legend_right = legend_w == 0 || side_right >= side_below;
+    let side = if legend_right { side_right } else { side_below }.max(1);
+    let group_w = if legend_right {
+        side + legend_w
+    } else {
+        side.max(legend_w)
+    };
+    let x_off = (panel_w.saturating_sub(group_w)) / 2;
+    let chart_x = if legend_right {
+        x_off
+    } else {
+        (panel_w.saturating_sub(side)) / 2
+    };
+
+    // Title, centred on the panel.
+    let mut title_style: TextStyle = ("sans-serif", 22u32, &palette.text).into_text_style(panel);
+    title_style.pos = Pos::new(HPos::Center, VPos::Top);
+    for (i, line) in title_lines.iter().enumerate() {
+        panel
+            .draw_text(
+                line,
+                &title_style,
+                ((panel_w / 2) as i32, (PAD + 2) as i32 + i as i32 * 26),
+            )
+            .map_err(err)?;
+    }
+
+    let square = panel.clone().shrink((chart_x, top), (side, side));
+    let label_font = smith::svg_label_font_px(side as f64);
+    let half = smith::view_half_width_for(side as f64, label_font as f64);
+    let scale = side as f64 / (2.0 * half);
+    let mut chart = ChartBuilder::on(&square)
+        .build_cartesian_2d(-half..half, -half..half)
+        .map_err(err)?;
+
+    for arc in smith::build_grid(grid, smith::ARC_RESOLUTION) {
+        chart
+            .draw_series(LineSeries::new(
+                arc.points,
+                rgb(colors.of(arc.family)).stroke_width(1),
+            ))
+            .map_err(err)?;
+    }
+
+    let label_color = rgb(colors.label);
+    let mut label_style: TextStyle =
+        ("sans-serif", label_font, &label_color).into_text_style(panel);
+    label_style.pos = Pos::new(HPos::Left, VPos::Top);
+    let to_px = |x: f64, y: f64| ((x + half) * scale, (half - y) * scale);
+    for l in smith::grid_labels_at_sized(grid, scale, label_font as f64) {
+        let w = measure_px(panel, &l.text, label_font) as f64;
+        let (left, t, _, _) = smith::label_box(&l, to_px, w, label_font as f64);
+        square
+            .draw_text(
+                &l.text,
+                &label_style,
+                (left.round() as i32, t.round() as i32),
+            )
+            .map_err(err)?;
+    }
+
+    let bounds = (-half, half, -half, half);
+    for s in &sp.series {
+        let color = s.color.to_plotters();
+        let pts: Vec<(f64, f64)> = s
+            .x_data
+            .iter()
+            .copied()
+            .zip(s.y_data.iter().copied())
+            .collect();
+        match s.kind {
+            PlotKind::Line => {
+                for run in clip_polyline(&pts, bounds) {
+                    if s.style == LineStyle::Dashed {
+                        for seg in run.windows(2).step_by(2) {
+                            chart
+                                .draw_series(LineSeries::new(seg.to_vec(), color.stroke_width(1)))
+                                .map_err(err)?;
+                        }
+                    } else {
+                        chart
+                            .draw_series(LineSeries::new(run, color.stroke_width(2)))
+                            .map_err(err)?;
+                    }
+                }
+            }
+            _ => {
+                chart
+                    .draw_series(
+                        pts.into_iter()
+                            .filter(|&p| in_bounds(p, bounds))
+                            .map(|p| Circle::new(p, 4, color.filled())),
+                    )
+                    .map_err(err)?;
+            }
+        }
+    }
+
+    if !entries.is_empty() {
+        let (lx, ly) = if legend_right {
+            (chart_x + side + 2 * PAD, top + PAD)
+        } else {
+            (
+                (panel_w.saturating_sub(legend_w)) / 2 + PAD,
+                top + side + PAD,
+            )
+        };
+        let mut text_style: TextStyle =
+            ("sans-serif", legend_font, &palette.text).into_text_style(panel);
+        text_style.pos = Pos::new(HPos::Left, VPos::Center);
+        for (k, s) in entries.iter().enumerate() {
+            let cy = (ly + k as u32 * row_h + row_h / 2) as i32;
+            let x0 = lx as i32;
+            let color = s.color.to_plotters();
+            match s.kind {
+                PlotKind::Line => panel
+                    .draw(&PathElement::new(
+                        vec![(x0, cy), (x0 + sample_w as i32, cy)],
+                        color.stroke_width(2),
+                    ))
+                    .map_err(err)?,
+                _ => panel
+                    .draw(&Circle::new(
+                        (x0 + sample_w as i32 / 2, cy),
+                        4,
+                        color.filled(),
+                    ))
+                    .map_err(err)?,
+            }
+            panel
+                .draw_text(&s.label, &text_style, (x0 + (sample_w + PAD) as i32, cy))
+                .map_err(err)?;
+        }
     }
     Ok(())
 }
@@ -2265,6 +2575,387 @@ mod tests {
         let wide = super::nice_log_key_points(0.0, 3.0, 12);
         let wreals: Vec<f64> = wide.iter().map(|p| 10f64.powf(*p).round()).collect();
         assert_eq!(wreals, vec![1.0, 10.0, 100.0, 1000.0]);
+    }
+
+    /// Point lists of every `<polyline>` stroked in `hex`.
+    fn polylines_with_stroke(svg: &str, hex: &str) -> Vec<Vec<(f64, f64)>> {
+        let mut out = Vec::new();
+        for chunk in svg.split("<polyline").skip(1) {
+            let tag = &chunk[..chunk.find("/>").unwrap_or(chunk.len())];
+            if !tag
+                .to_ascii_lowercase()
+                .contains(&format!("stroke=\"{hex}\""))
+            {
+                continue;
+            }
+            let Some(p0) = tag.find("points=\"") else {
+                continue;
+            };
+            let rest = &tag[p0 + 8..];
+            let body = &rest[..rest.find('"').unwrap_or(rest.len())];
+            let pts = body
+                .split_whitespace()
+                .filter_map(|xy| {
+                    let (a, b) = xy.split_once(',')?;
+                    Some((a.parse().ok()?, b.parse().ok()?))
+                })
+                .collect();
+            out.push(pts);
+        }
+        out
+    }
+
+    fn red_hex() -> String {
+        let (r, g, b) = crate::figure::SeriesColor::Red.to_rgb();
+        format!("#{r:02x}{g:02x}{b:02x}")
+    }
+
+    #[test]
+    fn nan_breaks_a_line_instead_of_drawing_to_the_corner() {
+        let path = tmp_path("_nan_gap.svg");
+        FIGURE.with(|f| f.borrow_mut().reset());
+        push_xy_line(
+            vec![0.0, 1.0, f64::NAN, 2.0, 3.0],
+            vec![0.0, 1.0, f64::NAN, 1.0, 0.0],
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Red),
+            LineStyle::Solid,
+        );
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        let lines = polylines_with_stroke(&svg, &red_hex());
+        assert_eq!(lines.len(), 2, "two runs either side of the NaN: {lines:?}");
+        for l in &lines {
+            assert_eq!(l.len(), 2, "{lines:?}");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn line_leaving_the_view_is_clipped_not_squashed_onto_the_frame() {
+        let path = tmp_path("_clip.svg");
+        FIGURE.with(|f| {
+            let mut f = f.borrow_mut();
+            f.reset();
+            f.current_mut().xlim = (Some(0.0), Some(1.0));
+            f.current_mut().ylim = (Some(0.0), Some(1.0));
+        });
+        // A circle wholly outside the view (a stability circle far off the
+        // chart) must draw nothing.
+        let t: Vec<f64> = (0..=64)
+            .map(|k| k as f64 / 64.0 * std::f64::consts::TAU)
+            .collect();
+        push_xy_line(
+            t.iter().map(|a| 3.0 + 0.5 * a.cos()).collect(),
+            t.iter().map(|a| 0.5 + 0.5 * a.sin()).collect(),
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Red),
+            LineStyle::Solid,
+        );
+        FIGURE.with(|f| f.borrow_mut().hold = true);
+        // A segment from (0.5, 0.5) to (3, 1) leaves through x = 1 at
+        // y = 0.6, not at the top-right corner.
+        push_xy_line(
+            vec![0.5, 3.0],
+            vec![0.5, 1.0],
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Blue),
+            LineStyle::Solid,
+        );
+        push_xy_line(
+            vec![0.0, 1.0],
+            vec![1.0, 1.0],
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Green),
+            LineStyle::Solid,
+        );
+        FIGURE.with(|f| f.borrow_mut().hold = false);
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            polylines_with_stroke(&svg, &red_hex()).is_empty(),
+            "off-view circle was drawn"
+        );
+        let hex_of = |c: crate::figure::SeriesColor| {
+            let (r, g, b) = c.to_rgb();
+            format!("#{r:02x}{g:02x}{b:02x}")
+        };
+        let blue = polylines_with_stroke(&svg, &hex_of(crate::figure::SeriesColor::Blue));
+        assert_eq!(blue.len(), 1);
+        let seg = &blue[0];
+        let top = polylines_with_stroke(&svg, &hex_of(crate::figure::SeriesColor::Green))[0][0].1;
+        let (x0, y0) = seg[0];
+        let (x1, y1) = seg[1];
+        // y = 0.6 is a fifth of the way from y = 0.5 up to the top (y = 1).
+        let want = y0 + (top - y0) * 0.2;
+        assert!(
+            x1 > x0 && (y1 - want).abs() <= 1.0,
+            "end {y1}, want {want}: {seg:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scatter_outside_the_view_is_not_drawn() {
+        let path = tmp_path("_scatter_clip.svg");
+        FIGURE.with(|f| {
+            let mut f = f.borrow_mut();
+            f.reset();
+            f.current_mut().xlim = (Some(0.0), Some(1.0));
+            f.current_mut().ylim = (Some(0.0), Some(1.0));
+        });
+        push_xy_scatter(
+            vec![0.5, 5.0, f64::NAN],
+            vec![0.5, 0.5, 0.5],
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Red),
+        );
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap().to_ascii_lowercase();
+        let n = svg.matches("<circle").filter(|_| true).count();
+        let red = svg
+            .split("<circle")
+            .skip(1)
+            .filter(|c| c.contains(&format!("fill=\"{}\"", red_hex())))
+            .count();
+        assert_eq!(red, 1, "only the in-view point; {n} circles in total");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn smith_panel(grid: crate::smith::SmithGrid) {
+        FIGURE.with(|f| {
+            let mut f = f.borrow_mut();
+            f.reset();
+            let sp = f.current_mut();
+            sp.smith = Some(grid);
+            sp.axis_equal = true;
+            sp.xlim = (Some(-1.15), Some(1.15));
+            sp.ylim = (Some(-1.15), Some(1.15));
+            sp.title = "Smith Chart".to_string();
+        });
+    }
+
+    /// Text elements as (x, y, text) in SVG pixels.
+    fn svg_texts(svg: &str) -> Vec<(f64, f64, String)> {
+        let mut out = Vec::new();
+        for chunk in svg.split("<text").skip(1) {
+            let Some(end) = chunk.find("</text>") else {
+                continue;
+            };
+            let tag = &chunk[..end];
+            let attr = |name: &str| -> Option<f64> {
+                let k = tag.find(&format!(" {name}=\""))?;
+                let rest = &tag[k + name.len() + 3..];
+                rest[..rest.find('"')?].parse().ok()
+            };
+            let text = tag[tag.find('>').map_or(0, |i| i + 1)..].trim().to_string();
+            if let (Some(x), Some(y)) = (attr("x"), attr("y")) {
+                out.push((x, y, text));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn smith_svg_has_grid_labels_and_no_cartesian_ticks() {
+        let path = tmp_path("_smith_labels.svg");
+        smith_panel(crate::smith::SmithGrid::Impedance);
+        FIGURE.with(|f| f.borrow_mut().hold = true);
+        push_xy_line(
+            vec![0.0, 0.2],
+            vec![0.0, 0.4],
+            "S11",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|f| f.borrow_mut().hold = false);
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        let texts: Vec<String> = svg_texts(&svg).into_iter().map(|t| t.2).collect();
+        for want in [
+            "0.2", "0.5", "1.0", "2.0", "5.0", "+j1.0", "-j1.0", "+j0.2", "-j5.0",
+        ] {
+            assert!(
+                texts.iter().any(|t| t == want),
+                "missing label {want}: {texts:?}"
+            );
+        }
+        // Cartesian tick labels (−1.0, 0.5 on an axis) and axis titles are
+        // not drawn on a Smith chart.
+        for unwanted in ["-1.0", "-0.5", "Re(Γ)", "Im(Γ)"] {
+            assert!(
+                !texts.iter().any(|t| t == unwanted),
+                "unexpected {unwanted}: {texts:?}"
+            );
+        }
+        assert!(texts.iter().any(|t| t == "S11"), "legend entry: {texts:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn smith_svg_labels_title_and_legend_never_overlap() {
+        // Single panel, and a 2×2 grid of Smith charts with long legends.
+        for (rows, cols) in [(1usize, 1usize), (2, 2), (1, 3)] {
+            let path = tmp_path(&format!("_smith_overlap_{rows}{cols}.svg"));
+            FIGURE.with(|f| f.borrow_mut().reset());
+            for k in 0..rows * cols {
+                FIGURE.with(|f| f.borrow_mut().set_subplot(rows, cols, k + 1));
+                FIGURE.with(|f| {
+                    let mut f = f.borrow_mut();
+                    let sp = f.current_mut();
+                    sp.smith = Some(crate::smith::SmithGrid::Impedance);
+                    sp.axis_equal = true;
+                    sp.xlim = (Some(-1.15), Some(1.15));
+                    sp.ylim = (Some(-1.15), Some(1.15));
+                    sp.title = "Input match of the amplifier".to_string();
+                    f.hold = true;
+                });
+                push_xy_line(
+                    vec![0.0, 0.3],
+                    vec![0.0, 0.3],
+                    "S11 measured",
+                    "",
+                    None,
+                    LineStyle::Solid,
+                );
+                push_xy_scatter(vec![0.0], vec![0.0], "matched", "", None);
+                FIGURE.with(|f| f.borrow_mut().hold = false);
+            }
+            render_figure_file(&path).unwrap();
+            let svg = std::fs::read_to_string(&path).unwrap();
+            // Box each text with the bundled font's measured width.
+            let boxes: Vec<(String, f64, f64, f64, f64)> = svg_texts(&svg)
+                .into_iter()
+                .map(|(x, y, t)| {
+                    let size = text_font_px(&svg, &t);
+                    let w = crate::file::measure_text_px(&t, size) as f64;
+                    let h = size as f64;
+                    // plotters writes the anchor point; text-anchor and
+                    // dominant-baseline say which side.
+                    let (l, top) = text_box_origin(&svg, &t, x, y, w, h);
+                    (t, l, top, l + w, top + h)
+                })
+                .collect();
+            for i in 0..boxes.len() {
+                for j in i + 1..boxes.len() {
+                    let a = &boxes[i];
+                    let b = &boxes[j];
+                    let overlap =
+                        a.1 < b.3 - 0.5 && b.1 < a.3 - 0.5 && a.2 < b.4 - 0.5 && b.2 < a.4 - 0.5;
+                    assert!(!overlap, "{rows}x{cols}: {a:?} overlaps {b:?}");
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// A one-panel figure is 900 px wide and LaTeX sets it at 0.9 of a
+    /// 6.3 in text width, about 0.45 pt per px. Grid labels and legend
+    /// entries must reach 7 pt there.
+    #[test]
+    fn smith_svg_text_is_readable_when_set_in_a_pdf() {
+        let path = tmp_path("_smith_pdf_size.svg");
+        smith_panel(crate::smith::SmithGrid::Impedance);
+        FIGURE.with(|f| f.borrow_mut().hold = true);
+        push_xy_line(
+            vec![0.0, 0.2],
+            vec![0.0, 0.4],
+            "S11",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|f| f.borrow_mut().hold = false);
+        render_figure_file(&path).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        let pt_per_px = 0.9 * 6.3 * 72.0 / 900.0;
+        for t in ["+j1.0", "-j5.0", "2.0", "S11"] {
+            let px = text_font_size(&svg, t);
+            assert!(
+                px * pt_per_px >= 7.0,
+                "{t}: {px} px is {:.1} pt",
+                px * pt_per_px
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `font-size` of the first `<text>` whose content is `t`, unrounded.
+    fn text_font_size(svg: &str, t: &str) -> f64 {
+        for chunk in svg.split("<text").skip(1) {
+            let Some(end) = chunk.find("</text>") else {
+                continue;
+            };
+            let tag = &chunk[..end];
+            if tag[tag.find('>').map_or(0, |i| i + 1)..].trim() != t {
+                continue;
+            }
+            let k = tag.find("font-size=\"").expect("font-size");
+            let rest = &tag[k + 11..];
+            return rest[..rest.find('"').unwrap()].parse().unwrap();
+        }
+        panic!("no <text> {t}");
+    }
+
+    /// Font size of the first `<text>` whose content is `t`.
+    fn text_font_px(svg: &str, t: &str) -> u32 {
+        for chunk in svg.split("<text").skip(1) {
+            let Some(end) = chunk.find("</text>") else {
+                continue;
+            };
+            let tag = &chunk[..end];
+            if tag[tag.find('>').map_or(0, |i| i + 1)..].trim() != t {
+                continue;
+            }
+            if let Some(k) = tag.find("font-size=\"") {
+                let rest = &tag[k + 11..];
+                if let Ok(v) = rest[..rest.find('"').unwrap_or(0)].parse::<f64>() {
+                    return v.round() as u32;
+                }
+            }
+        }
+        12
+    }
+
+    /// Top-left of a text box from plotters' SVG anchor attributes.
+    fn text_box_origin(svg: &str, t: &str, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
+        for chunk in svg.split("<text").skip(1) {
+            let Some(end) = chunk.find("</text>") else {
+                continue;
+            };
+            let tag = &chunk[..end];
+            if tag[tag.find('>').map_or(0, |i| i + 1)..].trim() != t
+                || !tag.contains(&format!("x=\"{x}\""))
+            {
+                continue;
+            }
+            let left = if tag.contains("text-anchor=\"end\"") {
+                x - w
+            } else if tag.contains("text-anchor=\"middle\"") {
+                x - w / 2.0
+            } else {
+                x
+            };
+            let top = if tag.contains("dominant-baseline=\"text-before-edge\"")
+                || tag.contains("dominant-baseline=\"hanging\"")
+            {
+                y
+            } else if tag.contains("dominant-baseline=\"middle\"")
+                || tag.contains("dominant-baseline=\"central\"")
+            {
+                y - h / 2.0
+            } else {
+                y - h * 0.8
+            };
+            return (left, top);
+        }
+        (x, y - h)
     }
 
     #[test]
