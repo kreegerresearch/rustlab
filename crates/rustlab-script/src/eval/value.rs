@@ -876,6 +876,37 @@ impl Value {
             }
             _ => {}
         }
+        // Complex storage that holds real data (every imaginary part exactly
+        // `+0.0`): the transpose of a real array is real, so `'` does not
+        // flip those zeros to `-0.0`. The result is real-stored, the same
+        // values as `.'`.
+        if CONJ {
+            let real_data = |d: &[C64]| -> Option<Vec<f64>> {
+                d.iter()
+                    .all(|z| z.im.to_bits() == 0)
+                    .then(|| d.iter().map(|z| z.re).collect())
+            };
+            match self {
+                Value::Vector(v) if !Shared::is_real(v) => {
+                    if let Some(d) = v.as_slice().and_then(real_data) {
+                        let n = d.len();
+                        return Ok(Value::real_matrix(
+                            Array2::from_shape_vec((n, 1), d).expect("n × 1"),
+                        ));
+                    }
+                }
+                Value::Matrix(m) if !Shared::is_real(m) => {
+                    if let Some(d) = m.as_slice().and_then(real_data) {
+                        let s = Shared::shape(m);
+                        let out = super::real_ops::transpose_f64(&d, s[0], s[1]);
+                        return Ok(Value::real_matrix(
+                            Array2::from_shape_vec((s[1], s[0]), out).expect("c × r"),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         match self {
             Value::Vector(v) => {
                 // Row vector (1×n) → column vector (n×1)

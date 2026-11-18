@@ -2239,6 +2239,64 @@ fn builtin_max_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Script
 /// Multi-return (`nargout >= 2`) is only valid for the single-vector / matrix
 /// forms and the 3-arg axis form. The two-argument elementwise form
 /// (`max(a, b)`) errors on multi-return; index has no defined meaning there.
+/// Elementwise `max(a, b)` / `min(a, b)` when both operands are real-stored
+/// arrays of one shape, or one is a real scalar. Same rule as the complex
+/// path on real data (a NaN loses, a tie keeps `a`), without widening, and
+/// the result stays real-stored. `None` sends every other case there.
+fn minmax_real_stored(a: &Value, b: &Value, is_max: bool) -> Option<Value> {
+    let pick = |x: f64, y: f64| -> f64 {
+        if x.is_nan() {
+            return y;
+        }
+        if y.is_nan() {
+            return x;
+        }
+        let take_y = if is_max { y > x } else { y < x };
+        if take_y {
+            y
+        } else {
+            x
+        }
+    };
+    let zip = |xs: &[f64], ys: &[f64]| -> Vec<f64> {
+        xs.iter().zip(ys).map(|(&x, &y)| pick(x, y)).collect()
+    };
+    let left = |xs: &[f64], y: f64| -> Vec<f64> { xs.iter().map(|&x| pick(x, y)).collect() };
+    let right = |x: f64, ys: &[f64]| -> Vec<f64> { ys.iter().map(|&y| pick(x, y)).collect() };
+    let matrix = |shape: &[usize], d: Vec<f64>| -> Option<Value> {
+        Some(Value::real_matrix(
+            Array2::from_shape_vec((shape[0], shape[1]), d).ok()?,
+        ))
+    };
+    match (a, b) {
+        (Value::Matrix(x), Value::Matrix(y)) if Shared::shape(x) == Shared::shape(y) => matrix(
+            Shared::shape(x),
+            zip(Shared::real_slice(x)?, Shared::real_slice(y)?),
+        ),
+        (Value::Matrix(x), Value::Scalar(y)) => {
+            matrix(Shared::shape(x), left(Shared::real_slice(x)?, *y))
+        }
+        (Value::Scalar(x), Value::Matrix(y)) => {
+            matrix(Shared::shape(y), right(*x, Shared::real_slice(y)?))
+        }
+        (Value::Vector(x), Value::Vector(y)) if Shared::len(x) == Shared::len(y) => Some(
+            Value::real_vector(Array1::from_vec(zip(
+                Shared::real_slice(x)?,
+                Shared::real_slice(y)?,
+            ))),
+        ),
+        (Value::Vector(x), Value::Scalar(y)) => Some(Value::real_vector(Array1::from_vec(left(
+            Shared::real_slice(x)?,
+            *y,
+        )))),
+        (Value::Scalar(x), Value::Vector(y)) => Some(Value::real_vector(Array1::from_vec(right(
+            *x,
+            Shared::real_slice(y)?,
+        )))),
+        _ => None,
+    }
+}
+
 fn builtin_extremum_nargout(
     args: Vec<Value>,
     nargout: usize,
@@ -2353,6 +2411,9 @@ fn builtin_extremum_nargout(
                 "{0}: multi-return form is not defined for the elementwise two-argument form; use [m, i] = {0}(v) on a single vector",
                 fn_name
             )));
+        }
+        if let Some(v) = minmax_real_stored(&args[0], &args[1], is_max) {
+            return Ok(v);
         }
         let all_real = value_all_real(&args[0]) && value_all_real(&args[1]);
         let pick = |x: C64, y: C64| -> C64 {
