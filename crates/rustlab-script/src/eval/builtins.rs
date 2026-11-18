@@ -17261,7 +17261,7 @@ fn smith_traces_from_network(
     let (ptype, n_ports, params, _freqs, _z0) = unpack_sparameters_typed("smith", v)?;
     if ptype != "S" && ptype != "Smm" {
         return Err(ScriptError::runtime(format!(
-            "smith: the network holds {ptype}-parameters, not reflection coefficients; convert it first (for example {} )",
+            "smith: the network holds {ptype}-parameters, not reflection coefficients; convert it first, as in {}",
             match ptype.as_str() {
                 "Z" => "smith(z2s(net))",
                 "Y" => "smith(y2s(net))",

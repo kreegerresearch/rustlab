@@ -1374,6 +1374,22 @@ mod tests {
     }
 
     #[test]
+    fn smith_panel_sends_unlabelled_grid_and_anchored_labels() {
+        let grid = smith_grid_wire(crate::smith::SmithGrid::Impedance);
+        assert_eq!(grid.len(), 17);
+        assert!(grid.iter().all(|s| s.label.is_empty()));
+        assert!(grid
+            .iter()
+            .all(|s| s.x.iter().chain(&s.y).all(|v| v.is_finite())));
+        let labels = smith_labels_wire(crate::smith::SmithGrid::Impedance);
+        assert_eq!(labels.len(), 15);
+        let top = labels.iter().find(|t| t.text == "+j1.0").unwrap();
+        assert_eq!((top.x, top.y, top.h, top.v), (0.0, 1.0, 0, -1));
+        let bottom = labels.iter().find(|t| t.text == "-j1.0").unwrap();
+        assert_eq!((bottom.h, bottom.v), (0, 1));
+    }
+
+    #[test]
     fn color_to_wire_rgb() {
         assert!(matches!(
             color_to_wire(&SeriesColor::Rgb(10, 20, 30)),
