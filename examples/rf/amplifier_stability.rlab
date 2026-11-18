@@ -51,8 +51,13 @@ rs = in_circles.radii
 figure()
 smith(s)
 marker(0, "matched")
+# smith_circle draws only the part of a circle inside |Γ| = 1. For this
+# LNA every input stability circle misses the chart (|C| - R > 1), the
+# geometric sign of unconditional stability, so none is drawn.
 for k = 1:len(f)
   smith_circle(cs(k), real(rs(k)), "")
 end
+fprintf("\nInput stability circles: min |C| - R = %.3f (> 1: outside the chart)\n", ...
+        min(abs(cs) - real(rs)))
 savefig("amp_stability.svg")
 savefig("amp_stability.html")

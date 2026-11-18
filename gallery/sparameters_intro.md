@@ -101,7 +101,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparameters_intro/plot-1-565668bf.svg)
+![plot 1](plots/sparameters_intro/plot-1-aaaef269.svg)
 
 <!-- rustlab:output-end -->
 
@@ -285,20 +285,22 @@ smith(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/sparameters_intro/plot-2-6627fc86.svg)
+![plot 2](plots/sparameters_intro/plot-2-635628df.svg)
 
 <!-- rustlab:output-end -->
 
 `smith(s)` plots `S11` (and `S22` if the network has at least 2 ports)
-on an impedance grid; the chart frame, real-axis baseline, constant-R
-circles, and constant-X arcs all render automatically. Axes lock to
-`equal` aspect and the unit disk fills the panel.
+on an impedance grid: the unit circle, the real axis, the constant-r
+circles and constant-x arcs for 0.2, 0.5, 1, 2, and 5, with the
+resistance values along the real axis and the reactance values around
+the rim. A point is $\Gamma = (z - 1)/(z + 1)$ for the normalised
+impedance $z = Z/Z_0$, so inductive loads ($x > 0$) are in the upper
+half, as on MATLAB's `smithplot`. The chart has no Cartesian axes, and
+the legend lists only the data.
 
-The grid is synthesized as ordinary dashed line series with empty labels,
-so it renders identically across every backend — terminal, SVG, PNG,
-HTML/Plotly, LaTeX/PDF, the live `rustlab-viewer`, and animation paths
-— with no per-backend code. The empty-label legend suppression keeps the
-chart legend uncluttered (just one entry per data trace).
+Every backend draws the same grid and labels — SVG, PNG, LaTeX/PDF,
+HTML/Plotly, the live `rustlab-viewer`, and animations. The terminal
+draws the grid without the labels.
 
 ### Annotating cardinal points
 
@@ -315,29 +317,30 @@ marker(1,  "open")        % right edge
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/sparameters_intro/plot-3-44966f2b.svg)
+![plot 3](plots/sparameters_intro/plot-3-c0d0c553.svg)
 
 <!-- rustlab:output-end -->
 
 ### Picking a specific port pair
 
-`smith(s, i, j)` plots just `Sij`; `smith(s, "ports", [i j])` (matrix
-form) is reserved for future multi-pair selection.
+`smith(s, i, j)` plots just `Sij`. A Smith chart reads reflection
+coefficients, so the useful pairs are `i = j`:
 
 ```rustlab
 clf
-smith(s, 2, 1)             % forward-transmission locus
-title("S21 locus")
+smith(s, 2, 2)             % output match only
+title("S22 locus")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/sparameters_intro/plot-4-48b491ad.svg)
+![plot 4](plots/sparameters_intro/plot-4-697cc6e1.svg)
 
 <!-- rustlab:output-end -->
 
-For S21 of an amplifier the locus typically spirals outside the unit
-disk at frequencies where the device has gain — a useful at-a-glance
-indicator.
+A transmission term such as `S21` of this amplifier has
+$|S_{21}| \approx 3$, three times the radius of the chart; `smith`
+prints a warning and clips such points instead of drawing them on the
+frame. Use `rfplot(s, "db", 2, 1)` for gain.
 
 ### Grid families: Z, Y, ZY
 
@@ -352,12 +355,12 @@ smith(s, "grid", "ZY")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/sparameters_intro/plot-5-ddb390d5.svg)
+![plot 5](plots/sparameters_intro/plot-5-c723ab82.svg)
 
 <!-- rustlab:output-end -->
 
-The Y-grid arcs render in a muted blue-green so they're visually
-distinguishable from the Z grid (which renders in light gray).
+The Y grid is drawn in a muted teal so it reads apart from the Z grid.
+The labels on the overlay are the impedance values.
 
 ## A raw reflection-coefficient locus
 
@@ -374,7 +377,7 @@ title("|Γ| = 0.5 circle")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/sparameters_intro/plot-6-fa2f3052.svg)
+![plot 6](plots/sparameters_intro/plot-6-3cb4e5ac.svg)
 
 <!-- rustlab:output-end -->
 

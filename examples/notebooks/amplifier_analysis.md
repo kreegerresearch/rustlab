@@ -234,14 +234,24 @@ rs = in_circles.radii;
 for k = 1:len(f)
   smith_circle(cs(k), real(rs(k)))
 end
-title("S11, S22 with input stability circles overlaid")
+title("Input stability circles: none reaches the chart")
 ```
 
-For this LNA the input stability circles lie entirely outside the unit
-disk — the geometric witness of unconditional stability. (If a circle
-crossed into the unit disk, sources with reflections inside that
-intersection would drive `|Γout| > 1` at that frequency, i.e.
-oscillation.)
+For this LNA no circle reaches the chart: every input stability circle
+lies wholly outside the unit disk, so `smith_circle` draws nothing (it
+draws only the part of a circle inside $|\Gamma| = 1$, where passive
+terminations live). That is the geometric witness of unconditional
+stability. The margin is $|C_S| - R_S$, the distance from the origin to
+the nearest point of each circle:
+
+```rustlab
+fprintf("min over f of |C_S| - R_S = %.3f (> 1: the circle misses the chart)\n", ...
+        min(abs(cs) - real(rs)))
+```
+
+If a circle crossed into the unit disk, sources with reflections inside
+that intersection would drive `|Γout| > 1` at that frequency, i.e.
+oscillation.
 
 ## Constant-gain circles
 
