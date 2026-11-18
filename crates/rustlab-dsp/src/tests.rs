@@ -2044,9 +2044,7 @@ mod welch_tests {
         // Linear congruential generator -> mean 0, unit variance.
         let mut s: u64 = 0xC0FFEE_C0DE;
         let x = real_signal((0..n).map(|_| {
-            s = s
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let u = ((s >> 33) as f64) / ((1u64 << 31) as f64) - 1.0; // ~[-1, 1)
             u
         }));
@@ -2601,7 +2599,9 @@ mod wavelet_tests {
 #[cfg(test)]
 mod welch_stream_tests {
     use crate::welch::{pwelch_psd, Sided};
-    use crate::welch_stream::{pwelch_stream, pwelch_stream_init, stft_stream, stft_stream_init};
+    use crate::welch_stream::{
+        pwelch_stream, pwelch_stream_init, stft_stream, stft_stream_init,
+    };
     use crate::window::WindowFunction;
     use ndarray::Array1;
     use num_complex::Complex;
@@ -2630,7 +2630,10 @@ mod welch_stream_tests {
         assert_eq!(last_pxx.len(), pxx_batch.len());
         // Streaming cumulative should match batch within tight numerical tol.
         for (s, b) in last_pxx.iter().zip(pxx_batch.iter()) {
-            assert!((s - b).abs() < 1e-9, "stream={s} vs batch={b} differ");
+            assert!(
+                (s - b).abs() < 1e-9,
+                "stream={s} vs batch={b} differ"
+            );
         }
     }
 
@@ -2642,11 +2645,7 @@ mod welch_stream_tests {
         // Frame smaller than win_len -> no segment yet.
         let frame = real_signal((0..64).map(|_| 0.5));
         let pxx = pwelch_stream(&frame, &mut state);
-        assert!(
-            pxx.is_empty(),
-            "expected empty during warmup, got len={}",
-            pxx.len()
-        );
+        assert!(pxx.is_empty(), "expected empty during warmup, got len={}", pxx.len());
     }
 
     #[test]
@@ -2666,7 +2665,8 @@ mod welch_stream_tests {
             }
         }));
         let win = WindowFunction::Hann.generate(256);
-        let mut state = pwelch_stream_init(fs, &win, 128, 256, Some(0.3), Sided::OneSided).unwrap();
+        let mut state = pwelch_stream_init(fs, &win, 128, 256, Some(0.3), Sided::OneSided)
+            .unwrap();
         let mut pxx = Array1::zeros(0);
         for chunk in x.exact_chunks(64) {
             let frame = chunk.to_owned();
@@ -2934,7 +2934,9 @@ mod cwt_stream_tests {
         let fs = 1000.0;
         let n_window = 1024;
         let scales = default_scales(n_window, 16);
-        let x = real_signal((0..n_window).map(|k| (2.0 * PI * 50.0 * k as f64 / fs).sin()));
+        let x = real_signal((0..n_window).map(|k| {
+            (2.0 * PI * 50.0 * k as f64 / fs).sin()
+        }));
         // Push the whole signal in one frame.
         let mut state = cwt_stream_init(fs, n_window, &scales).unwrap();
         let w_stream = cwt_stream(&x, &mut state);
