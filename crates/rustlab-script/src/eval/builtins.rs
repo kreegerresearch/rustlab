@@ -17065,16 +17065,50 @@ fn with_hold<T>(f: impl FnOnce() -> T) -> T {
 
 /// Push one reflection-coefficient trace onto the current Smith chart. A
 /// single value is a marker; a line through one point would not be drawn.
-fn push_smith_trace(gamma: &CVector, label: &str) {
+fn push_smith_trace(gamma: &CVector, label: &str, color: Option<SeriesColor>) {
     let xs: Vec<f64> = gamma.iter().map(|c| c.re).collect();
     let ys: Vec<f64> = gamma.iter().map(|c| c.im).collect();
     with_hold(|| {
         if xs.len() == 1 {
-            push_xy_scatter(xs, ys, label, "", None);
+            push_xy_scatter(xs, ys, label, "", color);
         } else {
-            push_xy_line(xs, ys, label, "", None, LineStyle::Solid);
+            push_xy_line(xs, ys, label, "", color, LineStyle::Solid);
         }
     });
+}
+
+/// A MATLAB-style colour value: a name or letter (`"r"`, `"red"`),
+/// `"#rrggbb"`, or an `[r g b]` triplet with each part in [0, 1].
+fn parse_color_value(name: &str, v: &Value) -> Result<SeriesColor, ScriptError> {
+    if let Value::Str(text) = v {
+        return SeriesColor::parse(text).ok_or_else(|| {
+            ScriptError::runtime(format!(
+                "{name}: unrecognized color '{text}' (known: {}, \"#rrggbb\", or [r g b] in [0, 1])",
+                SeriesColor::KNOWN_NAMES
+            ))
+        });
+    }
+    let parts: Vec<C64> = match v {
+        Value::Vector(x) => x.iter().copied().collect(),
+        Value::Matrix(m) if m.len() == 3 => m.iter().copied().collect(),
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: color must be a string or an [r g b] triplet, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|c| c.im != 0.0 || !(0.0..=1.0).contains(&c.re))
+    {
+        return Err(ScriptError::runtime(format!(
+            "{name}: an [r g b] color needs three real values in [0, 1]"
+        )));
+    }
+    let b = |c: &C64| (c.re * 255.0).round() as u8;
+    Ok(SeriesColor::Rgb(b(&parts[0]), b(&parts[1]), b(&parts[2])))
 }
 
 /// Warn when part of a trace lies outside the drawn square, where it is
@@ -17102,9 +17136,10 @@ fn warn_smith_outside(name: &str, label: &str, gamma: &CVector) {
 /// trailing arg slice. Default: impedance grid.
 fn parse_smith_options(
     args: &[Value],
-) -> Result<Option<rustlab_plot::smith::SmithGrid>, ScriptError> {
+) -> Result<(Option<rustlab_plot::smith::SmithGrid>, Option<SeriesColor>), ScriptError> {
     use rustlab_plot::smith::SmithGrid;
     let mut grid = None;
+    let mut color = None;
     let mut i = 0;
     while i < args.len() {
         let key = args[i]
@@ -17115,7 +17150,8 @@ fn parse_smith_options(
                 "smith: option '{key}' is missing its value"
             )));
         }
-        match key.as_str() {
+        match key.to_ascii_lowercase().as_str() {
+            "color" | "colour" => color = Some(parse_color_value("smith", &args[i + 1])?),
             "grid" => {
                 let v = args[i + 1].to_str().map_err(|e| {
                     ScriptError::type_err(format!("smith: 'grid' value must be a string: {e}"))
@@ -17128,13 +17164,13 @@ fn parse_smith_options(
             }
             other => {
                 return Err(ScriptError::type_err(format!(
-                    "smith: unknown option '{other}' (supported: \"grid\")"
+                    "smith: unknown option '{other}' (supported: \"grid\", \"Color\")"
                 )));
             }
         }
         i += 2;
     }
-    Ok(grid)
+    Ok((grid, color))
 }
 
 /// `smith(...)` — render a Smith chart of one or more reflection-coefficient
@@ -17158,9 +17194,12 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
     while positional_end >= 2 {
         let key_idx = positional_end - 2;
         if matches!(args[key_idx], Value::Str(_))
-            && ["grid"]
-                .iter()
-                .any(|k| args[key_idx].to_str().map(|s| s == *k).unwrap_or(false))
+            && ["grid", "color", "colour"].iter().any(|k| {
+                args[key_idx]
+                    .to_str()
+                    .map(|s| s.eq_ignore_ascii_case(k))
+                    .unwrap_or(false)
+            })
         {
             positional_end -= 2;
         } else {
@@ -17169,7 +17208,7 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let positional = &args[..positional_end];
     let options = &args[positional_end..];
-    let grid_opt = parse_smith_options(options)?;
+    let (grid_opt, color) = parse_smith_options(options)?;
 
     // Resolve positional args into one or more (label, gamma) traces.
     let traces: Vec<(String, CVector)> = match positional.len() {
@@ -17243,7 +17282,7 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
         .unwrap_or(rustlab_plot::smith::SmithGrid::Impedance);
     for (label, gamma) in traces {
         warn_smith_outside("smith", &label, &gamma);
-        push_smith_trace(&gamma, &label);
+        push_smith_trace(&gamma, &label, color);
     }
     finalize_smith_axes(grid_mode);
 
@@ -17866,7 +17905,11 @@ fn builtin_rfplot(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// Smith axes. Useful for matching-network design markers, intermediate
 /// impedance flags, or load-pull contour vertices.
 fn builtin_marker(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("marker", &args, 1, 2)?;
+    if args.is_empty() {
+        return Err(ScriptError::runtime(
+            "marker: requires a reflection coefficient".to_string(),
+        ));
+    }
     let gamma_c = match &args[0] {
         Value::Complex(c) => *c,
         Value::Scalar(s) => Complex::new(*s, 0.0),
@@ -17878,14 +17921,31 @@ fn builtin_marker(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     };
-    let label = if args.len() == 2 {
-        args[1]
+    // marker(g), marker(g, label), then MATLAB-style name-value pairs. An
+    // even number of arguments after g means they are all pairs.
+    let (label, opts) = if args.len() % 2 == 0 {
+        let label = args[1]
             .to_str()
-            .map_err(|e| ScriptError::type_err(format!("marker: label: {e}")))?
+            .map_err(|e| ScriptError::type_err(format!("marker: label: {e}")))?;
+        (label, &args[2..])
     } else {
-        String::new()
+        (String::new(), &args[1..])
     };
-    with_hold(|| push_xy_scatter(vec![gamma_c.re], vec![gamma_c.im], &label, "", None));
+    let mut color = None;
+    for pair in opts.chunks(2) {
+        let key = pair[0]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(format!("marker: option name: {e}")))?;
+        match key.to_ascii_lowercase().as_str() {
+            "color" | "colour" => color = Some(parse_color_value("marker", &pair[1])?),
+            other => {
+                return Err(ScriptError::runtime(format!(
+                    "marker: unknown option '{other}' (supported: \"Color\")"
+                )))
+            }
+        }
+    }
+    with_hold(|| push_xy_scatter(vec![gamma_c.re], vec![gamma_c.im], &label, "", color));
     sync_figure_outputs();
     Ok(Value::None)
 }

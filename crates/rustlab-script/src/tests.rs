@@ -16876,6 +16876,54 @@ mod sparameters_phase3_tests {
     }
 
     #[test]
+    fn marker_takes_a_matlab_style_color() {
+        use rustlab_plot::SeriesColor;
+        let state = smith_figure_state(
+            "smith([0.1, 0.2]); marker(0, \"m\", \"Color\", \"r\"); \
+             marker(0.1, \"color\", [0.2, 0.4, 0.6]); marker(0.2, \"h\", \"colour\", \"#ff8800\");",
+        );
+        let sp = state.current();
+        let m = sp.series.iter().find(|s| s.label == "m").unwrap();
+        assert!(matches!(m.color, SeriesColor::Red));
+        // A name-value pair right after gamma: no label.
+        let rgb = &sp.series[2];
+        assert_eq!(rgb.label, "");
+        assert!(
+            matches!(rgb.color, SeriesColor::Rgb(51, 102, 153)),
+            "{:?}",
+            rgb.color
+        );
+        let h = sp.series.iter().find(|s| s.label == "h").unwrap();
+        assert!(matches!(h.color, SeriesColor::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn marker_rejects_a_bad_color() {
+        let err = run_err("smith([0.1, 0.2]); marker(0, \"m\", \"color\", \"nope\");");
+        assert!(err.contains("color"), "{err}");
+        let err = run_err("smith([0.1, 0.2]); marker(0, \"color\", [2, 0, 0]);");
+        assert!(err.contains("[0, 1]"), "{err}");
+        let err = run_err("smith([0.1, 0.2]); marker(0, \"m\", \"size\", 3);");
+        assert!(err.contains("size"), "{err}");
+    }
+
+    #[test]
+    fn smith_color_option_sets_every_trace_of_the_call() {
+        use rustlab_plot::SeriesColor;
+        let state = smith_figure_state(
+            "S = zeros3(2, 2, 2); S(:, 1, 1) = 0.2; S(:, 2, 2) = 0.3;
+             s = sparameters(S, [1e9, 2e9]); smith(s, \"Color\", \"m\", \"grid\", \"Y\");",
+        );
+        let sp = state.current();
+        assert_eq!(sp.series.len(), 2);
+        assert!(sp
+            .series
+            .iter()
+            .all(|t| matches!(t.color, SeriesColor::Magenta)));
+        assert_eq!(sp.smith, Some(rustlab_plot::smith::SmithGrid::Admittance));
+    }
+
+    #[test]
     fn marker_at_origin_lands_at_chart_center() {
         // Smoke: marker(0) → scatter point at (0, 0).
         let state = smith_figure_state("smith(0.5); marker(0.0, \"center\");");
@@ -17466,6 +17514,21 @@ mod sparameters_phase5_tests {
             (x0 - 0.5).abs() < 1e-9,
             "rim crossing at Re = 0.5, got {x0}"
         );
+    }
+
+    #[test]
+    fn circles_struct_fields_index_directly() {
+        // The examples once said `c.centres(k)` parsed as a call; it is a
+        // field index, the same as copying the field first.
+        let ev = run("S = zeros3(2, 2, 2);
+             S(:, 1, 1) = 0.4; S(:, 2, 1) = 3; S(:, 1, 2) = 0.05; S(:, 2, 2) = 0.3;
+             s = sparameters(S, [1e9, 2e9]);
+             g = gain_circles(s, 10); c = g.centres; r = g.radii;
+             d = abs(g.centres(2) - c(2)) + abs(g.radii(2) - r(2));");
+        match ev.get("d") {
+            Some(Value::Scalar(d)) => assert_eq!(*d, 0.0),
+            other => panic!("d = {other:?}"),
+        }
     }
 
     #[test]
