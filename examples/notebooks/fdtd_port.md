@@ -133,14 +133,14 @@ band = f(f <= 1e9);
 g25 = sij(interp_freq(net25, band), 1, 1);
 g50 = sij(interp_freq(matched_net, band), 1, 1);
 g100 = sij(interp_freq(net100, band), 1, 1);
-smith(g25);
+smith(g25, "Color", "c");
 hold on
-smith(g50);
-smith(g100);
+smith(g50, "Color", "g");
+smith(g100, "Color", "m");
 legend("25 ohm", "50 ohm", "100 ohm");
-marker((25 - z0) / (25 + z0), "25 ohm at DC");
-marker(0, "50 ohm at DC");
-marker((100 - z0) / (100 + z0), "100 ohm at DC");
+marker((25 - z0) / (25 + z0), "25 ohm at DC", "Color", "c");
+marker(0, "50 ohm at DC", "Color", "g");
+marker((100 - z0) / (100 + z0), "100 ohm at DC", "Color", "m");
 hold off
 title("S11 of the three pillars, DC to 1 GHz");
 zf = @(g) z0 * (1 + g) / (1 - g);
@@ -153,12 +153,16 @@ As the frequency rises the 25 ohm trace turns clockwise into the
 inductive upper half: the series inductance of the pillar adds
 $+jX$. The 100 ohm trace turns into the capacitive lower half, where the
 pad's capacitance in parallel with the pillar takes over. The matched
-pillar stays near the centre.
+pillar stays near the centre. Each DC marker has its trace's colour.
+
+The magnitude plot covers the same band. Across the whole record it
+would show a rise to 0 dB near 10 GHz and a comb of dips above it, all
+noise from bins where the pulse has no energy.
 
 ```rustlab
 clf
-rfplot(matched_net);
-title("|S11| of the 50 ohm pillar");
+rfplot(interp_freq(matched_net, band));
+title("|S11| of the 50 ohm pillar, DC to 1 GHz");
 ```
 
 > [!NOTE]

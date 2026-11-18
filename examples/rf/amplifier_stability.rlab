@@ -44,8 +44,8 @@ end
 # Smith chart with input stability circles overlaid (one circle per frequency).
 % Drawing the load-stability circles is symmetric — same pattern.
 in_circles = stability_circles(s, "input")
-% Pull the struct fields into vectors first — `struct.field(k)` is parsed as
-% a call to a function named `field`, not as field-access + index.
+% Struct fields index directly (in_circles.centres(k)); short names keep the
+% loop below readable.
 cs = in_circles.centres
 rs = in_circles.radii
 figure()

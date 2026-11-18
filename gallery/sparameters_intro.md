@@ -285,7 +285,7 @@ smith(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/sparameters_intro/plot-2-635628df.svg)
+![plot 2](plots/sparameters_intro/plot-2-e684f4f9.svg)
 
 <!-- rustlab:output-end -->
 
@@ -317,7 +317,7 @@ marker(1,  "open")        % right edge
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/sparameters_intro/plot-3-c0d0c553.svg)
+![plot 3](plots/sparameters_intro/plot-3-fe46d8a0.svg)
 
 <!-- rustlab:output-end -->
 
@@ -333,7 +333,7 @@ title("S22 locus")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/sparameters_intro/plot-4-697cc6e1.svg)
+![plot 4](plots/sparameters_intro/plot-4-6616afef.svg)
 
 <!-- rustlab:output-end -->
 
@@ -355,7 +355,7 @@ smith(s, "grid", "ZY")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/sparameters_intro/plot-5-c723ab82.svg)
+![plot 5](plots/sparameters_intro/plot-5-9b9101f9.svg)
 
 <!-- rustlab:output-end -->
 
@@ -377,7 +377,7 @@ title("|Γ| = 0.5 circle")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/sparameters_intro/plot-6-3cb4e5ac.svg)
+![plot 6](plots/sparameters_intro/plot-6-69525eca.svg)
 
 <!-- rustlab:output-end -->
 

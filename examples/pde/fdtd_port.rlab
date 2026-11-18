@@ -118,17 +118,18 @@ title("Ampere current");
 figure();
 f = freqs(matched_net);
 band = f(f <= 1e9);
-smith(sij(interp_freq(net25, band), 1, 1));
+smith(sij(interp_freq(net25, band), 1, 1), "Color", "c");
 hold on
-smith(sij(interp_freq(matched_net, band), 1, 1));
-smith(sij(interp_freq(net100, band), 1, 1));
+smith(sij(interp_freq(matched_net, band), 1, 1), "Color", "g");
+smith(sij(interp_freq(net100, band), 1, 1), "Color", "m");
 legend("25 ohm", "50 ohm", "100 ohm");
-marker((25 - z0) / (25 + z0), "25 ohm at DC");
-marker(0, "50 ohm at DC");
-marker((100 - z0) / (100 + z0), "100 ohm at DC");
+marker((25 - z0) / (25 + z0), "25 ohm at DC", "Color", "c");
+marker(0, "50 ohm at DC", "Color", "g");
+marker((100 - z0) / (100 + z0), "100 ohm at DC", "Color", "m");
 hold off
 title("S11 of the three pillars, DC to 1 GHz");
 
+# Same band for the magnitude: above ~10 GHz the full record is noise.
 figure();
-rfplot(matched_net);
-title("|S11| of the 50 ohm pillar");
+rfplot(interp_freq(matched_net, band));
+title("|S11| of the 50 ohm pillar, DC to 1 GHz");
