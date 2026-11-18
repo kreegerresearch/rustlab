@@ -21637,6 +21637,21 @@ mod michael_bug_batch {
         }
     }
 
+    /// The Frobenius norm of a sparse matrix with no stored entries is +0,
+    /// as in MATLAB, not the -0 an empty floating-point sum starts from.
+    #[test]
+    fn sparse_norm_of_an_empty_difference_is_plus_zero() {
+        let ev = eval(
+            "A = laplacian_2d(4, 4, 1, 1);
+             n1 = norm(A - A, \"fro\");
+             n2 = norm(A - A);
+             n3 = norm(spzeros(3, 3));",
+        );
+        for name in ["n1", "n2", "n3"] {
+            assert_eq!(scalar(&ev, name).to_bits(), 0.0f64.to_bits(), "{name}");
+        }
+    }
+
     /// Two-argument `max` / `min` on real-stored operands gives the same bits
     /// as the complex path (NaN loses, ties keep the first operand, `-0` vs
     /// `+0` keeps the first) and keeps real storage.

@@ -9741,11 +9741,12 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             };
             match requested {
                 None => {
+                    // `fold` from +0: an empty `sum::<f64>()` is -0.
                     let n = sm
                         .entries
                         .iter()
                         .map(|(_, _, c)| c.norm_sqr())
-                        .sum::<f64>()
+                        .fold(0.0_f64, |acc, x| acc + x)
                         .sqrt();
                     Ok(Value::Scalar(n))
                 }
