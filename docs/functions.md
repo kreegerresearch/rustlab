@@ -3700,14 +3700,14 @@ save("amp_75ohm.s2p", s75)
 
 ### `smith(...)` and `marker(...)` — Smith chart plotting
 
-Plot reflection coefficients on a Smith chart. The chart grid (constant-resistance circles and constant-reactance arcs, clipped to the unit disk) is generated automatically; data traces overlay it. The panel is locked to `axis("equal")` and to the unit-disk bounds so geometry stays round across every rendering backend.
+Plot reflection coefficients on a Smith chart. A point is placed at $\Gamma = (z - 1)/(z + 1)$ for the normalised impedance $z = Z/Z_0$, the convention of MATLAB's `smithplot`: the matched load is at the centre, a short at $\Gamma = -1$ (left), an open at $\Gamma = +1$ (right), a pure reactance on the unit circle, and the inductive half ($x > 0$) on top. The grid is the unit circle, the real axis, and the constant-r circles and constant-x arcs for 0.2, 0.5, 1, 2, and 5, with the r values printed along the real axis and the x values (`+j0.5`, `-j2.0`, …) around the rim. The chart has no Cartesian axes; the view is the unit disk with room for the labels, at equal aspect.
 
 ```
 s = sparameters("amp.s2p")
 smith(s)                              % default: plot S11 and S22 on a Z-grid
-smith(s, 2, 1)                        % a specific Sij port pair
+smith(s, 2, 2)                        % a specific Sij port pair
 smith(gamma_vec)                      % raw complex Vector of reflection coefficients
-smith(0.5 + 0.3*j)                    % single-point trace (matching-network endpoint)
+smith(0.5 + 0.3*j)                    % one value, drawn as a marker
 smith("amp.s2p")                      % convenience: smith() + sparameters() in one call
 smith(s, "grid", "Y")                 % admittance grid (constant-G circles + constant-B arcs)
 smith(s, "grid", "ZY")                % immittance overlay (both Z and Y grids)
@@ -3718,19 +3718,31 @@ Grid modes:
 | Mode | Layout |
 |---|---|
 | `"Z"` (default) | Impedance grid — constant-R circles + constant-X arcs |
-| `"Y"` | Admittance grid (mirror image of Z) |
-| `"ZY"` | Both overlaid — useful for matching-network design |
+| `"Y"` | Admittance grid: the Z grid turned through 180° ($\Gamma = (1 - y)/(1 + y)$), so a capacitive susceptance is in the lower half. Labels are the g and b values |
+| `"ZY"` | Both overlaid — useful for matching-network design. Labels are the impedance values |
 
-`marker(gamma, label)` drops a labelled scatter point on the active Smith axes. The label appears in the legend; chart cardinal points are good things to mark:
+Rules:
+
+- The network must hold S-parameters (or mixed-mode `Smm`). `smith(s2z(s))` is an error that names the conversion back (`z2s`, `y2s`, `t2s`, `abcd2s`).
+- `smith` starts a new chart unless `hold on` is set and the subplot is already a Smith chart; then it adds its traces (MATLAB `smithplot` under `hold on`). The caller's hold state is never changed.
+- A value outside the drawn square is clipped, and `smith` prints `smith: warning: N of M S21 values lie outside the chart (largest |Γ| = …)`. A transmission term such as `S21` of an amplifier is the usual cause — plot it with `rfplot`. `NaN` values break the trace.
+- A later `plot` (or any other plot without `hold on`) replaces the chart and autoscales again.
+
+`marker(gamma, label)` drops a labelled scatter point on the active Smith axes. The label appears in the legend, which is drawn beside the chart. Chart cardinal points are good things to mark:
 
 ```
 marker(0,  "matched")    % chart centre — Γ = 0, perfect match
 marker(-1, "short")      % left edge of real axis
 marker(1,  "open")       % right edge of real axis
-marker(gamma_mid, "λ/8 transmission line")
+z0 = 50; zl = 100;
+gl = (zl - z0) / (zl + z0);          % 1/3
+marker(gl * exp(-2j * pi/4), "λ/8 toward the generator")   % -j/3
+marker(gl * exp(-2j * pi/2), "λ/4: z = 0.5")               % -1/3
 ```
 
-**Cross-backend behaviour.** The grid arcs are synthesised as ordinary dashed line series with empty labels — every rustlab plot backend (terminal, SVG/PNG via plotters, HTML via Plotly, LaTeX/PDF via the SVG path, animation GIF/HTML, live `rustlab-viewer`) renders them through its existing line-series path. Empty labels are suppressed from the legend (Plotly emits `showlegend: false`; SVG already keys legend inclusion on a non-empty label). There is no per-backend Smith-specific code, by design.
+Moving toward the generator along a lossless line multiplies Γ by $e^{-2j\beta\ell}$, a clockwise turn about the centre; a series inductor moves a point clockwise along its constant-r circle and a series capacitor counter-clockwise.
+
+**Backends.** Each backend draws the grid itself from `rustlab_plot::smith`, in colours taken from the plot theme (labels at least 4.5:1 contrast on the background): SVG/PNG and LaTeX/PDF (via SVG) with the legend beside or below the chart so it never covers the grid, HTML/Plotly with hidden axes and the labels as annotations, the live `rustlab-viewer` with hidden axes and the labels drawn in the plot, and animations through those two paths. The terminal draws the grid without labels and keeps `Re(Γ)` / `Im(Γ)` axes. In a small subplot (under about 72 pixels per unit of Γ) only the `1.0` and `±j1.0` labels are drawn so they cannot collide.
 
 ### `rfplot(...)` — magnitude / phase / group-delay vs frequency
 
@@ -3852,11 +3864,11 @@ for k = 1:len(freqs(s))
 end
 ```
 
-Note the Phase-2 parser gotcha: `in_circles.centres(k)` is parsed as a call to a function named `centres`, not as field access + index. Stash `in_circles.centres` into an intermediate variable first.
-
 ### `smith_circle(centre, radius [, label])`
 
 Overlay one parametric circle on the active Smith axes. `centre` is a complex scalar; `radius` is a non-negative real. The optional label appears in the legend (empty/missing label keeps it out). Use this to render stability or gain circles, or any other matching-design construct that has a circular locus in the reflection plane.
+
+On a Smith chart only the part of the circle inside $|\Gamma| = 1$ is drawn, ending exactly on the rim: these are loci of passive terminations. A circle wholly outside the disk draws nothing — for an unconditionally stable amplifier every stability circle does, and `min(abs(cs) - real(rs)) > 1` confirms it. Off a Smith chart the whole circle is drawn.
 
 ### Phase 6 — polish
 
