@@ -17025,71 +17025,86 @@ fn builtin_interp_freq(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── S-parameters Phase 3: Smith chart plotting ──────────────────────────────
 //
-// Implementation strategy: the Smith grid is synthesized as a stack of
-// regular dashed line series with empty labels (suppressed from the legend
-// in every backend). Data traces are pushed as normal series. axis_equal +
-// xlim/ylim lock the unit-disk framing. Because the chart is just "line
-// series + axis_equal", every plot backend (terminal, SVG, PNG, HTML/Plotly,
-// LaTeX/PDF via SVG, animation GIF/HTML, live viewer) renders it correctly
-// with zero per-backend code.
+// `smith()` marks the current subplot as a Smith chart (`SubplotState::smith`)
+// and pushes the reflection coefficients as ordinary series. Each backend
+// draws the grid, its value labels, and the unit-disk framing itself, from
+// `rustlab_plot::smith`.
 
-/// Push the grid arcs for `mode` as dashed line series with empty labels.
-/// Z and Y families render in distinguishable muted colors.
-fn push_smith_grid(mode: rustlab_plot::smith::SmithGrid) {
-    use rustlab_plot::smith::{build_grid, SmithFamily};
-    let grid = build_grid(mode, 96);
-    for arc in grid {
-        let color = match arc.family {
-            SmithFamily::Frame => SeriesColor::Rgb(120, 120, 120),
-            SmithFamily::Impedance => SeriesColor::Rgb(170, 170, 170),
-            SmithFamily::Admittance => SeriesColor::Rgb(120, 180, 200),
-        };
-        let style = match arc.family {
-            SmithFamily::Frame => LineStyle::Solid,
-            _ => LineStyle::Dashed,
-        };
-        let (xs, ys): (Vec<f64>, Vec<f64>) = arc.points.into_iter().unzip();
-        // Force hold=true around every grid push so the series accumulate
-        // rather than clearing. The caller resets hold after the data series
-        // land.
-        FIGURE.with(|fig| fig.borrow_mut().hold = true);
-        push_xy_line(xs, ys, "", "Smith Chart", Some(color), style);
-    }
-}
-
-/// Set the axis framing for a Smith chart panel: equal aspect + unit-disk
-/// bounds. Applied to the *current* subplot.
-fn finalize_smith_axes() {
+/// Mark the current subplot as a Smith chart: grid, equal aspect, the view
+/// square, and default title. Cartesian axis titles are cleared — the chart
+/// has no Cartesian axes.
+fn finalize_smith_axes(grid: rustlab_plot::smith::SmithGrid) {
     FIGURE.with(|fig| {
         let mut fig = fig.borrow_mut();
-        fig.hold = false;
         let sp = fig.current_mut();
+        let h = rustlab_plot::smith::VIEW_HALF_WIDTH;
+        sp.smith = Some(grid);
         sp.axis_equal = true;
-        sp.xlim = (Some(-1.1), Some(1.1));
-        sp.ylim = (Some(-1.1), Some(1.1));
+        sp.xlim = (Some(-h), Some(h));
+        sp.ylim = (Some(-h), Some(h));
         if sp.title.is_empty() {
             sp.title = "Smith Chart".to_string();
         }
-        sp.xlabel = "Re(Γ)".to_string();
-        sp.ylabel = "Im(Γ)".to_string();
+        sp.xlabel.clear();
+        sp.ylabel.clear();
     });
 }
 
-/// Push a complex reflection-coefficient vector as one data trace on the
-/// current Smith chart. Sets `hold = true` between the call and the next
-/// caller so chained `smith(...)` calls accumulate.
+/// Run `f` with `hold` on, then restore the caller's hold state.
+fn with_hold<T>(f: impl FnOnce() -> T) -> T {
+    let saved = FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        let saved = fig.hold;
+        fig.hold = true;
+        saved
+    });
+    let out = f();
+    FIGURE.with(|fig| fig.borrow_mut().hold = saved);
+    out
+}
+
+/// Push one reflection-coefficient trace onto the current Smith chart. A
+/// single value is a marker; a line through one point would not be drawn.
 fn push_smith_trace(gamma: &CVector, label: &str) {
     let xs: Vec<f64> = gamma.iter().map(|c| c.re).collect();
     let ys: Vec<f64> = gamma.iter().map(|c| c.im).collect();
-    FIGURE.with(|fig| fig.borrow_mut().hold = true);
-    push_xy_line(xs, ys, label, "Smith Chart", None, LineStyle::Solid);
+    with_hold(|| {
+        if xs.len() == 1 {
+            push_xy_scatter(xs, ys, label, "", None);
+        } else {
+            push_xy_line(xs, ys, label, "", None, LineStyle::Solid);
+        }
+    });
+}
+
+/// Warn when part of a trace lies outside the drawn square, where it is
+/// clipped.
+fn warn_smith_outside(name: &str, label: &str, gamma: &CVector) {
+    let h = rustlab_plot::smith::VIEW_HALF_WIDTH;
+    let finite: Vec<&C64> = gamma
+        .iter()
+        .filter(|c| c.re.is_finite() && c.im.is_finite())
+        .collect();
+    let outside = finite
+        .iter()
+        .filter(|c| c.re.abs() > h || c.im.abs() > h)
+        .count();
+    if outside > 0 {
+        let max = finite.iter().map(|c| c.norm()).fold(0.0_f64, f64::max);
+        eprintln!(
+            "{name}: warning: {outside} of {} {label} values lie outside the chart (largest |Γ| = {max:.3}) and are clipped",
+            finite.len()
+        );
+    }
 }
 
 /// Parse the optional `("grid", "Z" | "Y" | "ZY")` name-value pair from a
 /// trailing arg slice. Default: impedance grid.
-fn parse_smith_options(args: &[Value]) -> Result<rustlab_plot::smith::SmithGrid, ScriptError> {
+fn parse_smith_options(
+    args: &[Value],
+) -> Result<Option<rustlab_plot::smith::SmithGrid>, ScriptError> {
     use rustlab_plot::smith::SmithGrid;
-    let mut grid = SmithGrid::Impedance;
+    let mut grid = None;
     let mut i = 0;
     while i < args.len() {
         let key = args[i]
@@ -17105,11 +17120,11 @@ fn parse_smith_options(args: &[Value]) -> Result<rustlab_plot::smith::SmithGrid,
                 let v = args[i + 1].to_str().map_err(|e| {
                     ScriptError::type_err(format!("smith: 'grid' value must be a string: {e}"))
                 })?;
-                grid = SmithGrid::parse(&v).ok_or_else(|| {
+                grid = Some(SmithGrid::parse(&v).ok_or_else(|| {
                     ScriptError::runtime(format!(
                         "smith: 'grid' must be one of \"Z\", \"Y\", \"ZY\" (got \"{v}\")"
                     ))
-                })?;
+                })?);
             }
             other => {
                 return Err(ScriptError::type_err(format!(
@@ -17154,16 +17169,7 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let positional = &args[..positional_end];
     let options = &args[positional_end..];
-    let grid_mode = parse_smith_options(options)?;
-
-    // Clear the current panel before laying down the grid (smith() is
-    // canonically a new-chart call, not an overlay-on-existing).
-    FIGURE.with(|fig| {
-        let mut fig = fig.borrow_mut();
-        fig.hold = false;
-        fig.current_mut().clear_2d_overlays();
-    });
-    push_smith_grid(grid_mode);
+    let grid_opt = parse_smith_options(options)?;
 
     // Resolve positional args into one or more (label, gamma) traces.
     let traces: Vec<(String, CVector)> = match positional.len() {
@@ -17218,10 +17224,28 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
 
+    // A new chart unless `hold on` is set and this subplot is already a
+    // Smith chart, as with MATLAB's smithplot under hold on.
+    let previous = FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        let keep = fig.hold && fig.current().smith.is_some();
+        let sp = fig.current_mut();
+        if keep {
+            sp.smith
+        } else {
+            sp.clear_2d_overlays();
+            sp.title.clear();
+            None
+        }
+    });
+    let grid_mode = grid_opt
+        .or(previous)
+        .unwrap_or(rustlab_plot::smith::SmithGrid::Impedance);
     for (label, gamma) in traces {
+        warn_smith_outside("smith", &label, &gamma);
         push_smith_trace(&gamma, &label);
     }
-    finalize_smith_axes();
+    finalize_smith_axes(grid_mode);
 
     finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
@@ -17234,7 +17258,19 @@ fn smith_traces_from_network(
     v: &Value,
     ports: Option<Vec<(usize, usize)>>,
 ) -> Result<Vec<(String, CVector)>, ScriptError> {
-    let (_ptype, n_ports, params, _freqs, _z0) = unpack_sparameters_typed("smith", v)?;
+    let (ptype, n_ports, params, _freqs, _z0) = unpack_sparameters_typed("smith", v)?;
+    if ptype != "S" && ptype != "Smm" {
+        return Err(ScriptError::runtime(format!(
+            "smith: the network holds {ptype}-parameters, not reflection coefficients; convert it first (for example {} )",
+            match ptype.as_str() {
+                "Z" => "smith(z2s(net))",
+                "Y" => "smith(y2s(net))",
+                "T" => "smith(t2s(net))",
+                "ABCD" => "smith(abcd2s(net))",
+                _ => "with the matching *2s function",
+            }
+        )));
+    }
     let port_list = ports.unwrap_or_else(|| {
         let mut p = vec![(1, 1)];
         if n_ports >= 2 {
@@ -17526,19 +17562,28 @@ fn builtin_smith_circle(args: Vec<Value>) -> Result<Value, ScriptError> {
         String::new()
     };
 
-    // Parametric circle: (cx + r cos θ, cy + r sin θ), θ ∈ [0, 2π].
-    let n = 96;
-    let mut xs = Vec::with_capacity(n + 1);
-    let mut ys = Vec::with_capacity(n + 1);
-    for k in 0..=n {
-        let t = (k as f64) / (n as f64) * std::f64::consts::TAU;
-        xs.push(centre.re + radius * t.cos());
-        ys.push(centre.im + radius * t.sin());
-    }
-    FIGURE.with(|fig| fig.borrow_mut().hold = true);
-    // Use solid lines so circles read as decoration distinct from the
-    // dashed-arc Smith grid.
-    push_xy_line(xs, ys, &label, "", None, LineStyle::Solid);
+    // On a Smith chart the circle is a locus of passive terminations, so
+    // only its part inside |Γ| = 1 is drawn (exact rim crossings). Elsewhere
+    // it is the full parametric circle.
+    let on_smith = FIGURE.with(|fig| fig.borrow().current().smith.is_some());
+    let pts: Vec<(f64, f64)> = if on_smith {
+        rustlab_plot::smith::circle_in_unit_disk(
+            centre.re,
+            centre.im,
+            radius,
+            rustlab_plot::smith::ARC_RESOLUTION,
+        )
+    } else {
+        let n = 96;
+        (0..=n)
+            .map(|k| {
+                let t = (k as f64) / (n as f64) * std::f64::consts::TAU;
+                (centre.re + radius * t.cos(), centre.im + radius * t.sin())
+            })
+            .collect()
+    };
+    let (xs, ys): (Vec<f64>, Vec<f64>) = pts.into_iter().unzip();
+    with_hold(|| push_xy_line(xs, ys, &label, "", None, LineStyle::Solid));
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -17840,8 +17885,8 @@ fn builtin_marker(args: Vec<Value>) -> Result<Value, ScriptError> {
     } else {
         String::new()
     };
-    FIGURE.with(|fig| fig.borrow_mut().hold = true);
-    push_xy_scatter(vec![gamma_c.re], vec![gamma_c.im], &label, "", None);
+    with_hold(|| push_xy_scatter(vec![gamma_c.re], vec![gamma_c.im], &label, "", None));
+    sync_figure_outputs();
     Ok(Value::None)
 }
 

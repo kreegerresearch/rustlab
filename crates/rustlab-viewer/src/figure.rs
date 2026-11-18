@@ -47,6 +47,11 @@ pub struct PanelState {
     pub xlim: AxisLimits,
     pub ylim: AxisLimits,
     pub axis_equal: bool,
+    /// Hide the Cartesian axes and grid (a Smith chart). Reset by each
+    /// `PanelUpdate`; set by `PanelDecor`.
+    pub hide_axes: bool,
+    /// Labels in data coordinates, drawn over the series.
+    pub texts: Vec<rustlab_proto::WireText>,
     pub heatmap: Option<HeatmapImage>,
     /// 3D surface data + camera. When present, the panel renders a rotatable
     /// surface instead of the 2D egui_plot chart.
@@ -71,6 +76,8 @@ impl PanelState {
             xlim: (None, None),
             ylim: (None, None),
             axis_equal: false,
+            hide_axes: false,
+            texts: Vec::new(),
             heatmap: None,
             surface: None,
             surface_tex: None,
@@ -413,8 +420,8 @@ impl FigureWindow {
                             .id(panel_plot_id(fig_id, src_row, src_col))
                             .width(plot_width)
                             .height(plot_height)
-                            .show_axes([true, true])
-                            .show_grid([true, true])
+                            .show_axes([!panel.hide_axes, !panel.hide_axes])
+                            .show_grid([!panel.hide_axes, !panel.hide_axes])
                             .allow_zoom(true)
                             .allow_drag(true)
                             // Plain scroll zooms (handled below), so
@@ -622,6 +629,13 @@ impl FigureWindow {
 
                                 for series in &panel.series {
                                     render::render_series(plot_ui, series);
+                                }
+                                let (sx, sy) = {
+                                    let t = plot_ui.transform();
+                                    (t.dpos_dvalue_x(), t.dpos_dvalue_y())
+                                };
+                                for t in &panel.texts {
+                                    render::render_text(plot_ui, t, sx, sy);
                                 }
                             });
 

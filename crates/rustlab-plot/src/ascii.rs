@@ -170,8 +170,12 @@ pub(crate) fn draw_subplots(
             // axis("equal"): pad the visually-shorter axis so one data unit on
             // x equals one data unit on y. Skip when both limits were user-set.
             if sp.axis_equal && sp.heatmap.is_none() {
-                let user_set_x = sp.xlim.0.is_some() && sp.xlim.1.is_some();
-                let user_set_y = sp.ylim.0.is_some() && sp.ylim.1.is_some();
+                // A Smith chart's limits are the unit-disk view, not a user
+                // choice, so the narrower axis is still padded to keep the
+                // circles round.
+                let smith = sp.smith.is_some();
+                let user_set_x = !smith && sp.xlim.0.is_some() && sp.xlim.1.is_some();
+                let user_set_y = !smith && sp.ylim.0.is_some() && sp.ylim.1.is_some();
                 let (nx_min, nx_max, ny_min, ny_max) = apply_axis_equal_pad(
                     x_min,
                     x_max,
@@ -261,7 +265,31 @@ pub(crate) fn draw_subplots(
                 })
                 .collect();
 
-            let grid_pts: Vec<Vec<(f64, f64)>> = if sp.grid {
+            // Line series broken at NaN and clipped to the view, as in the
+            // SVG backend; ratatui would otherwise draw through the gap.
+            let line_runs: Vec<Vec<Vec<(f64, f64)>>> = series_points
+                .iter()
+                .map(|pts| crate::file::clip_polyline(pts, (x_min, x_max, y_min, y_max)))
+                .collect();
+
+            // A Smith chart draws its own grid. The terminal has no room for
+            // the value labels, so only the circles and arcs are drawn.
+            let smith_grid: Vec<(ratatui::style::Color, Vec<(f64, f64)>)> = match sp.smith {
+                Some(g) => {
+                    let colors =
+                        crate::smith::SmithColors::for_theme((30, 30, 46), (205, 214, 244));
+                    crate::smith::build_grid(g, crate::smith::ARC_RESOLUTION)
+                        .into_iter()
+                        .map(|a| {
+                            let (r, gg, b) = colors.of(a.family);
+                            (ratatui::style::Color::Rgb(r, gg, b), a.points)
+                        })
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+
+            let grid_pts: Vec<Vec<(f64, f64)>> = if sp.grid && sp.smith.is_none() {
                 const N: usize = 5;
                 let mut v = Vec::with_capacity(N * 2 + 2);
                 for i in 0..=N {
@@ -284,6 +312,15 @@ pub(crate) fn draw_subplots(
                         .marker(symbols::Marker::Braille)
                         .graph_type(GraphType::Line)
                         .style(Style::default().fg(ratatui::style::Color::Rgb(70, 70, 70)))
+                        .data(pts),
+                );
+            }
+            for (color, pts) in &smith_grid {
+                datasets.push(
+                    Dataset::default()
+                        .marker(symbols::Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(*color))
                         .data(pts),
                 );
             }
@@ -321,14 +358,17 @@ pub(crate) fn draw_subplots(
                         );
                     }
                     PlotKind::Line => {
-                        datasets.push(
-                            Dataset::default()
-                                .name(s.label.as_str())
+                        for (k, run) in line_runs[i].iter().enumerate() {
+                            let mut d = Dataset::default()
                                 .marker(symbols::Marker::Braille)
                                 .graph_type(GraphType::Line)
                                 .style(Style::default().fg(rcolor))
-                                .data(&series_points[i]),
-                        );
+                                .data(run);
+                            if k == 0 {
+                                d = d.name(s.label.as_str());
+                            }
+                            datasets.push(d);
+                        }
                     }
                 }
             }
@@ -338,13 +378,19 @@ pub(crate) fn draw_subplots(
             } else {
                 ""
             };
+            // The terminal keeps Cartesian axes on a Smith chart, so they
+            // are named for Γ.
             let xlabel = if !sp.xlabel.is_empty() {
                 sp.xlabel.as_str()
+            } else if sp.smith.is_some() {
+                "Re(Γ)"
             } else {
                 "x"
             };
             let ylabel = if !sp.ylabel.is_empty() {
                 sp.ylabel.as_str()
+            } else if sp.smith.is_some() {
+                "Im(Γ)"
             } else {
                 "y"
             };
@@ -465,6 +511,7 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let sp = fig.current_mut();
@@ -700,6 +747,7 @@ pub fn surf_terminal(
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
             sp.heatmap = None;
         }
@@ -804,6 +852,7 @@ fn push_line_series(
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let color = color.unwrap_or_else(|| fig.next_color());
@@ -834,6 +883,7 @@ fn push_stem_series(
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let color = color.unwrap_or_else(|| fig.next_color());
@@ -883,6 +933,7 @@ pub fn push_xy_lines(
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         for (x, y, label) in columns {
@@ -921,6 +972,7 @@ pub fn push_xy_bar(x: Vec<f64>, y: Vec<f64>, label: &str, title: &str, color: Op
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let color = color.unwrap_or_else(|| fig.next_color());
@@ -952,6 +1004,7 @@ pub fn push_xy_scatter(
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let color = color.unwrap_or_else(|| fig.next_color());
@@ -1001,6 +1054,7 @@ pub fn plot_complex(data: &CVector, title: &str) -> Result<(), PlotError> {
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
         }
         let sp = fig.current_mut();
@@ -1052,6 +1106,7 @@ pub fn plot_db(freqs: &RVector, h: &CVector, title: &str) -> Result<(), PlotErro
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
             sp.xlabel.clear();
             sp.ylabel.clear();
@@ -1101,6 +1156,7 @@ pub fn plot_histogram(data: &RVector, n_bins: usize, title: &str) -> Result<(), 
         if !fig.hold {
             let sp = fig.current_mut();
             sp.series.clear();
+            sp.leave_smith();
             sp.title.clear();
             sp.xlabel.clear();
             sp.ylabel.clear();
@@ -1344,6 +1400,7 @@ mod tests {
             if !fig.hold {
                 let sp = fig.current_mut();
                 sp.series.clear();
+                sp.leave_smith();
                 sp.title.clear();
                 sp.xlabel.clear();
                 sp.ylabel.clear();

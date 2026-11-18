@@ -16632,22 +16632,111 @@ mod sparameters_phase3_tests {
     }
 
     #[test]
-    fn smith_of_complex_vector_pushes_grid_and_one_data_trace() {
-        let state =
-            smith_figure_state("g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g);");
+    fn smith_of_complex_vector_marks_the_panel_and_pushes_one_data_trace() {
+        let state = smith_figure_state("g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g);");
         let sp = state.current();
-        // 17 grid arcs (2 frame + 5 R + 10 X) + 1 data trace = 18
-        assert_eq!(sp.series.len(), 18);
-        // Grid arcs have empty labels; the data trace is labelled "Γ".
-        let labelled: Vec<&str> = sp.series.iter().map(|s| s.label.as_str()).collect();
-        let non_empty: Vec<&&str> = labelled.iter().filter(|s| !s.is_empty()).collect();
-        assert_eq!(non_empty, vec![&"Γ"]);
-        // Axis is locked to the unit disk + equal aspect.
+        // The grid is drawn by each backend; the series hold only data.
+        assert_eq!(sp.series.len(), 1);
+        assert_eq!(sp.series[0].label, "Γ");
+        assert_eq!(sp.smith, Some(rustlab_plot::smith::SmithGrid::Impedance));
+        let h = rustlab_plot::smith::VIEW_HALF_WIDTH;
         assert!(sp.axis_equal);
-        assert_eq!(sp.xlim, (Some(-1.1), Some(1.1)));
-        assert_eq!(sp.ylim, (Some(-1.1), Some(1.1)));
-        assert_eq!(sp.xlabel, "Re(Γ)");
-        assert_eq!(sp.ylabel, "Im(Γ)");
+        assert_eq!(sp.xlim, (Some(-h), Some(h)));
+        assert_eq!(sp.ylim, (Some(-h), Some(h)));
+        // No Cartesian axis titles on a Smith chart.
+        assert_eq!(sp.xlabel, "");
+        assert_eq!(sp.ylabel, "");
+        // Γ values are plotted as given: x = Re(Γ), y = Im(Γ).
+        assert!((sp.series[0].x_data[0] - 0.5).abs() < 1e-12);
+        assert!(sp.series[0].y_data[0].abs() < 1e-12);
+    }
+
+    #[test]
+    fn smith_of_hand_computed_impedances_lands_on_gamma() {
+        // Γ = (Z − Z0)/(Z + Z0) with Z0 = 50, checked by hand.
+        let state = smith_figure_state(
+            "z0 = 50; z = [50, 0, 100, 25, j*50, -j*50, 25 + 25j, 50 + 50j];
+             smith((z - z0) ./ (z + z0));",
+        );
+        let sp = state.current();
+        let want = [
+            (0.0, 0.0),
+            (-1.0, 0.0),
+            (1.0 / 3.0, 0.0),
+            (-1.0 / 3.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (-0.2, 0.4),
+            (0.2, 0.4),
+        ];
+        let s = &sp.series[0];
+        for (k, (x, y)) in want.iter().enumerate() {
+            assert!(
+                (s.x_data[k] - x).abs() < 1e-12 && (s.y_data[k] - y).abs() < 1e-12,
+                "point {k}: ({}, {}) want ({x}, {y})",
+                s.x_data[k],
+                s.y_data[k]
+            );
+        }
+    }
+
+    #[test]
+    fn smith_single_value_is_a_visible_marker() {
+        // A one-point line draws nothing in any backend.
+        let state = smith_figure_state("smith(0.5 + 0.1*j);");
+        let sp = state.current();
+        assert_eq!(sp.series.len(), 1);
+        assert!(matches!(
+            sp.series[0].kind,
+            rustlab_plot::figure::PlotKind::Scatter
+        ));
+    }
+
+    #[test]
+    fn smith_rejects_z_parameters() {
+        // Plotting Z-parameters as if they were reflection coefficients put
+        // a 50 ohm load at Γ = 50.
+        let err = run_err(
+            "S = zeros3(1, 2, 2); S(1, 1, 1) = 0.2; S(1, 2, 2) = 0.1;
+             s = sparameters(S, [1e9]); smith(s2z(s));",
+        );
+        assert!(
+            err.contains("Z-parameters") && err.contains("z2s"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn smith_keeps_the_callers_hold_state() {
+        // marker / smith_circle used to leave hold on, so the next plot()
+        // was drawn on top of the Smith chart.
+        let state = smith_figure_state(
+            "smith(0.5 + 0.1*j); marker(0, \"m\"); smith_circle(0, 0.5); plot([1, 2, 3]);",
+        );
+        assert!(!state.hold);
+        let sp = state.current();
+        assert_eq!(sp.smith, None, "plot() replaces the Smith chart");
+        assert_eq!(sp.series.len(), 1);
+        assert_eq!(sp.xlim, (None, None), "plot() after smith() autoscales");
+        assert!(!sp.axis_equal);
+    }
+
+    #[test]
+    fn smith_under_hold_on_adds_to_the_chart() {
+        let state = smith_figure_state(
+            "smith([0.1, 0.2], \"grid\", \"ZY\"); hold on; smith([0.3, 0.4j]); hold off;",
+        );
+        let sp = state.current();
+        assert_eq!(sp.series.len(), 2);
+        assert_eq!(sp.smith, Some(rustlab_plot::smith::SmithGrid::Immittance));
+    }
+
+    #[test]
+    fn smith_without_hold_starts_a_new_chart_and_title() {
+        let state = smith_figure_state("plot([1, 2]); title(\"old\"); smith([0.1, 0.2]);");
+        let sp = state.current();
+        assert_eq!(sp.series.len(), 1);
+        assert_eq!(sp.title, "Smith Chart");
     }
 
     #[test]
@@ -16689,30 +16778,16 @@ mod sparameters_phase3_tests {
     }
 
     #[test]
-    fn smith_grid_y_mode_uses_admittance_family_colors() {
-        let state = smith_figure_state("smith(0.5 + 0.1*j, \"grid\", \"Y\");");
-        let sp = state.current();
-        // Y mode emits the Y family with bluish color (Rgb(120, 180, 200))
-        // distinct from the Z family color (Rgb(170, 170, 170)).
-        let saw_y_color = sp.series.iter().any(|s| {
-            matches!(s.color, rustlab_plot::SeriesColor::Rgb(120, 180, 200))
-        });
-        assert!(saw_y_color, "Y grid should emit at least one bluish arc");
-    }
-
-    #[test]
-    fn smith_grid_zy_mode_includes_both_families() {
-        let state = smith_figure_state("smith(0.5 + 0.1*j, \"grid\", \"ZY\");");
-        let sp = state.current();
-        let saw_z = sp
-            .series
-            .iter()
-            .any(|s| matches!(s.color, rustlab_plot::SeriesColor::Rgb(170, 170, 170)));
-        let saw_y = sp
-            .series
-            .iter()
-            .any(|s| matches!(s.color, rustlab_plot::SeriesColor::Rgb(120, 180, 200)));
-        assert!(saw_z && saw_y);
+    fn smith_grid_modes_are_recorded_on_the_panel() {
+        use rustlab_plot::smith::SmithGrid;
+        for (opt, want) in [
+            ("Y", SmithGrid::Admittance),
+            ("ZY", SmithGrid::Immittance),
+            ("z", SmithGrid::Impedance),
+        ] {
+            let state = smith_figure_state(&format!("smith(0.5 + 0.1*j, \"grid\", \"{opt}\");"));
+            assert_eq!(state.current().smith, Some(want), "{opt}");
+        }
     }
 
     #[test]
@@ -16722,51 +16797,39 @@ mod sparameters_phase3_tests {
     }
 
     #[test]
-    fn smith_svg_backend_emits_dashed_grid_lines() {
-        // Render to a temp SVG and check it contains many polyline elements
-        // (each dashed grid arc renders as a sequence of short polyline
-        // segments via plotters' dashed-stroke simulation).
+    fn smith_svg_backend_draws_grid_and_labels() {
         let tmp = std::env::temp_dir().join("rustlab_phase3_grid.svg");
         let tmp_str = tmp.to_string_lossy().replace('\\', "/");
-        let setup = format!(
-            "g = 0.5 * exp(j * linspace(0, 2*pi, 64)); smith(g); savefig(\"{tmp_str}\");"
-        );
+        let setup =
+            format!("g = 0.5 * exp(j * linspace(0, 2*pi, 64)); smith(g); savefig(\"{tmp_str}\");");
         render_smith_to_svg(&setup, &tmp);
         let svg = std::fs::read_to_string(&tmp).unwrap();
-        // 17 grid arcs + 1 data trace -> hundreds of polyline elements from
-        // the dashed-stroke simulation. Hard lower bound: more than 50.
-        let polyline_count = svg.matches("polyline").count();
-        assert!(
-            polyline_count > 50,
-            "expected many polylines for the Smith grid, got {polyline_count}"
-        );
-        // Title text from the chart.
+        // 17 grid polylines (frame, axis, 5 r circles, 10 x arcs) + data.
+        let polyline_count = svg.matches("<polyline").count();
+        assert!(polyline_count >= 18, "got {polyline_count} polylines");
         assert!(svg.contains("Smith Chart"), "missing title");
+        assert!(
+            svg.contains("+j1.0") && svg.contains("2.0"),
+            "missing grid labels"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
-    fn smith_html_backend_suppresses_grid_from_legend() {
+    fn smith_html_backend_draws_grid_traces_and_label_annotations() {
         let tmp = std::env::temp_dir().join("rustlab_phase3_grid.html");
         let tmp_str = tmp.to_string_lossy().replace('\\', "/");
-        let setup = format!(
-            "g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g); savefig(\"{tmp_str}\");"
-        );
+        let setup =
+            format!("g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g); savefig(\"{tmp_str}\");");
         run(&setup);
         let html = std::fs::read_to_string(&tmp).unwrap();
-        // Each of the 17 grid arcs gets `showlegend: false`.
-        let suppressed = html.matches("showlegend: false").count();
-        assert!(
-            suppressed >= 17,
-            "expected >= 17 showlegend:false directives, got {suppressed}"
-        );
-        // The data series ("Γ") still gets a legend entry.
+        // Grid traces stay out of the legend and the hover readout.
+        assert!(html.matches("hoverinfo: \"skip\"").count() >= 2);
         assert!(html.contains("\"Γ\""), "missing data series name");
-        // scaleanchor present because axis_equal=true.
-        assert!(
-            html.contains("scaleanchor"),
-            "axis_equal Smith chart should emit scaleanchor"
-        );
+        // Hidden Cartesian axes, equal scale, labels as annotations.
+        assert!(html.contains("visible: false"));
+        assert!(html.contains("scaleanchor"));
+        assert!(html.contains("text: \"+j1.0\"") && html.contains("text: \"5.0\""));
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -16790,7 +16853,7 @@ mod sparameters_phase3_tests {
     #[test]
     fn smith_marker_adds_scatter_point() {
         let setup = "
-            smith(0.5 + 0.1*j);
+            smith([0.5 + 0.1*j, 0.4]);
             marker(0.0, \"matched\");
             marker(1.0, \"open\");
         ";
@@ -17365,9 +17428,8 @@ mod sparameters_phase5_tests {
 
     #[test]
     fn smith_circle_adds_one_line_series_to_active_axes() {
-        // Lay down a Smith chart first, then overlay one circle. The figure
-        // should now have the 17 grid arcs + the smith data trace + one new
-        // circle line — total 19 series.
+        // Lay down a Smith chart first, then overlay one circle: the data
+        // marker and the circle.
         let setup = "
             smith(0.5 + 0.0 * j);
             smith_circle(0.0, 0.5, \"|Γ|=0.5\");
@@ -17375,8 +17437,7 @@ mod sparameters_phase5_tests {
         run(setup);
         let state = FIGURE.with(|f| f.borrow().clone());
         let sp = state.current();
-        // 17 grid arcs + 1 data trace + 1 overlay = 19 series.
-        assert_eq!(sp.series.len(), 19);
+        assert_eq!(sp.series.len(), 2);
         let circle = sp.series.last().unwrap();
         assert_eq!(circle.label, "|Γ|=0.5");
         // The circle's x-data should oscillate between roughly -0.5 and 0.5.
@@ -17384,6 +17445,27 @@ mod sparameters_phase5_tests {
         let min_x = circle.x_data.iter().cloned().fold(f64::INFINITY, f64::min);
         assert!((max_x - 0.5).abs() < 1e-9, "max_x: {max_x}");
         assert!((min_x - (-0.5)).abs() < 1e-9, "min_x: {min_x}");
+    }
+
+    #[test]
+    fn smith_circle_is_clipped_to_the_unit_disk() {
+        // A stability circle wholly outside the chart draws nothing; one
+        // that crosses the rim keeps only its inside arc, ending on the rim.
+        run("smith([0.1, 0.2]); smith_circle(3, 0.5, \"out\"); smith_circle(1, 1, \"cross\");");
+        let state = FIGURE.with(|f| f.borrow().clone());
+        let sp = state.current();
+        let out = sp.series.iter().find(|s| s.label == "out").unwrap();
+        assert!(out.x_data.is_empty());
+        let cross = sp.series.iter().find(|s| s.label == "cross").unwrap();
+        for (x, y) in cross.x_data.iter().zip(&cross.y_data) {
+            assert!(x * x + y * y <= 1.0 + 1e-9, "({x}, {y})");
+        }
+        let (x0, y0) = (cross.x_data[0], cross.y_data[0]);
+        assert!(((x0 * x0 + y0 * y0).sqrt() - 1.0).abs() < 1e-12);
+        assert!(
+            (x0 - 0.5).abs() < 1e-9,
+            "rim crossing at Re = 0.5, got {x0}"
+        );
     }
 
     #[test]
