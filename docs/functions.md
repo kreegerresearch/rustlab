@@ -3013,7 +3013,14 @@ quiver(U, V);                       % shortcut — indexed axes
 quiver(x(1:5:end), y(1:5:end), U(1:5:end, 1:5:end), V(1:5:end, 1:5:end));
 ```
 
-Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces. NaN entries in `U` or `V` skip that cell.
+Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces, and a `plot` / `scatter` / `stem` series is drawn on top of all of them in every backend (SVG, PNG, PDF, HTML, viewer). Without a heatmap, the axes grow to include the series. NaN entries in `U` or `V` skip that cell.
+```
+quiver(X, Y, -Y, X);
+hold on;
+plot(cos(t), sin(t), "r");     # a loop over the field
+hold off;
+savefig("stokes_loop.png");
+```
 
 Per-backend behaviour:
 

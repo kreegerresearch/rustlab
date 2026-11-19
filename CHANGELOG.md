@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.77
+
+### Fixed
+- **`plot` over `quiver`, `contour`, `streamplot`, or `imagesc` is drawn in SVG, PNG, and PDF.** A panel holding one of those overlays took a separate render path that drew the field and never its line, stem, bar, or scatter series, so `hold on; plot(cos(t), sin(t))` over a `quiver` was missing from the saved file with no warning (`rustlab_em`'s `stokes_loop.svg` shipped without its loop). The live viewer rasterises those panels through the same path and lost the series too. Series are now drawn on top of the overlays, with a legend when one is labelled. Without a heatmap, the axes grow to include the series, as MATLAB's `hold on` does; a heatmap keeps its cell extent. HTML already drew both and is unchanged. Saved figures that combine a field with `plot` change (the line now appears).
+
 ## 0.3.68
 
 ### Fixed
