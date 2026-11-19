@@ -160,6 +160,16 @@ impl BuiltinRegistry {
         r.register("atan2", builtin_atan2);
         r.register("sinh", builtin_sinh);
         r.register("cosh", builtin_cosh);
+        r.register("tan", builtin_tan);
+        r.register("cot", builtin_cot);
+        r.register("sec", builtin_sec);
+        r.register("csc", builtin_csc);
+        r.register("asinh", builtin_asinh);
+        r.register("acosh", builtin_acosh);
+        r.register("atanh", builtin_atanh);
+        r.register("isnan", builtin_isnan);
+        r.register("isinf", builtin_isinf);
+        r.register("isfinite", builtin_isfinite);
         r.register("floor", builtin_floor);
         r.register("ceil", builtin_ceil);
         r.register("round", builtin_round);
@@ -1055,6 +1065,142 @@ fn builtin_sinh(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_cosh(args: Vec<Value>) -> Result<Value, ScriptError> {
     apply_scalar_fn_to_value("cosh", args, f64::cosh, |c: Complex<f64>| c.cosh())
+}
+
+fn builtin_tan(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value("tan", args, f64::tan, |c: Complex<f64>| c.tan())
+}
+
+// cot / sec / csc are the reciprocals, as in MATLAB: cot(0) = Inf.
+fn builtin_cot(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "cot",
+        args,
+        |x| 1.0 / x.tan(),
+        |c: Complex<f64>| c.tan().inv(),
+    )
+}
+
+fn builtin_sec(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "sec",
+        args,
+        |x| 1.0 / x.cos(),
+        |c: Complex<f64>| c.cos().inv(),
+    )
+}
+
+fn builtin_csc(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "csc",
+        args,
+        |x| 1.0 / x.sin(),
+        |c: Complex<f64>| c.sin().inv(),
+    )
+}
+
+fn builtin_asinh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value("asinh", args, f64::asinh, |c: Complex<f64>| c.asinh())
+}
+
+fn builtin_acosh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Real domain is [1, ∞); below 1 the principal value is complex
+    // (acosh(0.5) → 1.0472i, acosh(-2) → 1.317 + πi), as in MATLAB.
+    apply_scalar_fn_promoting(
+        "acosh",
+        args,
+        f64::acosh,
+        |c: Complex<f64>| c.acosh(),
+        |x| x < 1.0,
+    )
+}
+
+fn builtin_atanh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Real domain is [-1, 1] (±1 give ±Inf); outside it the principal value
+    // is complex (atanh(2) → 0.5493 + π/2 i), as in MATLAB. On the real-axis
+    // cut MATLAB and Octave put the imaginary part at +π/2 for both signs;
+    // `Complex::atanh` gives −π/2 for x > 1.
+    apply_scalar_fn_promoting(
+        "atanh",
+        args,
+        f64::atanh,
+        |c: Complex<f64>| {
+            if c.im == 0.0 && c.re.abs() > 1.0 {
+                let x = c.re;
+                Complex::new(
+                    0.5 * ((1.0 + x) / (x - 1.0)).abs().ln(),
+                    std::f64::consts::FRAC_PI_2,
+                )
+            } else {
+                c.atanh()
+            }
+        },
+        |x| x.abs() > 1.0,
+    )
+}
+
+fn builtin_isnan(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isnan", args, |c| c.re.is_nan() || c.im.is_nan())
+}
+
+fn builtin_isinf(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isinf", args, |c| c.re.is_infinite() || c.im.is_infinite())
+}
+
+fn builtin_isfinite(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isfinite", args, |c| c.re.is_finite() && c.im.is_finite())
+}
+
+/// A per-element test of a numeric value. A scalar gives a `bool`; a vector
+/// or matrix gives a logical array of its shape; a `Tensor3` gives 0/1
+/// doubles (there is no rank-3 logical). Integers are always finite.
+fn elementwise_predicate(
+    name: &str,
+    args: Vec<Value>,
+    pred: impl Fn(Complex<f64>) -> bool,
+) -> Result<Value, ScriptError> {
+    check_args(name, &args, 1)?;
+    let logical = |flags: Vec<bool>, rows: usize, cols: usize| {
+        rustlab_core::LogicalArray::from_flags(flags, rows, cols)
+            .map(Value::Logical)
+            .map_err(|e| ScriptError::runtime(e.to_string()))
+    };
+    match &args[0] {
+        Value::Scalar(x) => Ok(Value::Bool(pred(Complex::new(*x, 0.0)))),
+        Value::Complex(c) => Ok(Value::Bool(pred(*c))),
+        Value::Int { data, .. } => Ok(Value::Bool(pred(Complex::new(*data as f64, 0.0)))),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let flags = data
+                .iter()
+                .map(|&x| pred(Complex::new(x as f64, 0.0)))
+                .collect();
+            logical(flags, *rows, *cols)
+        }
+        Value::Vector(v) => {
+            let flags = match Shared::real_slice(v) {
+                Some(r) => r.iter().map(|&x| pred(Complex::new(x, 0.0))).collect(),
+                None => v.iter().map(|&c| pred(c)).collect(),
+            };
+            logical(flags, 1, Shared::len(v))
+        }
+        Value::Matrix(m) => {
+            let s = Shared::shape(m);
+            let flags = match Shared::real_slice(m) {
+                Some(r) => r.iter().map(|&x| pred(Complex::new(x, 0.0))).collect(),
+                None => m.iter().map(|&c| pred(c)).collect(),
+            };
+            logical(flags, s[0], s[1])
+        }
+        Value::Tensor3(t) => Ok(Value::real_tensor3(
+            t.mapv(|c| f64::from(u8::from(pred(c)))),
+        )),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: expected a numeric value, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 // floor/ceil/round: apply to real and imaginary parts independently.

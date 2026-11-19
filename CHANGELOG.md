@@ -6,6 +6,13 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.71
+
+### Added
+- **`tan`, `cot`, `sec`, `csc`.** Element-wise tangent and the reciprocal trig functions, complex-aware like `sin` / `cos`. A pole is infinite as in MATLAB: `cot(0)` and `csc(0)` are `Inf`. Scripts that wrote `sin(x) ./ cos(x)` can use `tan(x)`.
+- **`asinh`, `acosh`, `atanh`.** Element-wise inverse hyperbolics. A real input outside the real domain gives MATLAB's principal complex value instead of `NaN`: `acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`, `atanh(2)` is `0.5493 + 1.5708i`, and `atanh(±1)` is `±Inf`. `acosh(x)` replaces the `log(x + sqrt(x.*x - 1))` workaround.
+- **`isnan`, `isinf`, `isfinite`.** Element-wise predicates. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, so `v(isnan(v)) = 0` works. A complex element is `NaN` (or infinite) when either part is, and finite only when both are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3`.
+
 ## 0.3.68
 
 ### Fixed
