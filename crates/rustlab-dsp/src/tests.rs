@@ -1583,6 +1583,34 @@ mod vector_calc_tests {
     }
 
     #[test]
+    fn gradient_1d_second_order_endpoints_are_exact_for_quadratics() {
+        use crate::vector_calc::{gradient_1d_coords_order, gradient_1d_order};
+        use num_complex::Complex;
+        // y = x^2 on 0..4: every sample is 2x with order 2; order 1 is unchanged.
+        let y: Vec<Complex<f64>> = [0.0, 1.0, 4.0, 9.0, 16.0]
+            .into_iter()
+            .map(|r| Complex::new(r, 0.0))
+            .collect();
+        let g = gradient_1d_order(&y, 1.0, 2).unwrap();
+        let got: Vec<f64> = g.iter().map(|c| c.re).collect();
+        assert_eq!(got, vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        let g1 = gradient_1d_order(&y, 1.0, 1).unwrap();
+        assert_eq!(g1[0].re, 1.0);
+        // Nonuniform: y = 5x^2 - 2x at x = [0, 1, 3, 3.5]; dy/dx = 10x - 2.
+        let x = [0.0, 1.0, 3.0, 3.5];
+        let yq: Vec<Complex<f64>> = x
+            .iter()
+            .map(|&t| Complex::new(5.0 * t * t - 2.0 * t, 0.0))
+            .collect();
+        let g = gradient_1d_coords_order(&yq, &x, 2).unwrap();
+        for (gi, &t) in g.iter().zip(&x) {
+            assert!((gi.re - (10.0 * t - 2.0)).abs() < 1e-12, "{gi} at {t}");
+        }
+        assert!(gradient_1d_order(&y[..2], 1.0, 2).is_err());
+        assert!(gradient_1d_order(&y, 1.0, 3).is_err());
+    }
+
+    #[test]
     fn nonpositive_step_errors() {
         let f = from_real_fn(3, 3, |_, _| 0.0);
         assert!(gradient_2d(&f, 0.0, 1.0).is_err());

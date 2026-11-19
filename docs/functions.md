@@ -234,13 +234,18 @@ T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
 ```
 Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
 
-### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(F)` / `gradient(F, dx, dy)`
+### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` / `gradient(F)` / `gradient(F, dx, dy)`
 1-D gradient of a vector (or a `1×N` / `N×1` matrix), and 2-D gradient of a matrix.
 
-A vector keeps its orientation and is not returned as a tuple. Endpoints use the first-order difference `(f[2]-f[1])/h`. Interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+A vector keeps its orientation and is not returned as a tuple. By default (MATLAB) the endpoints use the **first-order** difference `(f[2]-f[1])/h`, while interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+
+`"order", 2` (last) makes the 1-D endpoints **second-order** one-sided, the boundary order of the 2-D and 3-D stencils: `(-3f[1] + 4f[2] - f[3])/(2h)` and its mirror at the end, or, with coordinates, the derivative of the parabola through the first (last) three samples. The interior is unchanged. It needs at least 3 samples. A quadratic is then exact at every sample; with first-order ends the endpoint error is `O(h)` and dominates a smooth sweep. `"order", 1` is the default. A 2-D matrix accepts `"order", 2` (its boundaries already are second-order) and rejects `"order", 1`.
 ```
 g = gradient((0:4) .^ 2)     % [1, 2, 4, 6, 7]
 g = gradient([0, 1, 4, 9], 2)
+x = [0.4, 0.6, 0.8, 1.0, 1.4, 2.0];
+gradient(x.^2, x)               % [1.0, 1.2, 1.6, 2.0, 2.8, 3.4]  ends first-order
+gradient(x.^2, x, "order", 2)   % [0.8, 1.2, 1.6, 2.0, 2.8, 4.0]  exact
 ```
 
 A true 2-D matrix (`ny×nx`, rows index `y`, columns index `x`) still returns `[Fx, Fy]`.
