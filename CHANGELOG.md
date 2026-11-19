@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.73
+
+### Fixed
+- **`pin_dirichlet` keeps pinned values exact at small grid spacing.** A pinned row was an identity row (diagonal 1) next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`). The sparse LU then pivoted on the large entries in the pinned column, and a conductor pinned at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4` (`2.4e-11` at `h = 1e-2`). In `rustlab_em` Lesson 18 the energy identity `2U = Q·V0` drifted from 2e-14 to 9e-9. The pinned row is now scaled to the operator's own diagonal, and the same repro is exact at every `h` from 1 to 1e-6.
+
+### Added
+- **`pin_dirichlet(..., "scale", s)`.** `s` is `"auto"` (the default) or a positive number used as every pinned row's diagonal; `"scale", 1` gives the old identity rows.
+
+### Breaking / behavior changes
+- **`pin_dirichlet` pinned rows are `d_k·e_k`, not `e_k`.** Row `k` of the returned `A` has `d_k = |A(k, k)|` on the diagonal (if that is 0, the largest `|A(k, :)|`; if the row is empty, 1), and `b(k)` is `d_k · value`. Solutions are the same in exact arithmetic and now more accurate; only the last digits of an interior solution can move. A script that reads `A(k, k) == 1` or `b(k) == value` back from the outputs, or reuses `b` with a different operator, will see the scaled values. Migration: pass `"scale", 1` for the old rows.
+
 ## 0.3.68
 
 ### Fixed

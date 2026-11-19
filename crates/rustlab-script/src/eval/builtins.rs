@@ -15955,13 +15955,16 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
     }
 }
 
-/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values)
+/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values [, "scale", s])
 ///
 /// Enforce Dirichlet conditions on a linear system: for each pinned row
-/// k, replace row k of `A` with the identity row (diagonal 1, everything
-/// else 0) and set `b(k)` to the pinned value, so the solve reproduces
-/// the boundary potential exactly while the operator acts everywhere
-/// else. Replaces the hand-rolled "zero the stencil neighbours" loop —
+/// k, replace row k of `A` with `d_k` on the diagonal and 0 elsewhere, and
+/// set `b(k)` to `d_k · value`, so the solve reproduces the boundary
+/// potential while the operator acts everywhere else. `d_k` is `|A(k, k)|`
+/// by default (`"scale", "auto"`), else `max |A(k, :)|`, else 1: a pinned
+/// row of size 1 next to stencil entries of size `ε/h²` loses the LU pivot
+/// in its column and the pinned values drift (1e-7 at h = 1e-4). A positive
+/// number `s` uses `d_k = s` for every row; `s = 1` is the identity row. Replaces the hand-rolled "zero the stencil neighbours" loop —
 /// zeroing the whole row is equivalent for stencil operators and also
 /// correct for operators with wider rows (e.g. `laplacian_eps_2d`).
 ///
@@ -15969,7 +15972,43 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
 /// with the mask's nonzero cells / the index list. Both outputs must be
 /// bound: the modified `b` is half the point.
 fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    check_args("pin_dirichlet", &args, 4)?;
+    if args.len() != 4 && args.len() != 6 {
+        return Err(ScriptError::type_err(format!(
+            "pin_dirichlet: expected 4 arguments, or 6 with \"scale\", got {}",
+            args.len()
+        )));
+    }
+    // None = "auto" (per-row diagonal magnitude); Some(s) = fixed scale.
+    let fixed_scale: Option<f64> = if args.len() == 6 {
+        match &args[4] {
+            Value::Str(k) if k == "scale" => {}
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: 5th argument must be the option name \"scale\", got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+        match &args[5] {
+            Value::Str(s) if s == "auto" => None,
+            Value::Scalar(x) if x.is_finite() && *x > 0.0 => Some(*x),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: \"scale\" must be \"auto\" or a positive finite number, got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        Value::Scalar(x) => format!("{x}"),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+    } else {
+        None
+    };
     if nargout < 2 {
         return Err(ScriptError::type_err(
             "pin_dirichlet: returns two outputs — use [A, b] = pin_dirichlet(A, b, mask, values)"
@@ -16033,7 +16072,59 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
 
     let pinned: std::collections::BTreeSet<usize> = ks.iter().copied().collect();
 
-    // Rebuild A with the pinned rows replaced by identity rows.
+    // Row scale d_k, read from the original operator.
+    let mut scale: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    if let Some(s) = fixed_scale {
+        for &k in &pinned {
+            scale.insert(k, s);
+        }
+    } else {
+        let mut diag: std::collections::BTreeMap<usize, C64> = std::collections::BTreeMap::new();
+        let mut row_max: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+        match &args[0] {
+            Value::SparseMatrix(sm) => {
+                // COO may repeat a position; repeated entries add.
+                let mut cells: std::collections::BTreeMap<(usize, usize), C64> =
+                    std::collections::BTreeMap::new();
+                for &(r, c, v) in &sm.entries {
+                    if pinned.contains(&r) {
+                        *cells.entry((r, c)).or_insert(Complex::new(0.0, 0.0)) += v;
+                    }
+                }
+                for (&(r, c), &v) in &cells {
+                    if r == c {
+                        diag.insert(r, v);
+                    }
+                    let m = row_max.entry(r).or_insert(0.0);
+                    *m = m.max(v.norm());
+                }
+            }
+            Value::Matrix(m) => {
+                for &k in &pinned {
+                    diag.insert(k, m[[k, k]]);
+                    let mx = (0..m.ncols()).map(|j| m[[k, j]].norm()).fold(0.0, f64::max);
+                    row_max.insert(k, mx);
+                }
+            }
+            _ => unreachable!("validated above"),
+        }
+        for &k in &pinned {
+            let d = diag.get(&k).map_or(0.0, |z| z.norm());
+            let d = if d > 0.0 && d.is_finite() {
+                d
+            } else {
+                let r = row_max.get(&k).copied().unwrap_or(0.0);
+                if r > 0.0 && r.is_finite() {
+                    r
+                } else {
+                    1.0
+                }
+            };
+            scale.insert(k, d);
+        }
+    }
+
+    // Rebuild A with the pinned rows replaced by scaled identity rows.
     let new_a = match &args[0] {
         Value::SparseMatrix(sm) => {
             let hint = sm.ordering_hint;
@@ -16044,7 +16135,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 .copied()
                 .collect();
             for &k in &pinned {
-                entries.push((k, k, Complex::new(1.0, 0.0)));
+                entries.push((k, k, Complex::new(scale[&k], 0.0)));
             }
             let mut rebuilt = SparseMat::new(sm.rows, sm.cols, entries);
             // Identity rows don't change the grid structure — keep the
@@ -16060,7 +16151,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 for j in 0..dense.ncols() {
                     dense[[k, j]] = Complex::new(0.0, 0.0);
                 }
-                dense[[k, k]] = Complex::new(1.0, 0.0);
+                dense[[k, k]] = Complex::new(scale[&k], 0.0);
             }
             Value::Matrix(dense.into())
         }
@@ -16078,7 +16169,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             }
             let mut b = (**v).clone();
             for (&k, &val) in ks.iter().zip(vals.iter()) {
-                b[k] = val;
+                b[k] = val * scale[&k];
             }
             Value::Vector(b.into())
         }
@@ -16092,6 +16183,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             let mut b = (**m).clone();
             let row_shaped = m.nrows() == 1;
             for (&k, &val) in ks.iter().zip(vals.iter()) {
+                let val = val * scale[&k];
                 if row_shaped {
                     b[[0, k]] = val;
                 } else {

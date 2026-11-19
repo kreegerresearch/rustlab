@@ -12846,8 +12846,9 @@ mod pin_dirichlet_tests {
         }
     }
 
-    /// Mask form on a real operator: the pinned row becomes the identity
-    /// row, b gets the value, and everything else is untouched.
+    /// Mask form on a real operator: the pinned row becomes `|A(k,k)|` on the
+    /// diagonal (4 here), b gets that times the value, and everything else
+    /// is untouched.
     #[test]
     fn mask_pins_row_to_identity() {
         let ev = run(
@@ -12864,9 +12865,9 @@ mod pin_dirichlet_tests {
              other = b2(1);
              untouched = D(1, 1);",
         );
-        assert_eq!(scalar(&ev, "diag_val"), 1.0, "pinned diagonal is 1");
+        assert_eq!(scalar(&ev, "diag_val"), 4.0, "pinned diagonal is |A(k,k)|");
         assert_eq!(scalar(&ev, "off_sum"), 0.0, "pinned row has no off-diagonals");
-        assert_eq!(scalar(&ev, "rhs"), 5.0, "b carries the pinned value");
+        assert_eq!(scalar(&ev, "rhs"), 20.0, "b carries the scaled pinned value");
         assert_eq!(scalar(&ev, "other"), 0.0, "unpinned b untouched");
         assert!(
             scalar(&ev, "untouched").abs() > 0.0,
@@ -12939,8 +12940,8 @@ mod pin_dirichlet_tests {
              dv = D(k, k);
              rhs = b2(k);",
         );
-        assert_eq!(scalar(&ev, "dv"), 1.0);
-        assert_eq!(scalar(&ev, "rhs"), 3.5);
+        assert_eq!(scalar(&ev, "dv"), 6.0, "|A(k,k)| of laplacian_3d(2, 2, 2)");
+        assert_eq!(scalar(&ev, "rhs"), 21.0);
     }
 
     /// Dense A takes the same surgery.
@@ -12953,10 +12954,10 @@ mod pin_dirichlet_tests {
              a11 = A2(1, 1); a12 = A2(1, 2); a21 = A2(2, 1);
              r = b2(1);",
         );
-        assert_eq!(scalar(&ev, "a11"), 1.0);
+        assert_eq!(scalar(&ev, "a11"), 2.0);
         assert_eq!(scalar(&ev, "a12"), 0.0);
         assert_eq!(scalar(&ev, "a21"), 1.0, "other rows untouched");
-        assert_eq!(scalar(&ev, "r"), 4.0);
+        assert_eq!(scalar(&ev, "r"), 8.0);
     }
 
     #[test]
