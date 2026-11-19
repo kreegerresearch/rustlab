@@ -33,7 +33,7 @@ V_exact = sin(pi*(1:ny)'*dx/Lx) * sin(pi*(1:nx)*dy/Ly);
 
 # V(:) in rustlab gives a ROW vector in column-major order; transpose to
 # get a column vector suitable for L * v and spsolve.
-v_exact = V_exact(:)';
+v_exact = V_exact(:);
 rhs = full(L) * v_exact;
 v_solved = spsolve(L, rhs);
 
@@ -55,7 +55,7 @@ i_mid = round(ny / 2);
 j_mid = round(nx / 2);
 rho(i_mid, j_mid) = 1.0;
 
-rhs2 = -rho(:)';
+rhs2 = -rho(:);
 V2_flat = spsolve(L, rhs2);
 V2 = reshape(V2_flat, ny, nx);
 

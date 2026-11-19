@@ -48,7 +48,7 @@ about 80 MB. Sparse, it fits in well under 1 MB.
 % Centred point source.
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-b   = -1 * rho(:)';
+b   = -1 * rho(:);
 
 % Default dispatch: -L is SPD, so auto picks Cholesky.
 v_auto = spsolve(A, b);

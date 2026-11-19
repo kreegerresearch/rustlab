@@ -354,8 +354,8 @@ fn eigs_of_a_diagonal_sparse_matrix() {
         "A = sparse([1, 2, 3], [1, 2, 3], [1, 4, 9], 3, 3)\n\
          [V, D] = eigs(A, 2, \"lm\")\n\
          s = real(D(1)) + real(D(2))\n\
-         r0 = norm(A * V(:, 1)' - D(1) * V(:, 1)')\n\
-         r1 = norm(A * V(:, 2)' - D(2) * V(:, 2)')",
+         r0 = norm(A * V(:, 1) - D(1) * V(:, 1))\n\
+         r1 = norm(A * V(:, 2) - D(2) * V(:, 2))",
     );
     assert_re(&ev, "s", 13.0, 1e-8);
     assert!(re(&ev, "r0") < 1e-8, "{}", re(&ev, "r0"));

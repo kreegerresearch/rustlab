@@ -45,12 +45,12 @@ each other when applied to a `(ny, nx)` grid:
 
 ```
 V_grid = reshape(v_flat, ny, nx)   % flat → 2-D, column-major
-v_flat = V_grid(:)'                % 2-D → flat (row), then transpose to column
+v_flat = V_grid(:)                 % 2-D → flat column (column-major)
 ```
 
-`V(:)` returns a **row** vector in rustlab; the trailing `'` (transpose)
-turns it into the column vector that `spsolve` and matrix-vector products
-expect.
+`V(:)` is an `N×1` **column**, as in MATLAB, which is the shape `spsolve`
+and matrix-vector products expect. Don't add a `'`: on complex data it
+conjugates.
 
 ## Index sugar — `ij2k` and `k2ij`
 
@@ -79,7 +79,7 @@ Ly = (ny + 1) * dy;
 % Separable eigenfunction: V(i, j) = sin(π i dx / Lx) sin(π j dy / Ly)
 [J, I] = meshgrid(1:nx, 1:ny);
 V_exact = sin(pi * I * dx / Lx) .* sin(pi * J * dy / Ly);
-v_exact = V_exact(:)';
+v_exact = V_exact(:);
 
 % Apply L to v_exact, then solve — should recover v_exact to 1e-10.
 rhs = full(L) * v_exact;
@@ -90,7 +90,7 @@ print(rel_err)
 
 <!-- rustlab:output-start -->
 ```text
-0.0000000000000014539643322384945
+0.000000000000001453964332238495
 ```
 
 <!-- rustlab:output-end -->
@@ -110,7 +110,7 @@ L = laplacian_2d(nx, ny);
 rho = zeros(ny, nx);
 rho(round(ny/2), round(nx/2)) = 1.0;
 
-V_flat = spsolve(L, -rho(:)');
+V_flat = spsolve(L, -rho(:));
 V = reshape(V_flat, ny, nx);
 
 imagesc(V, "jet")
@@ -119,7 +119,7 @@ xlabel("j"); ylabel("i")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/laplacian/plot-1-aed483ff.svg)
+![plot 1](plots/laplacian/plot-1-30bb22d7.svg)
 
 <!-- rustlab:output-end -->
 
@@ -138,7 +138,7 @@ function — the same shape you'd see from a point charge in 2-D.
 **Sign:** `L ≈ +∇²`. For Poisson $\nabla^2 V = f$, solve as
 `V = spsolve(L, f_flat)`; for the physics convention
 $\nabla^2 V = -\rho/\varepsilon_0$, use
-`V = spsolve(L, -rho(:)' / eps0)`.
+`V = spsolve(L, -rho(:) / eps0)`.
 
 **Boundary:** homogeneous Dirichlet (`V = 0` outside the grid) is the
 default. Neumann and periodic conditions are the trailing `bc` string

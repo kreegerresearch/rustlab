@@ -1801,6 +1801,7 @@ reshape(1:24, 2, 3, 4)          # → 2×3×4 Tensor3 (column-major walk)
 - Total elements must be preserved: `numel(A)` must equal `m * n` (or `m * n * p`).
 - If `m == 1` or `n == 1` (and no `p`), returns a vector instead of a matrix.
 - The 4-argument form returns a `Tensor3`. See [Rank-3 Tensors](#rank-3-tensors).
+- `reshape(x, N, 1)` with `N > 1` is an `N×1` column, as in MATLAB. `reshape(x, 1, N)` is a row.
 
 ### `ind2sub(sz, IND)` / `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)`
 
@@ -1858,7 +1859,7 @@ Non-conjugate transpose — swaps rows and columns without conjugating imaginary
 transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 ```
 - Use `conj(transpose(A))` or `A'` notation for Hermitian (conjugate) transpose.
-- ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
+- ⚠️ **Reshaping complex data:** postfix `'` conjugates. `src(:)` is already the `N×1` column a solve or a product wants, so write `b = src(:)` with no transpose. The old idiom `b = src(:)'` silently flipped the sign of every imaginary part of a complex `src`, and since 0.3.75 it is a `1×N` row. Use `.'` (or `transpose`) when the intent is a pure reshape to a row.
 
 ### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
 - `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors. A length-1 input is a `1×1` matrix: `size(diag(5))` is `[1, 1]` and the entry is 5.
@@ -2334,7 +2335,7 @@ The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesso
 
 **Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
 
-⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. Reshape with `b = src(:).'` (non-conjugate) instead.
+⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. `src(:)` is already a column (since 0.3.75): use `b = src(:)`.
 
 ```
 x = spsolve(A, b)                       # auto-detect
@@ -2396,7 +2397,7 @@ x2 = solve(F, [j; 1]);
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
-**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
 
 **Boundary conditions.** The optional trailing string argument selects:
 - `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
@@ -2421,7 +2422,7 @@ nx = 32; ny = 24;
 L = laplacian_2d(nx, ny);
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-V = spsolve(L, -rho(:)');
+V = spsolve(L, -rho(:));
 V_grid = reshape(V, ny, nx);
 ```
 
@@ -4118,6 +4119,21 @@ v(end)     # last element
 v(2:4)     # elements 2, 3, 4
 ```
 On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column. `ind2sub(size(M), k)` and `sub2ind(size(M), i, j)` convert between that linear index and subscripts.
+
+**Result orientation (MATLAB).** These reads return an `N×1` column:
+- `x(:)` of any vector, matrix, `Tensor3`, or logical array (column-major order);
+- a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+- `M(rows, k)` that selects one column and more than one row (`D(2:end, 61)`, `M(:, k)`);
+- `T(:, j, k)` on a `Tensor3`.
+
+A single row `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), and a single element are unchanged (row / scalar). So `L * V(:)` is the operator applied to the flattened field, with no transpose; the old `L * V(:)'` conjugated a complex `V`. A column paired with a same-length vector is still element-wise (`M(:, 1) + v` has length `n`). `for` does not iterate over a column; loop over `c.'`. `arrayfun` and `parmap` accept a column input and read a column return as one vector result.
+```
+M = [1, 2; 3, 4; 5, 6];
+size(M(:, 1))       # → [3, 1]
+size(M(2, :))       # → [1, 2]
+size(M(:))          # → [6, 1]
+u = [fliplr(D(2:end, 61)'), D(:, 1)'];   # unfold a cut into one row
+```
 
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.

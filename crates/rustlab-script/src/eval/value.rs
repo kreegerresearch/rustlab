@@ -1191,6 +1191,117 @@ impl Value {
             let selected = Self::widen_int(self.clone()).index(indices)?;
             return Ok(Self::retag_as_int(selected, *class, *overflow));
         }
+        if Self::index_gives_column(self, &indices) {
+            return self.index_ref_dispatch(indices).map(Value::into_column);
+        }
+        self.index_ref_dispatch(indices)
+    }
+
+    /// Whether MATLAB returns a column for this read: `x(:)`, a non-scalar
+    /// subscript into an `n×1` column, an `n×1` subscript into a matrix,
+    /// `M(rows, k)` with more than one row, and `T(:, j, k)`. The selection
+    /// itself is unchanged; [`Value::into_column`] turns the 1-D result into
+    /// an `n×1` matrix. A single row (`M(k, :)`) and a row vector's
+    /// subscript stay a row.
+    fn index_gives_column(&self, indices: &[Value]) -> bool {
+        let count = |idx: &Value, len: usize| Self::resolve_index_dim(idx, len).ok().map(|p| p.len());
+        let is_column_shape = |v: &Value| match v {
+            Value::Matrix(m) => {
+                let s = Shared::shape(m);
+                s[1] == 1 && s[0] != 1
+            }
+            Value::Logical(a) => a.cols() == 1 && a.rows() != 1,
+            _ => false,
+        };
+        match indices {
+            [idx] => {
+                let scalar_like = matches!(idx, Value::Scalar(_) | Value::Complex(_))
+                    || Self::scalar_logical_bit(idx).is_some();
+                match idx {
+                    Value::All => matches!(
+                        self,
+                        Value::Vector(_) | Value::Matrix(_) | Value::Tensor3(_) | Value::Logical(_)
+                    ),
+                    _ if scalar_like => false,
+                    _ if is_column_shape(self) => true,
+                    _ => {
+                        // A matrix (not a row) read with a column of subscripts.
+                        let source_matrix = match self {
+                            Value::Matrix(m) => Shared::shape(m)[0] != 1,
+                            Value::Logical(a) => a.rows() != 1,
+                            _ => false,
+                        };
+                        source_matrix && is_column_shape(idx)
+                    }
+                }
+            }
+            [r, c] => {
+                let (rows, cols) = match self {
+                    Value::Matrix(m) => (Shared::shape(m)[0], Shared::shape(m)[1]),
+                    Value::Logical(a) => (a.rows(), a.cols()),
+                    Value::SparseMatrix(sm) => (sm.rows, sm.cols),
+                    _ => return false,
+                };
+                count(c, cols) == Some(1) && count(r, rows).is_some_and(|n| n != 1)
+            }
+            [i, j, k] => match self {
+                Value::Tensor3(t) => {
+                    let s = Shared::shape(t);
+                    count(j, s[1]) == Some(1)
+                        && count(k, s[2]) == Some(1)
+                        && count(i, s[0]).is_some_and(|n| n != 1)
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// A 1-D vector or a logical row as an `n×1` column. Real storage stays
+    /// real. Anything else is returned unchanged.
+    pub(crate) fn into_column(self) -> Value {
+        match self {
+            Value::Vector(v) => {
+                let n = Shared::len(&v);
+                match Shared::into_real(v) {
+                    Ok(r) => Value::real_matrix(
+                        r.into_shape_with_order((n, 1)).expect("n elements"),
+                    ),
+                    Err(v) => Value::Matrix(
+                        Shared::into_inner(v)
+                            .into_shape_with_order((n, 1))
+                            .expect("n elements")
+                            .into(),
+                    ),
+                }
+            }
+            Value::Logical(a) if a.rows() == 1 => Value::Logical(a.transpose()),
+            other => other,
+        }
+    }
+
+    /// An `n×1` column (n ≠ 1) as a 1-D vector; anything else unchanged.
+    /// `arrayfun` and `parmap` read a column return (`r = M(:)`) as one
+    /// vector result, the shape it had before `x(:)` became a column.
+    pub(crate) fn column_into_vector(self) -> Value {
+        match self {
+            Value::Matrix(m) if Shared::shape(&m)[1] == 1 && Shared::shape(&m)[0] != 1 => {
+                let n = Shared::shape(&m)[0];
+                match Shared::into_real(m) {
+                    Ok(r) => Value::real_vector(r.into_shape_with_order(n).expect("n elements")),
+                    Err(m) => Value::Vector(
+                        Shared::into_inner(m)
+                            .into_shape_with_order(n)
+                            .expect("n elements")
+                            .into(),
+                    ),
+                }
+            }
+            other => other,
+        }
+    }
+
+    pub(crate) fn index_ref_dispatch(&self, indices: Vec<Value>) -> Result<Value, String> {
         if let Some(v) = self.real_index(&indices) {
             return Ok(v);
         }

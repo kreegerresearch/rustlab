@@ -50,7 +50,7 @@ flattened column-major to match `laplacian_2d`'s indexing:
 ```rustlab
 src = zeros(ny, nx);
 src(ny/2, nx/2) = 1.0;
-b = src(:)';
+b = src(:);
 ```
 
 ## Auto dispatch picks the sparse LU path
@@ -138,7 +138,7 @@ print(norm(r))      % → ~1e-14
 
 <!-- rustlab:output-start -->
 ```text
-0.000000000000009661377855580665
+0.000000000000009661377855580659
 ```
 
 <!-- rustlab:output-end -->

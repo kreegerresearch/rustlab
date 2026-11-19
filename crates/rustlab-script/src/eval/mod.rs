@@ -1643,6 +1643,13 @@ impl Evaluator {
                     // and any wider matrix still cannot be iterated.
                     Value::Matrix(m) if m.nrows() == 1 => m.row(0).iter().copied().collect(),
                     Value::Scalar(n) => vec![Complex::new(n, 0.0)],
+                    Value::Matrix(m) if m.ncols() == 1 => {
+                        return Err(ScriptError::runtime(format!(
+                            "for: cannot iterate over a {}×1 column; loop over its transpose \
+                             (`for x = c.'`) to visit the elements",
+                            m.nrows()
+                        )))
+                    }
                     other => {
                         return Err(ScriptError::runtime(format!(
                             "for: cannot iterate over {}",
@@ -2485,6 +2492,11 @@ impl Evaluator {
                 .collect()),
             Value::Scalar(n) => Ok(vec![Value::Scalar(*n)]),
             Value::Complex(c) => Ok(vec![Value::Complex(*c)]),
+            // A column (`x(:)`, `M(:, k)`) or a one-row matrix, in order.
+            Value::Matrix(m) if Shared::shape(m)[0] == 1 || Shared::shape(m)[1] == 1 => {
+                let flat: Vec<C64> = m.iter().copied().collect();
+                Self::iterable_elements(caller, &Value::Vector(Array1::from_vec(flat).into()))
+            }
             other => Err(ScriptError::runtime(format!(
                 "{caller}: second argument must be a vector or scalar, got {}",
                 other.type_name()
@@ -2498,7 +2510,7 @@ impl Evaluator {
         let mut results: Vec<Value> = Vec::with_capacity(elements.len());
         for elem in elements {
             let out = self.call_callable(func.clone(), vec![elem])?;
-            results.push(out);
+            results.push(out.column_into_vector());
         }
 
         // Determine output shape from first result

@@ -2258,9 +2258,9 @@ mod eig_tests {
         let src = "
 A = [2, 1, 0; 1, 2, 1; 0, 1, 2];
 [V, D] = eig(A, \"vector\");
-r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
-r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
-r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+r1 = norm(A * V(:,1) - D(1) * V(:,1));
+r2 = norm(A * V(:,2) - D(2) * V(:,2));
+r3 = norm(A * V(:,3) - D(3) * V(:,3));
 ";
         let ev = eval_str(src);
         for name in &["r1", "r2", "r3"] {
@@ -3204,9 +3204,9 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
         let src = "
 A = [4, 1, 0; 0, 2, 1; 0, 0, 5];
 [V, D] = eig(A, \"vector\");
-r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
-r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
-r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+r1 = norm(A * V(:,1) - D(1) * V(:,1));
+r2 = norm(A * V(:,2) - D(2) * V(:,2));
+r3 = norm(A * V(:,3) - D(3) * V(:,3));
 ";
         let ev = eval_str(src);
         for name in &["r1", "r2", "r3"] {
@@ -10672,7 +10672,7 @@ mod sparse_tests {
                  V(ii, jj) = sin(pi*ii/(ny+1)) * sin(pi*jj/(nx+1));\n\
                end\n\
              end\n\
-             v_flat = V(:)';\n\
+             v_flat = V(:);\n\
              lam = 2*(cos(pi/(nx+1)) + cos(pi/(ny+1)) - 2);\n\
              r = D * v_flat - lam * v_flat;\n\
              err = norm(r)",
@@ -15016,7 +15016,12 @@ mod reshape_and_concat {
         ev.set("A", src);
         run(&mut ev, &format!("B = reshape(A, {m}, {n});"));
         let got = ev.get("B").unwrap();
-        if m == 1 || n == 1 {
+        if n == 1 && m != 1 {
+            // An m×1 shape is a column (MATLAB).
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(b.dim(), (m, 1), "{m}×{n}");
+            assert_eq!(col_major(got), flat, "{m}×{n}");
+        } else if m == 1 || n == 1 {
             let Value::Vector(v) = got else { panic!("{m}×{n}: {got:?}") };
             assert_eq!(v.to_vec(), flat, "{m}×{n}");
         } else {

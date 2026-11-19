@@ -42,7 +42,7 @@ rho(30, 30) =  1.0;
 rho(30, 70) = -1.0;
 rho(70, 30) = -1.0;
 rho(70, 70) =  1.0;
-b = rho(:)';
+b = rho(:);
 ```
 
 ## The solve — `spsolve` auto picks Cholesky

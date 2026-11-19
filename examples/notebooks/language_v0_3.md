@@ -85,7 +85,7 @@ For row extraction, use the explicit two-arg form `M(i, :)`.
 
 ```rustlab
 M = [10, 20; 30, 40; 50, 60];
-print(M(:))             % → [10, 30, 50, 20, 40, 60]  (col-major flatten)
+print(M(:))             % → 6×1 column [10; 30; 50; 20; 40; 60]  (col-major flatten)
 print(M(2))             % → 30   (second linear element)
 print(M([1, 4, 6]))     % → [10, 20, 60]   (vector of picks)
 print(M(2, :))          % → [30, 40]   (row 2 — explicit form)
