@@ -1,3 +1,4 @@
+use super::tensor3_lift;
 use super::shared::Shared;
 use crate::error::ScriptError;
 use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
@@ -752,6 +753,9 @@ fn builtin_window(args: Vec<Value>) -> Result<Value, ScriptError> {
 // ─── Math builtins ─────────────────────────────────────────────────────────
 
 fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("abs", &args, ScriptError::type_err, builtin_abs) {
+        return r;
+    }
     check_args("abs", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(n.abs())),
@@ -791,6 +795,9 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("angle", &args, ScriptError::type_err, builtin_angle) {
+        return r;
+    }
     check_args("angle", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n >= 0.0 {
@@ -828,6 +835,9 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("real", &args, ScriptError::type_err, builtin_real) {
+        return r;
+    }
     check_args("real", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
@@ -847,6 +857,9 @@ fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("imag", &args, ScriptError::type_err, builtin_imag) {
+        return r;
+    }
     check_args("imag", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n == 0.0 { 0.0 } else { 0.0 })),
@@ -872,6 +885,9 @@ fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_conj(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("conj", &args, ScriptError::type_err, builtin_conj) {
+        return r;
+    }
     check_args("conj", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
@@ -910,6 +926,21 @@ fn apply_scalar_fn_promoting(
     needs_complex: impl Fn(f64) -> bool + Sync,
 ) -> Result<Value, ScriptError> {
     check_args(name, &args, 1)?;
+    if let Some(r) = tensor3_lift::lift(name, &args, ScriptError::type_err, |a| {
+        apply_scalar_fn_promoting_2d(name, a, &f, &fc, &needs_complex)
+    }) {
+        return r;
+    }
+    apply_scalar_fn_promoting_2d(name, args, f, fc, needs_complex)
+}
+
+fn apply_scalar_fn_promoting_2d(
+    name: &str,
+    args: Vec<Value>,
+    f: impl Fn(f64) -> f64 + Sync,
+    fc: impl Fn(Complex<f64>) -> Complex<f64> + Sync,
+    needs_complex: impl Fn(f64) -> bool + Sync,
+) -> Result<Value, ScriptError> {
     // Promote one real element via the complex branch, else stay real.
     let elem = |x: f64| {
         if needs_complex(x) {
@@ -1078,6 +1109,9 @@ fn builtin_round(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // sign: real → -1/0/+1; complex → z/|z| (or 0 if z==0).
 fn builtin_sign(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("sign", &args, ScriptError::type_err, builtin_sign) {
+        return r;
+    }
     fn sign_real(x: f64) -> f64 {
         if x == 0.0 {
             0.0
@@ -1098,6 +1132,9 @@ fn builtin_sign(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // mod(a, m): a - m*floor(a/m), element-wise on real and imaginary parts.
 fn builtin_mod(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("mod", &args, ScriptError::type_err, builtin_mod) {
+        return r;
+    }
     check_args("mod", &args, 2)?;
     fn mod_f64(a: f64, m: f64) -> f64 {
         a - m * (a / m).floor()
@@ -2246,6 +2283,13 @@ fn builtin_extremum_nargout(
     fn_name: &str,
 ) -> Result<Value, ScriptError> {
     check_args_range(fn_name, &args, 1, 3)?;
+    if args.len() == 2 {
+        if let Some(r) = tensor3_lift::lift(fn_name, &args, ScriptError::type_err, |a| {
+            builtin_extremum_nargout(a, nargout, is_max, fn_name)
+        }) {
+            return r;
+        }
+    }
 
     // 3-arg axis form: max(M, [], dim) — matlab convention.
     if args.len() == 3 {
@@ -5368,6 +5412,11 @@ fn builtin_xor(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// broadcasts over an array. Array shapes must match.
 fn logical_binop(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args(name, &args, 2)?;
+    if let Some(r) = tensor3_lift::lift(name, &args, ScriptError::type_err, |a| {
+        logical_binop(name, a)
+    }) {
+        return r;
+    }
     let a = Value::to_logical(&args[0]).map_err(ScriptError::type_err)?;
     let b = Value::to_logical(&args[1]).map_err(ScriptError::type_err)?;
     let bit = |x: bool, y: bool| match name {
@@ -14972,6 +15021,13 @@ fn builtin_nonzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
 ///   nargout == 2 on dense vector: `[I, V]` indices + values.
 ///   nargout >= 3 on dense matrix: `[I, J, V]` row + col + nonzero values.
 fn builtin_find_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    // Column-major over the tensor; `[r, c] = find(T)` merges the trailing
+    // dimensions into `c`, and the third output is the values (MATLAB).
+    if let Some(Value::Tensor3(t)) = args.first() {
+        check_args("find", &args, 1)?;
+        let cols = tensor3_lift::to_columns(t);
+        return builtin_find_nargout(vec![cols], nargout);
+    }
     if nargout < 2 {
         return builtin_find(args);
     }

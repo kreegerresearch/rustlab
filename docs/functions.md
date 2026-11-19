@@ -2165,6 +2165,7 @@ A `Tensor3` is a complex 3-dimensional array of shape `(m, n, p)` — `m` rows, 
 **Conventions and limitations:**
 - All Tensor3 storage is complex (`C64`); real values are stored with imaginary part 0.
 - No broadcasting between `Matrix` and `Tensor3` — operations between them error.
+- Comparisons and element-wise functions keep the shape; comparisons give 0/1 doubles (there is no rank-3 logical). See [Comparisons, logic, and element-wise math](#comparisons-logic-and-element-wise-math).
 - `*` and `/` between two `Tensor3`s also error; use `.*` and `./` for element-wise.
 - `reshape` walks data column-major (matches Octave), so `reshape(1:24, 2, 3, 4)` fills the first column of page 1 first.
 - I/O via `save`/`load` to `.npy` preserves the rank-3 shape natively.
@@ -2222,6 +2223,22 @@ J = ones3(size(T)) .* T       # element-wise multiply
 ```
 - `T1 * T2` errors — use `.*` for element-wise.
 - `Matrix + Tensor3` errors — there is no broadcasting between the two ranks.
+
+### Comparisons, logic, and element-wise math
+A `Tensor3` works with the same element-wise operators and functions as a matrix, and the result keeps its `(m, n, p)` shape. The partner is a scalar or a `Tensor3` of the same size; a matrix or vector partner is an error.
+```
+R = sqrt(X.^2 + Y.^2 + Z.^2);   # X, Y, Z are Tensor3 grids
+M = R <= a;                     # conductor mask, 0/1 Tensor3
+G = (M > 0) .* (R > 0.5 * a);   # combine masks
+A = abs(T); F = floor(T); E = exp(T);
+C = min(T, 1); D = max(T, 0);   # two-argument min / max
+k = find(R <= a);               # column-major linear indices, the T(:) order
+v = T(find(M));                 # gather the masked values
+```
+- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), `!`, and `and` / `or` / `xor` return **0/1 doubles**, not a logical: there is no rank-3 logical (the same rule as `cat(3, L, L)`). So `T(M)` with a `Tensor3` mask is an error; use `T(find(M))` to gather, or `.*` to apply the mask.
+- Unary functions: `abs`, `sign`, `sqrt`, `exp`, `log`, `log10`, `log2`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, the trig and hyperbolic functions, and `mod(T, m)`. `sqrt` and `log` of a negative entry are complex, as for a matrix.
+- `min(T, s)` / `max(T, s)` / `min(T, U)` are element-wise. The reducing forms (`min(T)`, `max(T, [], dim)`) do not take a `Tensor3`.
+- `find(T)` returns the column-major linear indices of the nonzero entries. As in MATLAB, `[r, c] = find(T)` gives the row and a column index that runs over the trailing dimensions merged (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values. For three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
 
 ### `permute(A, [d1, d2, d3])`
 Reorder the axes of a Tensor3. `[d1, d2, d3]` must be a permutation of `[1, 2, 3]`.
