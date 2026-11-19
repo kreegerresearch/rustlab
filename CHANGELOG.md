@@ -6,6 +6,14 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.74
+
+### Fixed
+- **Sparse submatrix indexing no longer densifies.** `S(rows, cols)` on a sparse matrix built the full dense matrix first and then indexed it; for a 41³ Laplacian (`L(fr, fr)` with about 30k free nodes) that asked for 76 GB. A selection with more than one row and more than one column is now gathered from the stored entries in O(nnz + selected entries) and returned as a **sparse** matrix, so symmetric Dirichlet elimination (`A_ff V_f = −A_fp V_p`) with Cholesky works at that size. Subscripts may be vectors, ranges, `end`, `:`, or logical masks, in any order and with repeats.
+
+### Breaking / behavior changes
+- **`S(rows, cols)` of a sparse matrix is sparse.** It was a dense matrix. Arithmetic with a dense partner still promotes to dense, and `full(...)` gives the old value. `S(i, j)` is still the element, and a single row or column (`S(k, :)`, `S(:, k)`) is still a dense vector (MATLAB returns sparse there). Migration: wrap in `full(...)` where a dense matrix is needed, for example before `imagesc` or a dense-only builtin.
+
 ## 0.3.68
 
 ### Fixed

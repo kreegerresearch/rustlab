@@ -2276,6 +2276,16 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
 
+### Indexing a sparse matrix
+`S(i, j)` with two scalars is the element. `S(rows, cols)` that selects more than one row **and** more than one column returns a **sparse** matrix, gathered from the stored entries in O(nnz + selected entries) without densifying; subscripts may be vectors, ranges with `end`, `:`, or logical masks, in any order and with repeats, as on a dense matrix. The ordering hint of a `laplacian_*` matrix is not carried over. A single row or column (`S(k, :)`, `S(:, k)`) is a dense vector. (MATLAB returns sparse there too.)
+
+Symmetric Dirichlet elimination keeps a pinned Laplacian SPD, so Cholesky applies:
+```
+fr = find(P(:)' == 0);  pr = find(P(:)' > 0);    # free / pinned nodes
+Aff = L(fr, fr);  Afp = L(fr, pr);               # both stay sparse
+Vf = spsolve(Aff, -(Afp * Vp'), "cholesky");
+```
+
 ### `sparse(I, J, V, m, n)` / `sparse(A)`
 Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse. An entry is stored unless it is an exact zero (`+0` or `-0`); a tiny finite value stays.
 ```
