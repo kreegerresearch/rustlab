@@ -141,7 +141,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
-| `numel(v)` | Total element count |
+| `numel(v)` | Total element count (dense or sparse) |
+| `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`) or `x` is `""`; e.g. `isempty(S(:, []))` |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk. `reshape(x, N, 1)` is an `N×1` column; `reshape(x, 1, N)` a row |
 | `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |
@@ -574,7 +575,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
 | `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
-| `[A, b] = pin_dirichlet(A, b, mask, values [, "scale", s])` | Pin Dirichlet values: pinned row k becomes `d_k` on the diagonal and `b(k) = d_k·value`; mask (column-major) or 1-based index vector. Default `d_k = \|A(k,k)\|` keeps the LU pivot (pinned values exact at small `h`); `"scale", 1` is the old identity row |
+| `[A, b] = pin_dirichlet(A, b, mask, values [, "scale", s])` | Pin Dirichlet values: pinned row k becomes `d_k` on the diagonal and `b(k) = d_k·value`; mask (column-major) or 1-based index vector. Default `d_k = \|A(k,k)\|` keeps the LU pivot (pinned values exact at small `h`); `"scale", 1` is the old identity row. A script that rewrites `b` on pinned rows after pinning needs `"scale", 1` (or `b(k) = A(k, k)·value`) |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx`. For a size vector, use `sub2ind` / `ind2sub` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |

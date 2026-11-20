@@ -893,10 +893,19 @@ For `n = 0`, returns an empty vector.
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 
-For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 
 ### `numel(x)`
-Total number of elements: `rows × cols` for matrices, `1` for scalars.
+Total number of elements: `rows × cols` for matrices (dense or sparse), `1` for scalars. An empty sparse selection such as `S(:, [])` has `numel` 0.
+
+### `isempty(x)`
+True when `x` has no elements: any dimension is 0 (`numel(x) == 0`), or `x` is the empty string `""`. Works on dense, sparse, logical, integer, string-array, and table values. A scalar, struct, or function handle is never empty.
+```
+S = speye(4);
+isempty(S(:, []))   # → true  (4×0 sparse)
+isempty(zeros(3, 0))  # → true
+isempty(S)          # → false
+```
 
 ### `size(x)`
 Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.
@@ -2570,6 +2579,7 @@ Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`,
 - `b` — vector or 1×n / n×1 matrix; container and orientation are preserved.
 - Both outputs must be bound: `[A, b] = pin_dirichlet(...)`. A single-output call is an error — silently dropping the modified `b` would corrupt the physics.
 - Pinning twice with the default scale is safe: the second call reads the already-scaled diagonal.
+- **Rewriting `b` after pinning.** With the default scale, `b(k)` on a pinned row holds `d_k · value`, not `value`. A script that pins once and then writes its own right-hand side on pinned rows (`b(k) = 1` to drive one conductor of a capacitance matrix, then `spsolve`) must either pin with `"scale", 1` or write `b(k) = d_k · value` (`d_k = A(k, k)` after the call). Otherwise the pinned potential is `value / d_k`: in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Passing the drive values to `pin_dirichlet` itself is always correct.
 
 ```
 # Parallel plates at ±5 V on an ny×nx grid:

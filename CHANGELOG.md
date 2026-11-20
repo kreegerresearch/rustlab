@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.78
+
+### Fixed
+- **`S(:, k)` and `S(k, :)` on a sparse matrix no longer densify the whole matrix.** 0.3.74 kept `S(rows, cols)` sparse, but a selection of one row or one column still built a dense copy of `S` before slicing, which asked for ~76 GB on the 41³ operator in `rustlab_em`. The line is now filled from that row's or column's stored entries (O(nnz) time, memory the size of the result). Results and shapes are unchanged: `S(:, k)` is a dense `N×1` column, `S(k, :)` a dense row, and one element a scalar.
+- **Empty sparse selections are empty sparse matrices, and `numel` / `length` accept sparse values.** `S(:, [])` is an empty sparse `m×0`, `S([], :)` a `0×n`, and `S([], [])` a `0×0`, as in MATLAB. All-false logical masks behave the same way in either position. `S(k, [])` and `S([], k)` used to be dense `1×0` / `0×1`; they are now sparse of that shape. `numel` and `length` used to reject every sparse matrix and sparse vector ("unsupported type sparse"); they now return `rows·cols` and `max(rows, cols)`. A bad subscript on a sparse matrix (`S(5, 1)`, `S(0, :)`, `S(1.5, 2)`) now gives the same error text as on a dense matrix (`index 5 out of bounds (size 4)` instead of `index (5,1) out of bounds for 4×5 sparse matrix`).
+
+### Added
+- **`isempty(x)`.** True when any dimension is 0 (`numel(x) == 0`) or `x` is the empty string. Works on dense, sparse, logical, integer, string-array, and table values. `isempty(S(:, []))` is true.
+
+### Documentation
+- **`pin_dirichlet` and writing `b` afterwards.** With the default `"scale", "auto"`, a pinned row holds `d_k` on the diagonal and `b(k) = d_k · value`. A script that pins and then writes its own `b` on pinned rows (`b(k) = 1` to drive one conductor) gets a pinned value of `1 / d_k` instead; in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Such scripts should pin with `"scale", 1` or write `b(k) = A(k, k) · value`. The default is unchanged. Noted in `docs/functions.md`, `docs/quickref.md`, `AGENTS.md`, and `help pin_dirichlet`.
+
 ## 0.3.77
 
 ### Fixed
