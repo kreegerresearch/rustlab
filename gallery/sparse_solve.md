@@ -58,7 +58,7 @@ about 80 MB. Sparse, it fits in well under 1 MB.
 % Centred point source.
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-b   = -1 * rho(:)';
+b   = -1 * rho(:);
 
 % Default dispatch: -L is SPD, so auto picks Cholesky.
 v_auto = spsolve(A, b);
@@ -156,7 +156,7 @@ title("Poisson solution: -∇² V = δ at grid centre")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_solve/plot-1-c2fc2297.svg)
+![plot 1](plots/sparse_solve/plot-1-02c3e756.svg)
 
 <!-- rustlab:output-end -->
 
