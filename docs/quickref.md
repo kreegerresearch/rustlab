@@ -141,7 +141,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
-| `numel(v)` | Total element count |
+| `numel(v)` | Total element count (dense or sparse) |
+| `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`) or `x` is `""`; e.g. `isempty(S(:, []))` |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk. `reshape(x, N, 1)` is an `N×1` column; `reshape(x, 1, N)` a row |
 | `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |

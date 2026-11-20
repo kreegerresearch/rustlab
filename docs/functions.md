@@ -893,10 +893,19 @@ For `n = 0`, returns an empty vector.
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 
-For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 
 ### `numel(x)`
-Total number of elements: `rows × cols` for matrices, `1` for scalars.
+Total number of elements: `rows × cols` for matrices (dense or sparse), `1` for scalars. An empty sparse selection such as `S(:, [])` has `numel` 0.
+
+### `isempty(x)`
+True when `x` has no elements: any dimension is 0 (`numel(x) == 0`), or `x` is the empty string `""`. Works on dense, sparse, logical, integer, string-array, and table values. A scalar, struct, or function handle is never empty.
+```
+S = speye(4);
+isempty(S(:, []))   # → true  (4×0 sparse)
+isempty(zeros(3, 0))  # → true
+isempty(S)          # → false
+```
 
 ### `size(x)`
 Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.

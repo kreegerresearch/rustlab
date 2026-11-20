@@ -112,7 +112,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "length",   brief: "Alias for len",
         detail: "length(x)  — see len" },
     HelpEntry { name: "numel",    brief: "Total number of elements",
-        detail: "numel(x)  — total elements (rows*cols for matrices, m*n*p for tensor3, 1 for scalars)" },
+        detail: "numel(x)  — total elements (rows*cols for dense or sparse matrices, m*n*p for tensor3, 1 for scalars)" },
+    HelpEntry { name: "isempty",  brief: "True when a value has no elements",
+        detail: "isempty(x)  — true when any dimension is 0 (numel(x) == 0) or x is \"\"\n\nWorks on dense, sparse, logical, integer, string-array and table values.\nScalars, structs and function handles are never empty.\n\nExample:\n  S = speye(4);\n  isempty(S(:, []))   # true: a 4x0 sparse matrix\n  isempty(S)          # false" },
     HelpEntry { name: "size",     brief: "Dimensions as a 2- or 3-element vector",
         detail: "size(x)        — [rows, cols] for matrices/vectors, [m, n, p] for tensor3\nsize(x, dim)   — size along dimension 1, 2, or 3 (3 requires tensor3)" },
     HelpEntry { name: "ind2sub",  brief: "Linear index to subscripts (column-major, 1-based)",
@@ -1536,7 +1538,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
         toolbox: "linalg",
         subcategory: "Inspection",
         names: &[
-            "size", "ndims", "numel", "len", "length", "ind2sub", "sub2ind",
+            "size", "ndims", "numel", "isempty", "len", "length", "ind2sub", "sub2ind",
         ],
     },
     CategoryRow {
