@@ -90,6 +90,20 @@ Inverse sine in radians, element-wise. Accepts scalar, complex, vector, or matri
 Inverse tangent in radians (single-argument), element-wise. Accepts scalar, complex, vector, or matrix.
 For the two-argument form see `atan2(y, x)`.
 
+### `tan(x)`
+Tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+```
+tan(pi/4)   # → 1.0 (to rounding)
+Zin = Z0 * (ZL + j*Z0*tan(b*L)) ./ (Z0 + j*ZL*tan(b*L));
+```
+
+### `cot(x)` / `sec(x)` / `csc(x)`
+Cotangent `1/tan(x)`, secant `1/cos(x)`, and cosecant `1/sin(x)`, element-wise. Accepts scalar, complex, vector, or matrix. As in MATLAB, a pole is infinite: `cot(0)` and `csc(0)` are `Inf`.
+```
+cot(pi/4)   # → 1.0
+sec(0)      # → 1.0
+```
+
 ### `tanh(x)`
 Hyperbolic tangent, element-wise. Accepts scalar, complex, vector, or matrix.
 ```
@@ -148,6 +162,24 @@ cosh(0.0)   # → 1.0
 cosh(1.0)   # → ~1.543
 ```
 Identity: `cosh(x)^2 - sinh(x)^2 = 1`.
+
+### `asinh(x)` / `acosh(x)` / `atanh(x)`
+Inverse hyperbolic sine, cosine, and tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+A real input outside the real domain gives the principal complex value, as in MATLAB, instead of `NaN`: `acosh` is real for `x >= 1` (`acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`); `atanh` is real for `|x| <= 1`, with `atanh(±1) = ±Inf` (`atanh(2)` is `0.5493 + 1.5708i`). `asinh` is real for every real input.
+```
+asinh(1)               # → ~0.8814
+acosh(2)               # → ~1.317
+Z0 = (eta0/pi) * acosh(d / (2*a));   # twin-wire line impedance
+```
+
+### `isnan(x)` / `isinf(x)` / `isfinite(x)`
+Element-wise tests for `NaN`, `±Inf`, and finite values. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, usable as a mask (`v(isnan(v)) = 0`). A complex element is `NaN` (or infinite) when either part is, and finite only when both parts are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3` (there is no rank-3 logical).
+```
+isnan([1, NaN, 3])          # → logical [0 1 0]
+isinf([1, Inf, -Inf])       # → logical [0 1 1]
+isfinite(1 + NaN*1j)        # → false
+v(isnan(v)) = 0;            # replace NaN samples
+```
 
 ### `floor(x)`
 Largest integer ≤ x, applied to real and imaginary parts independently.
@@ -2165,6 +2197,7 @@ A `Tensor3` is a complex 3-dimensional array of shape `(m, n, p)` — `m` rows, 
 **Conventions and limitations:**
 - All Tensor3 storage is complex (`C64`); real values are stored with imaginary part 0.
 - No broadcasting between `Matrix` and `Tensor3` — operations between them error.
+- Comparisons and element-wise functions keep the shape; comparisons give 0/1 doubles (there is no rank-3 logical). See [Comparisons, logic, and element-wise math](#comparisons-logic-and-element-wise-math).
 - `*` and `/` between two `Tensor3`s also error; use `.*` and `./` for element-wise.
 - `reshape` walks data column-major (matches Octave), so `reshape(1:24, 2, 3, 4)` fills the first column of page 1 first.
 - I/O via `save`/`load` to `.npy` preserves the rank-3 shape natively.
@@ -2222,6 +2255,22 @@ J = ones3(size(T)) .* T       # element-wise multiply
 ```
 - `T1 * T2` errors — use `.*` for element-wise.
 - `Matrix + Tensor3` errors — there is no broadcasting between the two ranks.
+
+### Comparisons, logic, and element-wise math
+A `Tensor3` works with the same element-wise operators and functions as a matrix, and the result keeps its `(m, n, p)` shape. The partner is a scalar or a `Tensor3` of the same size; a matrix or vector partner is an error.
+```
+R = sqrt(X.^2 + Y.^2 + Z.^2);   # X, Y, Z are Tensor3 grids
+M = R <= a;                     # conductor mask, 0/1 Tensor3
+G = (M > 0) .* (R > 0.5 * a);   # combine masks
+A = abs(T); F = floor(T); E = exp(T);
+C = min(T, 1); D = max(T, 0);   # two-argument min / max
+k = find(R <= a);               # column-major linear indices, the T(:) order
+v = T(find(M));                 # gather the masked values
+```
+- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), `!`, and `and` / `or` / `xor` return **0/1 doubles**, not a logical: there is no rank-3 logical (the same rule as `cat(3, L, L)`). So `T(M)` with a `Tensor3` mask is an error; use `T(find(M))` to gather, or `.*` to apply the mask.
+- Unary functions: `abs`, `sign`, `sqrt`, `exp`, `log`, `log10`, `log2`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, the trig and hyperbolic functions, and `mod(T, m)`. `sqrt` and `log` of a negative entry are complex, as for a matrix.
+- `min(T, s)` / `max(T, s)` / `min(T, U)` are element-wise. The reducing forms (`min(T)`, `max(T, [], dim)`) do not take a `Tensor3`.
+- `find(T)` returns the column-major linear indices of the nonzero entries. As in MATLAB, `[r, c] = find(T)` gives the row and a column index that runs over the trailing dimensions merged (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values. For three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
 
 ### `permute(A, [d1, d2, d3])`
 Reorder the axes of a Tensor3. `[d1, d2, d3]` must be a permutation of `[1, 2, 3]`.
