@@ -110,10 +110,13 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `log(v)` | Natural logarithm |
 | `log10(v)`, `log2(v)` | Base-10 and base-2 logarithms. A negative real is the principal complex value (`log10(-1) = iπ/ln 10`), not NaN |
 | `nextpow2(x)` | Smallest integer `p` with `2^p >= |x|` (complex uses `|z|`). `nextpow2(0)` is 0 |
-| `sin(v)`, `cos(v)` | Trig (radians) |
+| `sin(v)`, `cos(v)`, `tan(v)` | Trig (radians) |
+| `cot(v)`, `sec(v)`, `csc(v)` | Reciprocal trig: `1/tan`, `1/cos`, `1/sin`. A pole is `Inf` (`cot(0)`) |
 | `asin(v)`, `acos(v)`, `atan(v)` | Inverse trig |
 | `atan2(y, x)` | Four-quadrant arctangent |
 | `tanh(v)`, `sinh(v)`, `cosh(v)` | Hyperbolic trig |
+| `asinh(v)`, `acosh(v)`, `atanh(v)` | Inverse hyperbolic trig. Outside the real domain the result is the principal complex value (`acosh(0.5) = 1.0472i`, `atanh(2) = 0.5493 + 1.5708i`), not NaN |
+| `isnan(v)`, `isinf(v)`, `isfinite(v)` | Element-wise NaN / ±Inf / finite tests. Scalar → `true`/`false`; array → logical of the same shape. Complex: NaN or Inf if either part is |
 | `floor(v)`, `ceil(v)`, `round(v)` | Rounding (applied to real and imaginary parts independently) |
 | `sign(v)` | −1/0/+1 for real; `z/\|z\|` for complex |
 | `mod(v, m)` | Modulo: `v − m·floor(v/m)` (m must be a real scalar) |

@@ -90,6 +90,20 @@ Inverse sine in radians, element-wise. Accepts scalar, complex, vector, or matri
 Inverse tangent in radians (single-argument), element-wise. Accepts scalar, complex, vector, or matrix.
 For the two-argument form see `atan2(y, x)`.
 
+### `tan(x)`
+Tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+```
+tan(pi/4)   # → 1.0 (to rounding)
+Zin = Z0 * (ZL + j*Z0*tan(b*L)) ./ (Z0 + j*ZL*tan(b*L));
+```
+
+### `cot(x)` / `sec(x)` / `csc(x)`
+Cotangent `1/tan(x)`, secant `1/cos(x)`, and cosecant `1/sin(x)`, element-wise. Accepts scalar, complex, vector, or matrix. As in MATLAB, a pole is infinite: `cot(0)` and `csc(0)` are `Inf`.
+```
+cot(pi/4)   # → 1.0
+sec(0)      # → 1.0
+```
+
 ### `tanh(x)`
 Hyperbolic tangent, element-wise. Accepts scalar, complex, vector, or matrix.
 ```
@@ -148,6 +162,24 @@ cosh(0.0)   # → 1.0
 cosh(1.0)   # → ~1.543
 ```
 Identity: `cosh(x)^2 - sinh(x)^2 = 1`.
+
+### `asinh(x)` / `acosh(x)` / `atanh(x)`
+Inverse hyperbolic sine, cosine, and tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+A real input outside the real domain gives the principal complex value, as in MATLAB, instead of `NaN`: `acosh` is real for `x >= 1` (`acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`); `atanh` is real for `|x| <= 1`, with `atanh(±1) = ±Inf` (`atanh(2)` is `0.5493 + 1.5708i`). `asinh` is real for every real input.
+```
+asinh(1)               # → ~0.8814
+acosh(2)               # → ~1.317
+Z0 = (eta0/pi) * acosh(d / (2*a));   # twin-wire line impedance
+```
+
+### `isnan(x)` / `isinf(x)` / `isfinite(x)`
+Element-wise tests for `NaN`, `±Inf`, and finite values. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, usable as a mask (`v(isnan(v)) = 0`). A complex element is `NaN` (or infinite) when either part is, and finite only when both parts are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3` (there is no rank-3 logical).
+```
+isnan([1, NaN, 3])          # → logical [0 1 0]
+isinf([1, Inf, -Inf])       # → logical [0 1 1]
+isfinite(1 + NaN*1j)        # → false
+v(isnan(v)) = 0;            # replace NaN samples
+```
 
 ### `floor(x)`
 Largest integer ≤ x, applied to real and imaginary parts independently.
