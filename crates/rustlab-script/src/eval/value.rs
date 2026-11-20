@@ -1739,6 +1739,53 @@ impl Value {
         rustlab_core::SparseMat::new(rows.len(), cols.len(), entries)
     }
 
+    /// `S(r, cols)` or `S(rows, c)` as a dense 1-D vector of the selected
+    /// length, filled from the stored entries of that one row or column:
+    /// O(nnz + selection), never the whole matrix dense. One element is a
+    /// scalar.
+    fn sparse_line(sm: &rustlab_core::SparseMat, rows: &[usize], cols: &[usize]) -> Value {
+        if rows.len() == 1 && cols.len() == 1 {
+            return Self::from_c64(sm.get(rows[0], cols[0]));
+        }
+        let along_row = rows.len() == 1;
+        let (line, sel, n) = if along_row {
+            (rows[0], cols, sm.cols)
+        } else {
+            (cols[0], rows, sm.rows)
+        };
+        let mut out = Array1::<C64>::zeros(sel.len());
+        // Original index → output positions; a run needs no table.
+        let run = Self::run_of(sel);
+        let table: Vec<Vec<usize>> = if run.is_some() {
+            Vec::new()
+        } else {
+            let mut map = vec![Vec::new(); n];
+            for (pos, &i) in sel.iter().enumerate() {
+                map[i].push(pos);
+            }
+            map
+        };
+        for &(r, c, v) in &sm.entries {
+            let (fixed, i) = if along_row { (r, c) } else { (c, r) };
+            if fixed != line {
+                continue;
+            }
+            match run {
+                Some((s0, len)) => {
+                    if i >= s0 && i < s0 + len {
+                        out[i - s0] = v;
+                    }
+                }
+                None => {
+                    for &pos in &table[i] {
+                        out[pos] = v;
+                    }
+                }
+            }
+        }
+        Value::Vector(out.into())
+    }
+
     fn index_2d(&self, row_idx: Value, col_idx: Value) -> Result<Value, String> {
         match self {
             Value::Matrix(m) => {
@@ -1834,9 +1881,10 @@ impl Value {
                             ));
                         }
                         // A single row or column (or one element) stays the
-                        // dense vector it was in 0.3.68.
+                        // dense vector it was in 0.3.68; the caller makes a
+                        // column `n×1`.
                         if rows.len() == 1 || cols.len() == 1 {
-                            return Self::sparse_matrix_dense(sm)?.index_2d(row_idx, col_idx);
+                            return Ok(Self::sparse_line(sm, &rows, &cols));
                         }
                         Ok(Value::SparseMatrix(Self::sparse_submatrix(
                             sm, &rows, &cols,

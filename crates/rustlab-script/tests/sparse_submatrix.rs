@@ -108,6 +108,76 @@ fn single_element_and_single_line_forms_are_dense() {
     assert_eq!(scalar(&ev, "r2"), 5.0);
 }
 
+/// Single-line reads gathered from the stored entries match the dense read,
+/// including repeated, unordered, and logical subscripts and complex values.
+#[test]
+fn single_line_forms_match_dense_indexing() {
+    let ev = eval(
+        "seed(11); S = sprand(9, 8, 0.4) + 1j * sprand(9, 8, 0.3); D = full(S);
+         r = [7, 2, 2, 9, 1]; c = [8, 3, 1, 3];
+         m = [true, false, true, true, false, false, true, false, true];
+         e1 = max(abs(S(:, 3) - D(:, 3)));
+         e2 = max(abs(S(4, :) - D(4, :)));
+         e3 = max(abs(S(r, 5) - D(r, 5)));
+         e4 = max(abs(S(6, c) - D(6, c)));
+         e5 = max(abs(S(m, 2) - D(m, 2)));
+         e6 = max(abs(S(2:5, end) - D(2:5, end)));
+         s1 = size(S(:, 3)); s2 = size(S(4, :)); s3 = size(S(r, 5)); s4 = size(S(6, c));",
+    );
+    for name in ["e1", "e2", "e3", "e4", "e5", "e6"] {
+        assert_eq!(scalar(&ev, name), 0.0, "{name}");
+    }
+    let size = |name: &str| match ev.get(name) {
+        Some(v) => v
+            .to_cvector()
+            .unwrap()
+            .iter()
+            .map(|z| z.re)
+            .collect::<Vec<_>>(),
+        None => panic!("{name} missing"),
+    };
+    assert_eq!(size("s1"), vec![9.0, 1.0]);
+    assert_eq!(size("s2"), vec![1.0, 8.0]);
+    assert_eq!(size("s3"), vec![5.0, 1.0]);
+    assert_eq!(size("s4"), vec![1.0, 4.0]);
+}
+
+/// `S(:, k)` and `S(k, :)` on the 41³ operator. Densifying the whole matrix
+/// first asked for ~76 GB (`rustlab_em`, 0.3.77); the line is gathered from
+/// the stored entries instead.
+#[test]
+fn large_3d_single_column_and_row_do_not_densify() {
+    let ev = eval(
+        "n = 41; N = n * n * n; L = -1 * laplacian_eps_3d(ones3(n, n, n), 1, 1, 1);
+         k = ijk2k(21, 21, 21, n, n);
+         c = L(:, k); r = L(k, :);
+         nc = sum(c != 0); nr = sum(r != 0);
+         dc = c(k); dr = r(k); tc = sum(c); tr = sum(r);
+         nb = [k - 1, k + 1, k - n, k + n, k - n * n, k + n * n];
+         ec = max(abs(c(nb) + 1)); er = max(abs(r(nb) + 1));",
+    );
+    assert!(
+        matches!(ev.get("c"), Some(Value::Matrix(m)) if m.dim() == (68921, 1)),
+        "column shape"
+    );
+    assert!(
+        matches!(ev.get("r"), Some(Value::Vector(v)) if v.len() == 68921),
+        "row shape"
+    );
+    for (name, want) in [
+        ("nc", 7.0),
+        ("nr", 7.0),
+        ("dc", 6.0),
+        ("dr", 6.0),
+        ("tc", 0.0),
+        ("tr", 0.0),
+        ("ec", 0.0),
+        ("er", 0.0),
+    ] {
+        assert_eq!(scalar(&ev, name), want, "{name}");
+    }
+}
+
 #[test]
 fn out_of_range_subscript_is_an_error() {
     let e = eval_err("S = speye(3); A = S([1, 4], [1, 2]);");
