@@ -580,6 +580,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `k2ijk(k, ny, nx)` | `[i, j, kk] = k2ijk(k, ny, nx)` — inverse of `ijk2k` |
 | `full(S)` | Convert sparse to dense (identity for dense inputs) |
+| `S(rows, cols)` | Sparse submatrix when more than one row and more than one column are selected (no densify, O(nnz)); `S(i, j)` is the element; a single row or column is a dense vector |
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros(S)` | Vector of non-zero values in storage order |

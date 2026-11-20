@@ -1595,6 +1595,39 @@ impl Value {
         }
     }
 
+    /// `S(rows, cols)` gathered from the stored entries, without densifying:
+    /// O(nnz + selected entries). Repeated and unordered subscripts select
+    /// as they do on a dense matrix. The ordering hint is dropped.
+    fn sparse_submatrix(
+        sm: &rustlab_core::SparseMat,
+        rows: &[usize],
+        cols: &[usize],
+    ) -> rustlab_core::SparseMat {
+        // Original index → every output position that selects it.
+        let positions = |sel: &[usize], n: usize| {
+            let mut map: Vec<Vec<usize>> = vec![Vec::new(); n];
+            for (out, &i) in sel.iter().enumerate() {
+                map[i].push(out);
+            }
+            map
+        };
+        let row_map = positions(rows, sm.rows);
+        let col_map = positions(cols, sm.cols);
+        let mut entries = Vec::new();
+        for &(r, c, v) in &sm.entries {
+            let (rs, cs) = (&row_map[r], &col_map[c]);
+            if rs.is_empty() || cs.is_empty() {
+                continue;
+            }
+            for &nr in rs {
+                for &nc in cs {
+                    entries.push((nr, nc, v));
+                }
+            }
+        }
+        rustlab_core::SparseMat::new(rows.len(), cols.len(), entries)
+    }
+
     fn index_2d(&self, row_idx: Value, col_idx: Value) -> Result<Value, String> {
         match self {
             Value::Matrix(m) => {
@@ -1671,8 +1704,32 @@ impl Value {
                         Ok(Self::from_c64(sm.get(ri, ci)))
                     }
                     _ => {
-                        // Fall back to dense for complex indexing
-                        Self::sparse_matrix_dense(sm)?.index_2d(row_idx, col_idx)
+                        let rows = Self::resolve_index_dim(&row_idx, sm.rows)?;
+                        let cols = Self::resolve_index_dim(&col_idx, sm.cols)?;
+                        if let Some(&r) = rows.iter().find(|&&r| r >= sm.rows) {
+                            return Err(format!(
+                                "index ({}, :) out of bounds for {}×{} sparse matrix",
+                                r + 1,
+                                sm.rows,
+                                sm.cols
+                            ));
+                        }
+                        if let Some(&c) = cols.iter().find(|&&c| c >= sm.cols) {
+                            return Err(format!(
+                                "index (:, {}) out of bounds for {}×{} sparse matrix",
+                                c + 1,
+                                sm.rows,
+                                sm.cols
+                            ));
+                        }
+                        // A single row or column (or one element) stays the
+                        // dense vector it was in 0.3.68.
+                        if rows.len() == 1 || cols.len() == 1 {
+                            return Self::sparse_matrix_dense(sm)?.index_2d(row_idx, col_idx);
+                        }
+                        Ok(Value::SparseMatrix(Self::sparse_submatrix(
+                            sm, &rows, &cols,
+                        )))
                     }
                 }
             }
