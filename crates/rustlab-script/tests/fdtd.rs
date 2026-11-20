@@ -1598,7 +1598,7 @@ fn preset_fields(src: &str, name: &str) -> Evaluator {
     let func = extract_function(src, "patch_preset");
     eval(&format!(
         "{func}\nm = patch_preset(\"{name}\");\n\
-         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps; nlossy = m.nlossy;\n\
+         dx = m.dx; dy = m.dy; nsub = m.nsub; nsteps = m.nsteps; nlossy = m.nlossy; tau_periods = m.tau_periods;\n\
          gpad = m.gpad; air_xy = m.air_xy; air_z = m.air_z;\n\
          npml = m.npml; margin = m.margin;\n"
     ))
@@ -1631,8 +1631,12 @@ fn patch_antenna_presets_accept_quick_and_full() {
     assert_eq!(scalar(&full, "nsub"), 2.0);
     assert_eq!(scalar(&full, "nsteps"), 16_000.0);
     assert_eq!(scalar(&full, "nlossy"), 8_000.0);
-    assert_eq!(scalar(&quick, "nsteps"), 8_000.0);
-    assert_eq!(scalar(&quick, "nlossy"), 5_000.0);
+    assert_eq!(scalar(&full, "tau_periods"), 0.5);
+    assert_eq!(scalar(&quick, "nsteps"), 4_500.0);
+    assert_eq!(scalar(&quick, "nlossy"), 3_500.0);
+    assert_eq!(scalar(&quick, "air_xy"), 4e-3);
+    assert_eq!(scalar(&quick, "air_z"), 20e-3);
+    assert_eq!(scalar(&quick, "tau_periods"), 1.0);
     assert_eq!(scalar(&full, "gpad"), 16e-3);
     assert_eq!(scalar(&full, "air_xy"), 10e-3);
     assert_eq!(scalar(&full, "air_z"), 20e-3);

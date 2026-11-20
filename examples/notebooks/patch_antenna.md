@@ -10,14 +10,16 @@ The mesh is 2 mm in the plane. Vertical air is 20 mm. A 10 mm gap above the patc
 
 ## Presets
 
-The first line of the cell picks the mesh. The default, `preset = "quick"`, puts one 1.6 mm cell through the substrate and runs in about ten seconds on four cores. `preset = "full"` is two 0.8 mm cells through the substrate. It takes about two and a half times as long and moves the dip from 2.358 GHz to 2.375 GHz, closer to the 1 mm reference at 2.437 GHz; directivity is 6.92 dBi on quick and 6.94 dBi on full. Edit that line to `"full"` to run it.
+The first line of the cell picks the mesh. The default, `preset = "quick"`, puts one 1.6 mm cell through the substrate and runs in about five seconds on four cores. `preset = "full"` is two 0.8 mm cells through the substrate. It takes about five times as long and moves the dip from 2.358 GHz to 2.375 GHz, closer to the 1 mm reference at 2.437 GHz; directivity is 6.92 dBi on quick and 6.94 dBi on full. Edit that line to `"full"` to run it.
 
-| preset | substrate cells | cells | lossless steps | lossy steps |
-|---|---:|---:|---:|---:|
-| `quick` (default) | 1 | 186,120 | 8,000 | 5,000 |
-| `full` | 2 | 285,120 | 16,000 | 8,000 |
+| preset | substrate cells | air beside the ground | pulse $\tau$ | cells | lossless steps | lossy steps |
+|---|---:|---:|---:|---:|---:|---:|
+| `quick` (default) | 1 | 4 mm | $1/f_0$ | 152,280 | 4,500 | 3,500 |
+| `full` | 2 | 10 mm | $1/(2f_0)$ | 285,120 | 16,000 | 8,000 |
 
-The port voltage dies well before either step count. The field on the near-to-far box is slower, and it sets the length: `fdtd_farfield` refuses a surface tail above $10^{-3}$ of the peak. On quick the lossless tail is $7.0\times 10^{-4}$ at 8,000 steps and $9.2\times 10^{-4}$ at 7,000. The lossy grid decays faster: $7.7\times 10^{-4}$ at 5,000 steps. An 11,000-step run of the quick mesh prints the same dip, $|S_{11}|$, directivity, gains, front-to-back ratio, pattern integral, and lossy efficiency. Only the power balance moves, from $4\times 10^{-9}$ to $-4\times 10^{-6}$, inside its $10^{-2}$ gate.
+Both keep 20 mm of air above and below the board, for the reason above.
+
+The field on the near-to-far box sets the length of the run: `fdtd_farfield` refuses a surface tail above $10^{-3}$ of the peak, and the port voltage dies well before that. With $\tau = 1/(2f_0)$ the pulse spectrum at DC is 8.5% of its peak. That charges the patch, and the static field it leaves on the box decays slowly: on the quick mesh the tail is still $7.0\times 10^{-4}$ after 8,000 steps. With $\tau = 1/f_0$ the DC content is 0.005% of the peak, and the tail is $1.4\times 10^{-4}$ after 4,500 lossless steps and $3.9\times 10^{-4}$ after 3,500 lossy ones. The spectrum is still $-12$ dB at 1.5 GHz and $-18$ dB at 3.5 GHz, the edges of the band the script reads. $S_{11}$, directivity, and gain are ratios at each frequency, so the pulse only sets how long the run must be: the quick preset with the shorter pulse, 10 mm of side air, and 8,000 and 5,000 steps prints the same dip, $|S_{11}|$, directivity, gains, front-to-back ratio, and lossy efficiency. The pattern integral moves from 0.9991 to 0.9990 of the flux (gate 0.5%), and the power balance from $-4\times 10^{-6}$ to $1\times 10^{-4}$ (gate $10^{-2}$).
 
 ## Loss
 
@@ -33,30 +35,37 @@ The script stops if a gate misses. The numbers it prints are the measurement.
 % fdtd_ntff, fdtd_farfield. The lossy rerun rebuilds the grid.
 %
 % preset is "quick" or "full". quick is the default: one cell through the
-% 1.6 mm substrate, 8 000 lossless steps and 5 000 lossy steps. The dip and
-% the directivity are approximate. full is the 2 mm lesson mesh, two cells
-% through the substrate, 16 000 lossless steps and 8 000 lossy steps, about
-% two and a half times the run time. Each step count is where the
-% near-to-far box has decayed under the 1e-3 pulse check with margin; the
-% lossy grid decays faster. The 1 mm comparison with the Phase 4 reference
-% is a release test, not this script. Vertical air is 20 mm so the
-% near-to-far box is out of the reactive field above the patch. The feed
-% is the edge feed: the first metal node of the centre row, a 50 ohm series
-% port.
+% 1.6 mm substrate, 4 mm of air beside the ground, a pulse with
+% tau = 1/f0, 4 500 lossless steps and 3 500 lossy steps. The dip and the
+% directivity are approximate. full is the 2 mm lesson mesh, two cells
+% through the substrate, 10 mm of air beside the ground, tau = 1/(2 f0),
+% 16 000 lossless steps and 8 000 lossy steps, about five times the run
+% time. Each step count is where the near-to-far box has decayed under the
+% 1e-3 pulse check with margin; the lossy grid decays faster. At
+% tau = 1/(2 f0) the pulse spectrum at DC is 8.5% of its peak, which leaves
+% a static field on the box that decays slowly; at tau = 1/f0 it is 0.005%.
+% S11, directivity, and gain are ratios at each frequency, so the pulse
+% only sets how long the run must be. The 1 mm comparison with the Phase 4
+% reference is a release test, not this script. Vertical air is 20 mm so
+% the near-to-far box is out of the reactive field above the patch. The
+% feed is the edge feed: the first metal node of the centre row, a 50 ohm
+% series port.
 
 preset = "quick";
 
 function mesh = patch_preset(name)
     switch name
         case "quick"
-            fprintf("quick preset: one cell through the substrate, 8000 + 5000 steps. The dip and directivity are approximate.\n");
+            fprintf("quick preset: one cell through the substrate, 4500 + 3500 steps. The dip and directivity are approximate.\n");
             mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 1, ...
-                "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
-                "npml", 8, "margin", 2, "nsteps", 8000, "nlossy", 5000);
+                "gpad", 16e-3, "air_xy", 4e-3, "air_z", 20e-3, ...
+                "npml", 8, "margin", 2, "nsteps", 4500, "nlossy", 3500, ...
+                "tau_periods", 1);
         case "full"
             mesh = struct("dx", 2e-3, "dy", 2e-3, "nsub", 2, ...
                 "gpad", 16e-3, "air_xy", 10e-3, "air_z", 20e-3, ...
-                "npml", 8, "margin", 2, "nsteps", 16000, "nlossy", 8000);
+                "npml", 8, "margin", 2, "nsteps", 16000, "nlossy", 8000, ...
+                "tau_periods", 0.5);
         otherwise
             error(sprintf("unknown preset %s: use quick or full", name));
     end
@@ -134,7 +143,7 @@ function sim = patch_sim(mesh, sigma, L, W, f0, eps_r)
     end
     ix = find(patch(iy, :) > 0);
     ix = ix(1);
-    tau = 1 / (2 * f0);
+    tau = mesh.tau_periods / f0;
     fdtd_port(sim, "ez", iy, ix, kg + 1:kg + nsub, 50, "modulated", 4 * tau, tau, f0);
     fdtd_ntff(sim, 2.34e9:0.02e9:2.40e9, "margin", margin);
 end
