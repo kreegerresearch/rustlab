@@ -1909,6 +1909,12 @@ impl Value {
                     .map(Value::Logical)
                     .map_err(|e| e.to_string())
             }
+            Value::Tensor3(t) => {
+                super::tensor3_lift::lift("!", &[Value::Tensor3(t)], |e| e, |mut a| {
+                    a.pop().expect("one operand").not()
+                })
+                .expect("a Tensor3 operand")
+            }
             other => Err(format!(
                 "'!' operator requires bool or a numeric array, got {}",
                 other.type_name()
@@ -2432,6 +2438,13 @@ impl Value {
     /// is element-wise, other arrays repeat a dimension of length 1, and two
     /// vectors must be the same length.
     fn compare_numeric(op: BinOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
+        if matches!(lhs, Value::Tensor3(_)) || matches!(rhs, Value::Tensor3(_)) {
+            let args = [lhs.clone(), rhs.clone()];
+            return super::tensor3_lift::lift("comparison", &args, |e| e, |a| {
+                Self::compare_numeric(op, &a[0], &a[1])
+            })
+            .expect("a Tensor3 operand");
+        }
         enum Side {
             Scalar(f64),
             Grid {

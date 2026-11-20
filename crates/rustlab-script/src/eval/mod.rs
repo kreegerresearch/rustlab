@@ -18,6 +18,7 @@ pub mod sparam_analysis;
 pub mod sparam_conv;
 pub(crate) mod subscript;
 pub mod table;
+pub(crate) mod tensor3_lift;
 pub mod toml_io;
 pub mod touchstone;
 pub mod value;

@@ -110,10 +110,13 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `log(v)` | Natural logarithm |
 | `log10(v)`, `log2(v)` | Base-10 and base-2 logarithms. A negative real is the principal complex value (`log10(-1) = iπ/ln 10`), not NaN |
 | `nextpow2(x)` | Smallest integer `p` with `2^p >= |x|` (complex uses `|z|`). `nextpow2(0)` is 0 |
-| `sin(v)`, `cos(v)` | Trig (radians) |
+| `sin(v)`, `cos(v)`, `tan(v)` | Trig (radians) |
+| `cot(v)`, `sec(v)`, `csc(v)` | Reciprocal trig: `1/tan`, `1/cos`, `1/sin`. A pole is `Inf` (`cot(0)`) |
 | `asin(v)`, `acos(v)`, `atan(v)` | Inverse trig |
 | `atan2(y, x)` | Four-quadrant arctangent |
 | `tanh(v)`, `sinh(v)`, `cosh(v)` | Hyperbolic trig |
+| `asinh(v)`, `acosh(v)`, `atanh(v)` | Inverse hyperbolic trig. Outside the real domain the result is the principal complex value (`acosh(0.5) = 1.0472i`, `atanh(2) = 0.5493 + 1.5708i`), not NaN |
+| `isnan(v)`, `isinf(v)`, `isfinite(v)` | Element-wise NaN / ±Inf / finite tests. Scalar → `true`/`false`; array → logical of the same shape. Complex: NaN or Inf if either part is |
 | `floor(v)`, `ceil(v)`, `round(v)` | Rounding (applied to real and imaginary parts independently) |
 | `sign(v)` | −1/0/+1 for real; `z/\|z\|` for complex |
 | `mod(v, m)` | Modulo: `v − m·floor(v/m)` (m must be a real scalar) |
@@ -209,6 +212,10 @@ A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages.
 | `size(A)` / `size(A, 3)` | `[m, n, p]`; `size(A, 3)` is valid only for Tensor3 |
 | `ndims(A)` | `3` for Tensor3, `2` otherwise (Octave convention) |
 | `A(:, :, k)` | Page slice — drops trailing singleton, returns Matrix(m, n) |
+| `T > 0`, `T == U`, `!T`, `and(P, Q)` | Element-wise with a scalar or a same-size Tensor3; result is a 0/1 Tensor3 (no rank-3 logical, so mask with `.*` or `T(find(M))`) |
+| `abs(T)`, `sqrt(T)`, `sign(T)`, `floor(T)`, `exp(T)`, `log(T)`, `real(T)`, `conj(T)`, … | Element-wise math keeps the `(m, n, p)` shape |
+| `min(T, s)`, `max(T, U)` | Two-argument element-wise min / max |
+| `find(T)` / `[r, c] = find(T)` / `[r, c, v] = find(T)` | Column-major linear indices (the `T(:)` order). As in MATLAB, `c` merges the trailing dims (`(k-1)*n + j`); use `ind2sub(size(T), find(T))` for `[i, j, k]` |
 | `save("T.npy", A)` / `load(...)` | NPY preserves rank-3 shape natively |
 | `[Fx,Fy,Fz] = gradient3(F[, dx, dy, dz])` | 3-D gradient (axis 0 = y, axis 1 = x, axis 2 = z); same stencils as `gradient` |
 | `divergence3(Fx, Fy, Fz[, dx, dy, dz])` | 3-D divergence ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z |
@@ -567,7 +574,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
 | `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
-| `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
+| `[A, b] = pin_dirichlet(A, b, mask, values [, "scale", s])` | Pin Dirichlet values: pinned row k becomes `d_k` on the diagonal and `b(k) = d_k·value`; mask (column-major) or 1-based index vector. Default `d_k = \|A(k,k)\|` keeps the LU pivot (pinned values exact at small `h`); `"scale", 1` is the old identity row |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx`. For a size vector, use `sub2ind` / `ind2sub` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
@@ -577,7 +584,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros(S)` | Vector of non-zero values in storage order |
-| `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / `find(S)` | Nargout-aware. Dense vector → 1-based indices; dense matrix → column-major linear indices (or `[I, J]` / `[I, J, V]` subscripts). Sparse: `[I, V]` (vec) or `[I, J, V]` (mat). |
+| `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / `find(S)` | Nargout-aware. Dense vector → 1-based indices; dense matrix or `Tensor3` → column-major linear indices (or `[I, J]` / `[I, J, V]` subscripts; on a `Tensor3`, `J` merges the trailing dims). Sparse: `[I, V]` (vec) or `[I, J, V]` (mat). |
 | `S(i,j)` | Index read (returns 0 for absent entries) |
 | `S(i,j) = val` | Index write (setting to 0 removes the entry) |
 | `transpose(S)` | Non-conjugate transpose (stays sparse) |
