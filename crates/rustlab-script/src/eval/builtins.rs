@@ -9105,7 +9105,16 @@ fn reshape_logical(
         .map_err(|e| ScriptError::runtime(e.to_string()))
 }
 
-fn builtin_reshape(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // `reshape(x, m, 1)` with m > 1 is an m×1 column, as MATLAB; the 2-D
+    // walks below give a 1-D vector for any one-row or one-column shape.
+    let column = args.len() == 3
+        && matches!((count_arg(&args[1]), count_arg(&args[2])), (Ok(m), Ok(1)) if m != 1);
+    let out = reshape_any(args)?;
+    Ok(if column { out.into_column() } else { out })
+}
+
+fn reshape_any(mut args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
     let m = count_arg(&args[1])?;
     let n = count_arg(&args[2])?;

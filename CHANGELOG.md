@@ -6,6 +6,26 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.75
+
+### Breaking / behavior changes
+- **Reads that MATLAB returns as a column are an `N×1` column.** These used to return a 1-D vector, which `size` reports as `[1, N]`:
+  - `x(:)` of a vector, matrix, `Tensor3`, or logical array (column-major order, unchanged);
+  - `reshape(x, N, 1)`;
+  - `M(rows, k)` that selects one column and more than one row (`M(:, k)`, `D(2:end, 61)`), including a sparse `S(:, k)`, which is a dense `N×1` column;
+  - a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+  - `T(:, j, k)` on a `Tensor3`.
+
+  `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), `reshape(x, 1, N)`, and a single element are unchanged. `L * V(:)` now works, and `L * reshape(V, numel(V), 1)` no longer fails with "cannot multiply matrix by row vector". `[fliplr(D(2:end, 61)'), D(:, 1)']` is one row, as in MATLAB.
+
+  **Migration.** The old idiom `x(:)'` (and `M(:, k)'`) was the way to get a column; it now gives a `1×N` row. Remove the `'`:
+  - `A * V(:)'` and `A * V(:, k)'` are now a dimension error; write `A * V(:)` and `A * V(:, k)`. For a complex `V` the old form also conjugated the values, so results that went through it change sign in the imaginary part.
+  - `b = rho(:)'` passed to `spsolve` still works (any orientation is accepted), but `b = rho(:)` is the idiom. The examples and notebooks in this repo now use it.
+  - A column next to a same-length vector is still element-wise (`M(:, 1) + v` has length `N`), but a column next to a `1×N` matrix (`zeros(1, N)`, `x(:)'`) expands to `N×N`, as in MATLAB.
+  - `for x = M(:, k)` is an error (as `for` over any `N×1` column already was); the message says to loop over `M(:, k).'`.
+  - `arrayfun` and `parmap` accept a column input, and a column return (`r = M(:)`) is still one vector result per call, so their output shapes do not change.
+  - `[a, M(:, k)]` with a row `a` is now a dimension error; use `[a, M(:, k).']` or `[a; M(:, k)]`.
+
 ## 0.3.74
 
 ### Fixed

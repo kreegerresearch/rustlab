@@ -40,7 +40,7 @@ flattened column-major to match `laplacian_2d`'s indexing:
 ```rustlab
 src = zeros(ny, nx);
 src(ny/2, nx/2) = 1.0;
-b = src(:)';
+b = src(:);
 ```
 
 ## Auto dispatch picks the sparse LU path

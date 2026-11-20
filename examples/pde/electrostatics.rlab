@@ -15,13 +15,13 @@ n  = nx * ny;
 # ── 2. Multi-charge source distribution ─────────────────────────
 # Four point charges in a grounded box: two positive, two negative.
 # Source density rho lives on the (ny, nx) grid; flatten column-major
-# for the linear solve: -∇² V = ρ → V = spsolve(A, ρ(:)').
+# for the linear solve: -∇² V = ρ → V = spsolve(A, ρ(:)).
 rho = zeros(ny, nx);
 rho(30, 30) =  1.0;
 rho(30, 70) = -1.0;
 rho(70, 30) = -1.0;
 rho(70, 70) =  1.0;
-b = rho(:)';
+b = rho(:);
 
 # ── 3. Solve. Auto dispatch picks the sparse Cholesky path. ─────
 print("Solving 10000x10000 Poisson via sparse Cholesky...");

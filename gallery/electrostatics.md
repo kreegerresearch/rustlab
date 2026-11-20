@@ -52,7 +52,7 @@ rho(30, 30) =  1.0;
 rho(30, 70) = -1.0;
 rho(70, 30) = -1.0;
 rho(70, 70) =  1.0;
-b = rho(:)';
+b = rho(:);
 ```
 
 ## The solve — `spsolve` auto picks Cholesky
@@ -84,7 +84,7 @@ title("Electrostatic potential — four-charge quadrupole");
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/electrostatics/plot-1-22040da6.svg)
+![plot 1](plots/electrostatics/plot-1-30ed385a.svg)
 
 <!-- rustlab:output-end -->
 
@@ -123,7 +123,7 @@ title("Electric field E = -∇V over potential")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/electrostatics/plot-2-eaa0975b.svg)
+![plot 2](plots/electrostatics/plot-2-424110e6.svg)
 
 <!-- rustlab:output-end -->
 

@@ -87,7 +87,7 @@ fn issparse_and_nnz_of_a_submatrix() {
 }
 
 #[test]
-fn single_element_and_single_line_forms_are_unchanged() {
+fn single_element_and_single_line_forms_are_dense() {
     let ev = eval(
         "S = sparse([1, 2, 3], [1, 2, 3], [4, 5, 6], 3, 3);
          a = S(2, 2); r = S(2, :); c = S(:, 3); nr = numel(r); r2 = r(2);",
@@ -98,8 +98,9 @@ fn single_element_and_single_line_forms_are_unchanged() {
         "{:?}",
         ev.get("r")
     );
+    // A single column is a dense N×1 column, as `M(:, k)` on a dense matrix.
     assert!(
-        matches!(ev.get("c"), Some(Value::Vector(_))),
+        matches!(ev.get("c"), Some(Value::Matrix(m)) if m.dim() == (3, 1)),
         "{:?}",
         ev.get("c")
     );
