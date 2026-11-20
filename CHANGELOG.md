@@ -12,7 +12,7 @@ should re-validate against those entries when upgrading.
 - **Reads that MATLAB returns as a column are an `N×1` column.** These used to return a 1-D vector, which `size` reports as `[1, N]`:
   - `x(:)` of a vector, matrix, `Tensor3`, or logical array (column-major order, unchanged);
   - `reshape(x, N, 1)`;
-  - `M(rows, k)` that selects one column and more than one row (`M(:, k)`, `D(2:end, 61)`);
+  - `M(rows, k)` that selects one column and more than one row (`M(:, k)`, `D(2:end, 61)`), including a sparse `S(:, k)`, which is a dense `N×1` column;
   - a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
   - `T(:, j, k)` on a `Tensor3`.
 
@@ -25,6 +25,38 @@ should re-validate against those entries when upgrading.
   - `for x = M(:, k)` is an error (as `for` over any `N×1` column already was); the message says to loop over `M(:, k).'`.
   - `arrayfun` and `parmap` accept a column input, and a column return (`r = M(:)`) is still one vector result per call, so their output shapes do not change.
   - `[a, M(:, k)]` with a row `a` is now a dimension error; use `[a, M(:, k).']` or `[a; M(:, k)]`.
+
+## 0.3.74
+
+### Fixed
+- **Sparse submatrix indexing no longer densifies.** `S(rows, cols)` on a sparse matrix built the full dense matrix first and then indexed it; for a 41³ Laplacian (`L(fr, fr)` with about 30k free nodes) that asked for 76 GB. A selection with more than one row and more than one column is now gathered from the stored entries in O(nnz + selected entries) and returned as a **sparse** matrix, so symmetric Dirichlet elimination (`A_ff V_f = −A_fp V_p`) with Cholesky works at that size. Subscripts may be vectors, ranges, `end`, `:`, or logical masks, in any order and with repeats.
+
+### Breaking / behavior changes
+- **`S(rows, cols)` of a sparse matrix is sparse.** It was a dense matrix. Arithmetic with a dense partner still promotes to dense, and `full(...)` gives the old value. `S(i, j)` is still the element, and a single row or column (`S(k, :)`, `S(:, k)`) is still a dense vector (MATLAB returns sparse there). Migration: wrap in `full(...)` where a dense matrix is needed, for example before `imagesc` or a dense-only builtin.
+
+## 0.3.73
+
+### Fixed
+- **`pin_dirichlet` keeps pinned values exact at small grid spacing.** A pinned row was an identity row (diagonal 1) next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`). The sparse LU then pivoted on the large entries in the pinned column, and a conductor pinned at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4` (`2.4e-11` at `h = 1e-2`). In `rustlab_em` Lesson 18 the energy identity `2U = Q·V0` drifted from 2e-14 to 9e-9. The pinned row is now scaled to the operator's own diagonal, and the same repro is exact at every `h` from 1 to 1e-6.
+
+### Added
+- **`pin_dirichlet(..., "scale", s)`.** `s` is `"auto"` (the default) or a positive number used as every pinned row's diagonal; `"scale", 1` gives the old identity rows.
+
+### Breaking / behavior changes
+- **`pin_dirichlet` pinned rows are `d_k·e_k`, not `e_k`.** Row `k` of the returned `A` has `d_k = |A(k, k)|` on the diagonal (if that is 0, the largest `|A(k, :)|`; if the row is empty, 1), and `b(k)` is `d_k · value`. Solutions are the same in exact arithmetic and now more accurate; only the last digits of an interior solution can move. A script that reads `A(k, k) == 1` or `b(k) == value` back from the outputs, or reuses `b` with a different operator, will see the scaled values. Migration: pass `"scale", 1` for the old rows.
+
+## 0.3.72
+
+### Added
+- **Element-wise `Tensor3` comparisons, logic, and math.** `T > 0`, `R <= a`, `T == U`, `!T`, and `and` / `or` / `xor` work on a `Tensor3` with a scalar or a same-size `Tensor3` partner. So do `abs`, `sign`, `sqrt`, `exp`, `log`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, `mod`, the trig and hyperbolic functions, and two-argument `min(T, s)` / `max(T, s)`. The result keeps the `(m, n, p)` shape. There is no rank-3 logical, so comparisons return 0/1 doubles (as `cat(3, L, L)` already did): mask with `.*`, or gather with `T(find(M))`. `T(M)` with a `Tensor3` mask is still an error. A matrix or vector next to a `Tensor3` is an error, as for `+`. These used to fail with `comparison requires compatible operands` or `unsupported type tensor3`.
+- **`find` on a `Tensor3`.** `find(T)` returns column-major linear indices (the `T(:)` order). As in MATLAB, `[r, c] = find(T)` merges the trailing dimensions into `c` (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values; for three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
+
+## 0.3.71
+
+### Added
+- **`tan`, `cot`, `sec`, `csc`.** Element-wise tangent and the reciprocal trig functions, complex-aware like `sin` / `cos`. A pole is infinite as in MATLAB: `cot(0)` and `csc(0)` are `Inf`. Scripts that wrote `sin(x) ./ cos(x)` can use `tan(x)`.
+- **`asinh`, `acosh`, `atanh`.** Element-wise inverse hyperbolics. A real input outside the real domain gives MATLAB's principal complex value instead of `NaN`: `acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`, `atanh(2)` is `0.5493 + 1.5708i`, and `atanh(±1)` is `±Inf`. `acosh(x)` replaces the `log(x + sqrt(x.*x - 1))` workaround.
+- **`isnan`, `isinf`, `isfinite`.** Element-wise predicates. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, so `v(isnan(v)) = 0` works. A complex element is `NaN` (or infinite) when either part is, and finite only when both are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3`.
 
 ## 0.3.68
 
