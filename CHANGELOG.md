@@ -6,6 +6,12 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.72
+
+### Added
+- **Element-wise `Tensor3` comparisons, logic, and math.** `T > 0`, `R <= a`, `T == U`, `!T`, and `and` / `or` / `xor` work on a `Tensor3` with a scalar or a same-size `Tensor3` partner. So do `abs`, `sign`, `sqrt`, `exp`, `log`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, `mod`, the trig and hyperbolic functions, and two-argument `min(T, s)` / `max(T, s)`. The result keeps the `(m, n, p)` shape. There is no rank-3 logical, so comparisons return 0/1 doubles (as `cat(3, L, L)` already did): mask with `.*`, or gather with `T(find(M))`. `T(M)` with a `Tensor3` mask is still an error. A matrix or vector next to a `Tensor3` is an error, as for `+`. These used to fail with `comparison requires compatible operands` or `unsupported type tensor3`.
+- **`find` on a `Tensor3`.** `find(T)` returns column-major linear indices (the `T(:)` order). As in MATLAB, `[r, c] = find(T)` merges the trailing dimensions into `c` (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values; for three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
+
 ## 0.3.71
 
 ### Added

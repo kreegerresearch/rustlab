@@ -212,6 +212,10 @@ A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages.
 | `size(A)` / `size(A, 3)` | `[m, n, p]`; `size(A, 3)` is valid only for Tensor3 |
 | `ndims(A)` | `3` for Tensor3, `2` otherwise (Octave convention) |
 | `A(:, :, k)` | Page slice — drops trailing singleton, returns Matrix(m, n) |
+| `T > 0`, `T == U`, `!T`, `and(P, Q)` | Element-wise with a scalar or a same-size Tensor3; result is a 0/1 Tensor3 (no rank-3 logical, so mask with `.*` or `T(find(M))`) |
+| `abs(T)`, `sqrt(T)`, `sign(T)`, `floor(T)`, `exp(T)`, `log(T)`, `real(T)`, `conj(T)`, … | Element-wise math keeps the `(m, n, p)` shape |
+| `min(T, s)`, `max(T, U)` | Two-argument element-wise min / max |
+| `find(T)` / `[r, c] = find(T)` / `[r, c, v] = find(T)` | Column-major linear indices (the `T(:)` order). As in MATLAB, `c` merges the trailing dims (`(k-1)*n + j`); use `ind2sub(size(T), find(T))` for `[i, j, k]` |
 | `save("T.npy", A)` / `load(...)` | NPY preserves rank-3 shape natively |
 | `[Fx,Fy,Fz] = gradient3(F[, dx, dy, dz])` | 3-D gradient (axis 0 = y, axis 1 = x, axis 2 = z); same stencils as `gradient` |
 | `divergence3(Fx, Fy, Fz[, dx, dy, dz])` | 3-D divergence ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z |
@@ -579,7 +583,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros(S)` | Vector of non-zero values in storage order |
-| `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / `find(S)` | Nargout-aware. Dense vector → 1-based indices; dense matrix → column-major linear indices (or `[I, J]` / `[I, J, V]` subscripts). Sparse: `[I, V]` (vec) or `[I, J, V]` (mat). |
+| `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / `find(S)` | Nargout-aware. Dense vector → 1-based indices; dense matrix or `Tensor3` → column-major linear indices (or `[I, J]` / `[I, J, V]` subscripts; on a `Tensor3`, `J` merges the trailing dims). Sparse: `[I, V]` (vec) or `[I, J, V]` (mat). |
 | `S(i,j)` | Index read (returns 0 for absent entries) |
 | `S(i,j) = val` | Index write (setting to 0 removes the entry) |
 | `transpose(S)` | Non-conjugate transpose (stays sparse) |
