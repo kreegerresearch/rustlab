@@ -6,7 +6,7 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.69
+## 0.3.70
 
 ### Added
 - **Notebook run-time budget.** `make notebook-budget` (`dev/notebook-budget.py`) renders every notebook in the repo (`examples/notebooks/`, `docs/` pages with rustlab cells, notebook test fixtures, `README.md`) with default settings in a release build, prints wall time and peak memory, and fails when one takes longer than 20 s (`NOTEBOOK_BUDGET=S` to change). The `notebook-budget` CI workflow runs it on every pull request and writes the table to the job summary. The target is a few seconds per notebook; 10 s is the "slow" line, and the budget is twice that so runner variance does not flake.
