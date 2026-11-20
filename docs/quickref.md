@@ -152,7 +152,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `horzcat(A, B, ...)` | Horizontal concatenation (also `[A, B]`) |
 | `vertcat(A, B, ...)` | Vertical concatenation (also `[A; B]`) |
 | `meshgrid(x, y)` | Returns `[X, Y]` matrices for 2D grids |
-| `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` | 1-D gradient. Endpoints first-order, interior central. Same orientation as `v` |
+| `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` | 1-D gradient, same orientation as `v`. Interior central (second-order). **Default endpoints are first-order** `(f(2)-f(1))/h` (MATLAB), unlike the 2-D / 3-D stencils' second-order boundaries; `"order", 2` gives second-order one-sided endpoints (exact for a quadratic, needs ≥ 3 samples) |
 | `[Fx,Fy] = gradient(F[, dx, dy])` | 2-D gradient (rows index y, cols index x); 2nd-order interior + one-sided boundary |
 | `divergence(Fx, Fy[, dx, dy])` | 2-D divergence ∂Fx/∂x + ∂Fy/∂y |
 | `curl(Fx, Fy[, dx, dy])` | 2-D scalar curl ∂Fy/∂x − ∂Fx/∂y (z-component of ∇×F) |

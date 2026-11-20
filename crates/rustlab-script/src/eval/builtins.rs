@@ -14,8 +14,8 @@ use rustlab_dsp::{
     butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, cwt_morlet, cwt_stream,
     cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
-    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d,
-    gradient_1d_coords, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
+    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d_coords_order,
+    gradient_1d_order, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
     pwelch_stream_init, quantize_scalar, snr_db, stft as stft_math, stft_stream, stft_stream_init,
     upfirdn, waterfall as waterfall_math, waterfall_current_history, waterfall_current_spectrum,
     waterfall_state_fs, waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
@@ -1578,10 +1578,18 @@ fn unpack_dxdy(args: &[Value], name: &str, start: usize) -> Result<(f64, f64), S
 /// interior), returned in the same orientation.
 /// `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` on a true 2-D matrix:
 /// the existing second-order field gradient.
-fn builtin_gradient(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_gradient(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("gradient", &args, 1, 5)?;
+    let order = take_gradient_order(&mut args)?;
     check_args_range("gradient", &args, 1, 3)?;
     if gradient_arg_is_1d(&args[0]) {
-        return builtin_gradient_1d(args);
+        return builtin_gradient_1d(args, order);
+    }
+    if order == Some(1) {
+        return Err(ScriptError::type_err(
+            "gradient: 2-D boundaries are second-order only; \"order\", 1 is for a vector"
+                .to_string(),
+        ));
     }
     let f = to_cmatrix_arg(&args[0], "gradient", "F")?;
     let (dx, dy) = unpack_dxdy(&args, "gradient", 1)?;
@@ -1600,7 +1608,34 @@ fn gradient_arg_is_1d(v: &Value) -> bool {
     }
 }
 
-fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// Remove a trailing `"order", k` option. `None` when it is absent.
+fn take_gradient_order(args: &mut Vec<Value>) -> Result<Option<u32>, ScriptError> {
+    let n = args.len();
+    let at = (1..n).find(|&i| matches!(&args[i], Value::Str(_)));
+    let Some(i) = at else { return Ok(None) };
+    match &args[i] {
+        Value::Str(k) if k == "order" && i + 2 == n => {}
+        Value::Str(k) => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: unknown option \"{k}\"; the only option is \"order\", 1 or 2, last"
+            )))
+        }
+        _ => unreachable!(),
+    }
+    let k = match &args[i + 1] {
+        Value::Scalar(k) if *k == 1.0 || *k == 2.0 => *k as u32,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: \"order\" must be 1 or 2, got {other}"
+            )))
+        }
+    };
+    args.truncate(i);
+    Ok(Some(k))
+}
+
+fn builtin_gradient_1d(args: Vec<Value>, order: Option<u32>) -> Result<Value, ScriptError> {
+    let order = order.unwrap_or(1);
     if args.len() == 3 {
         return Err(ScriptError::type_err(
             "gradient: a vector takes gradient(v), gradient(v, h), or gradient(v, x); \
@@ -1610,18 +1645,18 @@ fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let samples = gradient_samples(&args[0])?;
     let g = if args.len() == 1 {
-        gradient_1d(&samples, 1.0)?
+        gradient_1d_order(&samples, 1.0, order)?
     } else {
         match &args[1] {
-            Value::Scalar(h) => gradient_1d(&samples, *h)?,
-            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d(&samples, c.re)?,
+            Value::Scalar(h) => gradient_1d_order(&samples, *h, order)?,
+            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d_order(&samples, c.re, order)?,
             Value::Vector(v) => {
                 let x: Vec<f64> = v.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
                 let x: Vec<f64> = m.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             other => {
                 return Err(ScriptError::type_err(format!(

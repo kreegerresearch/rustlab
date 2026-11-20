@@ -39,7 +39,8 @@ pub use rasterize::{disk_mask, polygon_mask, rect_mask};
 pub use stft::stft;
 pub use upfirdn::upfirdn;
 pub use vector_calc::{
-    curl_2d, curl_3d, divergence_2d, divergence_3d, gradient_1d, gradient_1d_coords, gradient_2d,
+    curl_2d, curl_3d, divergence_2d, divergence_3d, gradient_1d, gradient_1d_coords,
+    gradient_1d_coords_order, gradient_1d_order, gradient_2d,
     gradient_3d,
 };
 pub use waterfall::waterfall;

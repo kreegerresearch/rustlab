@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.76
+
+### Added
+- **`gradient(..., "order", 2)` for 1-D endpoints.** The 1-D `gradient` keeps MATLAB's first-order endpoints `(f(2) - f(1))/h` by default, while the 2-D and 3-D stencils use second-order one-sided boundaries. `"order", 2` (last, after `h` or `x`) uses second-order one-sided endpoints: `(-3f(1) + 4f(2) - f(3))/(2h)` and its mirror, or on coordinates the derivative of the parabola through the first (last) three samples. The interior is unchanged. A quadratic is exact at every sample: on `x = [0.4 0.6 0.8 1.0 1.4 2.0]`, `gradient(x.^2, x)` ends at `1.0` and `3.4`, `gradient(x.^2, x, "order", 2)` at the exact `0.8` and `4.0`. In `rustlab_em` Lesson 15 the first-order ends put the endpoint forces 13–34% off. Needs at least 3 samples. A 2-D matrix accepts `"order", 2` and rejects `"order", 1`. `docs/quickref.md` now states the default endpoint order.
+
 ## 0.3.75
 
 ### Breaking / behavior changes
