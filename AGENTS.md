@@ -1322,6 +1322,9 @@ primary     = NUMBER | STRING | IDENT
 | `sin` | `sin(x)` | Sine (element-wise) |
 | `sqrt` | `sqrt(x)` | Square root (element-wise) |
 | `exp` | `exp(x)` | e^x (element-wise) |
+| `tan` / `cot` / `sec` / `csc` | `tan(x)` | Tangent and the reciprocals `1/tan`, `1/cos`, `1/sin` (element-wise). A pole is `Inf` (`cot(0)`) |
+| `asinh` / `acosh` / `atanh` | `acosh(x)` | Inverse hyperbolics (element-wise). Outside the real domain (`acosh` for x < 1, `atanh` for \|x\| > 1) the principal complex value, as in MATLAB |
+| `isnan` / `isinf` / `isfinite` | `isnan(x)` | Element-wise NaN / ±Inf / finite test. Scalar → bool; vector or matrix → logical of the same shape; Tensor3 → 0/1 Tensor3. Complex: either part NaN / Inf |
 | `log` | `log(x)` | Natural log (element-wise) |
 | `zeros` | `zeros(n)` / `zeros(m, n)` / `zeros(1, n)` | n×n zero matrix, or m×n. A row is `zeros(1, n)` and stays a matrix. `zeros(n, "int32")` is n×n |
 | `ones` | `ones(n)` / `ones(m, n)` / `ones(1, n)` | Same shapes as `zeros`, filled with ones |
