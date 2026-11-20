@@ -11,6 +11,7 @@
 //!    output [`QFmtSpec`] and quantizes its result accordingly.
 //! 4. Measure degradation with [`snr_db`].
 
+use rustlab_core::Sum0;
 use crate::error::DspError;
 use rustlab_core::{OverflowMode, RoundMode};
 
@@ -200,12 +201,12 @@ pub fn snr_db(x_ref: &[f64], x_q: &[f64]) -> Result<f64, DspError> {
         )));
     }
     let n = x_ref.len() as f64;
-    let sig_pwr: f64 = x_ref.iter().map(|&x| x * x).sum::<f64>() / n;
+    let sig_pwr: f64 = x_ref.iter().map(|&x| x * x).sum0() / n;
     let nse_pwr: f64 = x_ref
         .iter()
         .zip(x_q.iter())
         .map(|(&r, &q)| (r - q) * (r - q))
-        .sum::<f64>()
+        .sum0()
         / n;
     if nse_pwr == 0.0 {
         return Ok(f64::INFINITY);

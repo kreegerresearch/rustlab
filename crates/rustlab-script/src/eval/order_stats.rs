@@ -11,6 +11,7 @@
 //! An empty slice is NaN. One finite observation is 0. A single `Inf`
 //! or `NaN` is NaN, which is what `std(Inf)` and `var(Inf)` return.
 
+use rustlab_core::Sum0;
 use rustlab_core::C64;
 
 use crate::error::ScriptError;
@@ -93,7 +94,7 @@ pub(crate) fn variance_f64(name: &str, vals: &[f64], weight: &Weight) -> Result<
                 return Ok(if vals[0].is_finite() { 0.0 } else { f64::NAN });
             }
             let nf = n as f64;
-            let mean = vals.iter().sum::<f64>() / nf;
+            let mean = vals.iter().sum0() / nf;
             let ss: f64 = vals
                 .iter()
                 .map(|x| {
@@ -139,7 +140,7 @@ fn weighted_ss(
             "{name}: weights must be finite and nonnegative"
         )));
     }
-    let sw: f64 = w.iter().sum();
+    let sw: f64 = w.iter().sum0();
     if sw == 0.0 {
         return Ok(f64::NAN);
     }
@@ -322,7 +323,7 @@ pub(crate) fn variance(name: &str, vals: &[C64], weight: &Weight) -> Result<f64,
             }
             let nf = n as f64;
             let mean = vals.iter().copied().sum::<C64>() / nf;
-            let ss: f64 = vals.iter().map(|z| (*z - mean).norm_sqr()).sum();
+            let ss: f64 = vals.iter().map(|z| (*z - mean).norm_sqr()).sum0();
             let denom = match weight {
                 Weight::Sample => nf - 1.0,
                 Weight::Population => nf,

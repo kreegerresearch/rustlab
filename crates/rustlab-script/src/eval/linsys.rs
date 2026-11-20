@@ -5,6 +5,7 @@
 //! column-pivoted Householder QR and a basic solution (free variables are 0).
 //! A vector on the right is a column. An explicit one-row matrix stays a row.
 
+use rustlab_core::Sum0;
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -625,7 +626,7 @@ fn mean_std(x: &[f64]) -> Result<(f64, f64), ScriptError> {
             "polyfit: centering needs at least two x values".to_string(),
         ));
     }
-    let mean = x.iter().sum::<f64>() / x.len() as f64;
+    let mean = x.iter().sum0() / x.len() as f64;
     let mut acc = 0.0;
     for t in x {
         let d = t - mean;

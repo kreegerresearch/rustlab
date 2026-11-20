@@ -84,6 +84,9 @@ struct Sample {
 
 const _: () = assert!(std::mem::size_of::<Sample>() == 48);
 
+/// Samples per task in the accumulation pass.
+const NTFF_CHUNK: usize = 4096;
+
 #[derive(Clone, Debug)]
 pub(super) struct Ntff {
     freqs: Vec<f64>,
@@ -153,48 +156,59 @@ impl Ntff {
         let h_fields = [hx, hy, hz];
         let ns = r.samples.len();
         let parallel = parallel && ns > 0;
-        let mut emax = 0.0f64;
-        for (q, &f) in self.freqs.iter().enumerate() {
-            let w = 2.0 * PI * f;
-            let s = step as f64;
-            let re = Complex::from_polar(dt, -w * s * dt);
-            let rh = Complex::from_polar(dt, -w * (s - 0.5) * dt);
-            let e_base = q * ns;
-            let e = &mut r.e[e_base..e_base + ns];
-            let h = &mut r.h[e_base..e_base + ns];
-            if parallel {
-                e.par_iter_mut()
-                    .zip(h.par_iter_mut())
-                    .zip(r.samples.par_iter())
-                    .for_each(|((e, h), sm)| {
-                        let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
-                        let hv = 0.5
-                            * (h_fields[sm.h_slot as usize][sm.h_a as usize]
-                                + h_fields[sm.h_slot as usize][sm.h_b as usize]);
-                        *e += re * ev;
-                        *h += rh * hv;
-                    });
-            } else {
-                for (p, sm) in r.samples.iter().enumerate() {
-                    let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
-                    let hv = 0.5
-                        * (h_fields[sm.h_slot as usize][sm.h_a as usize]
-                            + h_fields[sm.h_slot as usize][sm.h_b as usize]);
-                    e[p] += re * ev;
-                    h[p] += rh * hv;
-                    if q == 0 {
-                        emax = emax.max(ev.abs());
-                    }
+        let s = step as f64;
+        let rot: Vec<(C64, C64)> = self
+            .freqs
+            .iter()
+            .map(|&f| {
+                let w = 2.0 * PI * f;
+                (
+                    Complex::from_polar(dt, -w * s * dt),
+                    Complex::from_polar(dt, -w * (s - 0.5) * dt),
+                )
+            })
+            .collect();
+        // One pass over the samples updates every frequency: the gathered
+        // E and H values are read once per step, not once per frequency.
+        // Each slot gets the same `+= r·v` as a pass per frequency would.
+        let chunk = NTFF_CHUNK.min(ns.max(1));
+        let mut e_rows: Vec<std::slice::ChunksMut<'_, C64>> =
+            r.e.chunks_mut(ns.max(1))
+                .map(|f| f.chunks_mut(chunk))
+                .collect();
+        let mut h_rows: Vec<std::slice::ChunksMut<'_, C64>> =
+            r.h.chunks_mut(ns.max(1))
+                .map(|f| f.chunks_mut(chunk))
+                .collect();
+        let mut tasks: Vec<(Vec<&mut [C64]>, Vec<&mut [C64]>, &[Sample])> = r
+            .samples
+            .chunks(chunk)
+            .map(|sm| {
+                let e: Vec<&mut [C64]> = e_rows.iter_mut().map(|it| it.next().unwrap()).collect();
+                let h: Vec<&mut [C64]> = h_rows.iter_mut().map(|it| it.next().unwrap()).collect();
+                (e, h, sm)
+            })
+            .collect();
+        let run = |(e, h, sm): &mut (Vec<&mut [C64]>, Vec<&mut [C64]>, &[Sample])| -> f64 {
+            let mut emax = 0.0f64;
+            for (p, sm) in sm.iter().enumerate() {
+                let ev = e_fields[sm.e_slot as usize][sm.e_idx as usize];
+                let hv = 0.5
+                    * (h_fields[sm.h_slot as usize][sm.h_a as usize]
+                        + h_fields[sm.h_slot as usize][sm.h_b as usize]);
+                for (q, &(re, rh)) in rot.iter().enumerate() {
+                    e[q][p] += re * ev;
+                    h[q][p] += rh * hv;
                 }
+                emax = emax.max(ev.abs());
             }
-        }
-        if parallel {
-            emax = r
-                .samples
-                .par_iter()
-                .map(|sm| e_fields[sm.e_slot as usize][sm.e_idx as usize].abs())
-                .reduce(|| 0.0, f64::max);
-        }
+            emax
+        };
+        let emax = if parallel {
+            tasks.par_iter_mut().map(run).reduce(|| 0.0, f64::max)
+        } else {
+            tasks.iter_mut().map(run).fold(0.0, f64::max)
+        };
         r.decay.push(emax);
     }
 }

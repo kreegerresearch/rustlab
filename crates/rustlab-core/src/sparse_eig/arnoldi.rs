@@ -9,6 +9,7 @@
 //! Modified Gram-Schmidt with twice-is-enough reorthogonalization —
 //! same robustness story as Lanczos.
 
+use crate::Sum0;
 use crate::sparse_eig::SparseEigError;
 use crate::types::C64;
 use ndarray::Array2;
@@ -128,7 +129,7 @@ fn inner(a: &[C64], b: &[C64]) -> C64 {
 }
 
 fn vec_norm(v: &[C64]) -> f64 {
-    v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt()
+    v.iter().map(|c| c.norm_sqr()).sum0().sqrt()
 }
 
 fn axpy(y: &mut [C64], alpha: C64, x: &[C64]) {

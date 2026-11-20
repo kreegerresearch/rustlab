@@ -876,6 +876,37 @@ impl Value {
             }
             _ => {}
         }
+        // Complex storage that holds real data (every imaginary part exactly
+        // `+0.0`): the transpose of a real array is real, so `'` does not
+        // flip those zeros to `-0.0`. The result is real-stored, the same
+        // values as `.'`.
+        if CONJ {
+            let real_data = |d: &[C64]| -> Option<Vec<f64>> {
+                d.iter()
+                    .all(|z| z.im.to_bits() == 0)
+                    .then(|| d.iter().map(|z| z.re).collect())
+            };
+            match self {
+                Value::Vector(v) if !Shared::is_real(v) => {
+                    if let Some(d) = v.as_slice().and_then(real_data) {
+                        let n = d.len();
+                        return Ok(Value::real_matrix(
+                            Array2::from_shape_vec((n, 1), d).expect("n × 1"),
+                        ));
+                    }
+                }
+                Value::Matrix(m) if !Shared::is_real(m) => {
+                    if let Some(d) = m.as_slice().and_then(real_data) {
+                        let s = Shared::shape(m);
+                        let out = super::real_ops::transpose_f64(&d, s[0], s[1]);
+                        return Ok(Value::real_matrix(
+                            Array2::from_shape_vec((s[1], s[0]), out).expect("c × r"),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         match self {
             Value::Vector(v) => {
                 // Row vector (1×n) → column vector (n×1)
@@ -3350,6 +3381,13 @@ impl Value {
         }
 
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
+        // Real scalars and real-stored blocks only: the matrix is real too.
+        let all_real = rows.iter().flatten().all(|v| match v {
+            Value::Scalar(_) => true,
+            Value::Vector(v) => Shared::is_real(v),
+            Value::Matrix(m) => Shared::is_real(m),
+            _ => false,
+        });
 
         for row in &rows {
             if row.is_empty() {
@@ -3431,6 +3469,12 @@ impl Value {
                 }
             }
             let nrows = all_rows.len();
+            if all_real {
+                let flat: Vec<f64> = all_rows.into_iter().flatten().map(|z| z.re).collect();
+                let mat =
+                    Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
+                return Ok(Value::real_matrix(mat));
+            }
             let flat: Vec<C64> = all_rows.into_iter().flatten().collect();
             let mat = Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
             Ok(Value::Matrix(mat.into()))

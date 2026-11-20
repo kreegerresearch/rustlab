@@ -2,7 +2,7 @@ CARGO       := cargo
 INSTALL_DIR := $(HOME)/.local/bin
 UNAME       := $(shell uname)
 
-.PHONY: all build release test install install-validate-deps perf octave-compare notebooks examples validate-notebooks validate-notebooks-self-test clean-notebooks clean help
+.PHONY: all build release test install install-validate-deps perf octave-compare notebooks examples notebook-budget validate-notebooks validate-notebooks-self-test clean-notebooks clean help
 
 all: help
 
@@ -53,6 +53,14 @@ notebooks:
 examples:
 	$(CARGO) build --locked --release -q --bin rustlab
 	@RUSTLAB=$(CURDIR)/target/release/rustlab bash dev/run-examples.sh
+
+# Render every notebook in the repo (examples, docs, notebook test
+# fixtures) with default settings in a release build and fail if one takes
+# longer than its budget (20 s by default; NOTEBOOK_BUDGET=S to change).
+NOTEBOOK_BUDGET ?= 20
+notebook-budget:
+	$(CARGO) build --locked --release -q -p rustlab-notebook --bin rustlab-notebook
+	@python3 dev/notebook-budget.py --budget $(NOTEBOOK_BUDGET)
 
 # Render every notebook under examples/notebooks/ through each output
 # format and pipe each artefact through a trusted external linter
@@ -128,6 +136,7 @@ help:
 	@echo "  octave-compare  Regenerate CSVs and compare rustlab vs Octave (requires octave)"
 	@echo "  notebooks       Render examples/notebooks/*.md → gallery/ (md committed, html ignored)"
 	@echo "  examples        Run examples/**/*.rlab under --plot none (skips live audio monitors)"
+	@echo "  notebook-budget Time every notebook's default render; fail past NOTEBOOK_BUDGET s (20)"
 	@echo "  validate-notebooks  Render quick_look.md to every format and lint each output (CI)"
 	@echo "  validate-notebooks-self-test  Verify each linter wrapper rejects its broken fixture"
 	@echo "  install-validate-deps  Install external linters (tidy-html5, chktex, markdownlint-cli2)"

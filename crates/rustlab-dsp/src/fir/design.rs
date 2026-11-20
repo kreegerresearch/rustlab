@@ -1,3 +1,4 @@
+use rustlab_core::Sum0;
 use crate::convolution::convolve;
 use crate::error::DspError;
 use crate::window::WindowFunction;
@@ -133,7 +134,7 @@ pub fn fir_lowpass(
     // Windowing can reduce the passband gain,
     // especially for narrow-band filters where many sinc tail samples are
     // tapered away by the window.
-    let dc_gain: f64 = coeffs.iter().map(|c| c.re).sum();
+    let dc_gain: f64 = coeffs.iter().map(|c| c.re).sum0();
     let coeffs = if dc_gain.abs() > 1e-12 {
         coeffs.mapv(|c| Complex::new(c.re / dc_gain, c.im / dc_gain))
     } else {

@@ -2,41 +2,83 @@
 
 # Patch width sweep
 
-Five patch widths, 28 mm to 44 mm in steps of 4 mm, on one ground. The length stays 28 mm. `parmap` builds a grid per width and steps it on the shared pool. Passing `"threads", 1` to `fdtd3d` would keep each trial on one core; this sweep does not.
+Patch widths from 28 mm to 44 mm on one ground. The length stays 28 mm. `parmap` builds a grid per width and steps it.
 
-The resonance and the match should both fall as the patch gets wider. Each resonance should stay within 1.5% of the staircased transmission-line model, and the span of the five resonances should be between half and twice the span of that model.
+The resonance and the match should both fall as the patch gets wider. Each resonance should stay within 1.5% of the staircased transmission-line model, and the span of the resonances should be between half and twice the span of that model.
+
+## Presets
+
+The `preset` line near the top of the cell picks the run.
+
+| preset | substrate cells | steps | widths | air above / beside | cells per trial |
+|---|---:|---:|---|---|---:|
+| `quick` (default) | 1 | 4,500 | 28, 36, 44 mm | 10 mm / 4 mm | 106,920 |
+| `full` | 2 | 8,000 | 28 to 44 mm, step 4 mm | 20 mm / 10 mm | 285,120 |
+
+The step count is set by the widest patch, which rings longest: at 4,500 quick steps its port tail is $4.6\times 10^{-4}$ of the peak, under the $10^{-3}$ pulse check in `fdtd_s11`. The narrow patch has decayed by 3,000.
+
+The sweep reads only $S_{11}$. The patch notebook keeps 20 mm of air above the board and 10 mm beside the ground so its near-to-far box sits outside the reactive field; this sweep has no near-to-far box. On the quick mesh, 10 mm above and 4 mm beside give the same three resonances to 0.1 MHz and the same $|S_{11}|$ to 0.001 as 20 mm and 10 mm, with 43% fewer cells.
+
+Quick takes about five seconds on four cores. Its resonances are 2.3815, 2.3577, and 2.3418 GHz against the model's 2.3733, 2.3559, and 2.3436 GHz: +0.35%, +0.08%, and −0.08%. Edit the line to `preset = "full";` for five widths on the two-cell substrate, about eight times as long.
+
+Both presets step each trial on the shared pool (`"threads", 0`). Passing `"threads", 1` to `fdtd3d` keeps a trial on one core instead. With three quick trials on four cores the shared pool was faster here, 5.1 s against 6.2 s, and the result is bit-identical either way.
 
 ```rustlab
-# Patch width sweep on the 2 mm lesson mesh.
+# Patch width sweep on the 2 mm mesh.
 # Demonstrates: parmap over an fdtd3d builder. Each trial builds its own
-# grid. The shared rayon pool steps every trial; "threads", 1 on fdtd3d
-# would pin a trial to one core instead.
+# grid and steps it with the preset's "threads" value: 0 steps it on the
+# shared rayon pool, 1 would keep a trial on one core.
+#
+# preset is "quick" or "full". quick is the default: one cell through the
+# 1.6 mm substrate, 4 500 steps (about 16 ns), three widths (28:8:44 mm),
+# 10 mm of air above and below the board and 4 mm beside the ground. The
+# sweep reads only S11, so the air the patch notebook keeps for its
+# near-to-far box is not needed: 20 mm above and 10 mm beside give the same
+# resonances to 0.1 MHz on this mesh. full is two cells through the
+# substrate, 8 000 steps, five widths (28:4:44 mm), 20 mm and 10 mm of air,
+# about eight times the run time. Each record is long enough for the widest
+# patch to pass the 1e-3 pulse check in fdtd_s11 (4.6e-4 at 4 500 steps on
+# quick).
 #
 # The ground and the mesh stay the size of the 38 mm design. Only the
 # patch width changes, and the length stays 28 mm. NTFF is off: the
 # result is the resonance and the match, not the pattern.
 
-function r = patch_res(Wm)
+preset = "quick";
+
+function m = sweep_preset(name)
+    switch name
+        case "quick"
+            m = struct("nsub", 1, "nsteps", 4500, "widths", 28e-3:8e-3:44e-3, ...
+                "air_z", 10e-3, "air_xy", 4e-3, "threads", 0);
+        case "full"
+            m = struct("nsub", 2, "nsteps", 8000, "widths", 28e-3:4e-3:44e-3, ...
+                "air_z", 20e-3, "air_xy", 10e-3, "threads", 0);
+        otherwise
+            error(sprintf("unknown preset %s: use quick or full", name));
+    end
+end
+
+function r = patch_res(Wm, nsub, nsteps, air_z, air_xy, threads)
     eps_r = 4.4;
     h = 1.6e-3;
     f0 = 2.4e9;
     Lm = 28e-3;
     dx = 2e-3;
-    nsub = 2;
     dz = h / nsub;
     npml = 8;
     margin = 2;
     ngx = 2 * round((Lm / 2 + 16e-3) / dx);
     ngy = 2 * round((19e-3 + 16e-3) / dx);
-    nax = round(10e-3 / dx);
-    naz = round(20e-3 / dz);
+    nax = round(air_xy / dx);
+    naz = round(air_z / dz);
     nx = ngx + 2 * (npml + margin + nax);
     ny = ngy + 2 * (npml + margin + nax);
     nz = nsub + 2 * (npml + margin + naz);
     jg0 = npml + margin + nax;
     ig0 = jg0;
     kg = npml + margin + naz;
-    sim = fdtd3d(nx, ny, nz, dx, dx, dz);
+    sim = fdtd3d(nx, ny, nz, dx, dx, dz, "threads", threads);
     eps = ones3(ny, nx, nz);
     eps(ig0 + 1:ig0 + ngy, jg0 + 1:jg0 + ngx, kg + 1:kg + nsub) = eps_r;
     fdtd_media(sim, eps, 1, 0);
@@ -56,8 +98,8 @@ function r = patch_res(Wm)
     fdtd_pec(sim, "z", kg + nsub + 1, patch);
     tau = 1 / (2 * f0);
     fdtd_port(sim, "ez", ny / 2 + 1, j0 + 1, kg + 1:kg + nsub, 50, "modulated", 4 * tau, tau, f0);
-    fdtd_run(sim, 8000);
-    s = fdtd_s11(sim, "nfft", 8 * 8000);
+    fdtd_run(sim, nsteps);
+    s = fdtd_s11(sim, "nfft", 8 * nsteps);
     f = s.frequencies;
     a = abs(sij(s, 1, 1));
     band = find(and(f > 1.8e9, f < 3.2e9));
@@ -70,9 +112,15 @@ eps_r = 4.4;
 h = 1.6e-3;
 Lm = 28e-3;
 dx = 2e-3;
-widths = 28e-3:4e-3:44e-3;
+m = sweep_preset(preset);
+widths = m.widths;
+nsub = m.nsub;
+nsteps = m.nsteps;
+threads = m.threads;
+air_z = m.air_z;
+air_xy = m.air_xy;
 tic;
-R = parmap(@(w) patch_res(w), widths);
+R = parmap(@(w) patch_res(w, nsub, nsteps, air_z, air_xy, threads), widths);
 fprintf("parmap over %d widths on %d threads: %.1f s\n", length(widths), nproc(), toc);
 
 f_model = zeros(1, length(widths));
@@ -118,15 +166,13 @@ title("Edge-fed patch, length 28 mm");
 
 <!-- rustlab:output-start -->
 ```text
-parmap over 5 widths on 4 threads: 37.2 s
-  W = 28 mm: f_res = 2.3987 GHz, model 2.3733 GHz, min |S11| = 0.729
-  W = 32 mm: f_res = 2.3851 GHz, model 2.3638 GHz, min |S11| = 0.672
-  W = 36 mm: f_res = 2.3783 GHz, model 2.3559 GHz, min |S11| = 0.610
-  W = 40 mm: f_res = 2.3647 GHz, model 2.3493 GHz, min |S11| = 0.545
-  W = 44 mm: f_res = 2.3579 GHz, model 2.3436 GHz, min |S11| = 0.475
-span 40.8 MHz, model 29.7 MHz, ratio 1.37
+parmap over 3 widths on 4 threads: 4.3 s
+  W = 28 mm: f_res = 2.3815 GHz, model 2.3733 GHz, min |S11| = 0.728
+  W = 36 mm: f_res = 2.3577 GHz, model 2.3559 GHz, min |S11| = 0.610
+  W = 44 mm: f_res = 2.3418 GHz, model 2.3436 GHz, min |S11| = 0.475
+span 39.7 MHz, model 29.7 MHz, ratio 1.34
 ```
 
-![plot 1](plots/fdtd_sweep/plot-1-d9245702.svg)
+![plot 1](plots/fdtd_sweep/plot-1-3ad09152.svg)
 
 <!-- rustlab:output-end -->
