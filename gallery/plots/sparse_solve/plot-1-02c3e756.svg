@@ -15,42 +15,22 @@ Poisson solution: -∇² V = δ at grid centre
 0.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,44 89,44 "/>
-<text x="80" y="83" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-5.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,83 89,83 "/>
 <text x="80" y="121" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 10.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,121 89,121 "/>
-<text x="80" y="160" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-15.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,160 89,160 "/>
 <text x="80" y="198" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 20.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,198 89,198 "/>
-<text x="80" y="237" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-25.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,237 89,237 "/>
 <text x="80" y="275" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 30.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,275 89,275 "/>
-<text x="80" y="314" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-35.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,314 89,314 "/>
 <text x="80" y="352" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 40.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,352 89,352 "/>
-<text x="80" y="391" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-45.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="84,391 89,391 "/>
 <text x="80" y="429" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 50.0
 </text>
@@ -60,42 +40,22 @@ Poisson solution: -∇² V = δ at grid centre
 0.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="90,430 90,435 "/>
-<text x="127" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-5.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="127,430 127,435 "/>
 <text x="165" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 10.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="165,430 165,435 "/>
-<text x="203" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-15.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="203,430 203,435 "/>
 <text x="241" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 20.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="241,430 241,435 "/>
-<text x="279" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-25.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="279,430 279,435 "/>
 <text x="317" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 30.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="317,430 317,435 "/>
-<text x="355" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-35.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="355,430 355,435 "/>
 <text x="393" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 40.0
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="393,430 393,435 "/>
-<text x="431" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-45.0
-</text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="431,430 431,435 "/>
 <text x="469" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
 50.0
 </text>

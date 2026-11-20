@@ -15,7 +15,7 @@ dx = 0.05; dy = 0.05;
 src = zeros(ny, nx);
 src(20, 20) =  1.0;
 src(40, 40) = -1.0;
-b = src(:)';
+b = src(:);
 
 # ── 2. Dirichlet — V = 0 outside the grid ───────────────────────
 # Standard non-singular system; spsolve auto-routes to Cholesky.

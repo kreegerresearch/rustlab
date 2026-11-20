@@ -1,3 +1,4 @@
+use super::tensor3_lift;
 use super::shared::Shared;
 use crate::error::ScriptError;
 use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
@@ -13,8 +14,8 @@ use rustlab_dsp::{
     butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, cwt_morlet, cwt_stream,
     cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
-    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d,
-    gradient_1d_coords, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
+    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d_coords_order,
+    gradient_1d_order, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
     pwelch_stream_init, quantize_scalar, snr_db, stft as stft_math, stft_stream, stft_stream_init,
     upfirdn, waterfall as waterfall_math, waterfall_current_history, waterfall_current_spectrum,
     waterfall_state_fs, waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
@@ -160,6 +161,16 @@ impl BuiltinRegistry {
         r.register("atan2", builtin_atan2);
         r.register("sinh", builtin_sinh);
         r.register("cosh", builtin_cosh);
+        r.register("tan", builtin_tan);
+        r.register("cot", builtin_cot);
+        r.register("sec", builtin_sec);
+        r.register("csc", builtin_csc);
+        r.register("asinh", builtin_asinh);
+        r.register("acosh", builtin_acosh);
+        r.register("atanh", builtin_atanh);
+        r.register("isnan", builtin_isnan);
+        r.register("isinf", builtin_isinf);
+        r.register("isfinite", builtin_isfinite);
         r.register("floor", builtin_floor);
         r.register("ceil", builtin_ceil);
         r.register("round", builtin_round);
@@ -752,6 +763,9 @@ fn builtin_window(args: Vec<Value>) -> Result<Value, ScriptError> {
 // ─── Math builtins ─────────────────────────────────────────────────────────
 
 fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("abs", &args, ScriptError::type_err, builtin_abs) {
+        return r;
+    }
     check_args("abs", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(n.abs())),
@@ -791,6 +805,9 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("angle", &args, ScriptError::type_err, builtin_angle) {
+        return r;
+    }
     check_args("angle", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n >= 0.0 {
@@ -828,6 +845,9 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("real", &args, ScriptError::type_err, builtin_real) {
+        return r;
+    }
     check_args("real", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
@@ -847,6 +867,9 @@ fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("imag", &args, ScriptError::type_err, builtin_imag) {
+        return r;
+    }
     check_args("imag", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n == 0.0 { 0.0 } else { 0.0 })),
@@ -872,6 +895,9 @@ fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_conj(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("conj", &args, ScriptError::type_err, builtin_conj) {
+        return r;
+    }
     check_args("conj", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
@@ -910,6 +936,21 @@ fn apply_scalar_fn_promoting(
     needs_complex: impl Fn(f64) -> bool + Sync,
 ) -> Result<Value, ScriptError> {
     check_args(name, &args, 1)?;
+    if let Some(r) = tensor3_lift::lift(name, &args, ScriptError::type_err, |a| {
+        apply_scalar_fn_promoting_2d(name, a, &f, &fc, &needs_complex)
+    }) {
+        return r;
+    }
+    apply_scalar_fn_promoting_2d(name, args, f, fc, needs_complex)
+}
+
+fn apply_scalar_fn_promoting_2d(
+    name: &str,
+    args: Vec<Value>,
+    f: impl Fn(f64) -> f64 + Sync,
+    fc: impl Fn(Complex<f64>) -> Complex<f64> + Sync,
+    needs_complex: impl Fn(f64) -> bool + Sync,
+) -> Result<Value, ScriptError> {
     // Promote one real element via the complex branch, else stay real.
     let elem = |x: f64| {
         if needs_complex(x) {
@@ -1057,6 +1098,142 @@ fn builtin_cosh(args: Vec<Value>) -> Result<Value, ScriptError> {
     apply_scalar_fn_to_value("cosh", args, f64::cosh, |c: Complex<f64>| c.cosh())
 }
 
+fn builtin_tan(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value("tan", args, f64::tan, |c: Complex<f64>| c.tan())
+}
+
+// cot / sec / csc are the reciprocals, as in MATLAB: cot(0) = Inf.
+fn builtin_cot(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "cot",
+        args,
+        |x| 1.0 / x.tan(),
+        |c: Complex<f64>| c.tan().inv(),
+    )
+}
+
+fn builtin_sec(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "sec",
+        args,
+        |x| 1.0 / x.cos(),
+        |c: Complex<f64>| c.cos().inv(),
+    )
+}
+
+fn builtin_csc(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value(
+        "csc",
+        args,
+        |x| 1.0 / x.sin(),
+        |c: Complex<f64>| c.sin().inv(),
+    )
+}
+
+fn builtin_asinh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value("asinh", args, f64::asinh, |c: Complex<f64>| c.asinh())
+}
+
+fn builtin_acosh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Real domain is [1, ∞); below 1 the principal value is complex
+    // (acosh(0.5) → 1.0472i, acosh(-2) → 1.317 + πi), as in MATLAB.
+    apply_scalar_fn_promoting(
+        "acosh",
+        args,
+        f64::acosh,
+        |c: Complex<f64>| c.acosh(),
+        |x| x < 1.0,
+    )
+}
+
+fn builtin_atanh(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Real domain is [-1, 1] (±1 give ±Inf); outside it the principal value
+    // is complex (atanh(2) → 0.5493 + π/2 i), as in MATLAB. On the real-axis
+    // cut MATLAB and Octave put the imaginary part at +π/2 for both signs;
+    // `Complex::atanh` gives −π/2 for x > 1.
+    apply_scalar_fn_promoting(
+        "atanh",
+        args,
+        f64::atanh,
+        |c: Complex<f64>| {
+            if c.im == 0.0 && c.re.abs() > 1.0 {
+                let x = c.re;
+                Complex::new(
+                    0.5 * ((1.0 + x) / (x - 1.0)).abs().ln(),
+                    std::f64::consts::FRAC_PI_2,
+                )
+            } else {
+                c.atanh()
+            }
+        },
+        |x| x.abs() > 1.0,
+    )
+}
+
+fn builtin_isnan(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isnan", args, |c| c.re.is_nan() || c.im.is_nan())
+}
+
+fn builtin_isinf(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isinf", args, |c| c.re.is_infinite() || c.im.is_infinite())
+}
+
+fn builtin_isfinite(args: Vec<Value>) -> Result<Value, ScriptError> {
+    elementwise_predicate("isfinite", args, |c| c.re.is_finite() && c.im.is_finite())
+}
+
+/// A per-element test of a numeric value. A scalar gives a `bool`; a vector
+/// or matrix gives a logical array of its shape; a `Tensor3` gives 0/1
+/// doubles (there is no rank-3 logical). Integers are always finite.
+fn elementwise_predicate(
+    name: &str,
+    args: Vec<Value>,
+    pred: impl Fn(Complex<f64>) -> bool,
+) -> Result<Value, ScriptError> {
+    check_args(name, &args, 1)?;
+    let logical = |flags: Vec<bool>, rows: usize, cols: usize| {
+        rustlab_core::LogicalArray::from_flags(flags, rows, cols)
+            .map(Value::Logical)
+            .map_err(|e| ScriptError::runtime(e.to_string()))
+    };
+    match &args[0] {
+        Value::Scalar(x) => Ok(Value::Bool(pred(Complex::new(*x, 0.0)))),
+        Value::Complex(c) => Ok(Value::Bool(pred(*c))),
+        Value::Int { data, .. } => Ok(Value::Bool(pred(Complex::new(*data as f64, 0.0)))),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let flags = data
+                .iter()
+                .map(|&x| pred(Complex::new(x as f64, 0.0)))
+                .collect();
+            logical(flags, *rows, *cols)
+        }
+        Value::Vector(v) => {
+            let flags = match Shared::real_slice(v) {
+                Some(r) => r.iter().map(|&x| pred(Complex::new(x, 0.0))).collect(),
+                None => v.iter().map(|&c| pred(c)).collect(),
+            };
+            logical(flags, 1, Shared::len(v))
+        }
+        Value::Matrix(m) => {
+            let s = Shared::shape(m);
+            let flags = match Shared::real_slice(m) {
+                Some(r) => r.iter().map(|&x| pred(Complex::new(x, 0.0))).collect(),
+                None => m.iter().map(|&c| pred(c)).collect(),
+            };
+            logical(flags, s[0], s[1])
+        }
+        Value::Tensor3(t) => Ok(Value::real_tensor3(
+            t.mapv(|c| f64::from(u8::from(pred(c)))),
+        )),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: expected a numeric value, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
 // floor/ceil/round: apply to real and imaginary parts independently.
 fn builtin_floor(args: Vec<Value>) -> Result<Value, ScriptError> {
     apply_scalar_fn_to_value("floor", args, f64::floor, |c: Complex<f64>| {
@@ -1078,6 +1255,9 @@ fn builtin_round(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // sign: real → -1/0/+1; complex → z/|z| (or 0 if z==0).
 fn builtin_sign(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("sign", &args, ScriptError::type_err, builtin_sign) {
+        return r;
+    }
     fn sign_real(x: f64) -> f64 {
         if x == 0.0 {
             0.0
@@ -1098,6 +1278,9 @@ fn builtin_sign(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // mod(a, m): a - m*floor(a/m), element-wise on real and imaginary parts.
 fn builtin_mod(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(r) = tensor3_lift::lift("mod", &args, ScriptError::type_err, builtin_mod) {
+        return r;
+    }
     check_args("mod", &args, 2)?;
     fn mod_f64(a: f64, m: f64) -> f64 {
         a - m * (a / m).floor()
@@ -1395,10 +1578,18 @@ fn unpack_dxdy(args: &[Value], name: &str, start: usize) -> Result<(f64, f64), S
 /// interior), returned in the same orientation.
 /// `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` on a true 2-D matrix:
 /// the existing second-order field gradient.
-fn builtin_gradient(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_gradient(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("gradient", &args, 1, 5)?;
+    let order = take_gradient_order(&mut args)?;
     check_args_range("gradient", &args, 1, 3)?;
     if gradient_arg_is_1d(&args[0]) {
-        return builtin_gradient_1d(args);
+        return builtin_gradient_1d(args, order);
+    }
+    if order == Some(1) {
+        return Err(ScriptError::type_err(
+            "gradient: 2-D boundaries are second-order only; \"order\", 1 is for a vector"
+                .to_string(),
+        ));
     }
     let f = to_cmatrix_arg(&args[0], "gradient", "F")?;
     let (dx, dy) = unpack_dxdy(&args, "gradient", 1)?;
@@ -1417,7 +1608,34 @@ fn gradient_arg_is_1d(v: &Value) -> bool {
     }
 }
 
-fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// Remove a trailing `"order", k` option. `None` when it is absent.
+fn take_gradient_order(args: &mut Vec<Value>) -> Result<Option<u32>, ScriptError> {
+    let n = args.len();
+    let at = (1..n).find(|&i| matches!(&args[i], Value::Str(_)));
+    let Some(i) = at else { return Ok(None) };
+    match &args[i] {
+        Value::Str(k) if k == "order" && i + 2 == n => {}
+        Value::Str(k) => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: unknown option \"{k}\"; the only option is \"order\", 1 or 2, last"
+            )))
+        }
+        _ => unreachable!(),
+    }
+    let k = match &args[i + 1] {
+        Value::Scalar(k) if *k == 1.0 || *k == 2.0 => *k as u32,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: \"order\" must be 1 or 2, got {other}"
+            )))
+        }
+    };
+    args.truncate(i);
+    Ok(Some(k))
+}
+
+fn builtin_gradient_1d(args: Vec<Value>, order: Option<u32>) -> Result<Value, ScriptError> {
+    let order = order.unwrap_or(1);
     if args.len() == 3 {
         return Err(ScriptError::type_err(
             "gradient: a vector takes gradient(v), gradient(v, h), or gradient(v, x); \
@@ -1427,18 +1645,18 @@ fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let samples = gradient_samples(&args[0])?;
     let g = if args.len() == 1 {
-        gradient_1d(&samples, 1.0)?
+        gradient_1d_order(&samples, 1.0, order)?
     } else {
         match &args[1] {
-            Value::Scalar(h) => gradient_1d(&samples, *h)?,
-            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d(&samples, c.re)?,
+            Value::Scalar(h) => gradient_1d_order(&samples, *h, order)?,
+            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d_order(&samples, c.re, order)?,
             Value::Vector(v) => {
                 let x: Vec<f64> = v.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
                 let x: Vec<f64> = m.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             other => {
                 return Err(ScriptError::type_err(format!(
@@ -2246,6 +2464,13 @@ fn builtin_extremum_nargout(
     fn_name: &str,
 ) -> Result<Value, ScriptError> {
     check_args_range(fn_name, &args, 1, 3)?;
+    if args.len() == 2 {
+        if let Some(r) = tensor3_lift::lift(fn_name, &args, ScriptError::type_err, |a| {
+            builtin_extremum_nargout(a, nargout, is_max, fn_name)
+        }) {
+            return r;
+        }
+    }
 
     // 3-arg axis form: max(M, [], dim) — matlab convention.
     if args.len() == 3 {
@@ -5368,6 +5593,11 @@ fn builtin_xor(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// broadcasts over an array. Array shapes must match.
 fn logical_binop(name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args(name, &args, 2)?;
+    if let Some(r) = tensor3_lift::lift(name, &args, ScriptError::type_err, |a| {
+        logical_binop(name, a)
+    }) {
+        return r;
+    }
     let a = Value::to_logical(&args[0]).map_err(ScriptError::type_err)?;
     let b = Value::to_logical(&args[1]).map_err(ScriptError::type_err)?;
     let bit = |x: bool, y: bool| match name {
@@ -8910,7 +9140,16 @@ fn reshape_logical(
         .map_err(|e| ScriptError::runtime(e.to_string()))
 }
 
-fn builtin_reshape(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // `reshape(x, m, 1)` with m > 1 is an m×1 column, as MATLAB; the 2-D
+    // walks below give a 1-D vector for any one-row or one-column shape.
+    let column = args.len() == 3
+        && matches!((count_arg(&args[1]), count_arg(&args[2])), (Ok(m), Ok(1)) if m != 1);
+    let out = reshape_any(args)?;
+    Ok(if column { out.into_column() } else { out })
+}
+
+fn reshape_any(mut args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
     let m = count_arg(&args[1])?;
     let n = count_arg(&args[2])?;
@@ -14972,6 +15211,13 @@ fn builtin_nonzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
 ///   nargout == 2 on dense vector: `[I, V]` indices + values.
 ///   nargout >= 3 on dense matrix: `[I, J, V]` row + col + nonzero values.
 fn builtin_find_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    // Column-major over the tensor; `[r, c] = find(T)` merges the trailing
+    // dimensions into `c`, and the third output is the values (MATLAB).
+    if let Some(Value::Tensor3(t)) = args.first() {
+        check_args("find", &args, 1)?;
+        let cols = tensor3_lift::to_columns(t);
+        return builtin_find_nargout(vec![cols], nargout);
+    }
     if nargout < 2 {
         return builtin_find(args);
     }
@@ -15955,13 +16201,16 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
     }
 }
 
-/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values)
+/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values [, "scale", s])
 ///
 /// Enforce Dirichlet conditions on a linear system: for each pinned row
-/// k, replace row k of `A` with the identity row (diagonal 1, everything
-/// else 0) and set `b(k)` to the pinned value, so the solve reproduces
-/// the boundary potential exactly while the operator acts everywhere
-/// else. Replaces the hand-rolled "zero the stencil neighbours" loop —
+/// k, replace row k of `A` with `d_k` on the diagonal and 0 elsewhere, and
+/// set `b(k)` to `d_k · value`, so the solve reproduces the boundary
+/// potential while the operator acts everywhere else. `d_k` is `|A(k, k)|`
+/// by default (`"scale", "auto"`), else `max |A(k, :)|`, else 1: a pinned
+/// row of size 1 next to stencil entries of size `ε/h²` loses the LU pivot
+/// in its column and the pinned values drift (1e-7 at h = 1e-4). A positive
+/// number `s` uses `d_k = s` for every row; `s = 1` is the identity row. Replaces the hand-rolled "zero the stencil neighbours" loop —
 /// zeroing the whole row is equivalent for stencil operators and also
 /// correct for operators with wider rows (e.g. `laplacian_eps_2d`).
 ///
@@ -15969,7 +16218,43 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
 /// with the mask's nonzero cells / the index list. Both outputs must be
 /// bound: the modified `b` is half the point.
 fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    check_args("pin_dirichlet", &args, 4)?;
+    if args.len() != 4 && args.len() != 6 {
+        return Err(ScriptError::type_err(format!(
+            "pin_dirichlet: expected 4 arguments, or 6 with \"scale\", got {}",
+            args.len()
+        )));
+    }
+    // None = "auto" (per-row diagonal magnitude); Some(s) = fixed scale.
+    let fixed_scale: Option<f64> = if args.len() == 6 {
+        match &args[4] {
+            Value::Str(k) if k == "scale" => {}
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: 5th argument must be the option name \"scale\", got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+        match &args[5] {
+            Value::Str(s) if s == "auto" => None,
+            Value::Scalar(x) if x.is_finite() && *x > 0.0 => Some(*x),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: \"scale\" must be \"auto\" or a positive finite number, got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        Value::Scalar(x) => format!("{x}"),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+    } else {
+        None
+    };
     if nargout < 2 {
         return Err(ScriptError::type_err(
             "pin_dirichlet: returns two outputs — use [A, b] = pin_dirichlet(A, b, mask, values)"
@@ -16033,7 +16318,59 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
 
     let pinned: std::collections::BTreeSet<usize> = ks.iter().copied().collect();
 
-    // Rebuild A with the pinned rows replaced by identity rows.
+    // Row scale d_k, read from the original operator.
+    let mut scale: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    if let Some(s) = fixed_scale {
+        for &k in &pinned {
+            scale.insert(k, s);
+        }
+    } else {
+        let mut diag: std::collections::BTreeMap<usize, C64> = std::collections::BTreeMap::new();
+        let mut row_max: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+        match &args[0] {
+            Value::SparseMatrix(sm) => {
+                // COO may repeat a position; repeated entries add.
+                let mut cells: std::collections::BTreeMap<(usize, usize), C64> =
+                    std::collections::BTreeMap::new();
+                for &(r, c, v) in &sm.entries {
+                    if pinned.contains(&r) {
+                        *cells.entry((r, c)).or_insert(Complex::new(0.0, 0.0)) += v;
+                    }
+                }
+                for (&(r, c), &v) in &cells {
+                    if r == c {
+                        diag.insert(r, v);
+                    }
+                    let m = row_max.entry(r).or_insert(0.0);
+                    *m = m.max(v.norm());
+                }
+            }
+            Value::Matrix(m) => {
+                for &k in &pinned {
+                    diag.insert(k, m[[k, k]]);
+                    let mx = (0..m.ncols()).map(|j| m[[k, j]].norm()).fold(0.0, f64::max);
+                    row_max.insert(k, mx);
+                }
+            }
+            _ => unreachable!("validated above"),
+        }
+        for &k in &pinned {
+            let d = diag.get(&k).map_or(0.0, |z| z.norm());
+            let d = if d > 0.0 && d.is_finite() {
+                d
+            } else {
+                let r = row_max.get(&k).copied().unwrap_or(0.0);
+                if r > 0.0 && r.is_finite() {
+                    r
+                } else {
+                    1.0
+                }
+            };
+            scale.insert(k, d);
+        }
+    }
+
+    // Rebuild A with the pinned rows replaced by scaled identity rows.
     let new_a = match &args[0] {
         Value::SparseMatrix(sm) => {
             let hint = sm.ordering_hint;
@@ -16044,7 +16381,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 .copied()
                 .collect();
             for &k in &pinned {
-                entries.push((k, k, Complex::new(1.0, 0.0)));
+                entries.push((k, k, Complex::new(scale[&k], 0.0)));
             }
             let mut rebuilt = SparseMat::new(sm.rows, sm.cols, entries);
             // Identity rows don't change the grid structure — keep the
@@ -16060,7 +16397,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 for j in 0..dense.ncols() {
                     dense[[k, j]] = Complex::new(0.0, 0.0);
                 }
-                dense[[k, k]] = Complex::new(1.0, 0.0);
+                dense[[k, k]] = Complex::new(scale[&k], 0.0);
             }
             Value::Matrix(dense.into())
         }
@@ -16078,7 +16415,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             }
             let mut b = (**v).clone();
             for (&k, &val) in ks.iter().zip(vals.iter()) {
-                b[k] = val;
+                b[k] = val * scale[&k];
             }
             Value::Vector(b.into())
         }
@@ -16092,6 +16429,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             let mut b = (**m).clone();
             let row_shaped = m.nrows() == 1;
             for (&k, &val) in ks.iter().zip(vals.iter()) {
+                let val = val * scale[&k];
                 if row_shaped {
                     b[[0, k]] = val;
                 } else {
