@@ -1,0 +1,65 @@
+# Single-line and empty reads on a sparse matrix, checked in-script.
+# Each `check` failure stops the script with an error naming the case.
+
+function n = check(n, ok, what)
+  if !ok
+    error(sprintf("sparse_line_reads: %s", what));
+  end
+  n = n + 1;
+end
+
+checks = 0;
+S = sparse([1, 2, 4, 1, 4, 2, 4, 1], [1, 1, 1, 2, 2, 3, 3, 5], ...
+           [5, 2j, -1, 7, 3, 1+4j, -2j, 9], 4, 5);
+D = full(S);
+fr = false(1, 4);
+fc = false(1, 5);
+
+# Empty selections: empty sparse of the selected shape.
+A = S(:, []);
+checks = check(checks, issparse(A) && isempty(A) && numel(A) == 0, "S(:, []) sparse, empty");
+checks = check(checks, all(size(A) == [4, 0]), "size S(:, [])");
+B = S([], :);
+checks = check(checks, issparse(B) && isempty(B) && numel(B) == 0, "S([], :) sparse, empty");
+checks = check(checks, all(size(B) == [0, 5]), "size S([], :)");
+C = S([], []);
+checks = check(checks, issparse(C) && isempty(C) && numel(C) == 0, "S([], []) sparse, empty");
+checks = check(checks, all(size(C) == [0, 0]), "size S([], [])");
+E = S(fr, :);
+checks = check(checks, issparse(E) && isempty(E) && all(size(E) == [0, 5]), "S(false, :)");
+F = S(:, fc);
+checks = check(checks, issparse(F) && isempty(F) && all(size(F) == [4, 0]), "S(:, false)");
+G = S(fr, fc);
+checks = check(checks, issparse(G) && numel(G) == 0 && all(size(G) == [0, 0]), "S(false, false)");
+H = S(2, fc);
+checks = check(checks, issparse(H) && isempty(H) && all(size(H) == [1, 0]), "S(k, false)");
+I = S(fr, 2);
+checks = check(checks, issparse(I) && isempty(I) && all(size(I) == [0, 1]), "S(false, k)");
+checks = check(checks, !isempty(S) && numel(S) == 20, "numel S");
+
+# Single elements are scalars.
+checks = check(checks, S(4, 2) == 3 && S(3, 3) == 0, "S(i, j) stored / implicit zero");
+checks = check(checks, abs(S(2, 3) - (1 + 4j)) == 0 && imag(S(2, 3)) == 4, "S(i, j) complex");
+
+# Lines against the dense read, in expressions and assignments.
+col = S(:, 3);
+checks = check(checks, all(size(col) == [4, 1]) && !issparse(col), "S(:, k) dense N×1");
+checks = check(checks, max(abs(col - D(:, 3))) == 0, "S(:, k) values");
+row = S(4, :);
+checks = check(checks, all(size(row) == [1, 5]) && !issparse(row), "S(k, :) dense row");
+checks = check(checks, max(abs(row - D(4, :))) == 0, "S(k, :) values");
+checks = check(checks, max(abs(S(end - 1, :) - D(end - 1, :))) == 0, "S(end-1, :)");
+checks = check(checks, max(abs(S([4, 2, 2, 1], end) - D([4, 2, 2, 1], end))) == 0, "S(rows, end)");
+checks = check(checks, max(abs(S(2, [true, false, true, false, true]) - D(2, [true, false, true, false, true]))) == 0, "S(k, mask)");
+y = 2 * S(:, 1) + S(:, 2);
+checks = check(checks, max(abs(y - (2 * D(:, 1) + D(:, 2)))) == 0, "lines in an expression");
+v = zeros(1, 5);
+v(2:5) = S(1, 2:5);
+checks = check(checks, all(v == [0, 7, 0, 0, 9]), "line in an assignment");
+checks = check(checks, max(abs(S(3, :))) == 0 && max(abs(S(:, 4))) == 0, "all-zero row and column");
+
+# A large matrix with three entries: a dense copy would be 16 TB.
+n = 1000000;
+L = sparse([1, n, 7], [1, n, n], [3, 4, 2j], n, n);
+checks = check(checks, abs(sum(L(:, n)) - (4 + 2j)) == 0 && sum(L(n, :)) == 4, "huge single lines");
+checks = check(checks, numel(L(:, [])) == 0 && isempty(L([], :)), "huge empty selections");

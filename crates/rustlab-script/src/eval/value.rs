@@ -1849,48 +1849,19 @@ impl Value {
                 }
             }
             Value::SparseMatrix(sm) => {
-                match (&row_idx, &col_idx) {
-                    (Value::Scalar(r), Value::Scalar(c)) => {
-                        let ri = Self::one_based_to_zero(*r)?;
-                        let ci = Self::one_based_to_zero(*c)?;
-                        if ri >= sm.rows || ci >= sm.cols {
-                            return Err(format!(
-                                "index ({},{}) out of bounds for {}×{} sparse matrix",
-                                r, c, sm.rows, sm.cols
-                            ));
-                        }
-                        Ok(Self::from_c64(sm.get(ri, ci)))
-                    }
-                    _ => {
-                        let rows = Self::resolve_index_dim(&row_idx, sm.rows)?;
-                        let cols = Self::resolve_index_dim(&col_idx, sm.cols)?;
-                        if let Some(&r) = rows.iter().find(|&&r| r >= sm.rows) {
-                            return Err(format!(
-                                "index ({}, :) out of bounds for {}×{} sparse matrix",
-                                r + 1,
-                                sm.rows,
-                                sm.cols
-                            ));
-                        }
-                        if let Some(&c) = cols.iter().find(|&&c| c >= sm.cols) {
-                            return Err(format!(
-                                "index (:, {}) out of bounds for {}×{} sparse matrix",
-                                c + 1,
-                                sm.rows,
-                                sm.cols
-                            ));
-                        }
-                        // A single row or column (or one element) stays the
-                        // dense vector it was in 0.3.68; the caller makes a
-                        // column `n×1`.
-                        if rows.len() == 1 || cols.len() == 1 {
-                            return Ok(Self::sparse_line(sm, &rows, &cols));
-                        }
-                        Ok(Value::SparseMatrix(Self::sparse_submatrix(
-                            sm, &rows, &cols,
-                        )))
-                    }
+                // Same subscript resolution (and errors) as a dense matrix.
+                let rows = Self::resolve_index_dim(&row_idx, sm.rows)?;
+                let cols = Self::resolve_index_dim(&col_idx, sm.cols)?;
+                // An empty selection is an empty sparse matrix of the
+                // selected shape (`S(:, [])` is m×0), as in MATLAB. A single
+                // row or column (or one element) is otherwise the dense
+                // vector it was in 0.3.68; the caller makes a column `n×1`.
+                if !rows.is_empty() && !cols.is_empty() && (rows.len() == 1 || cols.len() == 1) {
+                    return Ok(Self::sparse_line(sm, &rows, &cols));
                 }
+                Ok(Value::SparseMatrix(Self::sparse_submatrix(
+                    sm, &rows, &cols,
+                )))
             }
             Value::Logical(a) => {
                 let rows = Self::resolve_index_dim(&row_idx, a.rows())?;

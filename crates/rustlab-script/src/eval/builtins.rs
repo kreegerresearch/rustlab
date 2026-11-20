@@ -238,6 +238,7 @@ impl BuiltinRegistry {
         r.register("len", builtin_len);
         r.register("length", builtin_len); // alias for len
         r.register("numel", builtin_numel);
+        r.register("isempty", builtin_isempty);
         r.register("size", builtin_size);
         r.register("ndims", builtin_ndims);
         r.register("table", builtin_table);
@@ -4202,6 +4203,8 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
         Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
+        Value::SparseVector(sv) => Ok(Value::Scalar(sv.len as f64)),
+        Value::SparseMatrix(sm) => Ok(Value::Scalar(sm.rows.max(sm.cols) as f64)),
         other => Err(ScriptError::type_err(format!(
             "len: unsupported type {}",
             other
@@ -4221,6 +4224,8 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Logical(a) => a.len(),
         Value::StringArray(v) => v.len(),
         Value::Table(t) => t.height() * t.width(),
+        Value::SparseVector(sv) => sv.len,
+        Value::SparseMatrix(sm) => sm.rows * sm.cols,
         other => {
             return Err(ScriptError::type_err(format!(
                 "numel: unsupported type {}",
@@ -4229,6 +4234,22 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     Ok(Value::Scalar(n as f64))
+}
+
+/// `isempty(x)`: true when any dimension of `x` is 0 (`numel(x) == 0`), or
+/// `x` is the empty string. Values without a size (struct, function handle,
+/// …) are 1×1, so false.
+fn builtin_isempty(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isempty", &args, 1)?;
+    let empty = match &args[0] {
+        Value::Str(s) => s.is_empty(),
+        Value::Tuple(t) => t.is_empty(),
+        v => match builtin_numel(vec![v.clone()]) {
+            Ok(Value::Scalar(n)) => n == 0.0,
+            _ => false,
+        },
+    };
+    Ok(Value::Bool(empty))
 }
 
 fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
