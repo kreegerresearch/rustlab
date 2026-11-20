@@ -6,6 +6,14 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.78
+
+### Fixed
+- **`S(:, k)` and `S(k, :)` on a sparse matrix no longer densify the whole matrix.** 0.3.74 kept `S(rows, cols)` sparse, but a selection of one row or one column still built a dense copy of `S` before slicing, which asked for ~76 GB on the 41³ operator in `rustlab_em`. The line is now filled from that row's or column's stored entries (O(nnz) time, memory the size of the result). Results and shapes are unchanged: `S(:, k)` is a dense `N×1` column, `S(k, :)` a dense row, and one element a scalar.
+
+### Documentation
+- **`pin_dirichlet` and writing `b` afterwards.** With the default `"scale", "auto"`, a pinned row holds `d_k` on the diagonal and `b(k) = d_k · value`. A script that pins and then writes its own `b` on pinned rows (`b(k) = 1` to drive one conductor) gets a pinned value of `1 / d_k` instead; in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Such scripts should pin with `"scale", 1` or write `b(k) = A(k, k) · value`. The default is unchanged. Noted in `docs/functions.md`, `docs/quickref.md`, `AGENTS.md`, and `help pin_dirichlet`.
+
 ## 0.3.77
 
 ### Fixed

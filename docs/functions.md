@@ -2570,6 +2570,7 @@ Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`,
 - `b` — vector or 1×n / n×1 matrix; container and orientation are preserved.
 - Both outputs must be bound: `[A, b] = pin_dirichlet(...)`. A single-output call is an error — silently dropping the modified `b` would corrupt the physics.
 - Pinning twice with the default scale is safe: the second call reads the already-scaled diagonal.
+- **Rewriting `b` after pinning.** With the default scale, `b(k)` on a pinned row holds `d_k · value`, not `value`. A script that pins once and then writes its own right-hand side on pinned rows (`b(k) = 1` to drive one conductor of a capacitance matrix, then `spsolve`) must either pin with `"scale", 1` or write `b(k) = d_k · value` (`d_k = A(k, k)` after the call). Otherwise the pinned potential is `value / d_k`: in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Passing the drive values to `pin_dirichlet` itself is always correct.
 
 ```
 # Parallel plates at ±5 V on an ny×nx grid:
