@@ -413,15 +413,15 @@ Phases 1–2: data type, Touchstone I/O, accessors, parameter-set conversions, c
 | `deembed(meas, left, right)` | Recover DUT from `cascade(left, dut, right)`: `T_DUT = T_L⁻¹ · T_meas · T_R⁻¹` |
 | `newref(s, Z_new)` | Renormalise to a new reference impedance (scalar Z_new) |
 
-**Smith chart plotting** (renders across every backend — terminal, SVG/PNG, HTML/Plotly, LaTeX/PDF, viewer, animation)
+**Smith chart plotting** (Γ = (z − 1)/(z + 1), inductive half on top; labelled r / x grid in SVG/PNG, PDF, HTML, viewer, and animation; grid without labels in the terminal)
 
 | Function | Description |
 |---|---|
-| `smith(s)` / `smith(s, i, j)` | Plot S11 and S22 (default) or a specific Sij on a Smith chart |
-| `smith(gamma)` / `smith(0.5 + 0.1*j)` | Plot a raw complex reflection-coefficient Vector or single point |
+| `smith(s)` / `smith(s, i, j)` | Plot S11 and S22 (default) or a specific Sij on a Smith chart; S-parameters only; adds to the chart under `hold on` |
+| `smith(gamma)` / `smith(0.5 + 0.1*j)` | Plot a raw complex reflection-coefficient Vector, or one value as a marker |
 | `smith("file.s2p")` | Convenience: load Touchstone and plot |
 | `smith(..., "grid", "Z" \| "Y" \| "ZY")` | Grid mode: impedance (default), admittance, or immittance overlay |
-| `marker(gamma)` / `marker(gamma, "label")` | Drop a labelled scatter point on the active Smith axes |
+| `marker(gamma)` / `marker(gamma, "label")` / `marker(..., "Color", c)` | Drop a labelled scatter point on the active Smith axes; `c` is a name, letter, `#rrggbb`, or `[r g b]` in [0, 1] (same `"Color"` option on `smith`) |
 
 **Network plots vs frequency** (log-x axis; uses semilogx internally)
 
@@ -449,7 +449,7 @@ Phases 1–2: data type, Touchstone I/O, accessors, parameter-set conversions, c
 | `gainmax(s)` | real Vector, dB | 2-port; MAG when K > 1, MSG when K ≤ 1 |
 | `stability_circles(s, "input"\|"output")` | tagged struct | 2-port; centres + radii vs freq, source or load plane |
 | `gain_circles(s, gain_db)` | tagged struct | 2-port; loci of load Γ for a given operating-power gain |
-| `smith_circle(centre, radius [, label])` | overlay | Draw one circle on the active Smith axes (use to render the circles structs above) |
+| `smith_circle(centre, radius [, label])` | overlay | Draw one circle on the active Smith axes, clipped to \|Γ\| ≤ 1 (use to render the circles structs above) |
 
 **Phase 6 — polish**
 

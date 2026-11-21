@@ -77,6 +77,34 @@ pub enum ViewerMsg {
     Reset,
     /// Keepalive ping.
     Ping,
+    /// Draw one panel (0-based) as a chart without Cartesian axes — a Smith
+    /// chart: hide the axes and the rectangular grid and draw `texts`. A
+    /// [`ViewerMsg::PanelUpdate`] for the panel resets this, so it is sent
+    /// after the series. Older viewers do not know this message; it is only
+    /// sent for Smith charts.
+    PanelDecor {
+        fig_id: u32,
+        panel: u16,
+        hide_axes: bool,
+        texts: Vec<WireText>,
+    },
+}
+
+/// A text label in data coordinates.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WireText {
+    pub x: f64,
+    pub y: f64,
+    /// Screen offset from `(x, y)` in points; `dy > 0` is up.
+    pub dx: f32,
+    pub dy: f32,
+    /// Which side of the text box sits at the anchor: −1 left / bottom,
+    /// 0 centre, 1 right / top.
+    pub h: i8,
+    pub v: i8,
+    pub text: String,
+    pub color: WireColor,
+    pub size: f32,
 }
 
 /// Response from rustlab-viewer back to rustlab.
@@ -102,7 +130,7 @@ pub struct WireSeries {
 }
 
 /// Color on the wire.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum WireColor {
     Named(String),
     Rgb(u8, u8, u8),
@@ -299,6 +327,42 @@ pub fn socket_path_for_name(name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_trip_panel_decor() {
+        let text = WireText {
+            x: 0.0,
+            y: 1.0,
+            dx: 0.0,
+            dy: 4.0,
+            h: 0,
+            v: -1,
+            text: "+j1.0".into(),
+            color: WireColor::Rgb(200, 200, 200),
+            size: 11.0,
+        };
+        let msg = ViewerMsg::PanelDecor {
+            fig_id: 3,
+            panel: 1,
+            hide_axes: true,
+            texts: vec![text.clone()],
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &msg).unwrap();
+        let decoded: Option<ViewerMsg> = read_msg(&mut std::io::Cursor::new(&buf)).unwrap();
+        match decoded.expect("should decode") {
+            ViewerMsg::PanelDecor {
+                fig_id,
+                panel,
+                hide_axes,
+                texts,
+            } => {
+                assert_eq!((fig_id, panel, hide_axes), (3, 1, true));
+                assert_eq!(texts, vec![text]);
+            }
+            other => panic!("wrong variant {other:?}"),
+        }
+    }
 
     #[test]
     fn round_trip_viewer_msg() {

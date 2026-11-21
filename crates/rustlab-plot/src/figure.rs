@@ -421,6 +421,10 @@ pub struct SubplotState {
     pub quivers: Vec<QuiverData>,
     /// Streamline overlays. Rendered above quivers.
     pub streamlines: Vec<StreamlineData>,
+    /// Set by `smith()`: the panel is a Smith chart with this grid. Backends
+    /// draw the grid and its value labels, hide the Cartesian axes, and plot
+    /// `series` as reflection coefficients on top.
+    pub smith: Option<crate::smith::SmithGrid>,
 }
 impl SubplotState {
     /// Clone with series samples and explicit `xlim` / `ylim` mapped through
@@ -471,6 +475,17 @@ impl SubplotState {
     pub fn clear_2d_overlays(&mut self) {
         self.series.clear();
         self.surface = None;
+        self.leave_smith();
+    }
+
+    /// Drop Smith-chart mode, and the unit-disk limits and equal aspect that
+    /// `smith()` set with it, so the next plot on this subplot autoscales.
+    pub fn leave_smith(&mut self) {
+        if self.smith.take().is_some() {
+            self.xlim = (None, None);
+            self.ylim = (None, None);
+            self.axis_equal = false;
+        }
     }
 
     pub fn new() -> Self {
@@ -492,6 +507,7 @@ impl SubplotState {
             contours: Vec::new(),
             quivers: Vec::new(),
             streamlines: Vec::new(),
+            smith: None,
         }
     }
 }
@@ -652,6 +668,15 @@ fn hash_subplot(h: &mut u64, sp: &SubplotState) {
     hopt_f64(h, sp.ylim.0);
     hopt_f64(h, sp.ylim.1);
     hmix(h, sp.axis_equal as u64);
+    hmix(
+        h,
+        match sp.smith {
+            None => 0,
+            Some(crate::smith::SmithGrid::Impedance) => 1,
+            Some(crate::smith::SmithGrid::Admittance) => 2,
+            Some(crate::smith::SmithGrid::Immittance) => 3,
+        },
+    );
     hmix(
         h,
         match sp.y_axis_direction {

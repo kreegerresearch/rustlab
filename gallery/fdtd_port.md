@@ -84,6 +84,12 @@ for rload = [25, 50, 100]
   if rload > z0 && s_real <= 0
     error(sprintf("R = %g > Z0, but low-frequency S11 is %+.4f", rload, s_real));
   end
+  if rload == 25
+    net25 = net;
+  end
+  if rload == 100
+    net100 = net;
+  end
   if rload == z0
     matched_v = V;
     matched_i = I;
@@ -127,29 +133,69 @@ title("Ampere current");
 
 <!-- rustlab:output-end -->
 
+The pulse has `tau` = 1 ns, so its spectrum falls as
+$e^{-(\pi f \tau)^2}$: 0.03 at 600 MHz and $5 \times 10^{-5}$ at
+1 GHz. The record runs on to the grid's Nyquist frequency, near
+237 GHz, where `b/a` is a ratio of two numbers at round-off; a chart of
+every bin is a tangle. The Smith chart below stops at 1 GHz and shows
+all three pillars. Each starts at the reflection coefficient of its
+resistance, $\Gamma = (R - Z_0)/(R + Z_0)$: $-1/3$ for 25 ohm, 0 for
+50 ohm, and $+1/3$ for 100 ohm.
+
 ```rustlab
 clf
-smith(matched_net);
-title("S11 of the 50 ohm pillar");
+f = freqs(matched_net);
+band = f(f <= 1e9);
+g25 = sij(interp_freq(net25, band), 1, 1);
+g50 = sij(interp_freq(matched_net, band), 1, 1);
+g100 = sij(interp_freq(net100, band), 1, 1);
+smith(g25, "Color", "c");
+hold on
+smith(g50, "Color", "g");
+smith(g100, "Color", "m");
+legend("25 ohm", "50 ohm", "100 ohm");
+marker((25 - z0) / (25 + z0), "25 ohm at DC", "Color", "c");
+marker(0, "50 ohm at DC", "Color", "g");
+marker((100 - z0) / (100 + z0), "100 ohm at DC", "Color", "m");
+hold off
+title("S11 of the three pillars, DC to 1 GHz");
+zf = @(g) z0 * (1 + g) / (1 - g);
+fprintf("Z at %.0f MHz:  25 ohm -> %.1f%+.1fj   50 ohm -> %.1f%+.1fj   100 ohm -> %.1f%+.1fj ohm\n", ...
+        band(end) / 1e6, real(zf(g25(end))), imag(zf(g25(end))), ...
+        real(zf(g50(end))), imag(zf(g50(end))), real(zf(g100(end))), imag(zf(g100(end))))
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/fdtd_port/plot-2-3b70081e.svg)
+```text
+Z at 938 MHz:  25 ohm -> 25.0+5.9j   50 ohm -> 49.3+0.8j   100 ohm -> 93.2-18.3j ohm
+```
+
+![plot 2](plots/fdtd_port/plot-2-925caf98.svg)
 
 <!-- rustlab:output-end -->
 
+As the frequency rises the 25 ohm trace turns clockwise into the
+inductive upper half: the series inductance of the pillar adds
+$+jX$. The 100 ohm trace turns into the capacitive lower half, where the
+pad's capacitance in parallel with the pillar takes over. The matched
+pillar stays near the centre. Each DC marker has its trace's colour.
+
+The magnitude plot covers the same band. Across the whole record it
+would show a rise to 0 dB near 10 GHz and a comb of dips above it, all
+noise from bins where the pulse has no energy.
+
 ```rustlab
 clf
-rfplot(matched_net);
-title("|S11| of the 50 ohm pillar");
+rfplot(interp_freq(matched_net, band));
+title("|S11| of the 50 ohm pillar, DC to 1 GHz");
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/fdtd_port/plot-3-7237d66a.svg)
+![plot 3](plots/fdtd_port/plot-3-b20b1be6.svg)
 
 <!-- rustlab:output-end -->
 
 > [!NOTE]
 > The chart is the default `fdtd_s11(sim)`: no window, and no zero
-> padding. A matched pillar sits near the centre of the Smith chart.
+> padding.
 > `"window", "hann"` is for a steady tone. `"nfft", M` only interpolates.
