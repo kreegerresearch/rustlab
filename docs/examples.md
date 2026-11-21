@@ -1331,7 +1331,7 @@ for jj = 1:nx
     V_exact(ii, jj) = sin(pi*ii*dx/Lx) * sin(pi*jj*dy/Ly);
   end
 end
-v_exact = V_exact(:)';   % column vector, column-major
+v_exact = V_exact(:);    % column vector, column-major
 
 # Build the RHS by applying L to V_exact, then solve — the solution should
 # match within numerical precision.

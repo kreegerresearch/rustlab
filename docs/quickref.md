@@ -21,7 +21,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions. `true(m, n)` / `false(m, n)` build a logical array when the name is not shadowed; `true(n)` is `n×n` |
 | `stdin` | Handle passed to `fgetl`. `clear` restores it |
 | `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
-| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
+| `v(1)`, `v(end)`, `v(2:4)`, `v(idx)`, `M(rows, cols)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write). As in MATLAB, `x(:)`, `M(rows, k)`, a slice of an `N×1` column, and `T(:, j, k)` return an `N×1` column; `M(k, :)` and a slice of a row vector return a row. `idx` / `rows` / `cols` may be a vector or a `1×n` / `n×1` matrix (`randi(3, 1, 4)`, `zeros(1, n)`); a wider matrix is an error. A 1×1 matrix is a scalar where a scalar is accepted |
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)` and with `ind2sub` / `sub2ind`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
@@ -38,7 +38,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `*` | Matrix multiply |
 | `\` | Left division `A\b`. A vector on the right is a column and one solution is `n×1`. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot (`Inf`). Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. Square sparse `A` uses `spsolve` |
 | `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
-| `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
+| `'` | Conjugate transpose — **conjugates complex values**. `src(:)` is already a column, so `L * src(:)` needs no transpose; use `.'` for a non-conjugating transpose |
 | `.'` | Non-conjugate transpose |
 | `==`, `!=`, `<`, `>`, `<=`, `>=` | Array comparison returns a logical array (not numeric 0/1). A scalar comparison stays `true`/`false`. Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector is element-wise (`v' == v` is `1×n`); other arrays repeat a length-1 dimension; two vectors must be the same length. `!=` is not-equal (`~=` is not a token). `NaN == x` is false |
 | `!` | Element-wise not (MATLAB `~`). `!0` is true. `!NaN` is false. An array result is logical |
@@ -141,9 +141,10 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
-| `numel(v)` | Total element count |
+| `numel(v)` | Total element count (dense or sparse) |
+| `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`) or `x` is `""`; e.g. `isempty(S(:, []))` |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
-| `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
+| `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk. `reshape(x, N, 1)` is an `N×1` column; `reshape(x, 1, N)` a row |
 | `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |
 | `sub2ind(sz, I, J)` / `sub2ind(sz, I, J, K)` | Subscripts → the same linear index. A one-element subscript is repeated; other subscript arrays must be the same size (no row×column expansion). A trailing size of 1 may be omitted. An extra subscript pads `sz` with 1 and must be 1. Out of range is an error |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
@@ -152,7 +153,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `horzcat(A, B, ...)` | Horizontal concatenation (also `[A, B]`) |
 | `vertcat(A, B, ...)` | Vertical concatenation (also `[A; B]`) |
 | `meshgrid(x, y)` | Returns `[X, Y]` matrices for 2D grids |
-| `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` | 1-D gradient. Endpoints first-order, interior central. Same orientation as `v` |
+| `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` | 1-D gradient, same orientation as `v`. Interior central (second-order). **Default endpoints are first-order** `(f(2)-f(1))/h` (MATLAB), unlike the 2-D / 3-D stencils' second-order boundaries; `"order", 2` gives second-order one-sided endpoints (exact for a quadratic, needs ≥ 3 samples) |
 | `[Fx,Fy] = gradient(F[, dx, dy])` | 2-D gradient (rows index y, cols index x); 2nd-order interior + one-sided boundary |
 | `divergence(Fx, Fy[, dx, dy])` | 2-D divergence ∂Fx/∂x + ∂Fy/∂y |
 | `curl(Fx, Fy[, dx, dy])` | 2-D scalar curl ∂Fy/∂x − ∂Fx/∂y (z-component of ∇×F) |
@@ -574,12 +575,13 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
 | `laplacian_eps_3d(eps_map [, dx, dy, dz] [, bc])` | 3-D `∇·(ε∇)`, 7-point, harmonic-mean faces; `eps_map` is a `(ny, nx, nz)` `Tensor3`, same ordering as `laplacian_3d` |
-| `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
+| `[A, b] = pin_dirichlet(A, b, mask, values [, "scale", s])` | Pin Dirichlet values: pinned row k becomes `d_k` on the diagonal and `b(k) = d_k·value`; mask (column-major) or 1-based index vector. Default `d_k = \|A(k,k)\|` keeps the LU pivot (pinned values exact at small `h`); `"scale", 1` is the old identity row. A script that rewrites `b` on pinned rows after pinning needs `"scale", 1` (or `b(k) = A(k, k)·value`) |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx`. For a size vector, use `sub2ind` / `ind2sub` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `k2ijk(k, ny, nx)` | `[i, j, kk] = k2ijk(k, ny, nx)` — inverse of `ijk2k` |
 | `full(S)` | Convert sparse to dense (identity for dense inputs) |
+| `S(rows, cols)` | Sparse submatrix when more than one row and more than one column are selected (no densify, O(nnz)); `S(i, j)` is the element; a single row or column is dense (`S(k, :)` a row, `S(:, k)` an `N×1` column) |
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros(S)` | Vector of non-zero values in storage order |

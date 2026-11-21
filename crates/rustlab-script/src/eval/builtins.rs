@@ -15,8 +15,8 @@ use rustlab_dsp::{
     butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, cwt_morlet, cwt_stream,
     cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
-    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d,
-    gradient_1d_coords, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
+    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d_coords_order,
+    gradient_1d_order, gradient_2d, gradient_3d, ifft, pwelch_psd, pwelch_stream,
     pwelch_stream_init, quantize_scalar, snr_db, stft as stft_math, stft_stream, stft_stream_init,
     upfirdn, waterfall as waterfall_math, waterfall_current_history, waterfall_current_spectrum,
     waterfall_state_fs, waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
@@ -239,6 +239,7 @@ impl BuiltinRegistry {
         r.register("len", builtin_len);
         r.register("length", builtin_len); // alias for len
         r.register("numel", builtin_numel);
+        r.register("isempty", builtin_isempty);
         r.register("size", builtin_size);
         r.register("ndims", builtin_ndims);
         r.register("table", builtin_table);
@@ -1585,10 +1586,18 @@ fn unpack_dxdy(args: &[Value], name: &str, start: usize) -> Result<(f64, f64), S
 /// interior), returned in the same orientation.
 /// `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` on a true 2-D matrix:
 /// the existing second-order field gradient.
-fn builtin_gradient(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_gradient(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("gradient", &args, 1, 5)?;
+    let order = take_gradient_order(&mut args)?;
     check_args_range("gradient", &args, 1, 3)?;
     if gradient_arg_is_1d(&args[0]) {
-        return builtin_gradient_1d(args);
+        return builtin_gradient_1d(args, order);
+    }
+    if order == Some(1) {
+        return Err(ScriptError::type_err(
+            "gradient: 2-D boundaries are second-order only; \"order\", 1 is for a vector"
+                .to_string(),
+        ));
     }
     let f = to_cmatrix_arg(&args[0], "gradient", "F")?;
     let (dx, dy) = unpack_dxdy(&args, "gradient", 1)?;
@@ -1607,7 +1616,34 @@ fn gradient_arg_is_1d(v: &Value) -> bool {
     }
 }
 
-fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// Remove a trailing `"order", k` option. `None` when it is absent.
+fn take_gradient_order(args: &mut Vec<Value>) -> Result<Option<u32>, ScriptError> {
+    let n = args.len();
+    let at = (1..n).find(|&i| matches!(&args[i], Value::Str(_)));
+    let Some(i) = at else { return Ok(None) };
+    match &args[i] {
+        Value::Str(k) if k == "order" && i + 2 == n => {}
+        Value::Str(k) => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: unknown option \"{k}\"; the only option is \"order\", 1 or 2, last"
+            )))
+        }
+        _ => unreachable!(),
+    }
+    let k = match &args[i + 1] {
+        Value::Scalar(k) if *k == 1.0 || *k == 2.0 => *k as u32,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "gradient: \"order\" must be 1 or 2, got {other}"
+            )))
+        }
+    };
+    args.truncate(i);
+    Ok(Some(k))
+}
+
+fn builtin_gradient_1d(args: Vec<Value>, order: Option<u32>) -> Result<Value, ScriptError> {
+    let order = order.unwrap_or(1);
     if args.len() == 3 {
         return Err(ScriptError::type_err(
             "gradient: a vector takes gradient(v), gradient(v, h), or gradient(v, x); \
@@ -1617,18 +1653,18 @@ fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let samples = gradient_samples(&args[0])?;
     let g = if args.len() == 1 {
-        gradient_1d(&samples, 1.0)?
+        gradient_1d_order(&samples, 1.0, order)?
     } else {
         match &args[1] {
-            Value::Scalar(h) => gradient_1d(&samples, *h)?,
-            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d(&samples, c.re)?,
+            Value::Scalar(h) => gradient_1d_order(&samples, *h, order)?,
+            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d_order(&samples, c.re, order)?,
             Value::Vector(v) => {
                 let x: Vec<f64> = v.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
                 let x: Vec<f64> = m.iter().map(|c| c.re).collect();
-                gradient_1d_coords(&samples, &x)?
+                gradient_1d_coords_order(&samples, &x, order)?
             }
             other => {
                 return Err(ScriptError::type_err(format!(
@@ -4235,6 +4271,8 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
         Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
+        Value::SparseVector(sv) => Ok(Value::Scalar(sv.len as f64)),
+        Value::SparseMatrix(sm) => Ok(Value::Scalar(sm.rows.max(sm.cols) as f64)),
         other => Err(ScriptError::type_err(format!(
             "len: unsupported type {}",
             other
@@ -4254,6 +4292,8 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Logical(a) => a.len(),
         Value::StringArray(v) => v.len(),
         Value::Table(t) => t.height() * t.width(),
+        Value::SparseVector(sv) => sv.len,
+        Value::SparseMatrix(sm) => sm.rows * sm.cols,
         other => {
             return Err(ScriptError::type_err(format!(
                 "numel: unsupported type {}",
@@ -4262,6 +4302,22 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     Ok(Value::Scalar(n as f64))
+}
+
+/// `isempty(x)`: true when any dimension of `x` is 0 (`numel(x) == 0`), or
+/// `x` is the empty string. Values without a size (struct, function handle,
+/// …) are 1×1, so false.
+fn builtin_isempty(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isempty", &args, 1)?;
+    let empty = match &args[0] {
+        Value::Str(s) => s.is_empty(),
+        Value::Tuple(t) => t.is_empty(),
+        v => match builtin_numel(vec![v.clone()]) {
+            Ok(Value::Scalar(n)) => n == 0.0,
+            _ => false,
+        },
+    };
+    Ok(Value::Bool(empty))
 }
 
 fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -9173,7 +9229,16 @@ fn reshape_logical(
         .map_err(|e| ScriptError::runtime(e.to_string()))
 }
 
-fn builtin_reshape(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // `reshape(x, m, 1)` with m > 1 is an m×1 column, as MATLAB; the 2-D
+    // walks below give a 1-D vector for any one-row or one-column shape.
+    let column = args.len() == 3
+        && matches!((count_arg(&args[1]), count_arg(&args[2])), (Ok(m), Ok(1)) if m != 1);
+    let out = reshape_any(args)?;
+    Ok(if column { out.into_column() } else { out })
+}
+
+fn reshape_any(mut args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
     let m = count_arg(&args[1])?;
     let n = count_arg(&args[2])?;
@@ -16236,13 +16301,16 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
     }
 }
 
-/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values)
+/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values [, "scale", s])
 ///
 /// Enforce Dirichlet conditions on a linear system: for each pinned row
-/// k, replace row k of `A` with the identity row (diagonal 1, everything
-/// else 0) and set `b(k)` to the pinned value, so the solve reproduces
-/// the boundary potential exactly while the operator acts everywhere
-/// else. Replaces the hand-rolled "zero the stencil neighbours" loop —
+/// k, replace row k of `A` with `d_k` on the diagonal and 0 elsewhere, and
+/// set `b(k)` to `d_k · value`, so the solve reproduces the boundary
+/// potential while the operator acts everywhere else. `d_k` is `|A(k, k)|`
+/// by default (`"scale", "auto"`), else `max |A(k, :)|`, else 1: a pinned
+/// row of size 1 next to stencil entries of size `ε/h²` loses the LU pivot
+/// in its column and the pinned values drift (1e-7 at h = 1e-4). A positive
+/// number `s` uses `d_k = s` for every row; `s = 1` is the identity row. Replaces the hand-rolled "zero the stencil neighbours" loop —
 /// zeroing the whole row is equivalent for stencil operators and also
 /// correct for operators with wider rows (e.g. `laplacian_eps_2d`).
 ///
@@ -16250,7 +16318,43 @@ fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
 /// with the mask's nonzero cells / the index list. Both outputs must be
 /// bound: the modified `b` is half the point.
 fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    check_args("pin_dirichlet", &args, 4)?;
+    if args.len() != 4 && args.len() != 6 {
+        return Err(ScriptError::type_err(format!(
+            "pin_dirichlet: expected 4 arguments, or 6 with \"scale\", got {}",
+            args.len()
+        )));
+    }
+    // None = "auto" (per-row diagonal magnitude); Some(s) = fixed scale.
+    let fixed_scale: Option<f64> = if args.len() == 6 {
+        match &args[4] {
+            Value::Str(k) if k == "scale" => {}
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: 5th argument must be the option name \"scale\", got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+        match &args[5] {
+            Value::Str(s) if s == "auto" => None,
+            Value::Scalar(x) if x.is_finite() && *x > 0.0 => Some(*x),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: \"scale\" must be \"auto\" or a positive finite number, got {}",
+                    match other {
+                        Value::Str(s) => format!("\"{s}\""),
+                        Value::Scalar(x) => format!("{x}"),
+                        v => v.type_name().to_string(),
+                    }
+                )))
+            }
+        }
+    } else {
+        None
+    };
     if nargout < 2 {
         return Err(ScriptError::type_err(
             "pin_dirichlet: returns two outputs — use [A, b] = pin_dirichlet(A, b, mask, values)"
@@ -16314,7 +16418,59 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
 
     let pinned: std::collections::BTreeSet<usize> = ks.iter().copied().collect();
 
-    // Rebuild A with the pinned rows replaced by identity rows.
+    // Row scale d_k, read from the original operator.
+    let mut scale: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    if let Some(s) = fixed_scale {
+        for &k in &pinned {
+            scale.insert(k, s);
+        }
+    } else {
+        let mut diag: std::collections::BTreeMap<usize, C64> = std::collections::BTreeMap::new();
+        let mut row_max: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+        match &args[0] {
+            Value::SparseMatrix(sm) => {
+                // COO may repeat a position; repeated entries add.
+                let mut cells: std::collections::BTreeMap<(usize, usize), C64> =
+                    std::collections::BTreeMap::new();
+                for &(r, c, v) in &sm.entries {
+                    if pinned.contains(&r) {
+                        *cells.entry((r, c)).or_insert(Complex::new(0.0, 0.0)) += v;
+                    }
+                }
+                for (&(r, c), &v) in &cells {
+                    if r == c {
+                        diag.insert(r, v);
+                    }
+                    let m = row_max.entry(r).or_insert(0.0);
+                    *m = m.max(v.norm());
+                }
+            }
+            Value::Matrix(m) => {
+                for &k in &pinned {
+                    diag.insert(k, m[[k, k]]);
+                    let mx = (0..m.ncols()).map(|j| m[[k, j]].norm()).fold(0.0, f64::max);
+                    row_max.insert(k, mx);
+                }
+            }
+            _ => unreachable!("validated above"),
+        }
+        for &k in &pinned {
+            let d = diag.get(&k).map_or(0.0, |z| z.norm());
+            let d = if d > 0.0 && d.is_finite() {
+                d
+            } else {
+                let r = row_max.get(&k).copied().unwrap_or(0.0);
+                if r > 0.0 && r.is_finite() {
+                    r
+                } else {
+                    1.0
+                }
+            };
+            scale.insert(k, d);
+        }
+    }
+
+    // Rebuild A with the pinned rows replaced by scaled identity rows.
     let new_a = match &args[0] {
         Value::SparseMatrix(sm) => {
             let hint = sm.ordering_hint;
@@ -16325,7 +16481,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 .copied()
                 .collect();
             for &k in &pinned {
-                entries.push((k, k, Complex::new(1.0, 0.0)));
+                entries.push((k, k, Complex::new(scale[&k], 0.0)));
             }
             let mut rebuilt = SparseMat::new(sm.rows, sm.cols, entries);
             // Identity rows don't change the grid structure — keep the
@@ -16341,7 +16497,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
                 for j in 0..dense.ncols() {
                     dense[[k, j]] = Complex::new(0.0, 0.0);
                 }
-                dense[[k, k]] = Complex::new(1.0, 0.0);
+                dense[[k, k]] = Complex::new(scale[&k], 0.0);
             }
             Value::Matrix(dense.into())
         }
@@ -16359,7 +16515,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             }
             let mut b = (**v).clone();
             for (&k, &val) in ks.iter().zip(vals.iter()) {
-                b[k] = val;
+                b[k] = val * scale[&k];
             }
             Value::Vector(b.into())
         }
@@ -16373,6 +16529,7 @@ fn builtin_pin_dirichlet_nargout(args: Vec<Value>, nargout: usize) -> Result<Val
             let mut b = (**m).clone();
             let row_shaped = m.nrows() == 1;
             for (&k, &val) in ks.iter().zip(vals.iter()) {
+                let val = val * scale[&k];
                 if row_shaped {
                     b[[0, k]] = val;
                 } else {

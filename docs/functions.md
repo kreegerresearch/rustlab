@@ -266,13 +266,18 @@ T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
 ```
 Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
 
-### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(F)` / `gradient(F, dx, dy)`
+### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` / `gradient(F)` / `gradient(F, dx, dy)`
 1-D gradient of a vector (or a `1×N` / `N×1` matrix), and 2-D gradient of a matrix.
 
-A vector keeps its orientation and is not returned as a tuple. Endpoints use the first-order difference `(f[2]-f[1])/h`. Interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+A vector keeps its orientation and is not returned as a tuple. By default (MATLAB) the endpoints use the **first-order** difference `(f[2]-f[1])/h`, while interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+
+`"order", 2` (last) makes the 1-D endpoints **second-order** one-sided, the boundary order of the 2-D and 3-D stencils: `(-3f[1] + 4f[2] - f[3])/(2h)` and its mirror at the end, or, with coordinates, the derivative of the parabola through the first (last) three samples. The interior is unchanged. It needs at least 3 samples. A quadratic is then exact at every sample; with first-order ends the endpoint error is `O(h)` and dominates a smooth sweep. `"order", 1` is the default. A 2-D matrix accepts `"order", 2` (its boundaries already are second-order) and rejects `"order", 1`.
 ```
 g = gradient((0:4) .^ 2)     % [1, 2, 4, 6, 7]
 g = gradient([0, 1, 4, 9], 2)
+x = [0.4, 0.6, 0.8, 1.0, 1.4, 2.0];
+gradient(x.^2, x)               % [1.0, 1.2, 1.6, 2.0, 2.8, 3.4]  ends first-order
+gradient(x.^2, x, "order", 2)   % [0.8, 1.2, 1.6, 2.0, 2.8, 4.0]  exact
 ```
 
 A true 2-D matrix (`ny×nx`, rows index `y`, columns index `x`) still returns `[Fx, Fy]`.
@@ -888,10 +893,19 @@ For `n = 0`, returns an empty vector.
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 
-For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 
 ### `numel(x)`
-Total number of elements: `rows × cols` for matrices, `1` for scalars.
+Total number of elements: `rows × cols` for matrices (dense or sparse), `1` for scalars. An empty sparse selection such as `S(:, [])` has `numel` 0.
+
+### `isempty(x)`
+True when `x` has no elements: any dimension is 0 (`numel(x) == 0`), or `x` is the empty string `""`. Works on dense, sparse, logical, integer, string-array, and table values. A scalar, struct, or function handle is never empty.
+```
+S = speye(4);
+isempty(S(:, []))   # → true  (4×0 sparse)
+isempty(zeros(3, 0))  # → true
+isempty(S)          # → false
+```
 
 ### `size(x)`
 Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.
@@ -1833,6 +1847,7 @@ reshape(1:24, 2, 3, 4)          # → 2×3×4 Tensor3 (column-major walk)
 - Total elements must be preserved: `numel(A)` must equal `m * n` (or `m * n * p`).
 - If `m == 1` or `n == 1` (and no `p`), returns a vector instead of a matrix.
 - The 4-argument form returns a `Tensor3`. See [Rank-3 Tensors](#rank-3-tensors).
+- `reshape(x, N, 1)` with `N > 1` is an `N×1` column, as in MATLAB. `reshape(x, 1, N)` is a row.
 
 ### `ind2sub(sz, IND)` / `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)`
 
@@ -1890,7 +1905,7 @@ Non-conjugate transpose — swaps rows and columns without conjugating imaginary
 transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 ```
 - Use `conj(transpose(A))` or `A'` notation for Hermitian (conjugate) transpose.
-- ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
+- ⚠️ **Reshaping complex data:** postfix `'` conjugates. `src(:)` is already the `N×1` column a solve or a product wants, so write `b = src(:)` with no transpose. The old idiom `b = src(:)'` silently flipped the sign of every imaginary part of a complex `src`, and since 0.3.75 it is a `1×N` row. Use `.'` (or `transpose`) when the intent is a pure reshape to a row.
 
 ### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
 - `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors. A length-1 input is a `1×1` matrix: `size(diag(5))` is `[1, 1]` and the entry is 5.
@@ -2334,6 +2349,16 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
 
+### Indexing a sparse matrix
+`S(i, j)` with two scalars is the element. `S(rows, cols)` that selects more than one row **and** more than one column returns a **sparse** matrix, gathered from the stored entries in O(nnz + selected entries) without densifying; subscripts may be vectors, ranges with `end`, `:`, or logical masks, in any order and with repeats, as on a dense matrix. The ordering hint of a `laplacian_*` matrix is not carried over. A single row or column is dense: `S(k, :)` is a row and `S(:, k)` an `N×1` column, the same shapes as on a dense matrix. (MATLAB returns sparse there too.)
+
+Symmetric Dirichlet elimination keeps a pinned Laplacian SPD, so Cholesky applies:
+```
+fr = find(P(:)' == 0);  pr = find(P(:)' > 0);    # free / pinned nodes
+Aff = L(fr, fr);  Afp = L(fr, pr);               # both stay sparse
+Vf = spsolve(Aff, -(Afp * Vp'), "cholesky");
+```
+
 ### `sparse(I, J, V, m, n)` / `sparse(A)`
 Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse. An entry is stored unless it is an exact zero (`+0` or `-0`); a tiny finite value stays.
 ```
@@ -2392,7 +2417,7 @@ The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesso
 
 **Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
 
-⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. Reshape with `b = src(:).'` (non-conjugate) instead.
+⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. `src(:)` is already a column (since 0.3.75): use `b = src(:)`.
 
 ```
 x = spsolve(A, b)                       # auto-detect
@@ -2454,7 +2479,7 @@ x2 = solve(F, [j; 1]);
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
-**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
 
 **Boundary conditions.** The optional trailing string argument selects:
 - `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
@@ -2479,7 +2504,7 @@ nx = 32; ny = 24;
 L = laplacian_2d(nx, ny);
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-V = spsolve(L, -rho(:)');
+V = spsolve(L, -rho(:));
 V_grid = reshape(V, ny, nx);
 ```
 
@@ -2552,14 +2577,18 @@ np = ny * nx;
 V = reshape(spsolve(A, b), ny, nx, nz);
 ```
 
-### `pin_dirichlet(A, b, mask_or_indices, values)`
-Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with the identity row (diagonal 1, all off-diagonals 0 — the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`) and `b(k)` is set to the pinned value. `spsolve(A, b)` then reproduces the boundary potential exactly while the operator acts everywhere else.
+### `pin_dirichlet(A, b, mask_or_indices, values)` / `pin_dirichlet(..., "scale", s)`
+Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` then reproduces the boundary potential while the operator acts everywhere else.
+
+**Row scale.** By default (`"scale", "auto"`) `d_k` is the magnitude of the original diagonal `|A(k, k)|`; if that is 0, the largest `|A(k, :)|`; if the row is empty, 1. The solution is the same as with an identity row in exact arithmetic, but the pinned row stays the same size as its neighbours. With a diagonal of 1 next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`), the sparse LU pivots on the large entries in the pinned column and the pinned values drift: a conductor at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4`. With the default scale it comes back exact. `"scale", s` with a positive number uses `d_k = s` for every pinned row; `"scale", 1` is the identity row of 0.3.68 and earlier.
 
 - `mask_or_indices` — either a mask on the grid (matrix or 3-D tensor whose element count equals the operator size; nonzero = pin; linearized column-major, matching `ij2k`/`ijk2k` and the `laplacian_*` node ordering), or a vector of 1-based linear indices.
 - `values` — a scalar (broadcast to every pin) or a vector aligned with the mask's column-major nonzeros / the index list.
 - `A` — sparse (the `laplacian_*` ordering hint survives) or dense; must be square.
 - `b` — vector or 1×n / n×1 matrix; container and orientation are preserved.
 - Both outputs must be bound: `[A, b] = pin_dirichlet(...)`. A single-output call is an error — silently dropping the modified `b` would corrupt the physics.
+- Pinning twice with the default scale is safe: the second call reads the already-scaled diagonal.
+- **Rewriting `b` after pinning.** With the default scale, `b(k)` on a pinned row holds `d_k · value`, not `value`. A script that pins once and then writes its own right-hand side on pinned rows (`b(k) = 1` to drive one conductor of a capacitance matrix, then `spsolve`) must either pin with `"scale", 1` or write `b(k) = d_k · value` (`d_k = A(k, k)` after the call). Otherwise the pinned potential is `value / d_k`: in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Passing the drive values to `pin_dirichlet` itself is always correct.
 
 ```
 # Parallel plates at ±5 V on an ny×nx grid:
@@ -3071,7 +3100,14 @@ quiver(U, V);                       % shortcut — indexed axes
 quiver(x(1:5:end), y(1:5:end), U(1:5:end, 1:5:end), V(1:5:end, 1:5:end));
 ```
 
-Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces. NaN entries in `U` or `V` skip that cell.
+Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces, and a `plot` / `scatter` / `stem` series is drawn on top of all of them in every backend (SVG, PNG, PDF, HTML, viewer). Without a heatmap, the axes grow to include the series. NaN entries in `U` or `V` skip that cell.
+```
+quiver(X, Y, -Y, X);
+hold on;
+plot(cos(t), sin(t), "r");     # a loop over the field
+hold off;
+savefig("stokes_loop.png");
+```
 
 Per-backend behaviour:
 
@@ -4176,6 +4212,21 @@ v(end)     # last element
 v(2:4)     # elements 2, 3, 4
 ```
 On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column. `ind2sub(size(M), k)` and `sub2ind(size(M), i, j)` convert between that linear index and subscripts.
+
+**Result orientation (MATLAB).** These reads return an `N×1` column:
+- `x(:)` of any vector, matrix, `Tensor3`, or logical array (column-major order);
+- a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+- `M(rows, k)` that selects one column and more than one row (`D(2:end, 61)`, `M(:, k)`; a sparse `S(:, k)` is a dense column);
+- `T(:, j, k)` on a `Tensor3`.
+
+A single row `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), and a single element are unchanged (row / scalar). So `L * V(:)` is the operator applied to the flattened field, with no transpose; the old `L * V(:)'` conjugated a complex `V`. A column paired with a same-length vector is still element-wise (`M(:, 1) + v` has length `n`). `for` does not iterate over a column; loop over `c.'`. `arrayfun` and `parmap` accept a column input and read a column return as one vector result.
+```
+M = [1, 2; 3, 4; 5, 6];
+size(M(:, 1))       # → [3, 1]
+size(M(2, :))       # → [1, 2]
+size(M(:))          # → [6, 1]
+u = [fliplr(D(2:end, 61)'), D(:, 1)'];   # unfold a cut into one row
+```
 
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.

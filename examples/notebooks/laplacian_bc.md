@@ -29,7 +29,7 @@ dx = 0.05; dy = 0.05;
 src = zeros(ny, nx);
 src(20, 20) =  1.0;
 src(40, 40) = -1.0;
-b = src(:)';
+b = src(:);
 ```
 
 A two-charge dipole on a 60×60 grid.

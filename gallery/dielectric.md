@@ -67,7 +67,7 @@ negate to get an SPD operator that auto-routes to sparse Cholesky.
 ```rustlab
 rho = zeros(ny, nx);
 rho(50, 25) = 1.0;             % point charge at (50, 25)
-b = rho(:)' / eps0;            % matches the negated (SPD) operator A
+b = rho(:) / eps0;            % matches the negated (SPD) operator A
 v = spsolve(A, b);
 V = reshape(v, ny, nx);
 

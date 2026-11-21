@@ -363,7 +363,8 @@ mod tests {
                 }
             }
             for f in forms {
-                let want = widened(target).index_ref(f.clone());
+                // The raw read, before `index_ref` turns a column selection into n×1.
+                let want = widened(target).index_ref_dispatch(f.clone());
                 if let Some(got) = target.real_index(&f) {
                     covered += 1;
                     let want = want.unwrap_or_else(|e| {
