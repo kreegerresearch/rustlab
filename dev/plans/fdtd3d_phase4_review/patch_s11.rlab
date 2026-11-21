@@ -1,0 +1,90 @@
+# Phase 4 review diagnostic: the plan's lossless patch, three feed positions.
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase4_review/patch_s11.rlab --plot none
+#
+# Prints, per feed: whether the feed node is on the patch metal, late/peak of
+# the gap voltage, and the |S11| minimum in 1.5-3.5 GHz computed several ways
+# from the same V and I. Nothing here changes the stepper.
+
+eps_r = 4.4;
+h = 1.6e-3;
+f0 = 2.4e9;
+c0 = 299792458;
+W = c0 / (2 * f0) * sqrt(2 / (eps_r + 1));
+ee = (eps_r + 1) / 2 + (eps_r - 1) / 2 / sqrt(1 + 12 * h / W);
+dL = 0.412 * h * (ee + 0.3) * (W / h + 0.264) / ((ee - 0.258) * (W / h + 0.8));
+L = c0 / (2 * f0 * sqrt(ee)) - 2 * dL;
+dx = 1.0e-3; dy = 1.0e-3; dz = 0.4e-3;
+nx = 60; ny = 60; nz = 20; nsub = 4; npml = 6;
+px = (nx * dx - L) / 2;
+py = (ny * dy - W) / 2;
+xv = (0:nx - 1) * dx;
+yv = (0:ny - 1) * dy;
+[X, Y] = meshgrid(xv, yv);
+patch = rect_mask(X, Y, px, py, L, W);
+fprintf("L = %.4f mm, W = %.4f mm, px = %.4f mm, py = %.4f mm\n", L * 1e3, W * 1e3, px * 1e3, py * 1e3);
+cols = find(sum(patch, 1) > 0);
+fprintf("metal nodes x = %d..%d mm (%d mm long)\n", cols(1) - 1, cols(end) - 1, cols(end) - cols(1));
+
+function [V, I, dt] = patch_run(nx, ny, nz, dx, dy, dz, nsub, npml, eps_r, patch, iy, ix, f0, nsteps)
+  sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+  eps = ones3(ny, nx, nz);
+  eps(:, :, 1:nsub) = eps_r;
+  fdtd_media(sim, eps, 1, 0);
+  fdtd_cpml(sim, npml);
+  fdtd_cpml(sim, "zmin", 0);
+  fdtd_pec(sim, "z", nsub + 1, patch);
+  tau = 1 / (2 * f0);
+  fdtd_port(sim, "ez", iy, ix, 1:nsub, 50, "modulated", 4 * tau, tau, f0);
+  out = fdtd_run(sim, nsteps);
+  V = out.V;
+  I = out.I;
+  dt = out.dt;
+end
+
+# S11 from V, I with the dt/2 correction, optional window, sign, zero pad.
+function [fmin, smin, pneg] = s11_min(V, I, dt, z0, win, sgn, nfft, lo, hi)
+  n = length(V);
+  w = ones(n, 1);
+  if win == "hann"
+    w = window("hann", n);
+    w = w(:);
+  end
+  Vw = fft(V .* w, nfft);
+  Iw = fft(sgn * I .* w, nfft);
+  f = ((0:nfft - 1) / (nfft * dt))';
+  Iw = Iw .* exp(1j * pi * f * dt);
+  a = Vw + z0 * Iw;
+  b = Vw - z0 * Iw;
+  s = abs(b ./ a);
+  band = find((f > lo) .* (f < hi));
+  at = argmin(s(band));
+  fmin = f(band(at));
+  smin = s(band(at));
+  p = real(Vw .* conj(Iw));
+  pneg = sum(p(band) < 0) / length(band);
+end
+
+iy = round((py + W / 2) / dy) + 1;
+names = {"edge (plan: round(px/dx)+1)", "edge on metal (ceil(px/dx)+1)", "inset L/3"};
+feeds = [round(px / dx) + 1, ceil(px / dx) + 1, round((px + L / 3) / dx) + 1];
+nsteps = 6000;
+for q = 1:3
+  ix = feeds(q);
+  on = patch(iy, ix);
+  [V, I, dt] = patch_run(nx, ny, nz, dx, dy, dz, nsub, npml, eps_r, patch, iy, ix, f0, nsteps);
+  tau = 1 / (2 * f0);
+  k0 = round(8 * tau / dt);
+  late = max(abs(V(k0:end))) / max(abs(V));
+  fprintf("\n%s: ix = %d (x = %d mm), node on metal = %d, late/peak V = %.3e\n", names(q), ix, ix - 1, on, late);
+  n = length(V);
+  [f1, s1, p1] = s11_min(V, I, dt, 50, "rect", 1, n, 1.5e9, 3.5e9);
+  [f2, s2, p2] = s11_min(V, I, dt, 50, "hann", 1, n, 1.5e9, 3.5e9);
+  [f3, s3, p3] = s11_min(V, I, dt, 50, "rect", -1, n, 1.5e9, 3.5e9);
+  [f4, s4, p4] = s11_min(V, I, dt, 50, "rect", 1, 8 * n, 1.5e9, 3.5e9);
+  fprintf("  rect, N bins       min |S11| %.3f at %.4f GHz  (bins with Re(V I*) < 0: %.2f)\n", s1, f1 / 1e9, p1);
+  fprintf("  hann, N bins       min |S11| %.3f at %.4f GHz  (%.2f)\n", s2, f2 / 1e9, p2);
+  fprintf("  rect, -I           min |S11| %.3f at %.4f GHz  (%.2f)\n", s3, f3 / 1e9, p3);
+  fprintf("  rect, 8N zero pad  min |S11| %.3f at %.4f GHz  (%.2f)\n", s4, f4 / 1e9, p4);
+  fprintf("  bin spacing %.1f MHz\n", 1 / (n * dt) / 1e6);
+end

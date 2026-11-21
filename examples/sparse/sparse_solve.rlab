@@ -20,7 +20,7 @@ print(nnz(A))            % → ~12k for a 5-point stencil with Dirichlet trims
 # Centred point source.
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-b   = -1 * rho(:)';
+b   = -1 * rho(:);
 
 # Default dispatch: -L is SPD, so auto picks the sparse Cholesky path.
 print("Solving 2500x2500 Poisson via auto dispatch (sparse Cholesky)...")

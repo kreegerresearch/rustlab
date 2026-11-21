@@ -37,7 +37,7 @@ title("Relative permittivity ε_r")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/dielectric/plot-1-bb488bfa.svg)
+![plot 1](plots/dielectric/plot-1-bf7930c6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -67,7 +67,7 @@ negate to get an SPD operator that auto-routes to sparse Cholesky.
 ```rustlab
 rho = zeros(ny, nx);
 rho(50, 25) = 1.0;             % point charge at (50, 25)
-b = rho(:)' / eps0;            % matches the negated (SPD) operator A
+b = rho(:) / eps0;            % matches the negated (SPD) operator A
 v = spsolve(A, b);
 V = reshape(v, ny, nx);
 
@@ -77,7 +77,7 @@ title("Potential V — point charge in vacuum next to dielectric slab")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/dielectric/plot-2-563c24e7.svg)
+![plot 2](plots/dielectric/plot-2-f050c39f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -114,7 +114,7 @@ title("|E| with field arrows — interface jump at j = 50")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/dielectric/plot-3-cdc31b22.svg)
+![plot 3](plots/dielectric/plot-3-7f4762df.svg)
 
 <!-- rustlab:output-end -->
 

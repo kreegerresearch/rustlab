@@ -1,0 +1,12 @@
+rustlab 0.3.63 — interpreting /tmp/proto/conv05.rlab (.rlab)
+mesh 162 x 180 x 78 = 2274480 cells, 475 MB, dt = 5.7485e-13 s, metal 28.0 x 38.0 mm, feed edge ix=54
+ground 61.0 x 70.0 mm, sigma 0 S/m, NTFF freqs 0, steps 24000
+run 698.7 s, 78.1 Mcell/s
+  n= 4000 tail V 1.55e-01 I 8.41e-02  min|S11| 0.112 at 2.4463 GHz
+  n= 6000 tail V 1.61e-01 I 8.74e-02  min|S11| 0.302 at 2.4644 GHz
+  n= 8000 tail V 9.70e-02 I 5.27e-02  min|S11| 0.451 at 2.4735 GHz
+  n=12000 tail V 2.22e-02 I 1.21e-02  min|S11| 0.547 at 2.4644 GHz
+  n=16000 tail V 7.40e-03 I 4.02e-03  min|S11| 0.567 at 2.4735 GHz
+  n=20000 tail V 2.27e-03 I 1.24e-03  min|S11| 0.569 at 2.4680 GHz
+  n=24000 tail V 6.60e-04 I 3.59e-04  min|S11| 0.571 at 2.4644 GHz
+ring-down: amplitude decay 5.521e+08 1/s, loaded Q at 2.44 GHz = 13.9

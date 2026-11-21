@@ -53,22 +53,22 @@ jobs:
         with:
           shared-key: validate-notebooks
 
-      - name: Install build + linter system deps
-        # libfontconfig1-dev / libfreetype-dev are required to compile
-        # rustlab-plot — `plotters/ttf` pulls in `font-kit` →
-        # `yeslogic-fontconfig-sys` / `freetype-sys`, both of which
-        # link against system libraries. macOS dev machines ship these
-        # via the SDK; Ubuntu runners do not.
+      - name: Install linter system deps
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            pkg-config \
-            chktex \
-            poppler-utils \
-            qpdf \
-            tidy
+          ok=0
+          for attempt in 1 2 3; do
+            if sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
+              chktex \
+              poppler-utils \
+              qpdf \
+              tidy; then
+              ok=1
+              break
+            fi
+            echo "apt attempt ${attempt} failed"
+            sleep 20
+          done
+          test "$ok" = 1
           sudo npm install -g markdownlint-cli2
 
       - name: Build rustlab-notebook (release)

@@ -1,0 +1,33 @@
+# Phase 4 review diagnostic: per-bin Z of the resistive pillar, 8x zero padding,
+# R = 25 / 50 / 100 ohm, short and 4x records. DC is exact; Im Z is the fixture's L and C.
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase4_review/resistor_bins.rlab --plot none
+dx = 1.0e-3; dy = 1.5e-3; dz = 1.0e-3;
+nx = 16; ny = 14; nz = 8; n = 4; kp = 2; ip = 6; jp = 8; z0 = 50;
+function [V, I, vg, dt] = load_run(nx, ny, nz, dx, dy, dz, n, kp, ip, jp, rload, z0, nsteps, tau)
+  sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+  sig = zeros3(ny, nx, nz);
+  sig(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = kp * dz / (rload * n * dx * n * dy);
+  fdtd_media(sim, 1, 1, sig);
+  pad = zeros(ny, nx); pad(ip:ip + n, jp - 1:jp + n) = 1;
+  fdtd_pec(sim, "z", kp + 1, pad);
+  fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+  out = fdtd_run(sim, nsteps);
+  V = out.V; I = out.I; dt = out.dt;
+  vg = gaussian_pulse(((1:nsteps) * dt)', 4 * tau, tau);
+end
+tau = 1e-9;
+for rload = [25, 50, 100]
+  for nsteps = [6628, 26512]
+    [V, I, vg, dt] = load_run(nx, ny, nz, dx, dy, dz, n, kp, ip, jp, rload, z0, nsteps, tau);
+    nf = 8 * nsteps;
+    f = ((0:nf - 1) / (nf * dt))';
+    Vf = fft(V, nf); If = fft(I, nf) .* exp(1j * pi * f * dt);
+    fprintf("R=%g steps=%d  tail |V| %.2e of peak, tail |I| %.2e of peak\n", rload, nsteps, abs(V(end)) / max(abs(V)), abs(I(end)) / max(abs(I)));
+    for fq = [0, 50e6, 100e6, 200e6, 300e6, 500e6]
+      k = round(fq * nf * dt) + 1;
+      Z = Vf(k) / If(k);
+      fprintf("   %5.0f MHz  Z = %8.4f %+8.4fj\n", f(k) / 1e6, real(Z), imag(Z));
+    end
+  end
+end

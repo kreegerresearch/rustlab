@@ -1,0 +1,19 @@
+rustlab 0.3.63 — interpreting /tmp/proto/air20.rlab (.rlab)
+mesh 122 x 130 x 124 = 1966640 cells, 411 MB, dt = 1.1497e-12 s, metal 28.0 x 38.0 mm, feed edge ix=48
+ground 62.0 x 70.0 mm, sigma 0 S/m, NTFF freqs 3, steps 12000
+run 342.2 s, 69.0 Mcell/s
+  n= 4000 tail V 1.01e-01 I 4.86e-02  min|S11| 0.464 at 2.4463 GHz
+  n= 6000 tail V 2.18e-02 I 1.05e-02  min|S11| 0.551 at 2.4282 GHz
+  n= 8000 tail V 5.77e-03 I 2.78e-03  min|S11| 0.562 at 2.4327 GHz
+  n=12000 tail V 4.82e-04 I 2.32e-04  min|S11| 0.564 at 2.4372 GHz
+ring-down: amplitude decay 6.275e+08 1/s, loaded Q at 2.44 GHz = 12.2
+  f 2.420 GHz: D0 6.91 dBi, G0 6.91, Gr0 5.15 dBi, Pflux 5.6561e-23, Pacc 5.6649e-23, (Pacc-Pflux)/Pacc 0.0016, Psphere/Pflux 1.0013
+  f 2.440 GHz: D0 6.94 dBi, G0 6.93, Gr0 5.27 dBi, Pflux 5.7574e-23, Pacc 5.7666e-23, (Pacc-Pflux)/Pacc 0.0016, Psphere/Pflux 1.0011
+  f 2.460 GHz: D0 6.97 dBi, G0 6.96, Gr0 5.13 dBi, Pflux 5.5313e-23, Pacc 5.5372e-23, (Pacc-Pflux)/Pacc 0.0011, Psphere/Pflux 1.0009
+cuts at 2.440 GHz (S11 min 2.4372 GHz)
+  max D 6.94 dBi at theta 0 deg phi 9 deg
+  E-plane (phi=0) co-pol peak at theta 0 deg; H-plane (phi=90) peak at theta 0 deg
+  front/back (theta 0 vs 180, phi 0): 14.03 dB
+  cross-pol at broadside: 336.1 dB below co-pol
+  E-plane D(theta) dBi, theta 0:15:90 : 6.9 6.6 5.6 4.0 2.0 -0.4 -3.3 
+  H-plane D(theta) dBi, theta 0:15:90 : 6.9 6.5 5.3 3.3 0.8 -2.2 -5.2 

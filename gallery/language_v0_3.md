@@ -119,7 +119,7 @@ For row extraction, use the explicit two-arg form `M(i, :)`.
 
 ```rustlab
 M = [10, 20; 30, 40; 50, 60];
-print(M(:))             % → [10, 30, 50, 20, 40, 60]  (col-major flatten)
+print(M(:))             % → 6×1 column [10; 30; 50; 20; 40; 60]  (col-major flatten)
 print(M(2))             % → 30   (second linear element)
 print(M([1, 4, 6]))     % → [10, 20, 60]   (vector of picks)
 print(M(2, :))          % → [30, 40]   (row 2 — explicit form)
@@ -127,7 +127,13 @@ print(M(2, :))          % → [30, 40]   (row 2 — explicit form)
 
 <!-- rustlab:output-start -->
 ```text
-[1×6]  10.000000  30.000000  50.000000  20.000000  40.000000  60.000000
+Matrix(6x1)
+  [10.000000]
+  [30.000000]
+  [50.000000]
+  [20.000000]
+  [40.000000]
+  [60.000000]
 30
 [1×3]  10.000000  20.000000  60.000000
 [1×2]  30.000000  40.000000
@@ -208,7 +214,7 @@ print(mean(Se(1, :)))     % row 1 still has zero mean
 
 <!-- rustlab:output-start -->
 ```text
-0.000000000000000044408920985006264
+0
 ```
 
 <!-- rustlab:output-end -->

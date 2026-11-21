@@ -268,6 +268,7 @@ pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
     if results.is_empty() {
         return Ok(Value::Vector(ndarray::Array1::zeros(0).into()));
     }
+    let results: Vec<Value> = results.into_iter().map(Value::column_into_vector).collect();
     enum Shape {
         ScalarLike,
         Vector(usize),

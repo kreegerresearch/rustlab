@@ -22,11 +22,15 @@ thiserror.workspace    = true
 gif.workspace          = true
 # SVG/PNG backends. Kept in [dependencies] so Windows builds get them too;
 # it used to follow the unix target header and was unix-only by accident.
+# Text uses `ab_glyph` (pure Rust) with the font in `fonts/`, registered by
+# `src/font.rs`. Do not turn on `ttf`: it pulls font-kit, which needs the
+# fontconfig dev package and, without libfreetype-dev, compiles FreeType as
+# C++ and links libstdc++.
 plotters   = { version = "0.3", default-features = false, features = [
     "svg_backend",
     "bitmap_backend",
     "bitmap_encoder",
-    "ttf",
+    "ab_glyph",
     "all_series",
     "all_elements",
     "full_palette",

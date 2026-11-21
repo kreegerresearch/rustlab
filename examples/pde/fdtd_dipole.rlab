@@ -1,0 +1,142 @@
+# Short dipole and a half-wave wire: the near-to-far transform
+# Demonstrates: fdtd_ntff, fdtd_farfield, directivity, gain, realized gain
+#
+# v1 restrictions, not a Phase 6 decision: CPML on all six faces, a
+# homogeneous lossless exterior, at least 10 cells per background
+# wavelength, one port (no S21), serial stepping. Gain is NaN without a
+# port, and NaN when that power is not positive. The box origin is the
+# centroid of the Huygens surface.
+
+c0 = 299792458;
+dx = 1e-3;
+mu0 = 1.25663706212e-6;
+eps0 = 1 / (mu0 * c0 * c0);
+eta0 = sqrt(mu0 / eps0);
+
+# ── 1. Hertzian ez dipole, 32³, λ/Δ = 30 ─────────────────────────
+n = 32;
+sim = fdtd3d(n, n, n, dx, dx, dx, "courant", 0.99);
+fdtd_cpml(sim, 6);
+info = fdtd_info(sim);
+dt = info.dt;
+nsteps = 700;
+fc = c0 / 0.020;
+tau = sqrt(2) / (2 * pi * fc);
+t0 = 5 * tau;
+s = 1:nsteps;
+u = (s * dt - t0) / tau;
+g = -u .* exp(-u .* u);
+ic = n / 2 + 1;                         # script 17, the centre edge
+fdtd_source(sim, "ez", ic, ic, ic, "soft", g);
+f = c0 / 0.030;
+fdtd_ntff(sim, f);
+fdtd_run(sim, nsteps);
+
+# Ez sits half a cell above the node. The box centroid is 16 mm, so at
+# θ = 90° that z offset drops out of r̂·(r′ − o) only if the origin is
+# the edge. Put it there for the phase check.
+org = [16e-3, 16e-3, 16.5e-3];
+th = (1:35) * pi / 36;                  # 5° … 175°
+pat = fdtd_farfield(sim, th, 0, "origin", org);
+k = 2 * pi * f / c0;
+# The drive spectrum is the current moment. Etheta is that moment
+# times the dipole factor, in V·s, so it is small. abs and angle keep it.
+spec = sum(g .* exp(-j * 2 * pi * f * (s - 0.5) * dt));
+il = abs(spec) * dt * dx * dx;
+fan = eta0 * k * il / (4 * pi);
+eth = pat.Etheta(1, :, 1);
+ae = abs(eth);
+a90 = ae(18);                           # θ = 90°
+amp = abs(a90 / fan - 1);
+ph = abs(angle(eth)(18) - angle(spec) - pi / 2);
+shape = max(abs(ae ./ (abs(fan) * sin(th)) - 1));
+d = pat.directivity(1, :, 1);
+d90 = d(18);
+ddb = pat.directivity_dBi(1, :, 1);
+pan = eta0 * k^2 * il^2 / (12 * pi);
+pr = abs(pat.prad(1) / pan - 1);
+fprintf("short dipole  |F/Fan|-1 = %.4f   phase = %.4f rad\n", amp, ph);
+fprintf("              shape = %.4f   D(90) = %.4f (%.3f dBi)   |P/Pan|-1 = %.4f\n", shape, d90, ddb(18), pr);
+if amp > 0.01
+    error("short-dipole amplitude left the 1% band");
+end
+if ph > 0.02
+    error("short-dipole phase left the 0.02 rad band");
+end
+if shape > 0.01
+    error("short-dipole sin(theta) shape left the 1% band");
+end
+if abs(d90 / 1.5 - 1) > 0.01
+    error("short-dipole peak directivity left the 1% band");
+end
+if pr > 0.01
+    error("short-dipole flux left the 1% band");
+end
+
+phic = linspace(0, 2 * pi, 73);
+phic = phic(1:end - 1);
+cut = fdtd_farfield(sim, pi / 2, phic, "origin", org);
+xe = abs(cut.Ephi(1, 1, :));
+ye = abs(cut.Etheta(1, 1, :));
+xpol = max(xe ./ ye);
+fprintf("              max |Ephi|/|Etheta| on the xy cut = %.3e\n", xpol);
+if xpol > 2e-5
+    error("short-dipole cross-pol left the 2e-5 band");
+end
+
+subplot(2, 1, 1);
+plot(th * 180 / pi, ae / a90, th * 180 / pi, sin(th));
+xlabel("theta (deg)");
+ylabel("|Etheta| / max");
+title("short dipole elevation");
+
+subplot(2, 1, 2);
+ring = abs(cut.Etheta(1, 1, :));
+polar(phic, ring / max(ring));
+title("short dipole, theta = 90 deg");
+
+# ── 2. Half-wave wire: one port, PEC arms, gain and realized gain ─
+# 48³, CPML 8, margin 2 (the default). Arms of 7 cells each side of the
+# gap, on the x = constant plane through the port. The gap edge itself
+# is not PEC. Phase 6 geometry (ground, substrate) is not this example.
+nw = 48;
+wire = fdtd3d(nw, nw, nw, dx, dx, dx, "courant", 0.99);
+fdtd_cpml(wire, 8);
+winfo = fdtd_info(wire);
+wsteps = 1000;
+wfc = 9e9;
+wtau = sqrt(2) / (2 * pi * wfc);
+wt0 = 5 * wtau;
+ws = 1:wsteps;
+wu = (ws * winfo.dt - wt0) / wtau;
+gw = -wu .* exp(-wu .* wu);
+jc = nw / 2 + 1;                        # 1-based centre, rust index n/2
+kc = jc;
+mlo = zeros(nw, nw);
+mlo(jc, (kc - 7):kc) = 1;
+fdtd_pec(wire, "x", jc, mlo);
+mhi = zeros(nw, nw);
+mhi(jc, (kc + 1):(kc + 8)) = 1;
+fdtd_pec(wire, "x", jc, mhi);
+fdtd_port(wire, "ez", jc, jc, kc, 50, gw);
+fw = 8e9:0.5e9:10e9;
+fdtd_ntff(wire, fw);
+fdtd_run(wire, wsteps);
+wp = fdtd_farfield(wire, [pi / 2, pi / 2], 0);
+fprintf("f (GHz)    Re Zin    Im Zin    |S11|    D dBi    G dBi    Gr dBi\n");
+for q = 1:length(fw)
+    v = wp.s11(q);
+    zin = 50 * (1 + v) / (1 - v);
+    fprintf("%6.1f   %8.2f  %8.2f   %6.4f   %6.3f   %6.3f   %6.3f\n", fw(q) / 1e9, real(zin), imag(zin), abs(v), wp.directivity_dBi(q, 1, 1), wp.gain_dBi(q, 1, 1), wp.realized_gain_dBi(q, 1, 1));
+end
+bal = max(abs(wp.paccepted ./ wp.prad - 1));
+fprintf("max |Pacc/Pflux - 1| = %.3e\n", bal);
+if bal > 1e-3
+    error("wire dipole accepted power left the flux by more than 0.1%");
+end
+
+clf;
+plot(fw / 1e9, wp.gain_dBi(:, 1, 1), fw / 1e9, wp.realized_gain_dBi(:, 1, 1));
+xlabel("f (GHz)");
+ylabel("dBi");
+title("half-wave wire, theta = 90 deg");

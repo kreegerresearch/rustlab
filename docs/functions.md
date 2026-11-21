@@ -42,12 +42,16 @@ w = z ./ [3, 4]     % w has nonzero imag — z's complex content is preserved
 
 This applies to `.*`, `./`, and `.^` on `Vector` and `Matrix` types. Other operators (`*`, `/`, `inv`, `fft`, etc.) still produce complex outputs even on real inputs — extending the no-noise behaviour to those would require a typed-real value variant, which is tracked as a future plan.
 
+Reading one stored sample (`v(i)`, `M(i, j)`, `T(i, j, k)`, a 1×1 `det`, `squeeze` of a singleton) returns a real scalar only when the imaginary part is exactly zero, including `-0`. Any other imaginary part is kept, however small, so `abs` and `angle` of that scalar see both components. `abs` of a vector does the same per element: `|re|` when the imaginary part is exactly zero, and `hypot(re, im)` otherwise. A vector of `1e-15j` is not real. Scalar functions on a vector (`sqrt`, `sin`, …) use the real formula only when every imaginary part is exactly zero, which is the rule a matrix already used.
+
+`sum`, `mean`, `prod`, `dot`, `trace`, and `det` of a matrix larger than 1×1 still drop an imaginary part of the result below `1e-12`. That is accumulated roundoff on a result that is supposed to be real. A reduction whose whole value sits below `1e-12` can still lose a part. `to_scalar` and a size argument still accept `|Im| < 1e-10` as a real count.
+
 ### `abs(x)`
 Absolute value or magnitude. Element-wise on all numeric types.
 - Scalar: `abs(-3.0)` → `3.0`
-- Complex: `abs(3 + j*4)` → `5.0` (L2 norm)
-- Vector: element-wise magnitude, returns real vector
-- Matrix: element-wise magnitude, returns real matrix of the same shape
+- Complex: `abs(3 + j*4)` → `5.0` (L2 norm). A pure-imaginary `1e-15j` has magnitude `1e-15`, not `0`.
+- Vector: element-wise magnitude. An element whose imaginary part is exactly zero uses `|re|`; any other element uses `hypot`. The result is a real vector.
+- Matrix: element-wise `hypot`, a real matrix of the same shape.
 
 ### `angle(x)`
 Phase angle in radians (`atan2(im, re)`).
@@ -85,6 +89,20 @@ Inverse sine in radians, element-wise. Accepts scalar, complex, vector, or matri
 ### `atan(x)`
 Inverse tangent in radians (single-argument), element-wise. Accepts scalar, complex, vector, or matrix.
 For the two-argument form see `atan2(y, x)`.
+
+### `tan(x)`
+Tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+```
+tan(pi/4)   # → 1.0 (to rounding)
+Zin = Z0 * (ZL + j*Z0*tan(b*L)) ./ (Z0 + j*ZL*tan(b*L));
+```
+
+### `cot(x)` / `sec(x)` / `csc(x)`
+Cotangent `1/tan(x)`, secant `1/cos(x)`, and cosecant `1/sin(x)`, element-wise. Accepts scalar, complex, vector, or matrix. As in MATLAB, a pole is infinite: `cot(0)` and `csc(0)` are `Inf`.
+```
+cot(pi/4)   # → 1.0
+sec(0)      # → 1.0
+```
 
 ### `tanh(x)`
 Hyperbolic tangent, element-wise. Accepts scalar, complex, vector, or matrix.
@@ -144,6 +162,24 @@ cosh(0.0)   # → 1.0
 cosh(1.0)   # → ~1.543
 ```
 Identity: `cosh(x)^2 - sinh(x)^2 = 1`.
+
+### `asinh(x)` / `acosh(x)` / `atanh(x)`
+Inverse hyperbolic sine, cosine, and tangent, element-wise. Accepts scalar, complex, vector, or matrix.
+A real input outside the real domain gives the principal complex value, as in MATLAB, instead of `NaN`: `acosh` is real for `x >= 1` (`acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`); `atanh` is real for `|x| <= 1`, with `atanh(±1) = ±Inf` (`atanh(2)` is `0.5493 + 1.5708i`). `asinh` is real for every real input.
+```
+asinh(1)               # → ~0.8814
+acosh(2)               # → ~1.317
+Z0 = (eta0/pi) * acosh(d / (2*a));   # twin-wire line impedance
+```
+
+### `isnan(x)` / `isinf(x)` / `isfinite(x)`
+Element-wise tests for `NaN`, `±Inf`, and finite values. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, usable as a mask (`v(isnan(v)) = 0`). A complex element is `NaN` (or infinite) when either part is, and finite only when both parts are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3` (there is no rank-3 logical).
+```
+isnan([1, NaN, 3])          # → logical [0 1 0]
+isinf([1, Inf, -Inf])       # → logical [0 1 1]
+isfinite(1 + NaN*1j)        # → false
+v(isnan(v)) = 0;            # replace NaN samples
+```
 
 ### `floor(x)`
 Largest integer ≤ x, applied to real and imaginary parts independently.
@@ -230,13 +266,18 @@ T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
 ```
 Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
 
-### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(F)` / `gradient(F, dx, dy)`
+### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` / `gradient(F)` / `gradient(F, dx, dy)`
 1-D gradient of a vector (or a `1×N` / `N×1` matrix), and 2-D gradient of a matrix.
 
-A vector keeps its orientation and is not returned as a tuple. Endpoints use the first-order difference `(f[2]-f[1])/h`. Interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+A vector keeps its orientation and is not returned as a tuple. By default (MATLAB) the endpoints use the **first-order** difference `(f[2]-f[1])/h`, while interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+
+`"order", 2` (last) makes the 1-D endpoints **second-order** one-sided, the boundary order of the 2-D and 3-D stencils: `(-3f[1] + 4f[2] - f[3])/(2h)` and its mirror at the end, or, with coordinates, the derivative of the parabola through the first (last) three samples. The interior is unchanged. It needs at least 3 samples. A quadratic is then exact at every sample; with first-order ends the endpoint error is `O(h)` and dominates a smooth sweep. `"order", 1` is the default. A 2-D matrix accepts `"order", 2` (its boundaries already are second-order) and rejects `"order", 1`.
 ```
 g = gradient((0:4) .^ 2)     % [1, 2, 4, 6, 7]
 g = gradient([0, 1, 4, 9], 2)
+x = [0.4, 0.6, 0.8, 1.0, 1.4, 2.0];
+gradient(x.^2, x)               % [1.0, 1.2, 1.6, 2.0, 2.8, 3.4]  ends first-order
+gradient(x.^2, x, "order", 2)   % [0.8, 1.2, 1.6, 2.0, 2.8, 4.0]  exact
 ```
 
 A true 2-D matrix (`ny×nx`, rows index `y`, columns index `x`) still returns `[Fx, Fy]`.
@@ -300,7 +341,7 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## FDTD (3-D)
 
-A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, and point probes. A grid with no `fdtd_media`, `fdtd_pec`, or `fdtd_cpml` call is vacuum. A lumped port and the far-field transform are later phases of `dev/plans/fdtd3d.md`.
+A native time-domain Maxwell stepper on a Yee grid: PEC outer walls, cell-centred materials (`fdtd_media`), metal volumes and faces (`fdtd_pec`), a convolutional PML absorber (`fdtd_cpml`), soft and hard E sources, one lumped port (`fdtd_port`, `fdtd_s11`), point probes, and a near-to-far transform (`fdtd_ntff`, `fdtd_farfield`). A grid with no `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, or `fdtd_port` call is vacuum. v1 of the transform is a closed box inside CPML on all six faces, in a homogeneous lossless exterior. A ground plane, a substrate, and image theory are Phase 6, and that geometry is not decided.
 
 Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a `Tensor3`. Component names are `"ex"`, `"ey"`, `"ez"`, `"hx"`, `"hy"`, `"hz"`. The box is `[0, nx·dx] × [0, ny·dy] × [0, nz·dz]`. Node `(i, j, k)` sits at `x = (j−1)·dx`, `y = (i−1)·dy`, `z = (k−1)·dz`, and each component is offset half a cell along its staggered axes:
 
@@ -315,21 +356,21 @@ Indices are 1-based `(i, j, k)` = (y row, x column, z page), the same order as a
 
 Tangential E on the six walls is held at 0.
 
-### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)`
+### `sim = fdtd3d(nx, ny, nz, dx, dy, dz)` / `fdtd3d(..., "courant", s)` / `fdtd3d(..., "threads", n)`
 Create a vacuum grid with `E = H = 0`. `nx`, `ny`, `nz` are integers `>= 2`; `dx`, `dy`, `dz` are metres, finite and positive. The time step is the CFL limit times the Courant number `s`:
 
 ```
 dt = s / (c0 * sqrt(1/dx^2 + 1/dy^2 + 1/dz^2))
 ```
 
-`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
+`s` defaults to 0.99 and must be in `(0, 1]`; `s > 1` is an error before any step (`fdtd3d: courant must be in (0, 1], got 1.5`). `"courant"` and `"threads"` are name-value pairs and may appear in either order. `n` is `0` (the shared rayon pool, the default) or `1` (every half-step on the calling thread). A grid of 8,192 cells or more uses the pool unless `threads` is 1. The field update, the CPML correction, the port record, and the near-to-far phasors match the serial step bit for bit. `sim` is an opaque `fdtd3d` handle: assignment shares the same grid, and arithmetic, indexing, concatenation, `save`, and the function cache refuse it.
 ```
 sim = fdtd3d(40, 40, 40, 1e-3, 1e-3, 1e-3);
-sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9);
+sim2 = fdtd3d(60, 60, 20, 1e-3, 1e-3, 0.8e-3, "courant", 0.9, "threads", 1);
 ```
 
 ### `info = fdtd_info(sim)`
-Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, material, coefficient, PEC, and CPML storage), `c0` (299 792 458 m/s), and `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off).
+Struct with `nx`, `ny`, `nz`, `dx`, `dy`, `dz`, `dt`, `courant`, `steps` (completed steps), `bytes` (field, probe, port `V`/`I`, material, coefficient, PEC, CPML, and NTFF storage), `c0` (299 792 458 m/s), `cpml` (a length-6 vector `[xmin, xmax, ymin, ymax, zmin, zmax]` of face thicknesses in cells; all zeros when the absorber is off), `ntff` (how many frequencies are armed; 0 when the transform is off), and `threads` (`0` or `1`).
 ```
 info = fdtd_info(sim);
 tau = 20 * info.dt;
@@ -355,7 +396,7 @@ Metal. Each call adds to the metal already set; PEC edges are held at `E = 0` on
 - Volume: `mask` is an `ny × nx × nz` `Tensor3`. Every E edge of each nonzero cell (its 12 edges) is PEC.
 - Face: a zero-thickness sheet on node plane `index` of `axis` (`"x"`: column `j`, `"y"`: row `i`, `"z"`: page `k`, the same letters as `fdtd_slice`). `index` runs from 1 to `n + 1`; plane `f` sits at `(f − 1)·d`, so 1 and `n + 1` are the outer walls (already PEC). `mask2d` is one flag per node in the `fdtd_slice` layout (`"z"`: `ny × nx`, `"y"`: `nx × nz`, `"x"`: `ny × nz`), or a scalar for the whole plane. A tangential E edge in the plane is PEC when both its end nodes are set; a node beyond the last row or column (on the max wall) counts as set.
 
-A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source, and `fdtd_source` refuses an edge that is already PEC.
+A NaN in a mask is an error. Metal must be set before the first step, cannot cover an edge of an existing source or port, and `fdtd_source` / `fdtd_port` refuse an edge that is already PEC.
 ```
 fdtd_pec(sim, "z", 1, 1);                             # ground plane on the bottom wall (already PEC)
 fdtd_pec(sim, "z", 6, rect_mask(X, Y, x0, y0, w, h)); # a patch on top of a 5-cell substrate
@@ -419,10 +460,36 @@ Drive one E edge (`comp` is `"ex"`, `"ey"`, or `"ez"`), or a stack of collinear 
 - `"gaussian"` and `"modulated"` are evaluated at `t = n·dt` on step `n`, on every step.
 - A real vector `waveform` gives sample `n` at step `n`. Past its end a soft source adds nothing and a hard source releases the edge.
 
-Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
+Sources must be added before the first step. An edge on a PEC wall or on metal from `fdtd_pec` is an error (it is held at 0), and a hard source cannot share an edge with another source or with a port. In a dielectric a soft source's field scales with `1/eps_r` of its edge; the injected current is the same.
 ```
 fdtd_source(sim, "ez", 21, 21, 21, "soft", "gaussian", 4*tau, tau);
 fdtd_source(sim, "ez", 10, 10, 2:4, "hard", gaussian_pulse((1:200) * info.dt, 60*info.dt, 20*info.dt));
+```
+
+### `id = fdtd_port(sim, comp, i, j, k, Z0, waveform...)`
+```
+fdtd_port(sim, comp, i, j, k, Z0, "gaussian", t0, tau)
+fdtd_port(sim, comp, i, j, k, Z0, "modulated", t0, tau, f0)
+fdtd_port(sim, comp, i, j, k, Z0, waveform)
+```
+One lumped port: a series voltage `Vg` and a gap resistance `Z0` (ohms, finite and `> 0`) on an E edge, or on a stack of collinear edges. The index along the component's own axis (`j` for `ex`, `i` for `ey`, `k` for `ez`) may be a consecutive ascending range. Returns the 1-based port id, which is `1`. A second call errors and names the deferred S21 phase, including after the grid has already stepped. v1 does not build a full S matrix.
+
+`Z0` is split equally across the `N` edges. Each edge's extra conductivity is `σ = Δ_along / (R_edge · Area)` with `R_edge = Z0 / N`, added to the material conductivity before `Ca` and `Cb` are baked. The source is not an impressed field. Each edge is updated by
+
+```
+E := E - (dt/ε0) · Cb · Vg / (Z0 · Area)
+```
+
+`Cb` is that edge's baked relative coefficient (1 in vacuum). `Vg` is `"gaussian"`, `"modulated"`, or a real vector with sample `n` at step `n` (time `n·dt`); past the end of a vector the port adds nothing. A positive `Vg` makes `V = −Σ E·Δ` positive.
+
+Every step records, after the E update:
+
+- `V`, the gap voltage `−Σ E·Δ` over the stack, at time `n·dt`
+- `I`, the Ampère current around the first edge of the stack, from the H field at `(n − ½)·dt`. For an `ez` edge that is `(Hy − Hy_left)·dy − (Hx − Hx_below)·dx`, the segment lengths of the Yee curl. `fdtd_s11` corrects the half-step; the stored `I` does not.
+
+The port must be added before the first step. An edge on a PEC wall, on `fdtd_pec` metal, or shared with a hard source is an error (either order). `fdtd_record`'s `V` and `I` are `steps × 1` and `Z0` is that resistance.
+```
+id = fdtd_port(sim, "ez", 5, 6, 3:6, 50, "modulated", 4*tau, tau, 2.4e9);
 ```
 
 ### `id = fdtd_probe(sim, comp, i, j, k)`
@@ -455,9 +522,67 @@ The record of every step since the grid was created, without stepping:
 | `dt` | scalar |
 | `steps` | scalar |
 | `probe` | real `steps × nprobes` matrix; column `id` is that probe |
-| `V`, `I` | real `steps × 0` (ports arrive in a later phase) |
-| `Z0` | empty row |
+| `V`, `I` | real `steps × nports` (`nports` is 0 or 1). Column 1 is the lumped port |
+| `Z0` | real row, one resistance per port. Empty when the grid has no port |
 | `interrupted` | `true` when the last run was stopped by Ctrl+C |
+
+### `s = fdtd_s11(sim)` / `fdtd_s11(V, I, dt, Z0)`
+One-port S11 from the port's gap voltage and Ampère current. `fdtd_s11(sim)` reads the one port on that grid (`"port", 1` is accepted and is the only id; any other id errors and names S21). `fdtd_s11(V, I, dt, Z0)` is the same calculation on samples: `V` and `I` are real vectors or `steps × 1` columns of equal length (at least 2), `dt` and `Z0` are finite and positive. A grid with no port is an error.
+
+The default window is none (`"window", "rect"`, also `"rectangular"`). That is the pulse default: `S11 = b/a` needs the whole incident and reflected records. `"window", "hann"` (`"hanning"` too) is the Hann window, and it is the right choice for a steady tone that fills the record, where it cuts leakage into the next bin. On a pulse it weights an early incident wave and a later reflection differently, so `|S11|` can exceed 1 even when the grid is passive. Nothing in `fdtd_s11` rescales a bin onto the unit disk.
+
+`"nfft", M` zero-pads the windowed samples to `M` (`M` an integer, at least the record length). The extra bins interpolate the DFT of these samples. Bin spacing becomes `1/(M·dt)`, but two tones closer than `1/(N·dt)` stay unresolved until the record itself is longer. A shorter `M` is an error: that would drop samples, which is not interpolation.
+
+`fdtd_s11(sim)` is pulse extraction. It errors when the last 10% of `|V|` or of `|I|` is still above `1e-3` of that signal's peak. Run more steps; padding does not make a truncated ring decay. Naming a window turns this check off, because that is the steady-tone path. `"decay", "pulse"` forces the check and `"decay", "off"` skips it. `fdtd_s11(V, I, dt, Z0)` does not check the tail unless you pass `"decay", "pulse"`, so a synthetic tone stays usable.
+
+`I` was sampled `dt/2` earlier than `V`. Its FFT is multiplied by `exp(+j·ω·dt/2)` first. Then
+
+```
+a   = (V + Z0·I) / (2·sqrt(Z0))
+b   = (V - Z0·I) / (2·sqrt(Z0))
+S11 = b ./ a
+```
+
+The return is a 1-port `sparameters` network (`__kind__ = "sparameters"`, `parameter_type = "S"`, `parameters` shaped `(n_freq, 1, 1)`, `num_ports = 1`, `impedance = Z0`). `frequencies` are in Hz, strictly increasing, and every entry is `> 0`: bin `m` is `m/(M·dt)` for `m = 1 .. floor(M/2)`, with `M` the record length or `nfft`. DC is dropped (`rfplot` uses a logarithmic frequency axis) and an even `M` keeps Nyquist. A bin whose `|a|` is below `1e-12` times the peak `|a|` (the peak includes DC) is `NaN` at that frequency. `smith(s)` and `rfplot(s)` take this value. `s.impedance` is the port `Z0`, not `V/I`.
+```
+s = fdtd_s11(sim);
+smith(s);
+rfplot(s);
+sij(s, 1, 1)
+s = fdtd_s11(V, I, dt, Z0, "window", "hann");
+s = fdtd_s11(sim, "nfft", 8 * fdtd_info(sim).steps);
+```
+
+### `fdtd_ntff(sim, freqs)` / `fdtd_ntff(sim, freqs, "margin", m)`
+Arm the near-to-far transform before the first step. `freqs` is one frequency or a vector, in Hz, finite and positive. `m` defaults to 2 and is an integer `>= 1`. An empty `freqs` disarms the transform; `margin` is then ignored. A later call replaces the earlier one.
+
+The surface is one closed Huygens box, `m` cells inside the CPML, on all six faces. v1 refuses anything else:
+
+- CPML must be on every face. Turning one face off is an error at the first step.
+- Cells outside the box, and the one-cell layer just inside it, must equal the corner cell. That background is lossless (`sigma = 0`). A dielectric or a loss inside the box is allowed.
+- Every source, every port edge, and every PEC edge must sit strictly inside the box.
+- Each frequency needs at least 10 cells per background wavelength, and must be below `1/(2·dt)`.
+
+`fdtd_info(sim).ntff` is the armed count. `bytes` grows as soon as the transform is armed. Phase 6 (a ground, a substrate, image theory) is not this function, and that geometry is not decided.
+```
+fdtd_ntff(sim, c0 / 0.030);
+fdtd_ntff(sim, 8e9:0.5e9:10e9, "margin", 2);
+```
+
+### `pat = fdtd_farfield(sim, theta, phi)` / `fdtd_farfield(..., "origin", [x, y, z])` / `fdtd_farfield(..., "decay", "pulse"|"off")`
+The far field at the angles you name. `theta` and `phi` are radians, a scalar or a vector, and the result is their outer product.
+
+For a z-directed electric current, `Etheta` is the co-polar component and `Ephi` is the cross-polar one. In the xy plane (`theta = pi/2`) the co-polar field is `Etheta`, not `Ephi`. The phasors include `dt`, so the unit is V·s. The spherical factor `e^{-jkr}/r` is left off.
+
+`directivity = 4π U / Pflux`, with `U = (|Etheta|² + |Ephi|²) / (2 η)` and `Pflux` the time-average power leaving the box. `gain` divides by the power the port accepted, `½ Re(V conj(I))`. `realized_gain` divides by the incident power `½ |a|²`, with the same `a` as `fdtd_s11`. With no port, or when that power is not positive, `gain`, `realized_gain`, and their dBi fields are `NaN`. dBi is `10·log10` of a positive linear value. `realized_gain = gain · (1 − |S11|²)` is an algebraic identity of those definitions. `realized_gain = directivity · (1 − |S11|²)` is not, once the grid has loss.
+
+The default origin is the centroid of the box. An `"origin"` of three metres changes the phase and not the magnitude. `"decay", "pulse"` (the default) errors when the last 10% of the surface `|E|`, or of `|V|` or `|I|` when a port exists, is still above `1e-3` of that signal's peak. `"off"` returns the pattern anyway. Nothing is clipped. A nonfinite field sample, surface trace, port record, surface phasor, or flux is an error in either mode. `gain` and `realized_gain` stay `NaN` when there is no port or that power is not positive; that is a defined result.
+
+`Etheta` and `Ephi` are often near `1e-14` V·s. `abs(pat.Etheta(1, :, 1))` and `abs(pat.Etheta(1, 18, 1))` both return the modulus, and `angle` returns the phase. Do not rescale the phasor. The struct fields are `freq`, `theta`, `phi`, `Etheta`, `Ephi`, `U`, `prad`, `directivity`, `directivity_dBi`, `gain`, `gain_dBi`, `realized_gain`, `realized_gain_dBi`, `paccepted`, `pincident`, `s11` (`NaN` without a port), `origin`, `box` (1-based node planes `[xlo xhi ylo yhi zlo zhi]`), `k`, `eta`, and `decay`.
+```
+pat = fdtd_farfield(sim, (1:35) * pi / 36, 0);
+pat.directivity(1, 18, 1)
+```
 
 ### `M = fdtd_slice(sim, comp, axis, index)`
 Copy one plane of a component. `axis` is `"x"`, `"y"`, or `"z"` and `index` is 1-based on that axis.
@@ -633,13 +758,14 @@ Returns `true` if all elements are nonzero.
 all([1, 2, 3])     # → true
 all([1, 0, 3])     # → false
 ```
-- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix is an error. An empty logical is `true` for `all` and `false` for `any`.
+- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A logical vector uses the same shapes. A wider matrix or logical array reduces down each column to a `1×cols` logical row, as in MATLAB (`all([1, 0; 1, 2])` is `[1 0]` logical). An empty logical is `true` for `all` and `false` for `any`.
 
 ### `any(v)`
 Returns `true` if any element is nonzero.
 ```
 any([0, 0, 3])     # → true
 any([0, 0, 0])     # → false
+any([0, 1; 0, 0])  # → 1×2 logical [0 1]
 ```
 
 ---
@@ -767,10 +893,19 @@ For `n = 0`, returns an empty vector.
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 
-For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 
 ### `numel(x)`
-Total number of elements: `rows × cols` for matrices, `1` for scalars.
+Total number of elements: `rows × cols` for matrices (dense or sparse), `1` for scalars. An empty sparse selection such as `S(:, [])` has `numel` 0.
+
+### `isempty(x)`
+True when `x` has no elements: any dimension is 0 (`numel(x) == 0`), or `x` is the empty string `""`. Works on dense, sparse, logical, integer, string-array, and table values. A scalar, struct, or function handle is never empty.
+```
+S = speye(4);
+isempty(S(:, []))   # → true  (4×0 sparse)
+isempty(zeros(3, 0))  # → true
+isempty(S)          # → false
+```
 
 ### `size(x)`
 Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.
@@ -1614,7 +1749,8 @@ Sparse partial eigensolver. Returns a tuple `[V, D]` where `V` is a dense `n_row
 - `A` (and `B`) must be **sparse** — call `sparse(A)` first if you have a dense matrix. Use `eig` for dense problems.
 
 Auto-routing:
-- Hermitian / SPD `A` → hand-rolled symmetric Lanczos with full reorthogonalization.
+- Hermitian / SPD `A` → hand-rolled symmetric Lanczos with full reorthogonalization. Those eigenvalues are stored with imaginary part exactly `0`, so `D(k)` is a real scalar.
+- Smallest-magnitude pairs of a real matrix use shift-and-invert at `σ = 0`. On a Hermitian matrix the Arnoldi residual on the imaginary part is discarded; the stored eigenvalue is exactly real. A non-Hermitian eigenvalue keeps its imaginary part, including a tiny one.
 - General `A` → hand-rolled Arnoldi.
 - Generalized `eigs(A, B, n)` reduces to a standard problem via the existing `SparseChol` factor of `B` and routes through Arnoldi.
 
@@ -1631,7 +1767,7 @@ L = -1 * laplacian_2d(nx, ny);
 [V, D] = eigs(A, B, 6, "sm");
 ```
 
-**Convergence and limits.** The default Krylov dimension is `min(n_rows, max(6n+10, 40))`. For matrices with closely-spaced eigenvalues (clusters), Lanczos may need more iterations to resolve them. **Implicit restart** and **shift-invert** are not yet implemented; if convergence is poor on a particular system, the next steps in `dev/plans/em_requests_queue.md` cover those enhancements.
+**Convergence and limits.** The default Krylov dimension is `min(n_rows, max(6n+10, 40))`. For matrices with closely-spaced eigenvalues (clusters), Lanczos may need more iterations to resolve them. **Implicit restart** is not implemented; if convergence is poor on a particular system, the next steps in `dev/plans/em_requests_queue.md` cover that enhancement.
 
 **Hand-rolled algorithm references:**
 - Symmetric Lanczos with full reorthogonalization — Saad, *Numerical Methods for Large Eigenvalue Problems*, ch. 6; Golub & Van Loan §10.1.
@@ -1711,6 +1847,7 @@ reshape(1:24, 2, 3, 4)          # → 2×3×4 Tensor3 (column-major walk)
 - Total elements must be preserved: `numel(A)` must equal `m * n` (or `m * n * p`).
 - If `m == 1` or `n == 1` (and no `p`), returns a vector instead of a matrix.
 - The 4-argument form returns a `Tensor3`. See [Rank-3 Tensors](#rank-3-tensors).
+- `reshape(x, N, 1)` with `N > 1` is an `N×1` column, as in MATLAB. `reshape(x, 1, N)` is a row.
 
 ### `ind2sub(sz, IND)` / `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)`
 
@@ -1768,7 +1905,7 @@ Non-conjugate transpose — swaps rows and columns without conjugating imaginary
 transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 ```
 - Use `conj(transpose(A))` or `A'` notation for Hermitian (conjugate) transpose.
-- ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
+- ⚠️ **Reshaping complex data:** postfix `'` conjugates. `src(:)` is already the `N×1` column a solve or a product wants, so write `b = src(:)` with no transpose. The old idiom `b = src(:)'` silently flipped the sign of every imaginary part of a complex `src`, and since 0.3.75 it is a `1×N` row. Use `.'` (or `transpose`) when the intent is a pure reshape to a row.
 
 ### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
 - `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors. A length-1 input is a `1×1` matrix: `size(diag(5))` is `[1, 1]` and the entry is 5.
@@ -2075,6 +2212,7 @@ A `Tensor3` is a complex 3-dimensional array of shape `(m, n, p)` — `m` rows, 
 **Conventions and limitations:**
 - All Tensor3 storage is complex (`C64`); real values are stored with imaginary part 0.
 - No broadcasting between `Matrix` and `Tensor3` — operations between them error.
+- Comparisons and element-wise functions keep the shape; comparisons give 0/1 doubles (there is no rank-3 logical). See [Comparisons, logic, and element-wise math](#comparisons-logic-and-element-wise-math).
 - `*` and `/` between two `Tensor3`s also error; use `.*` and `./` for element-wise.
 - `reshape` walks data column-major (matches Octave), so `reshape(1:24, 2, 3, 4)` fills the first column of page 1 first.
 - I/O via `save`/`load` to `.npy` preserves the rank-3 shape natively.
@@ -2133,6 +2271,22 @@ J = ones3(size(T)) .* T       # element-wise multiply
 - `T1 * T2` errors — use `.*` for element-wise.
 - `Matrix + Tensor3` errors — there is no broadcasting between the two ranks.
 
+### Comparisons, logic, and element-wise math
+A `Tensor3` works with the same element-wise operators and functions as a matrix, and the result keeps its `(m, n, p)` shape. The partner is a scalar or a `Tensor3` of the same size; a matrix or vector partner is an error.
+```
+R = sqrt(X.^2 + Y.^2 + Z.^2);   # X, Y, Z are Tensor3 grids
+M = R <= a;                     # conductor mask, 0/1 Tensor3
+G = (M > 0) .* (R > 0.5 * a);   # combine masks
+A = abs(T); F = floor(T); E = exp(T);
+C = min(T, 1); D = max(T, 0);   # two-argument min / max
+k = find(R <= a);               # column-major linear indices, the T(:) order
+v = T(find(M));                 # gather the masked values
+```
+- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), `!`, and `and` / `or` / `xor` return **0/1 doubles**, not a logical: there is no rank-3 logical (the same rule as `cat(3, L, L)`). So `T(M)` with a `Tensor3` mask is an error; use `T(find(M))` to gather, or `.*` to apply the mask.
+- Unary functions: `abs`, `sign`, `sqrt`, `exp`, `log`, `log10`, `log2`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, the trig and hyperbolic functions, and `mod(T, m)`. `sqrt` and `log` of a negative entry are complex, as for a matrix.
+- `min(T, s)` / `max(T, s)` / `min(T, U)` are element-wise. The reducing forms (`min(T)`, `max(T, [], dim)`) do not take a `Tensor3`.
+- `find(T)` returns the column-major linear indices of the nonzero entries. As in MATLAB, `[r, c] = find(T)` gives the row and a column index that runs over the trailing dimensions merged (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values. For three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
+
 ### `permute(A, [d1, d2, d3])`
 Reorder the axes of a Tensor3. `[d1, d2, d3]` must be a permutation of `[1, 2, 3]`.
 ```
@@ -2185,6 +2339,16 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 ## Sparse Vectors & Matrices
 
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
+
+### Indexing a sparse matrix
+`S(i, j)` with two scalars is the element. `S(rows, cols)` that selects more than one row **and** more than one column returns a **sparse** matrix, gathered from the stored entries in O(nnz + selected entries) without densifying; subscripts may be vectors, ranges with `end`, `:`, or logical masks, in any order and with repeats, as on a dense matrix. The ordering hint of a `laplacian_*` matrix is not carried over. A single row or column is dense: `S(k, :)` is a row and `S(:, k)` an `N×1` column, the same shapes as on a dense matrix. (MATLAB returns sparse there too.)
+
+Symmetric Dirichlet elimination keeps a pinned Laplacian SPD, so Cholesky applies:
+```
+fr = find(P(:)' == 0);  pr = find(P(:)' > 0);    # free / pinned nodes
+Aff = L(fr, fr);  Afp = L(fr, pr);               # both stay sparse
+Vf = spsolve(Aff, -(Afp * Vp'), "cholesky");
+```
 
 ### `sparse(I, J, V, m, n)` / `sparse(A)`
 Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse. An entry is stored unless it is an exact zero (`+0` or `-0`); a tiny finite value stays.
@@ -2244,7 +2408,7 @@ The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesso
 
 **Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
 
-⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. Reshape with `b = src(:).'` (non-conjugate) instead.
+⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. `src(:)` is already a column (since 0.3.75): use `b = src(:)`.
 
 ```
 x = spsolve(A, b)                       # auto-detect
@@ -2306,7 +2470,7 @@ x2 = solve(F, [j; 1]);
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
-**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`. The same index is `sub2ind([ny, nx], i, j)`.
 
 **Boundary conditions.** The optional trailing string argument selects:
 - `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
@@ -2331,7 +2495,7 @@ nx = 32; ny = 24;
 L = laplacian_2d(nx, ny);
 rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
-V = spsolve(L, -rho(:)');
+V = spsolve(L, -rho(:));
 V_grid = reshape(V, ny, nx);
 ```
 
@@ -2404,14 +2568,18 @@ np = ny * nx;
 V = reshape(spsolve(A, b), ny, nx, nz);
 ```
 
-### `pin_dirichlet(A, b, mask_or_indices, values)`
-Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with the identity row (diagonal 1, all off-diagonals 0 — the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`) and `b(k)` is set to the pinned value. `spsolve(A, b)` then reproduces the boundary potential exactly while the operator acts everywhere else.
+### `pin_dirichlet(A, b, mask_or_indices, values)` / `pin_dirichlet(..., "scale", s)`
+Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` then reproduces the boundary potential while the operator acts everywhere else.
+
+**Row scale.** By default (`"scale", "auto"`) `d_k` is the magnitude of the original diagonal `|A(k, k)|`; if that is 0, the largest `|A(k, :)|`; if the row is empty, 1. The solution is the same as with an identity row in exact arithmetic, but the pinned row stays the same size as its neighbours. With a diagonal of 1 next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`), the sparse LU pivots on the large entries in the pinned column and the pinned values drift: a conductor at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4`. With the default scale it comes back exact. `"scale", s` with a positive number uses `d_k = s` for every pinned row; `"scale", 1` is the identity row of 0.3.68 and earlier.
 
 - `mask_or_indices` — either a mask on the grid (matrix or 3-D tensor whose element count equals the operator size; nonzero = pin; linearized column-major, matching `ij2k`/`ijk2k` and the `laplacian_*` node ordering), or a vector of 1-based linear indices.
 - `values` — a scalar (broadcast to every pin) or a vector aligned with the mask's column-major nonzeros / the index list.
 - `A` — sparse (the `laplacian_*` ordering hint survives) or dense; must be square.
 - `b` — vector or 1×n / n×1 matrix; container and orientation are preserved.
 - Both outputs must be bound: `[A, b] = pin_dirichlet(...)`. A single-output call is an error — silently dropping the modified `b` would corrupt the physics.
+- Pinning twice with the default scale is safe: the second call reads the already-scaled diagonal.
+- **Rewriting `b` after pinning.** With the default scale, `b(k)` on a pinned row holds `d_k · value`, not `value`. A script that pins once and then writes its own right-hand side on pinned rows (`b(k) = 1` to drive one conductor of a capacitance matrix, then `spsolve`) must either pin with `"scale", 1` or write `b(k) = d_k · value` (`d_k = A(k, k)` after the call). Otherwise the pinned potential is `value / d_k`: in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Passing the drive values to `pin_dirichlet` itself is always correct.
 
 ```
 # Parallel plates at ±5 V on an ny×nx grid:
@@ -2923,7 +3091,14 @@ quiver(U, V);                       % shortcut — indexed axes
 quiver(x(1:5:end), y(1:5:end), U(1:5:end, 1:5:end), V(1:5:end, 1:5:end));
 ```
 
-Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces. NaN entries in `U` or `V` skip that cell.
+Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces, and a `plot` / `scatter` / `stem` series is drawn on top of all of them in every backend (SVG, PNG, PDF, HTML, viewer). Without a heatmap, the axes grow to include the series. NaN entries in `U` or `V` skip that cell.
+```
+quiver(X, Y, -Y, X);
+hold on;
+plot(cos(t), sin(t), "r");     # a loop over the field
+hold off;
+savefig("stokes_loop.png");
+```
 
 Per-backend behaviour:
 
@@ -4029,6 +4204,21 @@ v(2:4)     # elements 2, 3, 4
 ```
 On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column. `ind2sub(size(M), k)` and `sub2ind(size(M), i, j)` convert between that linear index and subscripts.
 
+**Result orientation (MATLAB).** These reads return an `N×1` column:
+- `x(:)` of any vector, matrix, `Tensor3`, or logical array (column-major order);
+- a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+- `M(rows, k)` that selects one column and more than one row (`D(2:end, 61)`, `M(:, k)`; a sparse `S(:, k)` is a dense column);
+- `T(:, j, k)` on a `Tensor3`.
+
+A single row `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), and a single element are unchanged (row / scalar). So `L * V(:)` is the operator applied to the flattened field, with no transpose; the old `L * V(:)'` conjugated a complex `V`. A column paired with a same-length vector is still element-wise (`M(:, 1) + v` has length `n`). `for` does not iterate over a column; loop over `c.'`. `arrayfun` and `parmap` accept a column input and read a column return as one vector result.
+```
+M = [1, 2; 3, 4; 5, 6];
+size(M(:, 1))       # → [3, 1]
+size(M(2, :))       # → [1, 2]
+size(M(:))          # → [6, 1]
+u = [fliplr(D(2:end, 61)'), D(:, 1)'];   # unfold a cut into one row
+```
+
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.
 ```
@@ -4368,7 +4558,9 @@ An array comparison is a logical array. A scalar comparison stays the bool `true
 
 `!=` is not-equal. `~=` is not a token. `!` is element-wise not (what MATLAB writes as `~`). There is no `&` or `|` token: `and`, `or`, and `xor` are element-wise, and `&&` / `||` stay scalar and short-circuit. A 1-element logical is truthy in `if`, `while`, `&&`, and `||`. A wider logical is an error there — reduce it with `any` or `all`.
 
-Arithmetic promotes a logical to double 0/1, and so does `double`. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
+Arithmetic promotes a logical to double 0/1, and so does `double`. `double(L)` has the shape of `L`: a `1×n` logical is a `1×n` matrix, the same as `double` of a `1×n` double, and a `1×1` logical is a scalar. In arithmetic with a 1-D vector, a logical row is a vector, so `x .* (x > 0)` stays a vector when `x` is one.
+
+Every numeric builtin takes a logical array or a bool as its 0/1 doubles, as MATLAB does: `mean(m < 0)`, `median`, `std`, `var`, `prod`, `cumsum`, `abs`, `sqrt`, `round`, `norm`, `diff`, `trapz`, `kron`, `dot`, `mod`, `mean(true)`, and the plots (`heatmap(m < 0)`, `imagesc`, `plot`, `surf`, `contour`, …) all work. The result is a double. `sum` counts trues. Shape functions keep the logical class: `reshape(L, m, n)`, `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `cat` / `horzcat` / `vertcat` of logicals, and `min` / `max` of logicals (with `[m, i] = max(L)`, `i` stays numeric). Mixing a logical with a double (`max(L, 0.5)`, `[L, m]`, `cat(1, L, m)`) gives a double. There is no rank-3 logical, so `cat(3, L, L)` and a 3-D `reshape` give 0/1 doubles. `any` / `all` of a matrix reduce down each column to a logical row. `true + 1` is `2`. `sum` of a logical counts the trues, so older `sum(mask)` scripts keep their number. A logical prints as `1` and `0` with a shape header (`[1×N logical]` for a row), not as `1.000000`.
 
 Storage is one byte per element (`0` or `1`), row-major. A release scan of 1,000,000 flags (about one third set), best of five, counted trues in 364 µs on bytes and 92 µs on a packed bit vector, and listed the true positions in 1.10 ms and 695 µs. The byte form stays: each `get` is one load, and that is how MATLAB stores `logical`.
 
@@ -4405,12 +4597,22 @@ false(1, 4)    % 1×4 logical, every element false
 ```
 
 ### Comparisons
-`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool. A shape that does not broadcast is an error.
+`==`, `!=`, `<`, `>`, `<=`, `>=` on two arrays (or an array and a scalar) return a logical array. Real parts are compared. `NaN == x` is false and `NaN != x` is true. A length-1 array comparison is still a logical array, not a scalar bool.
+
+The pairs are the same ones `+` and `.*` use.
+
+- A scalar compares with every element.
+- An `n×1` column and a length-`n` vector compare element by element. The result is a `1×n` logical, the same length as `v .* v`. `v = 1:3; v' == v` is that row, not a `3×3` table.
+- Two matrices repeat a dimension of length 1. `c = [1; 2; 3]; r = ones(1, 3); c == r` is `3×3`, the same shape as `c .* r`.
+- Two vectors have to be the same length. A length-1 vector does not stretch across another vector. It does stretch across a matrix, as `.*` does.
+- A shape that cannot pair is an error (`comparison length mismatch` for two rows, `comparison shape mismatch` otherwise).
 
 ```
 [1, 2, 3] == [1, 0, 3]    % logical 1 0 1
 [1, 2, 3] > 2             % logical 0 0 1
 1 == 1                    % true  (bool)
+v = 1:3; v' == v          % 1×3 logical, same pairs as v' .* v
+c = [1; 2; 3]; c == ones(1, 3)   % 3×3 logical, same shape as c .* ones(1, 3)
 ```
 
 ### `and(a, b)` / `or(a, b)` / `xor(a, b)`

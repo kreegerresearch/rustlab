@@ -199,6 +199,35 @@ fn example_logical_arrays() {
 }
 
 #[test]
+fn example_seeded_random_loop() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let script = workspace_root()
+        .join("examples")
+        .join("language")
+        .join("seeded_random_loop.rlab");
+    let bin = env!("CARGO_BIN_EXE_rustlab");
+
+    let output = Command::new(bin)
+        .args(["run", "--plot", "none", script.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to launch rustlab for example 'seeded_random_loop'");
+
+    assert!(
+        output.status.success(),
+        "example 'language/seeded_random_loop' exited with {}\nstderr:\n{}\nstdout:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1.4068374149272016\n-1.407228768909929\n1.4142135623730951\n0\n",
+        "seed(322) print lines changed"
+    );
+}
+
+#[test]
 fn example_vectorized_style() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let script = workspace_root()

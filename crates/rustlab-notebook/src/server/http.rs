@@ -1989,6 +1989,8 @@ mod tests {
             .unwrap();
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("nonce-testnonce"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(csp.contains("'unsafe-eval'"));
         assert!(!csp.contains("[::1]"));
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         let s = String::from_utf8_lossy(&body);

@@ -618,8 +618,10 @@ fn product(a: R, b: R) -> Option<Value> {
 }
 
 /// Comparison operators with a real array operand. The result is a logical
-/// array of the complex path's shape: a vector is `1×n`, a matrix keeps
-/// its shape, and a vector matches a `1×n` matrix.
+/// array of the complex path's shape. Pairing matches `+` and `.*`: an
+/// `n×1` column with a length-`n` vector is element-wise (`1×n`), other
+/// arrays repeat a dimension of length 1, and two vectors must match in
+/// length. A vector matches a `1×n` matrix of that length.
 fn compare(op: BinOp, a: R, b: R) -> Option<Value> {
     use BinOp::*;
     let cmp = move |x: f64, y: f64| -> bool {
@@ -679,8 +681,71 @@ fn compare(op: BinOp, a: R, b: R) -> Option<Value> {
         {
             pack(1, c, zip_flags(x, y))
         }
-        _ => None,
+        // Same pairs as `+` / `.*` on an n×1 column and a length-n vector:
+        // element-wise, a 1×n logical, not an n×n outer table.
+        (R::Mat(d, r, 1), R::Vec(v)) if r == v.len() => pack(1, r, zip_flags(d, v)),
+        (R::Vec(v), R::Mat(d, r, 1)) if r == v.len() => pack(1, r, zip_flags(v, d)),
+        (left, right) => {
+            // Two vectors do not expand a length-1 side. Unequal lengths
+            // fall through so the complex path reports the length mismatch.
+            if matches!((left, right), (R::Vec(_), R::Vec(_))) {
+                return None;
+            }
+            let (x, xr, xc) = left.grid()?;
+            let (y, yr, yc) = right.grid()?;
+            let (rows, cols) = (bdim(xr, yr)?, bdim(xc, yc)?);
+            if rustlab_core::checked_elems(&[rows, cols], rustlab_core::ELEM_U8).is_err() {
+                return None;
+            }
+            pack(
+                rows,
+                cols,
+                broadcast_flags((x, xr, xc), (y, yr, yc), rows, cols, cmp),
+            )
+        }
     }
+}
+
+/// Comparison over a broadcast grid. A dimension of length 1 is repeated,
+/// the same rule as [`broadcast`] for `+` and `.*`.
+fn broadcast_flags(
+    (x, xr, xc): (&[f64], usize, usize),
+    (y, yr, yc): (&[f64], usize, usize),
+    rows: usize,
+    cols: usize,
+    cmp: impl Fn(f64, f64) -> bool,
+) -> Vec<bool> {
+    let mut out = Vec::with_capacity(rows.saturating_mul(cols));
+    for i in 0..rows {
+        let xa = &x[if xr == 1 { 0 } else { i } * xc..][..xc];
+        let ya = &y[if yr == 1 { 0 } else { i } * yc..][..yc];
+        match (xc == cols, yc == cols) {
+            (true, true) => {
+                for (&a, &b) in xa.iter().zip(ya) {
+                    out.push(cmp(a, b));
+                }
+            }
+            (true, false) => {
+                let b = ya[0];
+                for &a in xa {
+                    out.push(cmp(a, b));
+                }
+            }
+            (false, true) => {
+                let a = xa[0];
+                for &b in ya {
+                    out.push(cmp(a, b));
+                }
+            }
+            (false, false) => {
+                let (a, b) = (xa[0], ya[0]);
+                for _ in 0..cols {
+                    out.push(cmp(a, b));
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

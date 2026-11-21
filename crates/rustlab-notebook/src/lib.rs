@@ -3,11 +3,9 @@ pub mod check;
 pub mod comments;
 pub mod embed;
 pub mod execute;
-pub mod gitdiff;
-mod srcdiff;
-mod worddiff;
 pub mod fence_hl;
 mod file_browser;
+pub mod gitdiff;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;
@@ -20,9 +18,13 @@ pub mod render_json;
 pub mod render_latex;
 pub mod render_markdown;
 pub mod server;
+mod srcdiff;
+#[cfg(test)]
+mod theme_golden;
 pub mod validate;
 pub mod watch;
 pub mod widget;
+mod worddiff;
 
 use rustlab_plot::theme::ThemeColors;
 use std::cell::Cell;
@@ -252,9 +254,7 @@ impl SingleHtmlOpts {
             return Ok(());
         }
         if is_dir {
-            return Err(
-                "--index and --no-toc apply to a single notebook, not a directory".into(),
-            );
+            return Err("--index and --no-toc apply to a single notebook, not a directory".into());
         }
         if !html {
             return Err("--index and --no-toc apply only to HTML".into());
@@ -1613,9 +1613,8 @@ fn render_output(
     let rebase = if in_place || matches!(format, Format::Markdown { obsidian: Some(_) }) {
         None
     } else {
-        input.and_then(|src| {
-            render_markdown::LinkRebase::from_paths(src, out_path, current_rel_dir)
-        })
+        input
+            .and_then(|src| render_markdown::LinkRebase::from_paths(src, out_path, current_rel_dir))
     };
     let rebased_blocks;
     let rendered: &[execute::Rendered] = if let Some(rb) = rebase.as_ref() {
@@ -2162,6 +2161,7 @@ pub fn generate_index_html(
     browser: Option<&CollectionBrowser>,
 ) -> String {
     let c = theme;
+    let resolved = rustlab_plot::ResolvedTheme::from_colors(c);
     let mut links = String::new();
     for (title, filename) in entries {
         links.push_str(&format!(
@@ -2204,13 +2204,14 @@ pub fn generate_index_html(
   }}
   html {{ color-scheme: {color_scheme}; }}
   body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: {font_body};
+    font-size: {font_size};
     background: {bg};
     color: {text};
     display: flex;
     justify-content: center;
     min-height: 100vh;
-    padding: 3rem 1.5rem;
+    padding: 3rem {space_4};
   }}
   main {{
     max-width: 720px;
@@ -2219,29 +2220,29 @@ pub fn generate_index_html(
   h1 {{
     font-size: 2rem;
     color: {accent_primary};
-    margin-bottom: 0.5rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid {border};
+    margin-bottom: {space_1};
+    padding-bottom: {space_1};
+    border-bottom: {border_width} solid {border};
   }}
   .subtitle {{
     color: {text_dim};
     font-size: 0.9rem;
-    margin-bottom: 2rem;
+    margin-bottom: {space_5};
   }}
   ul {{
     list-style: none;
     padding: 0;
   }}
   li {{
-    margin-bottom: 0.5rem;
+    margin-bottom: {space_1};
   }}
   a {{
     display: block;
     padding: 0.8rem 1.2rem;
     background: {bg_secondary};
-    border: 1px solid {border};
-    border-radius: 8px;
-    color: {accent_secondary};
+    border: {border_width} solid {border};
+    border-radius: {radius_lg};
+    color: {link};
     text-decoration: none;
     font-size: 1.05rem;
     transition: background 0.15s, border-color 0.15s;
@@ -2254,20 +2255,20 @@ pub fn generate_index_html(
     color: {footer_text};
     font-size: 0.8rem;
     margin-top: 3rem;
-    padding-top: 1rem;
-    border-top: 1px solid {border};
+    padding-top: {space_3};
+    border-top: {border_width} solid {border};
   }}
   .intro {{
     color: {text};
-    margin-bottom: 2rem;
+    margin-bottom: {space_5};
   }}
-  .intro p, .intro ul, .intro ol {{ margin-bottom: 1rem; }}
-  .intro h2 {{ color: {accent_primary}; margin: 1.5rem 0 0.5rem; }}
+  .intro p, .intro ul, .intro ol {{ margin-bottom: {space_3}; }}
+  .intro h2 {{ color: {accent_primary}; margin: {space_4} 0 {space_1}; }}
   .intro a {{
     display: inline; padding: 0; background: transparent; border: 0;
-    color: {accent_secondary}; text-decoration: underline;
+    color: {link}; text-decoration: underline;
   }}
-  .intro a:visited {{ color: {accent_primary}; }}
+  .intro a:visited {{ color: {link_visited}; }}
   .intro a:hover {{ background: transparent; color: {accent_tertiary}; }}
   body.has-files {{
     display: block;
@@ -2276,7 +2277,7 @@ pub fn generate_index_html(
   }}
   body.has-files main {{
     margin-left: max(var(--fb-w, 16.5rem), calc(50% - 360px));
-    padding: 3rem 1.5rem 2rem;
+    padding: 3rem {space_4} {space_5};
   }}
 {file_css}
 </style>
@@ -2298,7 +2299,17 @@ pub fn generate_index_html(
         intro = intro,
         links = links,
         color_scheme = c.color_scheme(),
-        theme_vars = c.css_custom_properties(),
+        theme_vars = resolved.css_custom_properties(),
+        font_body = resolved.font_body_css(),
+        font_size = resolved.font_size_css(),
+        radius_lg = resolved.radius_lg_css(),
+        border_width = resolved.border_width_css(),
+        link = resolved.link_css(),
+        link_visited = resolved.link_visited_css(),
+        space_1 = resolved.space_css(1),
+        space_3 = resolved.space_css(3),
+        space_4 = resolved.space_css(4),
+        space_5 = resolved.space_css(5),
         bg = c.css_var("bg"),
         bg_secondary = c.css_var("bg-secondary"),
         text = c.css_var("text"),
@@ -2595,7 +2606,9 @@ mod tests {
             );
             let out = std::env::temp_dir().join(format!(
                 "rustlab-index-reject-{}.html",
-                href.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>()
+                href.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
             ));
             let _ = std::fs::remove_file(&out);
             let rendered = cmd_render_with(

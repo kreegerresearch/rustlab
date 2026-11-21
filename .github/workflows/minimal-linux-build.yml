@@ -1,0 +1,65 @@
+name: minimal-linux-build
+
+# Builds the workspace in a bare Ubuntu container that has a C compiler and
+# nothing else: no g++ / libstdc++ dev files, no pkg-config, no fontconfig or
+# FreeType headers. A dependency that needs any of them (font-kit through
+# plotters' `ttf` feature did: fontconfig always, and a bundled FreeType built
+# as C++ that linked -lstdc++) fails here instead of on a user's machine.
+# The tree guard catches the same crates on runners that do have the libs.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - "crates/rustlab-plot/**"
+      - ".github/workflows/minimal-linux-build.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container: ubuntu:24.04
+    steps:
+      - name: Install a C compiler only
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends ca-certificates curl git gcc libc6-dev
+          if dpkg -l | grep -E '^ii +(g\+\+|libstdc\+\+-[0-9]+-dev|pkg-config|pkgconf|libfontconfig1-dev|libfreetype-dev) '; then
+            echo "container is not minimal"; exit 1
+          fi
+
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: No system font or C++ crates in the graph
+        run: |
+          for feat in "" "--features rustlab-cli/viewer"; do
+            if cargo tree --workspace --locked $feat -e normal,build --prefix none \
+                | grep -E '^(font-kit|yeslogic-fontconfig-sys|freetype-sys|servo-fontconfig|link-cplusplus) '; then
+              echo "a crate above needs system fontconfig/FreeType or libstdc++"; exit 1
+            fi
+          done
+
+      - name: Build (default features)
+        run: cargo build --workspace --locked
+
+      - name: Build (viewer)
+        run: cargo build --workspace --locked --features rustlab-cli/viewer
+
+      - name: Render a plot
+        run: |
+          printf 'plot(1:10, (1:10).^2);\ntitle("x² μ Ω");\nsavefig("/tmp/p.png");\nsavefig("/tmp/p.svg");\n' > /tmp/p.rlab
+          ./target/debug/rustlab run --plot none /tmp/p.rlab
+          test -s /tmp/p.png && grep -q '<text' /tmp/p.svg

@@ -38,6 +38,7 @@ fn measure_px<DB>(area: &DrawingArea<DB, plotters::coord::Shift>, text: &str, si
 where
     DB: DrawingBackend,
 {
+    crate::font::ensure_registered();
     let style: TextStyle = ("sans-serif", size).into_text_style(area);
     style
         .font
@@ -104,9 +105,10 @@ struct ThemePalette {
 impl ThemePalette {
     fn from(theme: &ThemeColors) -> Self {
         ThemePalette {
-            bg: parse_color_solid(theme.plot_bg).unwrap_or(RGBColor(255, 255, 255)),
-            text: parse_color_rgba(theme.text).unwrap_or(RGBAColor(0, 0, 0, 1.0)),
-            grid: parse_color_rgba(theme.plot_grid).unwrap_or(RGBAColor(100, 100, 100, 0.35)),
+            bg: parse_color_solid(theme.plot_bg.as_ref()).unwrap_or(RGBColor(255, 255, 255)),
+            text: parse_color_rgba(theme.text.as_ref()).unwrap_or(RGBAColor(0, 0, 0, 1.0)),
+            grid: parse_color_rgba(theme.plot_grid.as_ref())
+                .unwrap_or(RGBAColor(100, 100, 100, 0.35)),
         }
     }
 }
@@ -347,6 +349,7 @@ pub fn render_panel_to_rgba(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, PlotError> {
+    crate::font::ensure_registered();
     let palette = ThemePalette::from(theme);
     let rgb_len = rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
         PlotError::FileOutput(rustlab_core::variable_too_large(
@@ -398,6 +401,7 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
+    crate::font::ensure_registered();
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     root.fill(&palette.bg).map_err(err)?;
 
@@ -631,8 +635,28 @@ where
         draw_grid(&mut chart, x_lo, x_hi, y_lo, y_hi, palette)?;
     }
 
+    draw_series_and_legend(&mut chart, &sp.series, (x_lo, x_hi), panel, palette)
+}
+/// Draw line, stem, bar, and scatter series on `chart`, plus a legend when
+/// any series has a label. Shared by plain plot panels and by the overlay
+/// panel (`imagesc` / `contour` / `quiver` / `streamplot` under `hold on`),
+/// so a `plot` drawn over a field looks the same as on its own.
+fn draw_series_and_legend<'a, DB, X, Y>(
+    chart: &mut ChartContext<'a, DB, Cartesian2d<X, Y>>,
+    series: &[crate::figure::Series],
+    (x_lo, x_hi): (f64, f64),
+    legend_area: &DrawingArea<DB, plotters::coord::Shift>,
+    palette: &ThemePalette,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend + 'a,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+    X: Ranged<ValueType = f64>,
+    Y: Ranged<ValueType = f64>,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     // Pre-compute grouped bar offsets
-    let bar_series_count = sp.series.iter().filter(|s| s.kind == PlotKind::Bar).count();
+    let bar_series_count = series.iter().filter(|s| s.kind == PlotKind::Bar).count();
     let mut bar_series_idx = 0usize;
 
     // Track whether any series has a label so we know whether to draw a
@@ -641,7 +665,7 @@ where
     let mut any_label = false;
 
     // Draw each series
-    for s in &sp.series {
+    for s in series {
         let rgb = s.color.to_plotters();
         let stroke_width: u32 = if s.style == LineStyle::Dashed { 1 } else { 2 };
         let color = rgb.stroke_width(stroke_width);
@@ -814,7 +838,7 @@ where
         let legend_bg = palette.bg.mix(0.85);
         let legend_border = palette.text.mix(0.3);
         let legend_label_style: TextStyle =
-            ("sans-serif", 14u32, &palette.text).into_text_style(panel);
+            ("sans-serif", 14u32, &palette.text).into_text_style(legend_area);
         chart
             .configure_series_labels()
             .background_style(legend_bg)
@@ -825,6 +849,27 @@ where
             .map_err(err)?;
     }
     Ok(())
+}
+
+/// Chart bounds for an overlay panel. With no heatmap, the extent of the
+/// finite samples of `sp.series` is merged into `base` (the field's extent),
+/// as MATLAB's `hold on` grows the axes. A heatmap keeps its cell extent.
+fn overlay_chart_bounds(sp: &SubplotState, base: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (mut x_lo, mut x_hi, mut y_lo, mut y_hi) = base;
+    if sp.heatmap.is_some() {
+        return base;
+    }
+    for s in &sp.series {
+        for (&x, &y) in s.x_data.iter().zip(&s.y_data) {
+            if x.is_finite() && y.is_finite() {
+                x_lo = x_lo.min(x);
+                x_hi = x_hi.max(x);
+                y_lo = y_lo.min(y);
+                y_hi = y_hi.max(y);
+            }
+        }
+    }
+    (x_lo, x_hi, y_lo, y_hi)
 }
 
 /// Render a 3D surface to a plotters backend using a fixed isometric camera.
@@ -1115,6 +1160,7 @@ where
     } else {
         return Ok(());
     };
+    let (x_lo, x_hi, y_lo, y_hi) = overlay_chart_bounds(sp, (x_lo, x_hi, y_lo, y_hi));
 
     // When a heatmap is present, split off a colorbar strip on the right and
     // shrink the chart drawing area so its post-margin/post-label data rect
@@ -1474,6 +1520,11 @@ where
     // Streamline overlays.
     for sd in &sp.streamlines {
         render_streamlines_to_backend(&mut chart, sd)?;
+    }
+
+    // `plot` / `scatter` / `stem` series added under `hold on` go on top.
+    if !sp.series.is_empty() {
+        draw_series_and_legend(&mut chart, &sp.series, (x_lo, x_hi), &chart_area, palette)?;
     }
 
     // Colorbar — only when the panel has a heatmap (mirrors the HTML
@@ -3858,19 +3909,19 @@ mod tests {
         for theme in [crate::Theme::Dark, crate::Theme::Light] {
             let colors = theme.colors();
             assert!(
-                parse_color_solid(colors.plot_bg).is_some(),
+                parse_color_solid(colors.plot_bg.as_ref()).is_some(),
                 "{theme:?} plot_bg {:?} must parse",
-                colors.plot_bg
+                colors.plot_bg.as_ref()
             );
             assert!(
-                parse_color_rgba(colors.text).is_some(),
+                parse_color_rgba(colors.text.as_ref()).is_some(),
                 "{theme:?} text {:?} must parse",
-                colors.text
+                colors.text.as_ref()
             );
             assert!(
-                parse_color_rgba(colors.plot_grid).is_some(),
+                parse_color_rgba(colors.plot_grid.as_ref()).is_some(),
                 "{theme:?} plot_grid {:?} must parse",
-                colors.plot_grid
+                colors.plot_grid.as_ref()
             );
         }
         // Spot-check one concrete value end-to-end.
@@ -3887,5 +3938,131 @@ mod tests {
         set_default_theme(Theme::Dark);
         assert_eq!(default_theme(), Theme::Dark);
         set_default_theme(prior);
+    }
+
+    /// A unit circle drawn with `hold on` over a vector field: the line
+    /// series the overlay path used to drop.
+    fn quiver_with_circle(color: SeriesColor) -> SubplotState {
+        let (x, y, u, v) = uniform_field(9, 9, 1.0, 0.0);
+        let mut sp = SubplotState::new();
+        sp.quivers.push(crate::figure::QuiverData {
+            x,
+            y,
+            u,
+            v,
+            scale: 1.0,
+            color: None,
+            title: None,
+        });
+        let t: Vec<f64> = (0..100).map(|k| k as f64 * std::f64::consts::TAU / 99.0).collect();
+        sp.series.push(crate::figure::Series {
+            label: String::new(),
+            x_data: t.iter().map(|a| 0.5 + 0.3 * a.cos()).collect(),
+            y_data: t.iter().map(|a| 0.5 + 0.3 * a.sin()).collect(),
+            color,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        sp
+    }
+
+    fn hex(c: SeriesColor) -> String {
+        let (r, g, b) = c.to_rgb();
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
+    #[test]
+    fn plot_over_quiver_is_drawn_in_svg() {
+        let path = tmp_path("_quiver_plot_overlay.svg");
+        let sp = quiver_with_circle(SeriesColor::Red);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            *fig.current_mut() = sp;
+        });
+        render_figure_file(&path).expect("quiver + plot SVG");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let _ = std::fs::remove_file(&path);
+        let red = hex(SeriesColor::Red);
+        let circle: Vec<&str> = svg
+            .split("<polyline")
+            .skip(1)
+            .filter(|el| el.split('>').next().is_some_and(|attrs| attrs.contains(&red)))
+            .collect();
+        assert_eq!(circle.len(), 1, "expected one {red} polyline for the circle");
+        let points = circle[0].split("points=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(points.split_whitespace().count(), 100, "every sample of the circle");
+    }
+
+    #[test]
+    fn plot_over_quiver_is_drawn_in_png_pixels() {
+        // `render_panel_to_rgba` is the BitMapBackend path PNG export and the
+        // live viewer's quiver panels share.
+        let sp = quiver_with_circle(SeriesColor::Red);
+        let theme = Theme::default();
+        let rgba = render_panel_to_rgba(&sp, theme.colors(), 400, 300).expect("rgba");
+        let (r, g, b) = SeriesColor::Red.to_rgb();
+        let red_px = rgba
+            .chunks_exact(4)
+            .filter(|p| (p[0], p[1], p[2]) == (r, g, b))
+            .count();
+        assert!(red_px > 200, "circle pixels in the raster: {red_px}");
+        let mut without = sp.clone();
+        without.series.clear();
+        let rgba = render_panel_to_rgba(&without, theme.colors(), 400, 300).expect("rgba");
+        let none = rgba
+            .chunks_exact(4)
+            .filter(|p| (p[0], p[1], p[2]) == (r, g, b))
+            .count();
+        assert_eq!(none, 0, "the red pixels come from the plot series");
+    }
+
+    #[test]
+    fn plot_over_contour_and_streamlines_is_drawn() {
+        for kind in ["contour", "streamline"] {
+            let mut sp = quiver_with_circle(SeriesColor::Magenta);
+            let q = sp.quivers.pop().unwrap();
+            match kind {
+                "contour" => sp.contours.push(ContourData {
+                    z: q.y.iter().map(|_| q.x.clone()).collect(),
+                    x: q.x.clone(),
+                    y: q.y.clone(),
+                    levels: vec![-0.5, 0.5],
+                    filled: false,
+                    line_color: None,
+                    colorscale: "viridis".to_string(),
+                }),
+                _ => sp.streamlines.push(crate::figure::StreamlineData {
+                    x: q.x.clone(),
+                    y: q.y.clone(),
+                    u: q.u.clone(),
+                    v: q.v.clone(),
+                    density: 1.0,
+                    seeds: None,
+                    color: None,
+                    title: None,
+                }),
+            }
+            let theme = Theme::default();
+            let rgba = render_panel_to_rgba(&sp, theme.colors(), 400, 300).expect("rgba");
+            let (r, g, b) = SeriesColor::Magenta.to_rgb();
+            let px = rgba.chunks_exact(4).filter(|p| (p[0], p[1], p[2]) == (r, g, b)).count();
+            assert!(px > 200, "{kind}: circle pixels {px}");
+        }
+    }
+
+    #[test]
+    fn overlay_series_widen_the_vector_field_bounds() {
+        // A line reaching outside the quiver grid (as MATLAB's hold on does)
+        // extends the axes so the whole line is visible.
+        let mut sp = quiver_with_circle(SeriesColor::Red);
+        sp.series[0].x_data = vec![-2.0, 3.0];
+        sp.series[0].y_data = vec![-1.0, 4.0];
+        let (x0, x1, y0, y1) = overlay_chart_bounds(&sp, (0.0, 1.0, 0.0, 1.0));
+        assert_eq!((x0, x1, y0, y1), (-2.0, 3.0, -1.0, 4.0));
+        // A heatmap keeps its cell extent: the series is drawn, not used for
+        // the bounds.
+        sp.heatmap = Some(crate::figure::HeatmapData::default());
+        assert_eq!(overlay_chart_bounds(&sp, (0.0, 1.0, 0.0, 1.0)), (0.0, 1.0, 0.0, 1.0));
     }
 }

@@ -10,7 +10,8 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from. When you write `.rlab`, follow [Script style for agents](#script-style-for-agents) below.
+5. [`docs/coding-guidelines.md`](coding-guidelines.md) — human-first style for `.rlab` scripts and notebooks. The worked `.rlab` before-and-after examples are [Script style for agents](#script-style-for-agents) below.
+6. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 88 runnable scripts and 40 rendered notebooks to copy patterns from.
 
 ---
 
@@ -90,7 +91,7 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 
 1. **Every number is complex to the script.** `j` and `i` are the imaginary unit: `z = 3.0 + j*4.0`. Element-wise ops, `*`, and the outer product on purely real inputs return exactly-real results (`[1 Inf] * 2` is `[2 Inf]`). Arrays of real numbers are stored as real numbers (8 bytes each), which is invisible to a script; `RUSTLAB_COMPLEX_STORAGE=1` stores every array as complex, for comparing results when something looks wrong. `real(v)`, `imag(v)`, `conj(v)`, `abs(v)`, `angle(v)` decompose complex values.
 2. **Indexing is 1-based, with `end` for the last element:** `v(1)`, `v(end)`, `v(2:4)`, `M(i, j)`, `M(i, :)`, `M(:, j)`. Slices return new values.
-3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major. `[I, J] = ind2sub(size(M), k)` and `k = sub2ind(size(M), I, J)` are that same index (rows first, rank at most 3). One `ind2sub` output is the linear index. An index outside the array is an error. A one-element `sub2ind` subscript is repeated; two non-scalar arrays must be the same size.
+3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`, which is an `N×1` column (as is `reshape(x, N, 1)`, `M(rows, k)`, and a slice of a column; `M(k, :)` and a slice of a row vector stay rows), so `L * V(:)` needs no transpose; it round-trips with `find(M)`. `reshape` also walks column-major. `[I, J] = ind2sub(size(M), k)` and `k = sub2ind(size(M), I, J)` are that same index (rows first, rank at most 3). One `ind2sub` output is the linear index. An index outside the array is an error. A one-element `sub2ind` subscript is repeated; two non-scalar arrays must be the same size.
 4. **Ranges:** `1:5`, `0:0.5:2`, `10:-1:1` (`start:stop` or `start:step:stop`).
 5. **Literals:** `[1, 2, 3]` row, `[1; 2; 3]` column, `[a, b; c, d]` matrix. `[A, B]` / `[A; B]` concatenate. `{"a", "b"}` is a string array. `1_000_000` underscores are allowed in numbers.
 6. **`*` is matrix multiply; `.*`, `./`, `.\`, `.^` are element-wise.** `A .\ B` is `B ./ A`. Mixing them up is the most common generated-code bug.
@@ -129,7 +130,9 @@ fprintf("designed %d taps\n", length(h))
 
 ## Script style for agents
 
-Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote. The same six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab).
+The human-facing page for this style, including a short notebook half, is [Coding guidelines](coding-guidelines.md). The six practices below are the worked `.rlab` examples.
+
+Write the array operation. Reach for a `for` loop only when sample `k` has to read a value the previous iteration wrote, or when the step has to take the next values from a seeded stream in order. The six patterns, with the checks that keep them honest, are in [`examples/language/vectorized_style.rlab`](../examples/language/vectorized_style.rlab). The seeded-stream case is [`examples/language/seeded_random_loop.rlab`](../examples/language/seeded_random_loop.rlab).
 
 ### 1. Prefer array ops and indexing over nested `for` loops
 
@@ -235,6 +238,8 @@ for k = 2:length(x)
   y(k) = a * y(k - 1) + (1 - a) * x(k);
 end
 ```
+
+A seeded generator is the same kind of step. Each trial has to draw the next `rand()` values in order. One `rand(...)` array sliced by component changes that order, and `parmap` reseeds each worker, so the sample moves. Leave the loop, keep the array arithmetic inside it, and name the reason in one line. [`examples/language/seeded_random_loop.rlab`](../examples/language/seeded_random_loop.rlab) is that case.
 
 ### 6. Name intermediate arrays instead of deep nested index expressions
 
@@ -380,7 +385,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 When asked to produce rustlab code:
 
 1. **Check the capability index first** (`docs/quickref.md` or `rustlab docs --json`). Never invent function names.
-2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
+2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots. Follow [Coding guidelines](coding-guidelines.md) and [Script style for agents](#script-style-for-agents): array ops, `arrayfun` / `parmap`, masks, reductions, a loop only when the step is sequential, and named intermediates.
 3. **Run it:** `rustlab run script.rlab --plot none`, capturing stderr.
 4. **A nonzero exit code means the script failed.** Without `--profile`, stderr also has a line starting with `error:`. Fix and re-run.
 5. **Verify artifacts** (the SVG/CSV/NPZ files you expected) exist and are non-trivial in size.

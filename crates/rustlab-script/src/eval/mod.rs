@@ -14,10 +14,11 @@ pub(crate) mod real_index;
 pub(crate) mod real_ops;
 pub mod rng;
 pub mod shared;
-pub(crate) mod subscript;
 pub mod sparam_analysis;
 pub mod sparam_conv;
+pub(crate) mod subscript;
 pub mod table;
+pub(crate) mod tensor3_lift;
 pub mod toml_io;
 pub mod touchstone;
 pub mod value;
@@ -441,9 +442,10 @@ impl Evaluator {
         // A 1×1 matrix is a scalar in every write that accepts a scalar.
         // A 1×n right-hand side stays a matrix and still errors when the
         // left side is one element (MATLAB: dimension mismatch).
+        // A 1×1 right-hand side is that one sample. Exact-zero imag is
+        // real; a smaller-than-1e-12 imag is still the sample.
         let val = match val.unit_matrix() {
-            Some(c) if c.im.abs() < 1e-10 => Value::Scalar(c.re),
-            Some(c) => Value::Complex(c),
+            Some(c) => Value::from_c64(c),
             None => val,
         };
 
@@ -1642,6 +1644,13 @@ impl Evaluator {
                     // and any wider matrix still cannot be iterated.
                     Value::Matrix(m) if m.nrows() == 1 => m.row(0).iter().copied().collect(),
                     Value::Scalar(n) => vec![Complex::new(n, 0.0)],
+                    Value::Matrix(m) if m.ncols() == 1 => {
+                        return Err(ScriptError::runtime(format!(
+                            "for: cannot iterate over a {}×1 column; loop over its transpose \
+                             (`for x = c.'`) to visit the elements",
+                            m.nrows()
+                        )))
+                    }
                     other => {
                         return Err(ScriptError::runtime(format!(
                             "for: cannot iterate over {}",
@@ -2484,6 +2493,11 @@ impl Evaluator {
                 .collect()),
             Value::Scalar(n) => Ok(vec![Value::Scalar(*n)]),
             Value::Complex(c) => Ok(vec![Value::Complex(*c)]),
+            // A column (`x(:)`, `M(:, k)`) or a one-row matrix, in order.
+            Value::Matrix(m) if Shared::shape(m)[0] == 1 || Shared::shape(m)[1] == 1 => {
+                let flat: Vec<C64> = m.iter().copied().collect();
+                Self::iterable_elements(caller, &Value::Vector(Array1::from_vec(flat).into()))
+            }
             other => Err(ScriptError::runtime(format!(
                 "{caller}: second argument must be a vector or scalar, got {}",
                 other.type_name()
@@ -2497,7 +2511,7 @@ impl Evaluator {
         let mut results: Vec<Value> = Vec::with_capacity(elements.len());
         for elem in elements {
             let out = self.call_callable(func.clone(), vec![elem])?;
-            results.push(out);
+            results.push(out.column_into_vector());
         }
 
         // Determine output shape from first result
@@ -3416,16 +3430,62 @@ impl Evaluator {
             vals.into_iter().map(Value::widen_int).collect()
         };
 
+        // Logical widening, the same rule as MATLAB: a numeric builtin sees a
+        // logical array or a bool as its 0/1 doubles. Builtins in
+        // LOGICAL_AWARE_BUILTINS see the raw logical. A class-preserving
+        // builtin (LOGICAL_PRESERVING_BUILTINS) whose data arguments are all
+        // logical gets a logical result back.
+        let mut relogical = false;
+        let vals: Vec<Value> = if !LOGICAL_AWARE_BUILTINS.contains(&name)
+            && vals
+                .iter()
+                .any(|v| matches!(v, Value::Logical(_) | Value::Bool(_)))
+        {
+            relogical =
+                LOGICAL_PRESERVING_BUILTINS.contains(&name) && Self::logical_data_args(name, &vals);
+            vals.into_iter().map(Value::widen_logical).collect()
+        } else {
+            vals
+        };
+
         let _cancel_scope = self.cancel.as_ref().map(builtin_cancel::enter);
-        if !self.profiler.is_enabled() {
-            return self.builtins.call_with_nargout(name, vals, nargout);
+        let result = if !self.profiler.is_enabled() {
+            self.builtins.call_with_nargout(name, vals, nargout)
+        } else {
+            let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
+            self.profiler.enter(name);
+            let result = self.builtins.call_with_nargout(name, vals, nargout);
+            let out = result.as_ref().map_or(0, Self::value_bytes);
+            self.profiler.exit(name, in_bytes, out);
+            result
+        };
+        if relogical {
+            result.map(Value::relogical)
+        } else {
+            result
         }
-        let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
-        self.profiler.enter(name);
-        let result = self.builtins.call_with_nargout(name, vals, nargout);
-        let out = result.as_ref().map_or(0, Self::value_bytes);
-        self.profiler.exit(name, in_bytes, out);
-        result
+    }
+
+    /// Whether every data argument of a class-preserving builtin is a
+    /// logical array or a bool. `cat` skips its dimension. The second
+    /// argument of `min` / `max` is data unless it is the `[]` placeholder.
+    /// The size and order arguments of the shape functions are not data.
+    fn logical_data_args(name: &str, vals: &[Value]) -> bool {
+        let is_logical = |v: &Value| matches!(v, Value::Logical(_) | Value::Bool(_));
+        let is_empty = |v: &Value| match v {
+            Value::Matrix(m) => m.len() == 0,
+            Value::Vector(x) => x.len() == 0,
+            _ => false,
+        };
+        match name {
+            "cat" => vals.len() > 1 && vals[1..].iter().all(is_logical),
+            "horzcat" | "vertcat" => vals.iter().all(is_logical),
+            "min" | "max" => {
+                vals.first().is_some_and(is_logical)
+                    && vals.get(1).is_none_or(|v| is_empty(v) || is_logical(v))
+            }
+            _ => vals.first().is_some_and(is_logical),
+        }
     }
 
     /// `true` / `false` still hold a scalar bool. `true(m)` and `true(m, n)`
@@ -4922,6 +4982,65 @@ const INT_AWARE_BUILTINS: &[&str] = &[
     "print",
     "fprintf",
     "sprintf",
+];
+
+/// Builtins that receive a logical array or a bool as itself. Every other builtin
+/// gets its 0/1 doubles (see `call_builtin_tracked_nargout`).
+const LOGICAL_AWARE_BUILTINS: &[&str] = &[
+    // Class and type queries.
+    "class",
+    "islogical",
+    "isa",
+    "isinteger",
+    "iscell",
+    "ischar",
+    "isstruct",
+    "issparse",
+    // Conversions and logical operators.
+    "logical",
+    "double",
+    "and",
+    "or",
+    "xor",
+    // Logical-specific paths: `sum` counts trues, `find` returns logical
+    // values, `reshape` keeps the logical class and the requested shape.
+    "sum",
+    "find",
+    "reshape",
+    // `any` / `all` reduce a logical array directly.
+    "any",
+    "all",
+    // Shape queries (no copy).
+    "size",
+    "numel",
+    "length",
+    "len",
+    "ndims",
+    "height",
+    "width",
+    // Containers, storage and printing keep the class.
+    "table",
+    "struct",
+    "save",
+    "disp",
+    "print",
+];
+
+/// Builtins that return a logical when their data arguments are logical, as
+/// MATLAB's do: shape functions, `sort`, `min` / `max`, `cat`.
+const LOGICAL_PRESERVING_BUILTINS: &[&str] = &[
+    "repmat",
+    "fliplr",
+    "squeeze",
+    "permute",
+    "transpose",
+    "diag",
+    "sort",
+    "min",
+    "max",
+    "cat",
+    "horzcat",
+    "vertcat",
 ];
 
 const IMPURE_BUILTINS: &[&str] = &[

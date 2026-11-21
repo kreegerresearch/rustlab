@@ -6,6 +6,157 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.78
+
+### Fixed
+- **`S(:, k)` and `S(k, :)` on a sparse matrix no longer densify the whole matrix.** 0.3.74 kept `S(rows, cols)` sparse, but a selection of one row or one column still built a dense copy of `S` before slicing, which asked for ~76 GB on the 41³ operator in `rustlab_em`. The line is now filled from that row's or column's stored entries (O(nnz) time, memory the size of the result). Results and shapes are unchanged: `S(:, k)` is a dense `N×1` column, `S(k, :)` a dense row, and one element a scalar.
+- **Empty sparse selections are empty sparse matrices, and `numel` / `length` accept sparse values.** `S(:, [])` is an empty sparse `m×0`, `S([], :)` a `0×n`, and `S([], [])` a `0×0`, as in MATLAB. All-false logical masks behave the same way in either position. `S(k, [])` and `S([], k)` used to be dense `1×0` / `0×1`; they are now sparse of that shape. `numel` and `length` used to reject every sparse matrix and sparse vector ("unsupported type sparse"); they now return `rows·cols` and `max(rows, cols)`. A bad subscript on a sparse matrix (`S(5, 1)`, `S(0, :)`, `S(1.5, 2)`) now gives the same error text as on a dense matrix (`index 5 out of bounds (size 4)` instead of `index (5,1) out of bounds for 4×5 sparse matrix`).
+
+### Added
+- **`isempty(x)`.** True when any dimension is 0 (`numel(x) == 0`) or `x` is the empty string. Works on dense, sparse, logical, integer, string-array, and table values. `isempty(S(:, []))` is true.
+
+### Documentation
+- **`pin_dirichlet` and writing `b` afterwards.** With the default `"scale", "auto"`, a pinned row holds `d_k` on the diagonal and `b(k) = d_k · value`. A script that pins and then writes its own `b` on pinned rows (`b(k) = 1` to drive one conductor) gets a pinned value of `1 / d_k` instead; in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Such scripts should pin with `"scale", 1` or write `b(k) = A(k, k) · value`. The default is unchanged. Noted in `docs/functions.md`, `docs/quickref.md`, `AGENTS.md`, and `help pin_dirichlet`.
+
+## 0.3.77
+
+### Fixed
+- **`plot` over `quiver`, `contour`, `streamplot`, or `imagesc` is drawn in SVG, PNG, and PDF.** A panel holding one of those overlays took a separate render path that drew the field and never its line, stem, bar, or scatter series, so `hold on; plot(cos(t), sin(t))` over a `quiver` was missing from the saved file with no warning (`rustlab_em`'s `stokes_loop.svg` shipped without its loop). The live viewer rasterises those panels through the same path and lost the series too. Series are now drawn on top of the overlays, with a legend when one is labelled. Without a heatmap, the axes grow to include the series, as MATLAB's `hold on` does; a heatmap keeps its cell extent. HTML already drew both and is unchanged. Saved figures that combine a field with `plot` change (the line now appears).
+
+## 0.3.76
+
+### Added
+- **`gradient(..., "order", 2)` for 1-D endpoints.** The 1-D `gradient` keeps MATLAB's first-order endpoints `(f(2) - f(1))/h` by default, while the 2-D and 3-D stencils use second-order one-sided boundaries. `"order", 2` (last, after `h` or `x`) uses second-order one-sided endpoints: `(-3f(1) + 4f(2) - f(3))/(2h)` and its mirror, or on coordinates the derivative of the parabola through the first (last) three samples. The interior is unchanged. A quadratic is exact at every sample: on `x = [0.4 0.6 0.8 1.0 1.4 2.0]`, `gradient(x.^2, x)` ends at `1.0` and `3.4`, `gradient(x.^2, x, "order", 2)` at the exact `0.8` and `4.0`. In `rustlab_em` Lesson 15 the first-order ends put the endpoint forces 13–34% off. Needs at least 3 samples. A 2-D matrix accepts `"order", 2` and rejects `"order", 1`. `docs/quickref.md` now states the default endpoint order.
+
+## 0.3.75
+
+### Breaking / behavior changes
+- **Reads that MATLAB returns as a column are an `N×1` column.** These used to return a 1-D vector, which `size` reports as `[1, N]`:
+  - `x(:)` of a vector, matrix, `Tensor3`, or logical array (column-major order, unchanged);
+  - `reshape(x, N, 1)`;
+  - `M(rows, k)` that selects one column and more than one row (`M(:, k)`, `D(2:end, 61)`), including a sparse `S(:, k)`, which is a dense `N×1` column;
+  - a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+  - `T(:, j, k)` on a `Tensor3`.
+
+  `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), `reshape(x, 1, N)`, and a single element are unchanged. `L * V(:)` now works, and `L * reshape(V, numel(V), 1)` no longer fails with "cannot multiply matrix by row vector". `[fliplr(D(2:end, 61)'), D(:, 1)']` is one row, as in MATLAB.
+
+  **Migration.** The old idiom `x(:)'` (and `M(:, k)'`) was the way to get a column; it now gives a `1×N` row. Remove the `'`:
+  - `A * V(:)'` and `A * V(:, k)'` are now a dimension error; write `A * V(:)` and `A * V(:, k)`. For a complex `V` the old form also conjugated the values, so results that went through it change sign in the imaginary part.
+  - `b = rho(:)'` passed to `spsolve` still works (any orientation is accepted), but `b = rho(:)` is the idiom. The examples and notebooks in this repo now use it.
+  - A column next to a same-length vector is still element-wise (`M(:, 1) + v` has length `N`), but a column next to a `1×N` matrix (`zeros(1, N)`, `x(:)'`) expands to `N×N`, as in MATLAB.
+  - `for x = M(:, k)` is an error (as `for` over any `N×1` column already was); the message says to loop over `M(:, k).'`.
+  - `arrayfun` and `parmap` accept a column input, and a column return (`r = M(:)`) is still one vector result per call, so their output shapes do not change.
+  - `[a, M(:, k)]` with a row `a` is now a dimension error; use `[a, M(:, k).']` or `[a; M(:, k)]`.
+
+## 0.3.74
+
+### Fixed
+- **Sparse submatrix indexing no longer densifies.** `S(rows, cols)` on a sparse matrix built the full dense matrix first and then indexed it; for a 41³ Laplacian (`L(fr, fr)` with about 30k free nodes) that asked for 76 GB. A selection with more than one row and more than one column is now gathered from the stored entries in O(nnz + selected entries) and returned as a **sparse** matrix, so symmetric Dirichlet elimination (`A_ff V_f = −A_fp V_p`) with Cholesky works at that size. Subscripts may be vectors, ranges, `end`, `:`, or logical masks, in any order and with repeats.
+
+### Breaking / behavior changes
+- **`S(rows, cols)` of a sparse matrix is sparse.** It was a dense matrix. Arithmetic with a dense partner still promotes to dense, and `full(...)` gives the old value. `S(i, j)` is still the element, and a single row or column (`S(k, :)`, `S(:, k)`) is still a dense vector (MATLAB returns sparse there). Migration: wrap in `full(...)` where a dense matrix is needed, for example before `imagesc` or a dense-only builtin.
+
+## 0.3.73
+
+### Fixed
+- **`pin_dirichlet` keeps pinned values exact at small grid spacing.** A pinned row was an identity row (diagonal 1) next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`). The sparse LU then pivoted on the large entries in the pinned column, and a conductor pinned at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4` (`2.4e-11` at `h = 1e-2`). In `rustlab_em` Lesson 18 the energy identity `2U = Q·V0` drifted from 2e-14 to 9e-9. The pinned row is now scaled to the operator's own diagonal, and the same repro is exact at every `h` from 1 to 1e-6.
+
+### Added
+- **`pin_dirichlet(..., "scale", s)`.** `s` is `"auto"` (the default) or a positive number used as every pinned row's diagonal; `"scale", 1` gives the old identity rows.
+
+### Breaking / behavior changes
+- **`pin_dirichlet` pinned rows are `d_k·e_k`, not `e_k`.** Row `k` of the returned `A` has `d_k = |A(k, k)|` on the diagonal (if that is 0, the largest `|A(k, :)|`; if the row is empty, 1), and `b(k)` is `d_k · value`. Solutions are the same in exact arithmetic and now more accurate; only the last digits of an interior solution can move. A script that reads `A(k, k) == 1` or `b(k) == value` back from the outputs, or reuses `b` with a different operator, will see the scaled values. Migration: pass `"scale", 1` for the old rows.
+
+## 0.3.72
+
+### Added
+- **Element-wise `Tensor3` comparisons, logic, and math.** `T > 0`, `R <= a`, `T == U`, `!T`, and `and` / `or` / `xor` work on a `Tensor3` with a scalar or a same-size `Tensor3` partner. So do `abs`, `sign`, `sqrt`, `exp`, `log`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, `mod`, the trig and hyperbolic functions, and two-argument `min(T, s)` / `max(T, s)`. The result keeps the `(m, n, p)` shape. There is no rank-3 logical, so comparisons return 0/1 doubles (as `cat(3, L, L)` already did): mask with `.*`, or gather with `T(find(M))`. `T(M)` with a `Tensor3` mask is still an error. A matrix or vector next to a `Tensor3` is an error, as for `+`. These used to fail with `comparison requires compatible operands` or `unsupported type tensor3`.
+- **`find` on a `Tensor3`.** `find(T)` returns column-major linear indices (the `T(:)` order). As in MATLAB, `[r, c] = find(T)` merges the trailing dimensions into `c` (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values; for three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
+
+## 0.3.71
+
+### Added
+- **`tan`, `cot`, `sec`, `csc`.** Element-wise tangent and the reciprocal trig functions, complex-aware like `sin` / `cos`. A pole is infinite as in MATLAB: `cot(0)` and `csc(0)` are `Inf`. Scripts that wrote `sin(x) ./ cos(x)` can use `tan(x)`.
+- **`asinh`, `acosh`, `atanh`.** Element-wise inverse hyperbolics. A real input outside the real domain gives MATLAB's principal complex value instead of `NaN`: `acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`, `atanh(2)` is `0.5493 + 1.5708i`, and `atanh(±1)` is `±Inf`. `acosh(x)` replaces the `log(x + sqrt(x.*x - 1))` workaround.
+- **`isnan`, `isinf`, `isfinite`.** Element-wise predicates. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, so `v(isnan(v)) = 0` works. A complex element is `NaN` (or infinite) when either part is, and finite only when both are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3`.
+
+## 0.3.68
+
+### Fixed
+- **Linux builds no longer need fontconfig, FreeType, or libstdc++.** plotters' `ttf` text backend pulled `font-kit`, which needed `libfontconfig1-dev` at build time. Without `libfreetype-dev`, `freetype-sys` compiled its bundled FreeType as C++ and linked `-lstdc++`. With clang as `cc` (Ubuntu with GCC 13 plus a GCC 14 `libgcc`), the newest `/usr/lib/gcc/x86_64-linux-gnu/<N>/` had no `libstdc++.so`, and the release link failed with `rust-lld: error: unable to find library -lstdc++`. `rustlab-plot` now uses plotters' pure-Rust `ab_glyph` backend with Liberation Sans 2.1.5 compiled in (SIL OFL 1.1, `crates/rustlab-plot/fonts/`). Building needs only a C compiler and libc headers (`build-essential`, or `gcc glibc-devel` on Fedora) for bundled SQLite and BLAKE3. The README's claim that plotting needs no system libraries is now true, and the README lists those build packages. A new `minimal-linux-build` CI job builds in a bare `ubuntu:24.04` container without g++, pkg-config, or font headers, and fails if `font-kit`, `freetype-sys`, or `yeslogic-fontconfig-sys` re-enter the dependency graph.
+
+### Breaking / behavior changes
+- **Plot text uses one bundled font on every OS.** PNG, GIF, and viewer-raster text is drawn in Liberation Sans (Arial/Helvetica metrics) instead of the system's `sans-serif` (Helvetica on macOS, often DejaVu or Noto Sans on Linux, Arial on Windows). The font size is unchanged: the measured em is `size / 1.24`, the same as the old backend and as the SVG `font-size`. SVG files still name `font-family="sans-serif"`, so browsers and Inkscape (PDF) draw SVG text with their own font as before. Label widths now come from Liberation Sans, so the y-label gutter can move by a pixel and, rarely, an axis gets one fewer or one more tick than with your system font. On this Linux test machine (Noto Sans), 87 of the 132 example-notebook SVGs were byte-identical to 0.3.65's. Output is now the same on every machine, so committed SVG/PNG renders should be regenerated once; after that they stop drifting between macOS and Linux.
+
+## 0.3.67
+
+### Fixed
+- **Logical arrays in builtins.** Since logical arrays arrived (0.3.56), most builtins rejected them: `mean(m < 0)` was `mean: unsupported type logical`, `reshape(m > 0, 1, 4)` was `cannot reshape logical`, and `heatmap(m < 0)` was `expected matrix, got logical(2x2)`, while `sum(m < 0)` worked. Every numeric builtin now takes a logical array or a scalar `true` / `false` as its 0/1 doubles, as MATLAB does, and returns a double. This covers the reductions (`mean`, `median`, `std`, `var`, `prod`, `cumsum`, `trapz`, `cumtrapz`, `diff`, `norm`, `nnz`, `trace`, `dot`), element-wise math (`abs`, `sqrt`, `exp`, `round`, `floor`, `ceil`, `real`, `imag`, `mod`), `kron`, `inv`, `convolve`, `sprintf("%d", true)`, and the plots (`heatmap`, `imagesc`, `plot`, `stem`, `bar`, `surf`, `contour`, …). Shape functions keep the logical class when every data input is logical: `reshape` (with exactly the requested `m×n`, so `reshape(v, 3, 1)` of a logical row is a `3×1` logical), `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `min` / `max` (the index output of `[m, i] = max(L)` stays numeric), and `cat` / `horzcat` / `vertcat`. A logical mixed with a double (`max(L, 0.5)`, `cat(1, L, m)`) gives a double. There is no rank-3 logical: `cat(3, L, L)` and a 3-D `reshape` give 0/1 doubles. `size`, `numel`, `length`, `ndims`, `class`, `islogical`, `isa`, `sum`, `find`, `table`, `struct`, `save`, `disp`, and `print` still see the logical itself.
+- **`any` / `all` of a matrix.** A matrix with more than one row and column was an error (numeric or logical). It now reduces down each column to a `1×cols` logical row, as in MATLAB: `any([0, 1; 0, 0])` is logical `[0 1]`.
+
+### Breaking / behavior changes
+- **`double` of a logical row is a `1×n` matrix.** `double(L)` of a `1×n` logical returned a 1-D vector, while every wider logical became a matrix. It now has the logical's shape, the same as `double` of a `1×n` double: `double([1, -2, 3] > 0)` prints as `Matrix(1x3)`, and `size` is still `[1, 3]`. A `1×1` logical is still a scalar. The same `1×n` matrix is what arithmetic with a scalar or a matrix gives (`(v > 0) + 0`), so it broadcasts against a column as MATLAB does (`[1; 2; 3] + (r > 0)` is `3×3`). Next to a 1-D vector a logical row is still a vector, so `x .* (x > 0)` keeps the type of `x`, and `[mask, 1]` concatenation is unchanged. Migration: a script that relied on the vector-only rule that an `n×1` column plus a length-`n` vector is element-wise, with the vector coming from `double(mask)` or `mask + scalar`, now gets the `n×n` result; use `mask(:)` or a transpose to pick the orientation.
+
+## 0.3.66
+
+### Added
+- **Notebook design tokens.** HTML notebook pages, the directory index, and `watch` chrome declare design tokens on `:root` after the existing 33 `--rl-*` color tokens. The new names cover the system font stacks (`--rl-font-body`, `--rl-font-heading`, `--rl-font-mono`), `--rl-font-size` (`medium`), `--rl-line-height` (`1.7`), `--rl-measure` (`960px`), radii (`3px` / `6px` / `8px`), `--rl-border-width` (`1px`), a six-step space scale (`0.5rem` through `2.5rem`), table header / stripe / rule mixes, callout and link colors, `--rl-focus-ring` (`auto`), eight plot-series colors, and one shadow. Rules that already used those literals now read the token and keep the old literal as the `var()` fallback. The painted page is unchanged. The default theme is still Mocha. Stacks are system fonts only (no font files, no `@font-face`). PDF and LaTeX stay Catppuccin Latte on white. Plotly and SVG still take colors from the palette directly; the plot tokens are declared for a later pass. The directory index keeps its `720px` column.
+
+## 0.3.65
+
+### Fixed
+- **`notebook watch` WebGL plots.** A series longer than 10,000 points is a Plotly `scattergl` trace. On a watch page that trace showed "WebGL is not supported by your browser" even when the browser had WebGL. Static `render` HTML has no Content-Security-Policy, so the same figure worked there. The watch policy now sends `worker-src 'self' blob:` and `'unsafe-eval'` on `script-src`. regl, which `scattergl` uses, compiles its draw command with the `Function` constructor during context creation; CSP treats that as eval, Plotly catches the throw, and the overlay replaces the plot. `'unsafe-eval'` is what removes the overlay. `worker-src 'self' blob:` allows the blob workers Plotly's bundled mapbox-gl and maplibre create (`new Worker` on a `blob:` URL). Those workers are not on the `scattergl` or `surface` path. `style-src` is unchanged (`'self' 'unsafe-inline'`, no `blob:` and no unpkg): Plotly injects its rules with a `<style>` element, and a maplibre stylesheet request to unpkg stays blocked. The nonce and `'strict-dynamic'` are unchanged, so notebook prose still cannot inject a script. `'unsafe-eval'` means a script the page already allowed can turn a string into code; Plotly builds that string from its own command templates. See `docs/security.md`.
+
+## 0.3.64
+
+### Added
+- **Patch antenna.** `examples/pde/patch_antenna.rlab` and `examples/notebooks/patch_antenna.md` put a finite ground and an edge-fed patch in air, with CPML on all six faces and the near-to-far box in the air above the board (20 mm). The lossy rerun builds a second grid; there is no reset. The script's `preset` is `"quick"` or `"full"`. `"quick"` is the default: one cell through the 1.6 mm substrate and 11 000 steps, and the script prints that the dip and the directivity are approximate. `"full"` is the 2 mm lesson mesh, two substrate cells, 16 000 steps. Any other name is an error that names both. The notebook is the full lesson and does not read `preset`. `examples/pde/fdtd_sweep.rlab` and `examples/notebooks/fdtd_sweep.md` map the resonance over five widths with `parmap`.
+- **`fdtd3d(..., "threads", n)`.** `n` is `0` (the shared pool, the default) or `1` (serial). It composes with `"courant"` in either order. `fdtd_info(sim).threads` reports it. A grid of 8,192 cells or more updates the fields, the CPML correction, and the near-to-far phasors, on the pool unless `threads` is 1.
+
+### Breaking / behavior changes
+- **Large FDTD grids step in parallel.** A grid of 8,192 cells or more runs the E and H updates, the CPML correction, and the near-to-far accumulation, on the shared rayon pool. Below that the step stays on the calling thread: on 4 threads the pool is slower at 4,096 cells and tied at 8,000. The port voltage and current, the probe record, the CPML auxiliaries, and the far-field phasors match a one-thread step bit for bit. `fdtd3d(..., "threads", 1)` keeps the single-thread loop. A script that timed a large grid will see a different rate. The numbers do not change.
+
+## 0.3.63
+
+### Added
+- **Coding guidelines.** [`docs/coding-guidelines.md`](docs/coding-guidelines.md) is a short, human-first style page for `.rlab` scripts and notebooks. Scripts lead with cutting nested loops: array operations, slices, logical masks, `find`, reductions, and `arrayfun` / `parmap`, for readability and for speed. The default is one loop or none; a nested loop that is the physics, the state, or a seeded stream stays, with a one-line reason. [`examples/language/seeded_random_loop.rlab`](examples/language/seeded_random_loop.rlab) is the seeded-stream case: four `rand()` draws per trial, in order, under `seed(322)`. There is no `break` or `continue`. `#` and `%` both start a comment; `%` is the one to prefer. Notebooks stay a light convention list (one idea per cell, `clf;` before a plot cell, `<!-- hide -->` for setup) and point at [`docs/notebooks.md`](docs/notebooks.md) and [`docs/lesson-site-pattern.md`](docs/lesson-site-pattern.md). Worked `.rlab` examples stay in [Script style for agents](docs/agent-guide.md#script-style-for-agents).
+
+## 0.3.62
+
+### Added
+- **Seeded random loop example.** `examples/language/seeded_random_loop.rlab` keeps one loop because each trial draws four `rand()` values in order from `seed(322)`. The body is array arithmetic (Bloch components and a factored correlator table). A `rand` array sliced by component, or `parmap` (it reseeds each worker), would move the sample. The script reseeds and checks that the first four samples replay. `rustlab run examples/language/seeded_random_loop.rlab --plot none` prints the max, the min, `sqrt(2)`, and the fraction of trials above 2.
+
+### Breaking / behavior changes
+- **Comparisons use the same pairs as `+` and `.*`.** `==`, `!=`, `<`, `>`, `<=`, and `>=` used to require identical shapes and error with `comparison shape mismatch` when an `n×1` column met a length-`n` vector, or when two matrices could expand a length-1 dimension. They now follow the arithmetic rule. `v = 1:3; v' == v` is a `1×3` logical (element-wise, the same pairs as `v' .* v`), not a `3×3` outer table. `c = [1; 2; 3]; c == ones(1, 3)` is `3×3`, the same shape as `c .* ones(1, 3)`. Two vectors still have to be the same length, including a length-1 vector against a longer vector. A shape that cannot pair is still an error. A script that caught the old shape error on a pair `+` already accepted now gets a logical array instead.
+
+## 0.3.61
+
+`0.3.59` is the lumped port. This release is the near-to-far transform.
+
+### Breaking / behavior changes
+- **A stored complex sample keeps every nonzero imaginary part.** Reading one element (`v(i)`, `M(i, j)`, `T(i, j, k)`, a 1×1 `det`, `squeeze` of a singleton, one table cell) used to return a real scalar whenever `|Im| < 1e-12`. It now returns a real scalar only when the imaginary part is exactly zero (`+0` or `-0`). `1e-15j` stays complex, and so does `1 + 1e-18j`. `abs` of a vector used `|re|` whenever every `|Im| < 1e-10`, so `abs(1e-15j)` was `0` and `abs` of a phasor near `1e-14` kept only the real part. `abs` is now per element: `|re|` when that element's imaginary part is exactly zero, and `hypot(re, im)` otherwise. A vector passed to `sqrt`, `sin`, and the other scalar functions uses the real formula only when every imaginary part is exactly zero, matching a matrix. A script that indexed `1 + 1e-15j` and branched on `class` being `"double"` now sees `"complex"`.
+- **Reductions are unchanged.** `sum`, `mean`, `prod`, `dot`, `trace`, and `det` of a matrix larger than 1×1 still drop an imaginary part of the result below `1e-12`. That part is accumulated roundoff on a value that should be real. A reduction of a single `1e-13j` is still the real scalar `0`. `to_scalar` and size arguments still treat `|Im| < 1e-10` as a real count. Printed arrays still hide `|Im| < 1e-12`; the value is complex, and `abs` and `angle` see it.
+- **Hermitian `eigs` eigenvalues are exactly real.** Shift-and-invert Arnoldi used to leave an imaginary residual near `1e-18` on a real eigenvalue. The old one-element read hid that residual. The solver now stores the imaginary part as `0` when `A` is Hermitian, so `D(1)` is a real scalar. A non-Hermitian eigenvalue keeps its imaginary part, including a tiny one.
+
+### Added
+- **3-D FDTD, Phase 5 of `dev/plans/fdtd3d.md`: a near-to-far transform.** `fdtd_ntff(sim, freqs [, "margin", m])` arms one closed Huygens box before the first step. `m` defaults to 2. An empty `freqs` disarms it. `fdtd_farfield(sim, theta, phi [, "origin", xyz] [, "decay", "pulse"|"off"])` returns `Etheta` and `Ephi` in V·s (the DFT includes `dt`; `e^{-jkr}/r` is omitted), the flux directivity, and gain and realized gain from the port's accepted and incident power. With no port, or when that power is not positive, those gains are `NaN`. The default origin is the box centroid. Moving it changes phase only.
+- **v1 restrictions.** CPML on all six faces. The exterior, including one cell inside the box, is one lossless medium. Every source, port edge, and PEC edge sits strictly inside. Each frequency needs at least 10 cells per background wavelength and must be below Nyquist. No `Js`/`Ms` export, no total-field/scattered-field, no second port, no S21, no frequency sweep, and no parallel stepping. Phase 6's geometry (a ground, a substrate, image theory) is not decided and is not implemented.
+- **Polarization and the pattern.** A z-directed electric current radiates `Etheta`. `Ephi` is the cross-polar component, including in the xy plane. Directivity is `4π U / Pflux` with `U = (|Etheta|² + |Ephi|²) / (2 η)`. A short dipole's peak is 1.5 and `D(θ) = 1.5 sin²θ`; pointwise `D` is not 1.5 at every angle. `realized_gain = gain · (1 − |S11|²)` follows from the definitions. `realized_gain = directivity · (1 − |S11|²)` does not, once the grid has loss.
+- **Decay.** The default `"decay", "pulse"` refuses the pattern when the last 10% of the surface `|E|`, or of `|V|` or `|I|` when a port exists, is still above `1e-3` of the peak. `"off"` skips that ratio. Nothing clips a bad pattern. A nonfinite field sample, surface trace, port record, surface phasor, or flux is an error in either mode; a `NaN` gain with no port is still the defined result. A uniform `eps_r = 2` at medium λ/Δ = 30 has surface tail/peak `6.6e-4` after 700 steps and `2.0e-4` after 2800, under the `1e-3` limit, so the dielectric gate uses `"decay", "pulse"`. The earlier `2.4e-3` figure does not reproduce. CPML `σ` inside the slab is still not scaled by `eps_r` (that is the Phase 3 absorber); it is not what sets this tail. Raising `alpha_max` to `0.05` drops the same tail to `4e-8` and moves the far field by less than `1e-3`.
+- **`fdtd_info`.** `ntff` is the armed frequency count (0 when off). `bytes` includes the NTFF samples, phasors, and the surface-decay trace.
+- **Example.** `examples/pde/fdtd_dipole.rlab` and `examples/notebooks/fdtd_dipole.md`. `abs(pat.Etheta(1, :, 1))` is the modulus in V·s; the example does not rescale it. The drive spectrum is the current-moment reference. On the 32³ grid the release example prints `|F/Fan| − 1 = 0.0040`, phase `0.0009` rad, `D(90°) = 1.5044` (1.774 dBi), `|P/Pan| − 1 = 0.0050`, and a cross-polar ratio `4.9e-6`. The 48³ half-wave wire (CPML 8, 1000 steps) prints `Zin` 55.37 − 44.61j Ω at 8.0 GHz, 66.74 − 12.20j at 8.5, 80.32 + 19.35j at 9.0, and 116.20 + 80.55j at 10.0, with directivity 2.077 to 2.261 dBi. Accepted power and the flux agree to `3e-6`. Gain equals directivity on that lossless wire; realized gain is lower by the mismatch.
+- **Loss.** On a 4 mm cube of `σ = 1` S/m, `Pacc/Pflux = 1.0185`. An independent `½ Σ σ |Ê|² ΔV`, with `Ê` the same end-of-step DFT the flux uses and `σ` the cell-map edge mean (not the port resistor), matches `Pacc − Pflux` to `+2.46e-3`, `+1.44e-3`, and `+7.57e-4` at Δ = 2 mm, 1 mm, and ⅔ mm. The centred sample `(E^n+E^{n−1})/2` falls on the other side of that gap (`−1.19e-2`, `−2.14e-3`, `−8.35e-4`). Both residuals shrink as Δ shrinks.
+
+## 0.3.59
+
+### Breaking / behavior changes
+- **`fdtd_s11` does not window a pulse by default.** This version has not shipped, so no released script depended on the earlier Hann default. A pulse record is left rectangular. `"window", "hann"` remains, and it is the right window for a steady tone that fills the record. On a pulse it weights an early incident sample and a later reflection differently, so `|S11|` can exceed 1 on a passive grid. `fdtd_s11(sim)` errors when the last 10% of `|V|` or of `|I|` is still above `1e-3` of that signal's peak. Naming a window skips the check; `"decay", "pulse"` forces it and `"decay", "off"` skips it. `fdtd_s11(V, I, dt, Z0)` does not check the tail unless `"decay", "pulse"` is passed. `"nfft", M` zero-pads to `M` (at least the record length). The extra bins interpolate the DFT of these samples. They do not resolve tones closer than `1/(N·dt)`; a longer record does.
+
+### Added
+- **3-D FDTD, Phase 4 of `dev/plans/fdtd3d.md`: one lumped port.** `fdtd_port(sim, comp, i, j, k, Z0, ...)` puts a series voltage and a gap resistance on one E edge, or on a consecutive stack along that component. `Z0` (ohms) is split across the stack and baked as extra edge conductivity `σ = Δ_along / ((Z0/N) · Area)`, on top of any material `σ`. The source subtracts `(dt/ε0) · Cb · Vg / (Z0 · Area)` from each edge. That is a series source. The impressed-field update `E −= Cb · Vg / (N · Δ)` is the existing soft source and is not what the port does. `id` is `1`. A second call errors and names the deferred S21 phase, including after the grid has already stepped. v1 does not build a full S matrix.
+- **Records.** Every step stores `V = −Σ E·Δ` (after the E update, time `n·dt`) and `I`, the Ampère current around the first edge of the stack, from `H` at `(n − ½)·dt`. For `ez`, `I = (Hy − Hy_left)·dy − (Hx − Hx_below)·dx` — the segment lengths of the Yee curl. `fdtd_record` / `fdtd_run` / `fdtd_step` now fill `V` and `I` as `steps × 1` and `Z0` as that resistance. With no port the columns stay empty, as in 0.3.58.
+- **`fdtd_s11`.** `fdtd_s11(sim)` or `fdtd_s11(V, I, dt, Z0)` returns a 1-port `sparameters` network (`parameters` shaped `(n_freq, 1, 1)`, positive `frequencies` in Hz, `impedance = Z0`), so `smith(s)` and `rfplot(s)` take it. The FFT of `I` is multiplied by `exp(+j ω dt / 2)` before `S11 = b/a` with `a, b = (V ± Z0 I) / (2 √Z0)`. DC is dropped. A bin whose `|a|` is below `1e-12` of the peak is `NaN`. Nothing clips `|S11|` onto the unit disk. The default window is none. `"nfft", M` zero-pads. `fdtd_s11(sim)` refuses an undecayed pulse (see the behavior change above). Example: `examples/pde/fdtd_port.rlab` and `examples/notebooks/fdtd_port.md`. The example's load is a conductive pillar built from `σ = (kp·Δz)/(R·n·Δx·n·Δy)`, one node outside the port, so `V/I` is not the port stamp rearranged. On that pillar (`Δx = 1 mm`, `Δy = 1.5 mm`, `Δz = 1 mm`, 16τ Gaussian) the release example prints `V/I` = 25.0005 Ω (+0.002%), 49.9579 Ω (−0.084%), and 99.5866 Ω (−0.413%). The 50 Ω `|S11|` reaches 0.0020 through 300 MHz, and the low-frequency sign follows `(R−Z0)/(R+Z0)`. The same load on `ex` and `ey`, a PEC short (`S11 ≈ −1`), and a non-passive synthetic `R = −10` (returned unclipped) are unit tests. The teaching patch (60×60×20, `dx = dy = 1 mm`, `dz = 0.4 mm`, 4 cells of `εr = 4.4`, 6-cell CPML, `zmin` off, edge feed on the first metal node, 16000 steps, rectangular window, 8× zero pad) has its `|S11|` minimum at 2.4395 GHz (+1.64% from 2.4 GHz, `|S11| = 0.698`). The metal is the inclusive mask, 28.00 mm against a design length of 29.42 mm; `L` and `W` were not snapped to the grid. The first 6000 samples of that record are still ringing and are non-passive; the full record is passive, and the unpadded dip sits within one native bin of the padded one. A Hann window on that same decayed record is non-passive. The recovered gap resistance and the inset-feed ring frequency remain diagnostics, not these gates.
+
 ## 0.3.58
 
 ### Breaking / behavior changes

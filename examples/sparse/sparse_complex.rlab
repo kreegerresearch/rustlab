@@ -29,7 +29,7 @@ print(nnz(A))         % → 17760
 % to match laplacian_2d's index convention.
 src = zeros(ny, nx);
 src(ny/2, nx/2) = 1.0;
-b = src(:)';
+b = src(:);
 
 # ── 3. Solve. Auto detects non-Hermitian and runs sparse LU. ─────
 # Both factor and solve operate on Complex<f64> CSC storage. The

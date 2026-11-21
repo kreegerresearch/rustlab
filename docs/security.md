@@ -150,10 +150,57 @@ dropped when that cap trips.
   applied (breaks script/tag breakout inside `$…$`). Code output and
   plot text (titles, labels) are escaped by their emitters.
 - Watch-served pages send a Content-Security-Policy with
-  `default-src 'self'`, nonce + `'strict-dynamic'` for scripts, and
-  loopback-only `connect-src` for WebSockets (`'self'`,
-  `ws://127.0.0.1:*`, `ws://localhost:*`). A `ws://[::1]:*` source is
-  not valid CSP and is omitted; the listener binds `127.0.0.1`.
+  `default-src 'self'`, nonce + `'strict-dynamic'` + `'unsafe-eval'`
+  for scripts, `worker-src 'self' blob:`, `style-src 'self'
+  'unsafe-inline'`, and loopback-only `connect-src` for WebSockets
+  (`'self'`, `ws://127.0.0.1:*`, `ws://localhost:*`). A `ws://[::1]:*`
+  source is not valid CSP and is omitted; the listener binds
+  `127.0.0.1`. The full header is built by `server/auth.rs::csp_header`.
+- **`worker-src` and `'unsafe-eval'` are for vendored Plotly 2.35.0.**
+  Static `render` HTML has no CSP, so the same figure works there. A
+  `scattergl` trace (a series longer than 10,000 points) on a watch
+  page was replaced with "WebGL is not supported by your browser".
+  - **`Function` (this is what draws that overlay).** `scattergl`,
+    splom, and parcoords build their WebGL context with regl. During
+    `createREGL`, regl compiles a draw command with
+    `Function.apply(null, args)`. CSP treats the `Function` constructor
+    as `eval` and blocks it unless `script-src` includes
+    `'unsafe-eval'`. Plotly catches the throw and draws the overlay.
+    A headless Chromium check (SwiftShader) of a 12,000-point
+    `scattergl` plus a `surface` reproduced the overlay whenever
+    `'unsafe-eval'` was absent, including when `worker-src 'self'
+    blob:` was already set, and cleared it when `'unsafe-eval'` was
+    set. `'unsafe-eval'` does not allow an inline `<script>` or an
+    inline event handler: the nonce and `'strict-dynamic'` still decide
+    which scripts run. The tradeoff is that a script which is already
+    allowed to run can turn a string into code. Plotly builds that
+    string from its own command templates, not from notebook prose.
+    Author HTML still cannot inject a script that would reach `eval`.
+  - **Blob workers.** mapbox-gl, bundled in that file, probes worker
+    support with `new Worker(URL.createObjectURL(new Blob([""],
+    {type:"text/javascript"})))` before its own WebGL check. A refused
+    probe reports "insufficient worker support". maplibre publishes its
+    worker the same way. With no `worker-src`, a blob URL falls back to
+    `default-src 'self'` and is blocked. That probe does not run for
+    `scattergl` or `surface`; the same headless check logged no
+    `worker-src` violation for those two traces, and `surface` rendered
+    under the previous policy. `worker-src 'self' blob:` is still set
+    so those bundled workers are allowed when Plotly does create them.
+    It does not allow `data:` workers or a remote worker URL. Only a
+    script the page already allowed (the per-process nonce, or a script
+    loaded by one under `'strict-dynamic'`) can create the worker.
+    Notebook prose is still escaped and does not receive the nonce, so
+    it cannot spawn one. A blob worker inherits this page policy.
+  - **Styles.** `style-src` does not include `blob:`, and it does not
+    allow `https://unpkg.com`. Plotly injects its own rules with a
+    `<style>` element and `CSSStyleSheet.insertRule`, which
+    `'unsafe-inline'` already allows. The bundle's only `text/css` URL
+    is maplibre-gl.css on unpkg, requested when the library loads, and
+    the headless check still reports that `style-src-elem` violation
+    after this change. `scattergl` and `surface` render with it
+    blocked. rustlab does not emit a `map` trace. `surface` (`surf`)
+    uses gl-plot3d's `canvas.getContext("webgl")`. That path does not
+    call `Function` and does not create a blob worker.
 - The nonce is stamped **at render time** on the script tags the
   renderer and page chrome emit; served HTML is never post-processed to
   add nonces, so a `<script>` that reached the document through author
@@ -199,9 +246,9 @@ normalisation of `..` and canonicalisation of the existing prefix
 and PDF (`![alt](path)` and a safe raw `<img src alt>`) use the same
 check. A path outside the root is not copied, and the placeholder in the
 page does not repeat that path. Watch still serves only files under its
-plot tempdir (`GET /plots/…` rejects `..`). The page CSP is unchanged:
-`img-src 'self' data: blob:` and `script-src` with the per-process nonce
-plus `'strict-dynamic'`.
+plot tempdir (`GET /plots/…` rejects `..`). The page CSP is the watch policy in H3: `img-src 'self' data: blob:`,
+`script-src` with the per-process nonce, `'strict-dynamic'`, and
+`'unsafe-eval'`, and `worker-src 'self' blob:`.
 
 The root is:
 

@@ -1,0 +1,195 @@
+# Phase 6 planning prototype: floating finite ground + substrate in air,
+# CPML on all six faces, closed NTFF box in air. Not an example.
+# A wrapper sets the knobs below, then `run patch_core.rlab`.
+#
+#   dxy      lateral cell (m)          nsub   substrate cells (dz = h/nsub)
+#   gpad     ground/substrate overhang beyond the patch metal (m)
+#   air_xy   air from the substrate edge to the NTFF box, lateral (m)
+#   air_z    air from ground / patch to the NTFF box (m)
+#   npml     CPML cells          margin  NTFF margin (cells)
+#   feed     "edge" or "inset"   sigma   substrate conductivity (S/m)
+#   nsteps   steps               ntff_on 1 = arm NTFF and print the pattern
+#   ffreqs   NTFF frequencies (Hz)    dth, dph  pattern grid step (deg)
+#   Lmetal, Wmetal  0 = staircase the design L x W with rect_mask; > 0 =
+#            exactly that metal span (m), centred, for the convergence study
+#   excite   "port" (50 ohm lumped port) or "soft" (soft source, no port;
+#            an Ez probe under the far radiating edge gives the ring-down)
+
+c0 = 299792458;
+eps0 = 8.8541878128e-12;
+eps_r = 4.4;
+h = 1.6e-3;
+f0 = 2.4e9;
+W = c0 / (2 * f0) * sqrt(2 / (eps_r + 1));
+ee = (eps_r + 1) / 2 + (eps_r - 1) / 2 / sqrt(1 + 12 * h / W);
+dL = 0.412 * h * (ee + 0.3) * (W / h + 0.264) / ((ee - 0.258) * (W / h + 0.8));
+L = c0 / (2 * f0 * sqrt(ee)) - 2 * dL;
+
+dx = dxy;
+dy = dxy;
+dz = h / nsub;
+ngx = 2 * round((L / 2 + gpad) / dx);
+ngy = 2 * round((W / 2 + gpad) / dy);
+nax = round(air_xy / dx);
+nay = round(air_xy / dy);
+naz = round(air_z / dz);
+nx = ngx + 2 * (npml + margin + nax);
+ny = ngy + 2 * (npml + margin + nay);
+nz = nsub + 2 * (npml + margin + naz);
+jg0 = npml + margin + nax;
+ig0 = npml + margin + nay;
+kg = npml + margin + naz;
+
+sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+eps = ones3(ny, nx, nz);
+eps(ig0 + 1:ig0 + ngy, jg0 + 1:jg0 + ngx, kg + 1:kg + nsub) = eps_r;
+sig = zeros3(ny, nx, nz);
+if sigma > 0
+  sig(ig0 + 1:ig0 + ngy, jg0 + 1:jg0 + ngx, kg + 1:kg + nsub) = sigma;
+end
+fdtd_media(sim, eps, 1, sig);
+fdtd_cpml(sim, npml);
+
+xv = (0:nx - 1) * dx;
+yv = (0:ny - 1) * dy;
+[X, Y] = meshgrid(xv, yv);
+ground = zeros(ny, nx);
+ground(ig0 + 1:ig0 + ngy + 1, jg0 + 1:jg0 + ngx + 1) = 1;
+fdtd_pec(sim, "z", kg + 1, ground);
+px = nx / 2 * dx - L / 2;
+py = ny / 2 * dy - W / 2;
+patch = rect_mask(X, Y, px, py, L, W);
+if Lmetal > 0
+  nL = round(Lmetal / dx);
+  nW = round(Wmetal / dy);
+  j0 = round(nx / 2 - nL / 2);
+  i0 = round(ny / 2 - nW / 2);
+  patch = zeros(ny, nx);
+  patch(i0 + 1:i0 + nW + 1, j0 + 1:j0 + nL + 1) = 1;
+end
+fdtd_pec(sim, "z", kg + nsub + 1, patch);
+cols = find(sum(patch, 1) > 0);
+rows = find(sum(patch, 2) > 0);
+
+iy = round((py + W / 2) / dy) + 1;
+if feed == "edge"
+  ix = find(patch(iy, :) > 0);
+  ix = ix(1);
+else
+  ix = round((px + L / 3) / dx) + 1;
+end
+tau = 1 / (2 * f0);
+if excite == "port"
+  fdtd_port(sim, "ez", iy, ix, kg + 1:kg + nsub, 50, "modulated", 4 * tau, tau, f0);
+else
+  fdtd_source(sim, "ez", iy, ix, kg + 1:kg + nsub, "soft", "modulated", 4 * tau, tau, f0);
+  fdtd_probe(sim, "ez", iy, cols(end) - 1, kg + 2);
+end
+nf_ntff = 0;
+if ntff_on
+  ff = ffreqs;
+  fdtd_ntff(sim, ff, "margin", margin);
+  nf_ntff = length(ff);
+end
+info = fdtd_info(sim);
+fprintf("mesh %d x %d x %d = %.0f cells, %.0f MB, dt = %.4e s, metal %.1f x %.1f mm, feed %s ix=%d\n", ...
+  nx, ny, nz, nx * ny * nz, info.bytes / 1e6, info.dt, (cols(end) - cols(1)) * dx * 1e3, ...
+  (rows(end) - rows(1)) * dy * 1e3, feed, ix);
+fprintf("ground %.1f x %.1f mm, sigma %.4g S/m, NTFF freqs %d, steps %d\n", ngx * dx * 1e3, ngy * dy * 1e3, sigma, nf_ntff, nsteps);
+
+out = fdtd_run(sim, nsteps);
+fprintf("run %.1f s, %.1f Mcell/s\n", out.seconds, out.cell_rate / 1e6);
+dt = out.dt;
+if excite == "port"
+  V = out.V(:, 1);
+  I = out.I(:, 1);
+else
+  V = out.probe(:, 1);
+  I = V;
+end
+pk = max(abs(V));
+cuts = [4000, 6000, 8000, 12000, 16000, 20000, 24000, 30000, 40000];
+for q = 1:length(cuts)
+  n = cuts(q);
+  if n <= nsteps && excite == "port"
+    m0 = round(0.9 * n);
+    tl = max(abs(V(m0:n))) / pk;
+    ti = max(abs(I(m0:n))) / max(abs(I(1:n)));
+    s = fdtd_s11(V(1:n), I(1:n), dt, 50, "nfft", 8 * n);
+    f = s.frequencies;
+    a = abs(sij(s, 1, 1));
+    band = find((f > 1.8e9) .* (f < 3.2e9));
+    k = argmin(a(band));
+    wide = find((f > 1.5e9) .* (f < 3.5e9));
+    fprintf("  n=%5d tail V %.2e I %.2e  min|S11| %.3f at %.4f GHz  max|S11| 1.5-3.5 GHz %.4f\n", n, tl, ti, a(band(k)), f(band(k)) / 1e9, max(a(wide)));
+  end
+end
+
+# loaded Q from the ring-down envelope of V (later 60% of the record)
+blk = round(1 / (f0 * dt)) * 2;
+nb = floor(nsteps / blk);
+env = zeros(nb, 1);
+tb = zeros(nb, 1);
+for b = 1:nb
+  seg = V((b - 1) * blk + 1:b * blk);
+  env(b) = max(abs(seg));
+  tb(b) = ((b - 0.5) * blk) * dt;
+end
+b0 = round(0.4 * nb);
+b1 = nb;
+g = find(env(b0:b1) > 1e-6 * pk) + b0 - 1;
+p = polyfit(tb(g), log(env(g)), 1);
+fprintf("ring-down: amplitude decay %.3e 1/s, loaded Q at 2.44 GHz = %.1f\n", -p(1), pi * 2.44e9 / (-p(1)));
+
+if ntff_on
+  th = (0:dth:180) * pi / 180;
+  phv = (0:dph:360 - dph) * pi / 180;
+  pat = fdtd_farfield(sim, th, phv, "decay", "off");
+  fr = pat.freq;
+  for q = 1:length(fr)
+    D = pat.directivity(q, :, :);
+    # sphere integral of U against the flux power
+    U = squeeze(pat.U(q, :, :));
+    wth = ones(1, length(th)) * (dth * pi / 180);
+    wth(1) = wth(1) / 2;
+    wth(end) = wth(end) / 2;
+    wcol = (sin(th) .* wth)';
+    psph = sum(sum(U .* (wcol * ones(1, length(phv))))) * (dph * pi / 180);
+    fprintf("  f %.3f GHz: D0 %.2f dBi, G0 %.2f, Gr0 %.2f dBi, Pflux %.4e, Pacc %.4e, (Pacc-Pflux)/Pacc %.4f, Psphere/Pflux %.4f\n", ...
+      fr(q) / 1e9, pat.directivity_dBi(q, 1, 1), pat.gain_dBi(q, 1, 1), pat.realized_gain_dBi(q, 1, 1), ...
+      pat.prad(q), pat.paccepted(q), (pat.paccepted(q) - pat.prad(q)) / pat.paccepted(q), psph / pat.prad(q));
+  end
+  # pattern cuts at the armed frequency nearest the S11 minimum of the full record
+  fmin = 2.44e9;
+  if excite == "port"
+    s = fdtd_s11(V, I, dt, 50, "nfft", 8 * nsteps);
+    f = s.frequencies;
+    a = abs(sij(s, 1, 1));
+    band = find((f > 1.8e9) .* (f < 3.2e9));
+    fmin = f(band(argmin(a(band))));
+  end
+  q = argmin(abs(fr - fmin));
+  fprintf("cuts at %.3f GHz (S11 min %.4f GHz)\n", fr(q) / 1e9, fmin / 1e9);
+  Dt = squeeze(pat.directivity(q, :, :));
+  e_co = squeeze(pat.Etheta(q, :, 1));
+  e_x = squeeze(pat.Ephi(q, :, 1));
+  h_co = squeeze(pat.Ephi(q, :, 90 / dph + 1));
+  h_x = squeeze(pat.Etheta(q, :, 90 / dph + 1));
+  [dmax, imax] = max(Dt(:));
+  [ti, pj] = ind2sub(size(Dt), imax);
+  fprintf("  max D %.2f dBi at theta %d deg phi %d deg\n", 10 * log10(dmax), (ti - 1) * dth, (pj - 1) * dph);
+  [m1, i1] = max(abs(e_co));
+  [m2, i2] = max(abs(h_co));
+  fprintf("  E-plane (phi=0) co-pol peak at theta %d deg; H-plane (phi=90) peak at theta %d deg\n", (i1 - 1) * dth, (i2 - 1) * dth);
+  fprintf("  front/back (theta 0 vs 180, phi 0): %.2f dB\n", 10 * log10(Dt(1, 1) / Dt(end, 1)));
+  fprintf("  cross-pol at broadside: %.1f dB below co-pol\n", 20 * log10(abs(e_co(1)) / max(abs(e_x(1)), 1e-300)));
+  fprintf("  E-plane D(theta) dBi, theta 0:15:90 : ");
+  for t = 1:15 / dth:90 / dth + 1
+    fprintf("%.1f ", 10 * log10(Dt(t, 1)));
+  end
+  fprintf("\n  H-plane D(theta) dBi, theta 0:15:90 : ");
+  for t = 1:15 / dth:90 / dth + 1
+    fprintf("%.1f ", 10 * log10(Dt(t, 90 / dph + 1)));
+  end
+  fprintf("\n");
+end

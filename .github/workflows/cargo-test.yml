@@ -7,8 +7,8 @@ name: cargo-test
 # because only notebook validation gated merges.
 #
 # chktex + tidy are required by rustlab-notebook's validate::tests
-# (linter-wrapper self-tests); the font/pkg-config packages are
-# build-time deps of rustlab-plot's SVG/PNG backends.
+# (linter-wrapper self-tests). The build itself needs no -dev packages;
+# minimal-linux-build.yml checks that in a bare container.
 
 on:
   workflow_dispatch:
@@ -33,13 +33,18 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            pkg-config \
-            chktex \
-            tidy
+          ok=0
+          for attempt in 1 2 3; do
+            if sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
+              chktex \
+              tidy; then
+              ok=1
+              break
+            fi
+            echo "apt attempt ${attempt} failed"
+            sleep 20
+          done
+          test "$ok" = 1
 
       - name: Cache cargo registry and build artefacts
         uses: actions/cache@v4

@@ -150,7 +150,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px);
     padding: 6px 11px; cursor: pointer;
   }}
   #rl-toolbar button:hover {{ border-color: {accent}; }}
@@ -168,7 +168,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     display: flex; flex-direction: column; gap: 8px; align-items: stretch;
     min-width: 16rem; padding: 8px;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-radius: 8px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius-lg, 8px);
     box-shadow: 0 8px 24px rgba(0,0,0,.28);
   }}
   #rl-toolbar #rl-diff-toggle {{
@@ -178,7 +178,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar #rl-diff-toggle.active {{ background: transparent; color: {text}; border-color: {border}; }}
   .rl-switch {{
     width: 28px; height: 16px; border-radius: 99px; flex: none; position: relative;
-    border: 1px solid {border}; background: {bg};
+    border: var(--rl-border-width, 1px) solid {border}; background: {bg};
   }}
   .rl-switch::after {{
     content: ""; position: absolute; top: 1px; left: 1px;
@@ -197,7 +197,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     box-sizing: border-box; text-align: left;
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: transparent; color: {text};
-    border: 1px solid transparent; border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid transparent; border-radius: var(--rl-radius, 6px);
     padding: 6px 8px; cursor: pointer;
   }}
   #rl-toolbar .rl-menu-switch input {{
@@ -214,7 +214,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     position: fixed; top: 46px; right: 14px; z-index: 100001; margin: 0;
     padding: 4px 8px; max-width: 22rem;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px);
     font: 12px/1.35 system-ui, sans-serif;
   }}
   p.rl-git-note {{ margin: 0; font: 11px/1.35 system-ui, sans-serif; color: {text_dim}; }}
@@ -228,8 +228,8 @@ fn chrome_style(c: &ThemeColors) -> String {
   }}
   #rl-toolbar .rl-dx-opt {{
     display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px; align-items: start;
-    width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px;
-    background: transparent; color: {text}; border: 1px solid transparent;
+    width: 100%; text-align: left; padding: 6px 8px; border-radius: var(--rl-radius, 6px);
+    background: transparent; color: {text}; border: var(--rl-border-width, 1px) solid transparent;
     font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   #rl-toolbar .rl-dx-opt:hover {{ border-color: {border}; }}
@@ -247,7 +247,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-diff input {{
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg}; color: {text};
-    border: 1px solid {border}; border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px);
     padding: 4px 6px; width: 100%; box-sizing: border-box;
   }}
   #rl-diff input:focus {{ border-color: {accent}; outline: none; }}
@@ -260,7 +260,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     margin: 0; padding: 2px; list-style: none;
     max-height: 14rem; overflow: auto;
     background: {bg}; color: {text};
-    border: 1px solid {border}; border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px);
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   .rl-diff-menu li {{ padding: 3px 6px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }}
@@ -284,13 +284,13 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-dx-list li .rl-k {{ color: {text_dim}; }}
   #rl-dx-list li.rl-empty {{ display: block; color: {text_dim}; cursor: default; }}
   .rl-dx-keys kbd {{
-    font: 11px ui-monospace, monospace; border: 1px solid {border}; border-radius: 3px; padding: 0 4px;
+    font: 11px ui-monospace, monospace; border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius-sm, 3px); padding: 0 4px;
   }}
   #rl-diff-banner {{
     position: fixed; top: 46px; right: 14px; z-index: 99999; margin: 0;
     padding: 6px 10px; max-width: 30rem; text-align: left; cursor: pointer;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-radius: 8px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius-lg, 8px);
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   #rl-diff-banner:hover {{ border-color: {accent}; }}
@@ -299,8 +299,8 @@ fn chrome_style(c: &ThemeColors) -> String {
   .rl-diff-notice {{
     margin: 0 0 1rem; padding: 0.6rem 0.85rem;
     background: {bg_secondary}; color: {text};
-    border: 1px solid {border}; border-left: 4px solid {accent};
-    border-radius: 6px;
+    border: var(--rl-border-width, 1px) solid {border}; border-left: 4px solid {accent};
+    border-radius: var(--rl-radius, 6px);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   /* Changes are a bar in the gutter left of the text. No wash, so body
@@ -344,7 +344,7 @@ fn chrome_style(c: &ThemeColors) -> String {
      take the body text color so a link inside stays readable. Headings
      and code keep their own colors and get a 2px line instead. */
   main ins.rl-w, main del.rl-w {{
-    color: {text}; border-radius: 3px; padding: 0 1px;
+    color: {text}; border-radius: var(--rl-radius-sm, 3px); padding: 0 1px;
     -webkit-box-decoration-break: clone; box-decoration-break: clone;
   }}
   main ins.rl-w {{ background: var(--rl-dx-add-word); text-decoration: none; }}
@@ -375,12 +375,12 @@ fn chrome_style(c: &ThemeColors) -> String {
   main .rl-dx-srcview {{
     margin: 3rem 0 1rem; overflow: hidden;
     background: var(--rl-code-bg, {code_bg}); color: {text};
-    border: 1px solid {border}; border-radius: 8px;
+    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius-lg, 8px);
     font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }}
   main .rl-dx-srcview .rl-dx::before {{ display: none; }}
   main .rl-dx-fh {{
-    padding: 8px 12px; border-bottom: 1px solid {border}; background: {bg_secondary}; color: {text_dim};
+    padding: 8px 12px; border-bottom: var(--rl-border-width, 1px) solid {border}; background: {bg_secondary}; color: {text_dim};
     font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   main .rl-dx-hunk {{ padding: 3px 12px; background: {bg_secondary}; color: {text_dim}; font-size: 12px; }}
@@ -393,7 +393,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   main .rl-dx-l-add .rl-dx-s {{ color: var(--rl-dx-add-bar); }}
   main .rl-dx-l-del .rl-dx-s {{ color: var(--rl-dx-del-bar); }}
   main .rl-dx-none {{ padding: 8px 12px; }}
-  .rl-dx-seg {{ display: inline-flex; align-self: flex-start; border: 1px solid {border}; border-radius: 6px; overflow: hidden; }}
+  .rl-dx-seg {{ display: inline-flex; align-self: flex-start; border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px); overflow: hidden; }}
   #rl-toolbar .rl-dx-seg button {{
     border: 0; border-radius: 0; background: transparent; color: {text}; padding: 4px 12px;
   }}
@@ -410,7 +410,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-source-pane {{
     position: fixed; top: 0; right: 0; height: 100vh;
     width: var(--rl-pane-w); min-width: 0; max-width: var(--rl-pane-w);
-    background: {code_bg}; border-left: 1px solid {border};
+    background: {code_bg}; border-left: var(--rl-border-width, 1px) solid {border};
     z-index: 99998; display: flex; flex-direction: column;
     transform: translateX(101%); transition: transform .18s ease;
     box-shadow: -8px 0 24px rgba(0,0,0,.25);
@@ -424,7 +424,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   body.has-files.rl-source-open main {{ margin-left: calc(220px + var(--fb-w, 16.5rem)); }}
   body.has-files.no-toc.rl-source-open main {{ margin-left: var(--fb-w, 16.5rem); }}
   #rl-source-head {{
-    padding: 9px 14px; border-bottom: 1px solid {border};
+    padding: 9px 14px; border-bottom: var(--rl-border-width, 1px) solid {border};
     font: 12px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim};
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
   }}
@@ -460,9 +460,9 @@ fn editor_style(c: &ThemeColors) -> String {
     height: 100%; background: {code_bg}; color: {text};
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }}
-  #rl-source-pane .CodeMirror-gutters {{ background: {bg_secondary}; border-right: 1px solid {border}; }}
+  #rl-source-pane .CodeMirror-gutters {{ background: {bg_secondary}; border-right: var(--rl-border-width, 1px) solid {border}; }}
   #rl-source-pane .CodeMirror-linenumber {{ color: {text_dim}; }}
-  #rl-source-pane .CodeMirror-cursor {{ border-left: 1px solid {text}; }}
+  #rl-source-pane .CodeMirror-cursor {{ border-left: var(--rl-border-width, 1px) solid {text}; }}
   #rl-source-pane .CodeMirror-selected {{ background: {border}; }}
   #rl-source-pane .CodeMirror-activeline-background {{ background: {bg_secondary}; }}
 {tokens}</style>

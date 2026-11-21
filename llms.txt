@@ -22,7 +22,9 @@ interrupt (Ctrl-C or `q` on a live figure).
 - [docs/agent-guide.md](docs/agent-guide.md): START HERE — how to use rustlab as an
   agent: execution model, the language in 21 rules, pitfalls, plotting/output
   recipes, notebook authoring, toolbox map, verification workflow.
-  Writing `.rlab`: [Script style for agents](docs/agent-guide.md#script-style-for-agents)
+- [docs/coding-guidelines.md](docs/coding-guidelines.md): human-first style for
+  people writing `.rlab` scripts and notebooks (agents can follow it too).
+  Worked `.rlab` examples: [Script style for agents](docs/agent-guide.md#script-style-for-agents)
 - [docs/quickref.md](docs/quickref.md): canonical capability index — every builtin
   with one-line description; if a function is not listed here it does not exist
 - [docs/functions.md](docs/functions.md): full signatures, semantics, and a usage

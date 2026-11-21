@@ -85,7 +85,7 @@ pub fn render_figure_state_html_themed(
 </head>
 <body>
 "##,
-        bg = theme.bg,
+        bg = theme.bg.as_ref(),
         plotly = crate::vendor::PLOTLY_REL_SRC,
     ));
     html.push_str(&div_content);
@@ -258,7 +258,7 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         let x_end = geom.x1;
         let y_start = geom.y0;
         let y_end = geom.y1;
-        let cbar = colorbar_attr(&geom, theme.text);
+        let cbar = colorbar_attr(&geom, theme.text.as_ref());
 
         // Axis layout
         let show_grid = if panel.grid { "true" } else { "false" };
@@ -340,8 +340,8 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 y0 = y_start, y1 = y_end,
                 xlabel = escape_js(&panel.xlabel),
                 ylabel = escape_js(&panel.ylabel),
-                text = theme.text,
-                plot_bg = theme.plot_bg,
+                text = theme.text.as_ref(),
+                plot_bg = theme.plot_bg.as_ref(),
             ));
         } else {
             // Log-scaled axes (semilogx/semilogy/loglog): Plotly renders real
@@ -373,8 +373,8 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 x0 = x_start, x1 = x_end,
                 y0 = y_start, y1 = y_end,
                 grid = show_grid,
-                plot_grid = theme.plot_grid,
-                text = theme.text,
+                plot_grid = theme.plot_grid.as_ref(),
+                text = theme.text.as_ref(),
                 xlabel = escape_js(&panel.xlabel),
                 ylabel = escape_js(&panel.ylabel),
                 xtick = xtick_extra,
@@ -391,7 +391,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 title = annotation_text(&panel.title, cols),
                 cx = (x_start + x_end) / 2.0,
                 ty = y_end,
-                color = theme.text,
+                color = theme.text.as_ref(),
             ));
         }
 
@@ -547,7 +547,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 // string in `ThemeColors`.)
                 let line_color = match &cd.line_color {
                     Some(c) => color_to_css(c),
-                    None => theme.text.to_string(),
+                    None => theme.text.as_ref().to_string(),
                 };
                 traces.push_str(&format!(
                     r#"{{ z: {z}, x: {x}, y: {y}, type: "contour", contours: {{ coloring: "none", showlines: true, start: {s}, end: {e}, size: {step} }}, line: {{ color: "{color}", width: 1.5 }}, showscale: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
@@ -755,8 +755,8 @@ var layout_{js_var} = {{
   font: {{ color: "{text}" }},
   "##,
         js_var = js_var,
-        plot_bg = theme.plot_bg,
-        text = theme.text
+        plot_bg = theme.plot_bg.as_ref(),
+        text = theme.text.as_ref()
     ));
     out.push_str(&layout_axes);
     out.push_str(&scenes);
@@ -1151,7 +1151,7 @@ mod tests {
             "newline in a title must be a Plotly line break; got:\n{div}"
         );
         assert!(
-            div.contains(&format!(r#"color: "{}""#, theme.text)),
+            div.contains(&format!(r#"color: "{}""#, theme.text.as_ref())),
             "title text must use the theme foreground"
         );
     }
@@ -1331,5 +1331,32 @@ mod tests {
         let len = std::fs::metadata(&js).unwrap().len();
         assert!(len > 1_000_000, "sibling plotly bundle too small: {len}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plot_over_quiver_keeps_both_traces() {
+        // The SVG/PNG path used to drop the line; Plotly must keep emitting it.
+        let mut fig = FigureState::new();
+        let sp = fig.current_mut();
+        sp.quivers.push(crate::figure::QuiverData {
+            x: vec![0.0, 1.0],
+            y: vec![0.0, 1.0],
+            u: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            v: vec![vec![0.0, 0.0], vec![0.0, 0.0]],
+            scale: 1.0,
+            color: None,
+            title: None,
+        });
+        sp.series.push(Series {
+            label: String::new(),
+            x_data: vec![0.25, 0.5, 0.75],
+            y_data: vec![0.5, 0.75, 0.5],
+            color: SeriesColor::Red,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert_eq!(div.matches(r#"type: "scatter""#).count(), 2, "{div}");
+        assert!(div.contains("0.25,0.5,0.75"), "line samples missing:\n{div}");
     }
 }

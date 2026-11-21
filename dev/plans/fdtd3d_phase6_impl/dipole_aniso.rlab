@@ -1,0 +1,45 @@
+# Phase 6 planning diagnostic: pattern integral vs flux for the Phase 5
+# Hertzian dipole, cubic cells against dz = 0.4 dx (the patch mesh ratio).
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase6_impl/dipole_aniso.rlab --plot none
+
+c0 = 299792458;
+dx = 1e-3;
+function r = sphere_ratio(pat, th, phv, dth, dph)
+  U = squeeze(pat.U(1, :, :));
+  wth = ones(1, length(th)) * dth;
+  wth(1) = wth(1) / 2;
+  wth(end) = wth(end) / 2;
+  wcol = (sin(th) .* wth)';
+  r = sum(sum(U .* (wcol * ones(1, length(phv))))) * dph / pat.prad(1);
+end
+th = (0:3:180) * pi / 180;
+phv = (0:3:357) * pi / 180;
+for q = 1:3
+  if q == 1
+    dz = dx; nz = 32; tag = "cubic dz = dx, ez dipole";
+  else
+    dz = 0.4 * dx; nz = 80; tag = "dz = 0.4 dx, ez dipole";
+  end
+  comp = "ez";
+  if q == 3
+    comp = "ex"; tag = "dz = 0.4 dx, ex dipole";
+  end
+  n = 32;
+  sim = fdtd3d(n, n, nz, dx, dx, dz, "courant", 0.99);
+  fdtd_cpml(sim, 6);
+  info = fdtd_info(sim);
+  dt = info.dt;
+  nsteps = round(700 * 1.9e-12 / dt);
+  fc = c0 / 0.020;
+  tau = sqrt(2) / (2 * pi * fc);
+  t0 = 5 * tau;
+  s = 1:nsteps;
+  u = (s * dt - t0) / tau;
+  g = -u .* exp(-u .* u);
+  fdtd_source(sim, comp, n / 2 + 1, n / 2 + 1, nz / 2 + 1, "soft", g);
+  fdtd_ntff(sim, c0 / 0.030);
+  fdtd_run(sim, nsteps);
+  pat = fdtd_farfield(sim, th, phv);
+  fprintf("%s: steps %d, Psphere/Pflux - 1 = %.2e\n", tag, nsteps, sphere_ratio(pat, th, phv, 3 * pi / 180, 3 * pi / 180) - 1);
+end

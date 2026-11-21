@@ -120,10 +120,27 @@ pub const USER_FILE_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; 
 /// literal) and ignores it, which also logs an error on every page. The
 /// listener binds `127.0.0.1`, so `'self'` and `ws://127.0.0.1:*` cover
 /// the page's WebSocket.
+///
+/// `worker-src 'self' blob:` and `'unsafe-eval'` are for vendored Plotly
+/// 2.35.0. `scattergl` (and splom / parcoords) go through regl, which
+/// compiles a draw command with `Function.apply` while `createREGL` is
+/// still running. CSP treats that as eval; the throw is caught and the
+/// plot is replaced with "WebGL is not supported by your browser".
+/// `'unsafe-eval'` allows that constructor. It does not allow an inline
+/// script: the nonce and `'strict-dynamic'` still decide which scripts
+/// run. `worker-src` is separate. Without it a blob worker falls back to
+/// `default-src 'self'` and is blocked. Plotly's bundled mapbox-gl probes
+/// with `new Worker(URL.createObjectURL(blob))`, and maplibre publishes
+/// its worker the same way. Those workers are not on the `scattergl` or
+/// `surface` path. `style-src` stays `'self' 'unsafe-inline'` — Plotly
+/// injects rules with a `<style>` element and `insertRule`, and the
+/// bundle creates no `blob:` stylesheet on the scattergl / surface path.
+/// A maplibre request for unpkg CSS stays blocked. See `docs/security.md`.
 pub fn csp_header(nonce: &str) -> String {
     format!(
         "default-src 'self'; \
-         script-src 'self' 'nonce-{nonce}' 'strict-dynamic'; \
+         script-src 'self' 'nonce-{nonce}' 'strict-dynamic' 'unsafe-eval'; \
+         worker-src 'self' blob:; \
          style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob:; \
          font-src 'self'; \
@@ -244,5 +261,41 @@ mod tests {
         assert!(!csp.contains("[::1]"));
         assert!(csp.contains("connect-src 'self' ws://127.0.0.1:* ws://localhost:*"));
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
+    }
+
+    /// Plotly 2.35.0 feature-detects workers with `new Worker(URL.createObjectURL(blob))`,
+    /// and regl compiles `scattergl` draw commands with `Function.apply`.
+    /// `style-src` does not gain `blob:`: the scattergl / surface path injects
+    /// CSS with a `<style>` element, which `'unsafe-inline'` already allows.
+    #[test]
+    fn csp_allows_blob_workers_for_plotly_webgl() {
+        let csp = csp_header("abc");
+        assert!(
+            csp.contains("worker-src 'self' blob:"),
+            "watch CSP must allow blob workers; got {csp}"
+        );
+        assert!(
+            csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic' 'unsafe-eval'"),
+            "regl uses the Function constructor; nonce and strict-dynamic stay; got {csp}"
+        );
+        assert!(
+            !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "inline scripts stay blocked; got {csp}"
+        );
+        assert!(
+            csp.contains("style-src 'self' 'unsafe-inline';"),
+            "style-src stays inline-only; got {csp}"
+        );
+        let style = csp
+            .split("style-src")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(
+            !style.contains("blob:"),
+            "style-src does not need blob:; got {csp}"
+        );
     }
 }

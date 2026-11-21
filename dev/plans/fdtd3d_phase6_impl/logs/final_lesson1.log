@@ -1,0 +1,20 @@
+== lesson1
+rustlab 0.3.63 — interpreting /tmp/tmp.LmzjJ1vVfY/lesson1.rlab (.rlab)
+mesh 60 x 66 x 72 = 285120 cells, 60 MB, dt = 2.2994e-12 s, metal 28.0 x 36.0 mm, feed edge ix=24
+ground 60.0 x 72.0 mm, sigma 0.01175 S/m, NTFF freqs 4, steps 8000
+run 23.2 s, 98.2 Mcell/s
+  n= 4000 tail V 1.87e-03 I 7.32e-04  min|S11| 0.339 at 2.3783 GHz  max|S11| 1.5-3.5 GHz 0.9891
+  n= 6000 tail V 1.35e-04 I 5.48e-05  min|S11| 0.339 at 2.3738 GHz  max|S11| 1.5-3.5 GHz 0.9893
+  n= 8000 tail V 1.68e-05 I 6.81e-06  min|S11| 0.340 at 2.3783 GHz  max|S11| 1.5-3.5 GHz 0.9894
+ring-down: amplitude decay 5.526e+08 1/s, loaded Q at 2.44 GHz = 13.9
+  f 2.340 GHz: D0 6.88 dBi, G0 3.77, Gr0 2.97 dBi, Pflux 3.4555e-23, Pacc 7.0686e-23, (Pacc-Pflux)/Pacc 0.5111, Psphere/Pflux 1.0006
+  f 2.360 GHz: D0 6.91 dBi, G0 3.80, Gr0 3.22 dBi, Pflux 3.5999e-23, Pacc 7.3619e-23, (Pacc-Pflux)/Pacc 0.5110, Psphere/Pflux 1.0004
+  f 2.380 GHz: D0 6.94 dBi, G0 3.83, Gr0 3.30 dBi, Pflux 3.6096e-23, Pacc 7.3827e-23, (Pacc-Pflux)/Pacc 0.5111, Psphere/Pflux 1.0003
+  f 2.400 GHz: D0 6.97 dBi, G0 3.86, Gr0 3.20 dBi, Pflux 3.4855e-23, Pacc 7.1328e-23, (Pacc-Pflux)/Pacc 0.5113, Psphere/Pflux 1.0001
+cuts at 2.380 GHz (S11 min 2.3783 GHz)
+  max D 6.94 dBi at theta 0 deg phi 0 deg
+  E-plane (phi=0) co-pol peak at theta 0 deg; H-plane (phi=90) peak at theta 0 deg
+  front/back (theta 0 vs 180, phi 0): 12.99 dB
+  cross-pol at broadside: 329.3 dB below co-pol
+  E-plane D(theta) dBi, theta 0:15:90 : 6.9 6.6 5.6 4.1 2.0 -0.4 -3.3 
+  H-plane D(theta) dBi, theta 0:15:90 : 6.9 6.5 5.2 3.2 0.6 -2.4 -5.6 

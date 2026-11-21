@@ -1,0 +1,4 @@
+rustlab 0.3.63 — interpreting /agent/repos/rustlab/dev/plans/fdtd3d_phase6_impl/dipole_aniso.rlab (.rlab)
+cubic dz = dx, ez dipole: steps 698, Psphere/Pflux - 1 = -2.32e-04
+dz = 0.4 dx, ez dipole: steps 1157, Psphere/Pflux - 1 = 6.96e-04
+dz = 0.4 dx, ex dipole: steps 1157, Psphere/Pflux - 1 = -1.69e-04

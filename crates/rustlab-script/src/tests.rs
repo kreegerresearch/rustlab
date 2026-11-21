@@ -2258,9 +2258,9 @@ mod eig_tests {
         let src = "
 A = [2, 1, 0; 1, 2, 1; 0, 1, 2];
 [V, D] = eig(A, \"vector\");
-r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
-r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
-r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+r1 = norm(A * V(:,1) - D(1) * V(:,1));
+r2 = norm(A * V(:,2) - D(2) * V(:,2));
+r3 = norm(A * V(:,3) - D(3) * V(:,3));
 ";
         let ev = eval_str(src);
         for name in &["r1", "r2", "r3"] {
@@ -3204,9 +3204,9 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
         let src = "
 A = [4, 1, 0; 0, 2, 1; 0, 0, 5];
 [V, D] = eig(A, \"vector\");
-r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
-r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
-r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+r1 = norm(A * V(:,1) - D(1) * V(:,1));
+r2 = norm(A * V(:,2) - D(2) * V(:,2));
+r3 = norm(A * V(:,3) - D(3) * V(:,3));
 ";
         let ev = eval_str(src);
         for name in &["r1", "r2", "r3"] {
@@ -10672,7 +10672,7 @@ mod sparse_tests {
                  V(ii, jj) = sin(pi*ii/(ny+1)) * sin(pi*jj/(nx+1));\n\
                end\n\
              end\n\
-             v_flat = V(:)';\n\
+             v_flat = V(:);\n\
              lam = 2*(cos(pi/(nx+1)) + cos(pi/(ny+1)) - 2);\n\
              r = D * v_flat - lam * v_flat;\n\
              err = norm(r)",
@@ -12846,8 +12846,9 @@ mod pin_dirichlet_tests {
         }
     }
 
-    /// Mask form on a real operator: the pinned row becomes the identity
-    /// row, b gets the value, and everything else is untouched.
+    /// Mask form on a real operator: the pinned row becomes `|A(k,k)|` on the
+    /// diagonal (4 here), b gets that times the value, and everything else
+    /// is untouched.
     #[test]
     fn mask_pins_row_to_identity() {
         let ev = run(
@@ -12864,9 +12865,9 @@ mod pin_dirichlet_tests {
              other = b2(1);
              untouched = D(1, 1);",
         );
-        assert_eq!(scalar(&ev, "diag_val"), 1.0, "pinned diagonal is 1");
+        assert_eq!(scalar(&ev, "diag_val"), 4.0, "pinned diagonal is |A(k,k)|");
         assert_eq!(scalar(&ev, "off_sum"), 0.0, "pinned row has no off-diagonals");
-        assert_eq!(scalar(&ev, "rhs"), 5.0, "b carries the pinned value");
+        assert_eq!(scalar(&ev, "rhs"), 20.0, "b carries the scaled pinned value");
         assert_eq!(scalar(&ev, "other"), 0.0, "unpinned b untouched");
         assert!(
             scalar(&ev, "untouched").abs() > 0.0,
@@ -12939,8 +12940,8 @@ mod pin_dirichlet_tests {
              dv = D(k, k);
              rhs = b2(k);",
         );
-        assert_eq!(scalar(&ev, "dv"), 1.0);
-        assert_eq!(scalar(&ev, "rhs"), 3.5);
+        assert_eq!(scalar(&ev, "dv"), 6.0, "|A(k,k)| of laplacian_3d(2, 2, 2)");
+        assert_eq!(scalar(&ev, "rhs"), 21.0);
     }
 
     /// Dense A takes the same surgery.
@@ -12953,10 +12954,10 @@ mod pin_dirichlet_tests {
              a11 = A2(1, 1); a12 = A2(1, 2); a21 = A2(2, 1);
              r = b2(1);",
         );
-        assert_eq!(scalar(&ev, "a11"), 1.0);
+        assert_eq!(scalar(&ev, "a11"), 2.0);
         assert_eq!(scalar(&ev, "a12"), 0.0);
         assert_eq!(scalar(&ev, "a21"), 1.0, "other rows untouched");
-        assert_eq!(scalar(&ev, "r"), 4.0);
+        assert_eq!(scalar(&ev, "r"), 8.0);
     }
 
     #[test]
@@ -15016,7 +15017,12 @@ mod reshape_and_concat {
         ev.set("A", src);
         run(&mut ev, &format!("B = reshape(A, {m}, {n});"));
         let got = ev.get("B").unwrap();
-        if m == 1 || n == 1 {
+        if n == 1 && m != 1 {
+            // An m×1 shape is a column (MATLAB).
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(b.dim(), (m, 1), "{m}×{n}");
+            assert_eq!(col_major(got), flat, "{m}×{n}");
+        } else if m == 1 || n == 1 {
             let Value::Vector(v) = got else { panic!("{m}×{n}: {got:?}") };
             assert_eq!(v.to_vec(), flat, "{m}×{n}");
         } else {
@@ -18905,6 +18911,85 @@ mod round2_regressions {
         assert_eq!(scalar(&eval("a = sum(sum([1,2;3,4] > 2))"), "a"), 2.0);
     }
 
+    /// Comparisons pair elements the way `+` and `.*` do.
+    ///
+    /// An `n×1` column with a length-`n` vector is element-wise (a `1×n`
+    /// logical), the same pairs as `v' .* v`. Two matrices repeat a
+    /// length-1 dimension, so a `3×1` matrix against a `1×3` matrix is
+    /// `3×3`. Two vectors of different lengths still error, including a
+    /// length-1 vector, which does not stretch across another vector.
+    #[test]
+    fn comparison_pairs_like_plus_and_elemul() {
+        let flags = |ev: &Evaluator, name: &str| -> (usize, usize, Vec<u8>) {
+            match ev.get(name).unwrap() {
+                Value::Logical(a) => (
+                    a.rows(),
+                    a.cols(),
+                    a.as_slice().iter().map(|&b| b).collect(),
+                ),
+                other => panic!("{name}: {other:?}"),
+            }
+        };
+        let shape_of = |ev: &Evaluator, name: &str| -> (usize, usize) {
+            match ev.get(name).unwrap() {
+                Value::Vector(v) => (1, crate::eval::shared::Shared::len(v)),
+                Value::Matrix(m) => {
+                    let s = crate::eval::shared::Shared::shape(m);
+                    (s[0], s[1])
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        };
+
+        // v' == v is the column-element zip, not a 3×3 outer table.
+        let ev = eval("v = 1:3; eq = v' == v; prod = v' .* v; sm = v' + v");
+        assert_eq!(flags(&ev, "eq"), (1, 3, vec![1, 1, 1]));
+        assert_eq!(shape_of(&ev, "prod"), (1, 3));
+        assert_eq!(shape_of(&ev, "sm"), (1, 3));
+
+        // The zip is not the diagonal of an outer compare.
+        let ev = eval("v = [1, 2, 4]; c = [1; 0; 4]; eq = c == v; back = v == c");
+        assert_eq!(flags(&ev, "eq"), (1, 3, vec![1, 0, 1]));
+        assert_eq!(flags(&ev, "back"), (1, 3, vec![1, 0, 1]));
+        let ev = eval("v = [2, 3, 3]; lt = [1; 2; 4] < v");
+        assert_eq!(flags(&ev, "lt"), (1, 3, vec![1, 1, 0]));
+
+        // Two matrices: a length-1 dimension expands, same shape as .*.
+        let ev = eval("col = [1; 2; 3]; row = ones(1, 3); eq = col == row; prod = col .* row");
+        assert_eq!(flags(&ev, "eq"), (3, 3, vec![1, 1, 1, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (3, 3));
+
+        let ev = eval("A = [1, 2, 3; 4, 5, 6]; b = [1; 4]; eq = A == b; prod = A .* b");
+        assert_eq!(flags(&ev, "eq"), (2, 3, vec![1, 0, 0, 1, 0, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (2, 3));
+
+        // A length-1 vector stretches across a matrix, as .* does.
+        let ev = eval("eq = [2] == [1, 2; 2, 0]; prod = [2] .* [1, 2; 2, 0]");
+        assert_eq!(flags(&ev, "eq"), (2, 2, vec![0, 1, 1, 0]));
+        assert_eq!(shape_of(&ev, "prod"), (2, 2));
+
+        let refuse = |src: &str| -> String {
+            let src = format!("{src}\n");
+            let tokens = lexer::tokenize(&src).unwrap();
+            let stmts = parser::parse(tokens).unwrap();
+            let mut ev = Evaluator::new();
+            for stmt in &stmts {
+                if let Err(e) = ev.exec_stmt(stmt) {
+                    return e.to_string();
+                }
+            }
+            panic!("expected an error for: {src}");
+        };
+        let err = refuse("a = ones(2, 3) == ones(3, 2)");
+        assert!(err.contains("comparison shape mismatch"), "{err}");
+        let err = refuse("a = (1:3) == (1:4)");
+        assert!(err.contains("comparison length mismatch"), "{err}");
+        // A length-1 vector does not stretch across another vector.
+        let err = refuse("a = [5] == (1:3)");
+        assert!(err.contains("comparison length mismatch"), "{err}");
+    }
+
+
     // E2 — logical mask indexing (read + assign) on vectors and matrices.
     #[test]
     fn logical_mask_indexing() {
@@ -21331,12 +21416,27 @@ mod printf_and_row_matrix_tests {
         }
         assert_eq!(scalar(&ev, "s"), 3.0);
 
-        let msg = eval_err(
+        // An n×1 column and a length-n vector compare element-wise, the
+        // same pairs as `.*` and `+`. This used to be a shape error.
+        let ev = eval(
             "v = [1, 2, 3]
              c = [1; 2; 3]
-             b = v == c",
+             b = v == c
+             prod = v .* c
+             sm = v + c",
         );
-        assert!(msg.contains("comparison"), "{msg}");
+        match ev.get("b").unwrap() {
+            Value::Logical(a) => {
+                assert_eq!((a.rows(), a.cols()), (1, 3));
+                assert_eq!(a.to_flags(), vec![true, true, true]);
+            }
+            other => panic!("b: expected logical, got {other:?}"),
+        }
+        assert_eq!(shape_1d(&ev, "prod"), 3);
+        assert_eq!(shape_1d(&ev, "sm"), 3);
+
+        // A column is still not a `for` sequence. That rule is separate
+        // from comparison.
         let msg = eval_err(
             "s = 0
              for i = [1; 2; 3]
@@ -21344,6 +21444,14 @@ mod printf_and_row_matrix_tests {
              end",
         );
         assert!(msg.contains("cannot iterate"), "{msg}");
+    }
+
+    fn shape_1d(ev: &Evaluator, name: &str) -> usize {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.len(),
+            Value::Matrix(m) => m.nrows() * m.ncols(),
+            other => panic!("{name}: {other:?}"),
+        }
     }
 }
 

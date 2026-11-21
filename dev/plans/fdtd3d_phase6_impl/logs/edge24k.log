@@ -1,0 +1,33 @@
+rustlab 0.3.63 — interpreting /tmp/proto/edge.rlab (.rlab)
+mesh 102 x 110 x 74 = 830280 cells, 174 MB, dt = 1.1497e-12 s, metal 28.0 x 38.0 mm, feed edge ix=38
+ground 62.0 x 70.0 mm, sigma 0 S/m, NTFF freqs 14, steps 24000
+run 364.6 s, 54.6 Mcell/s
+  n= 4000 tail V 1.02e-01 I 4.90e-02  min|S11| 0.468 at 2.4463 GHz
+  n= 6000 tail V 2.19e-02 I 1.05e-02  min|S11| 0.555 at 2.4282 GHz
+  n= 8000 tail V 5.86e-03 I 2.82e-03  min|S11| 0.567 at 2.4327 GHz
+  n=12000 tail V 4.89e-04 I 2.35e-04  min|S11| 0.569 at 2.4372 GHz
+  n=16000 tail V 7.18e-05 I 3.43e-05  min|S11| 0.570 at 2.4395 GHz
+  n=20000 tail V 1.17e-05 I 5.64e-06  min|S11| 0.569 at 2.4354 GHz
+  n=24000 tail V 2.91e-06 I 1.40e-06  min|S11| 0.569 at 2.4372 GHz
+ring-down: amplitude decay 4.337e+08 1/s, loaded Q at 2.44 GHz = 17.7
+  f 2.300 GHz: D0 6.84 dBi, G0 6.83, Gr0 1.22 dBi, Pflux 2.3412e-23, Pacc 2.3451e-23, (Pacc-Pflux)/Pacc 0.0017, Psphere/Pflux 1.0203
+  f 2.320 GHz: D0 6.87 dBi, G0 6.86, Gr0 2.02 dBi, Pflux 2.8024e-23, Pacc 2.8069e-23, (Pacc-Pflux)/Pacc 0.0016, Psphere/Pflux 1.0206
+  f 2.340 GHz: D0 6.90 dBi, G0 6.89, Gr0 2.83 dBi, Pflux 3.3494e-23, Pacc 3.3546e-23, (Pacc-Pflux)/Pacc 0.0015, Psphere/Pflux 1.0206
+  f 2.360 GHz: D0 6.93 dBi, G0 6.92, Gr0 3.59 dBi, Pflux 3.9697e-23, Pacc 3.9757e-23, (Pacc-Pflux)/Pacc 0.0015, Psphere/Pflux 1.0206
+  f 2.380 GHz: D0 6.96 dBi, G0 6.95, Gr0 4.29 dBi, Pflux 4.6190e-23, Pacc 4.6256e-23, (Pacc-Pflux)/Pacc 0.0014, Psphere/Pflux 1.0204
+  f 2.400 GHz: D0 6.99 dBi, G0 6.98, Gr0 4.85 dBi, Pflux 5.2070e-23, Pacc 5.2142e-23, (Pacc-Pflux)/Pacc 0.0014, Psphere/Pflux 1.0200
+  f 2.420 GHz: D0 7.01 dBi, G0 7.01, Gr0 5.21 dBi, Pflux 5.6078e-23, Pacc 5.6153e-23, (Pacc-Pflux)/Pacc 0.0013, Psphere/Pflux 1.0196
+  f 2.440 GHz: D0 7.04 dBi, G0 7.03, Gr0 5.33 dBi, Pflux 5.7097e-23, Pacc 5.7170e-23, (Pacc-Pflux)/Pacc 0.0013, Psphere/Pflux 1.0190
+  f 2.460 GHz: D0 7.06 dBi, G0 7.06, Gr0 5.19 dBi, Pflux 5.4831e-23, Pacc 5.4898e-23, (Pacc-Pflux)/Pacc 0.0012, Psphere/Pflux 1.0183
+  f 2.480 GHz: D0 7.09 dBi, G0 7.08, Gr0 4.82 dBi, Pflux 5.0008e-23, Pacc 5.0067e-23, (Pacc-Pflux)/Pacc 0.0012, Psphere/Pflux 1.0175
+  f 2.500 GHz: D0 7.11 dBi, G0 7.10, Gr0 4.29 dBi, Pflux 4.3881e-23, Pacc 4.3932e-23, (Pacc-Pflux)/Pacc 0.0011, Psphere/Pflux 1.0167
+  f 2.520 GHz: D0 7.13 dBi, G0 7.12, Gr0 3.64 dBi, Pflux 3.7571e-23, Pacc 3.7613e-23, (Pacc-Pflux)/Pacc 0.0011, Psphere/Pflux 1.0157
+  f 2.540 GHz: D0 7.15 dBi, G0 7.14, Gr0 2.95 dBi, Pflux 3.1761e-23, Pacc 3.1795e-23, (Pacc-Pflux)/Pacc 0.0011, Psphere/Pflux 1.0148
+  f 2.560 GHz: D0 7.17 dBi, G0 7.16, Gr0 2.23 dBi, Pflux 2.6732e-23, Pacc 2.6761e-23, (Pacc-Pflux)/Pacc 0.0011, Psphere/Pflux 1.0137
+cuts at 2.440 GHz (S11 min 2.4372 GHz)
+  max D 7.04 dBi at theta 0 deg phi 280 deg
+  E-plane (phi=0) co-pol peak at theta 0 deg; H-plane (phi=90) peak at theta 0 deg
+  front/back (theta 0 vs 180, phi 0): 13.78 dB
+  cross-pol at broadside: 343.3 dB below co-pol
+  E-plane D(theta) dBi, theta 0:15:90 : 7.0 6.7 5.7 4.1 2.1 -0.4 -3.2 
+  H-plane D(theta) dBi, theta 0:15:90 : 7.0 6.6 5.4 3.4 0.8 -2.2 -5.3 

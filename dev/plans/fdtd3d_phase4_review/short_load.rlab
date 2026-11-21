@@ -1,0 +1,26 @@
+# Phase 4 review diagnostic: the pillar replaced by a PEC block (a short).
+# Expect S11 -> -1 at low frequency and V/I -> jwL (inductive, small).
+# Not an example. Run from the repo root:
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase4_review/short_load.rlab --plot none
+dx = 1.0e-3; dy = 1.5e-3; dz = 1.0e-3; z0 = 50; n = 4; kp = 2; ip = 6; jp = 8; tau = 1e-9;
+nx = 16; ny = 14; nz = 8;
+sim = fdtd3d(nx, ny, nz, dx, dy, dz);
+blk = zeros3(ny, nx, nz);
+blk(ip:ip + n - 1, jp:jp + n - 1, 1:kp) = 1;
+fdtd_pec(sim, blk);
+pad = zeros(ny, nx); pad(ip:ip + n, jp - 1:jp + n) = 1;
+fdtd_pec(sim, "z", kp + 1, pad);
+fdtd_port(sim, "ez", ip + n / 2, jp - 1, 1:kp, z0, "gaussian", 4 * tau, tau);
+dt = fdtd_info(sim).dt;
+nsteps = round(16 * tau / dt);
+out = fdtd_run(sim, nsteps);
+V = out.V; I = out.I;
+nf = 8 * nsteps;
+f = ((0:nf - 1) / (nf * dt))';
+Vf = fft(V, nf); If = fft(I, nf) .* exp(1j * pi * f * dt);
+for fm = [10e6, 100e6, 300e6]
+  k = round(fm * nf * dt) + 1;
+  s = (Vf(k) - z0 * If(k)) / (Vf(k) + z0 * If(k));
+  z = Vf(k) / If(k);
+  fprintf("%4.0f MHz  S11 = %+.4f%+.4fj  |S11| = %.5f  Z = %+.4f%+.4fj  L = %.3f nH\n", fm / 1e6, real(s), imag(s), abs(s), real(z), imag(z), imag(z) / (2 * pi * f(k)) * 1e9);
+end

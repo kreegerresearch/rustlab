@@ -1,0 +1,58 @@
+# Phase 6 planning prototype: parmap over patch widths on the 2 mm lesson
+# mesh (floating ground, CPML on six faces, no NTFF). Not an example.
+#   ./target/release/rustlab run dev/plans/fdtd3d_phase6_impl/sweep_proto.rlab --plot none
+
+function r = patch_res(Wm)
+  eps_r = 4.4;
+  h = 1.6e-3;
+  f0 = 2.4e9;
+  Lm = 28e-3;
+  dx = 2e-3;
+  nsub = 2;
+  dz = h / nsub;
+  npml = 8;
+  margin = 2;
+  ngx = 2 * round((Lm / 2 + 16e-3) / dx);
+  ngy = 2 * round((19e-3 + 16e-3) / dx);
+  nax = round(10e-3 / dx);
+  naz = round(20e-3 / dz);
+  nx = ngx + 2 * (npml + margin + nax);
+  ny = ngy + 2 * (npml + margin + nax);
+  nz = nsub + 2 * (npml + margin + naz);
+  jg0 = npml + margin + nax;
+  ig0 = jg0;
+  kg = npml + margin + naz;
+  sim = fdtd3d(nx, ny, nz, dx, dx, dz);
+  eps = ones3(ny, nx, nz);
+  eps(ig0 + 1:ig0 + ngy, jg0 + 1:jg0 + ngx, kg + 1:kg + nsub) = eps_r;
+  fdtd_media(sim, eps, 1, 0);
+  fdtd_cpml(sim, npml);
+  ground = zeros(ny, nx);
+  ground(ig0 + 1:ig0 + ngy + 1, jg0 + 1:jg0 + ngx + 1) = 1;
+  fdtd_pec(sim, "z", kg + 1, ground);
+  nL = round(Lm / dx);
+  nW = round(Wm / dx);
+  j0 = nx / 2 - nL / 2;
+  i0 = ny / 2 - nW / 2;
+  patch = zeros(ny, nx);
+  patch(i0 + 1:i0 + nW + 1, j0 + 1:j0 + nL + 1) = 1;
+  fdtd_pec(sim, "z", kg + nsub + 1, patch);
+  tau = 1 / (2 * f0);
+  fdtd_port(sim, "ez", ny / 2 + 1, j0 + 1, kg + 1:kg + nsub, 50, "modulated", 4 * tau, tau, f0);
+  fdtd_run(sim, 8000);
+  s = fdtd_s11(sim, "nfft", 64000);
+  f = s.frequencies;
+  a = abs(sij(s, 1, 1));
+  band = find((f > 1.8e9) .* (f < 3.2e9));
+  k = argmin(a(band));
+  r = [f(band(k)), a(band(k))];
+end
+
+widths = [28e-3, 32e-3, 36e-3, 40e-3, 44e-3];
+tic;
+R = parmap(@(w) patch_res(w), widths);
+t = toc;
+fprintf("parmap over %d widths on %d threads: %.1f s\n", length(widths), nproc(), t);
+for q = 1:length(widths)
+  fprintf("  W = %2.0f mm: f_res = %.4f GHz, min |S11| = %.3f\n", widths(q) * 1e3, R(q, 1) / 1e9, R(q, 2));
+end
