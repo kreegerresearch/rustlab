@@ -6,6 +6,7 @@
 //! natural order; the negative lags are the wrapped end of that product,
 //! not a reversed copy of `y`.
 
+use rustlab_core::Sum0;
 use crate::fft::dft_any_len;
 use num_complex::Complex;
 use rustlab_core::{checked_elems, variable_too_large, CoreError, C64, ELEM_C64, ELEM_F64};
@@ -220,8 +221,8 @@ fn scale_c64(raw: &mut [C64], x: &[C64], y: &[C64], maxlag: usize, scale: XcorrS
             }
         }
         XcorrScale::Coeff => {
-            let ex: f64 = x.iter().map(|c| c.norm_sqr()).sum();
-            let ey: f64 = y.iter().map(|c| c.norm_sqr()).sum();
+            let ex: f64 = x.iter().map(|c| c.norm_sqr()).sum0();
+            let ey: f64 = y.iter().map(|c| c.norm_sqr()).sum0();
             let d = (ex * ey).sqrt();
             if d == 0.0 {
                 raw.fill(Complex::new(f64::NAN, f64::NAN));
@@ -260,8 +261,8 @@ fn scale_f64(raw: &mut [f64], x: &[f64], y: &[f64], maxlag: usize, scale: XcorrS
             }
         }
         XcorrScale::Coeff => {
-            let ex: f64 = x.iter().map(|v| v * v).sum();
-            let ey: f64 = y.iter().map(|v| v * v).sum();
+            let ex: f64 = x.iter().map(|v| v * v).sum0();
+            let ey: f64 = y.iter().map(|v| v * v).sum0();
             let d = (ex * ey).sqrt();
             if d == 0.0 {
                 raw.fill(f64::NAN);

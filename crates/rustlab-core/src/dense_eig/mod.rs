@@ -41,6 +41,7 @@ mod real;
 #[cfg(test)]
 mod tests;
 
+use crate::Sum0;
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
 use num_complex::Complex;
@@ -127,7 +128,7 @@ fn unit(one: bool) -> C64 {
 fn normalize_columns(v: &mut CMatrix) {
     let n = v.nrows();
     for j in 0..v.ncols() {
-        let norm = (0..n).map(|i| v[[i, j]].norm_sqr()).sum::<f64>().sqrt();
+        let norm = (0..n).map(|i| v[[i, j]].norm_sqr()).sum0().sqrt();
         if norm == 0.0 {
             continue;
         }

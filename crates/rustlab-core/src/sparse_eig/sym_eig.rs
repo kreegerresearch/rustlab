@@ -12,6 +12,7 @@
 //! tiny constant factor and bulletproof correctness — exactly what we
 //! want for a small dense subproblem.
 
+use crate::Sum0;
 use ndarray::Array2;
 
 /// Diagonalize a symmetric matrix `A` via cyclic Jacobi rotations.
@@ -44,7 +45,7 @@ pub fn sym_eig_jacobi(a: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
                 off_norm_sq += 2.0 * t[[i, j]].powi(2);
             }
         }
-        let total_sq: f64 = (0..n).map(|i| t[[i, i]].powi(2)).sum::<f64>() + off_norm_sq;
+        let total_sq: f64 = (0..n).map(|i| t[[i, i]].powi(2)).sum0() + off_norm_sq;
         if off_norm_sq <= tol_factor.powi(2) * total_sq {
             break;
         }

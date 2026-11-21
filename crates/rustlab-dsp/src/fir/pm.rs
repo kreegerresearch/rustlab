@@ -12,6 +12,7 @@
 //! Parks & McClellan, "Chebyshev Approximation for Nonrecursive Digital Filters
 //! with Linear Phase", *IEEE Trans. Circuit Theory*, 1972.
 
+use rustlab_core::Sum0;
 use super::design::FirFilter;
 use crate::error::DspError;
 use ndarray::Array1;
@@ -315,7 +316,7 @@ fn eval_fir_response(h: &[f64], f: f64) -> f64 {
 /// Build the dense frequency grid by distributing `n_grid` points
 /// proportionally across all specified bands.
 fn build_grid(bands: &[Band], n_grid: usize) -> Vec<Pt> {
-    let total_bw: f64 = bands.iter().map(|b| (b.upper - b.lower).max(0.0)).sum();
+    let total_bw: f64 = bands.iter().map(|b| (b.upper - b.lower).max(0.0)).sum0();
     if total_bw == 0.0 {
         return vec![];
     }

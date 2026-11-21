@@ -466,6 +466,17 @@ cargo doc --workspace --no-deps --open
 cargo run -p rustlab-cli --bin rustlab -- run examples/dsp/lowpass.rlab
 ```
 
+### Notebook run-time budget
+
+`make notebook-budget` (`dev/notebook-budget.py`, the `notebook-budget` CI
+workflow on every PR) renders every notebook in the repo with default
+settings in a release build and fails when one takes longer than 20 s
+(`NOTEBOOK_BUDGET=S`). Aim for a few seconds per notebook on a 4-core
+runner; 10 s is slow. A heavy setting that is worth teaching goes behind a
+documented opt-in (the `preset = "quick"` / `"full"` pattern in
+`patch_antenna` and `fdtd_sweep`), and the default stays fast. Do not raise
+the budget to make a slow notebook pass, and do not skip cells.
+
 ### Testing dependencies
 
 `cargo test` is the only requirement for the standard test suite. Higher-tier
@@ -1282,7 +1293,7 @@ primary     = NUMBER | STRING | IDENT
 | Switch / case | `switch expr case v1 ... otherwise ... end` | Match value against cases; first match wins |
 | For loop | `for i = 1:n ... end` | Iterates over range or vector; loop var stays in scope |
 | While loop | `while cond ... end` | Repeats body while cond is truthy; cond may be Bool, a 1-element logical, Scalar (nonzero), or Complex |
-| Logical array | `[true, false]`, `v > 0`, `logical(x)`, `true(m, n)` | Array comparisons are logical, not numeric 0/1. Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector is element-wise; other arrays repeat a length-1 dimension; two vectors must match in length. A scalar comparison stays `bool`. `islogical` is true for both; `class` is `"bool"` or `"logical"`. `L(k)` and `L(i, j)` of one cell stay a 1×1 logical (`class` `"logical"`). `A(mask)` selects trues (length must match). Scalar `true` selects the first element; `false` selects nothing; a 1-element logical is that subscript (`A(mask(k))`). A shorter logical of any other length is an error. `!` is MATLAB `~`. `!=` is MATLAB `~=` (`~=` is not a token). Element-wise `&`/`|` are `and` / `or` / `xor`. `&&` / `||` stay scalar. `double(mask)` or `mask + 0` is numeric 0/1 with the mask's shape (a `1×n` logical is a `1×n` matrix; next to a 1-D vector in arithmetic it is a vector). Numeric builtins and plots take a logical or a bool as 0/1 doubles (`LOGICAL_AWARE_BUILTINS` in `eval/mod.rs` lists the ones that see the raw logical); `reshape`, `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `min` / `max`, `cat` / `horzcat` / `vertcat` of all-logical data return a logical (`LOGICAL_PRESERVING_BUILTINS`). `sum(mask)` counts trues. `true(n)` is `n×n` when `true` is not shadowed |
+| Logical array | `[true, false]`, `v > 0`, `logical(x)`, `true(m, n)` | Array comparisons are logical, not numeric 0/1. Pairing matches `+` and `.*`: an `n×1` column with a length-`n` vector is element-wise; other arrays repeat a length-1 dimension; two vectors must match in length. A scalar comparison stays `bool`. `islogical` is true for both; `class` is `"bool"` or `"logical"`. `L(k)` and `L(i, j)` of one cell stay a 1×1 logical (`class` `"logical"`). `A(mask)` selects trues (length must match). Scalar `true` selects the first element; `false` selects nothing; a 1-element logical is that subscript (`A(mask(k))`). A shorter logical of any other length is an error. `!` is MATLAB `~`. `!=` is MATLAB `~=` (`~=` is not a token). Element-wise `&`/`|` are `and` / `or` / `xor`. `&&` / `||` stay scalar. `double(mask)` or `mask + 0` is numeric 0/1 with the mask's shape (a `1×n` logical is a `1×n` matrix; next to a 1-D vector in arithmetic it is a vector). Numeric builtins and plots take a logical or a bool as 0/1 doubles (`LOGICAL_AWARE_BUILTINS` in `eval/mod.rs` lists the ones that see the raw logical); `reshape`, `repmat`, `fliplr`, `squeeze`, `transpose`, `diag`, `sort`, `min` / `max`, `cat` / `horzcat` / `vertcat` of all-logical data return a logical (`LOGICAL_PRESERVING_BUILTINS`). `sum(mask)` counts trues. `true(n)` is `n×n` when `true` is not shadowed. `L(i, j) = v`, `L(:, k) = v`, `L(idx) = v` keep `L` logical (nonzero is true; NaN and complex are errors), grow with `false` past the end, and a new variable written with a logical value is logical |
 | ~~`break` / `continue`~~ | **Not supported — by design.** | Find-first patterns: lift the exit condition into the `while` header (`while i <= N && !found`). Skip patterns: invert the `if` predicate. See `dev/requests/break-continue.md`. Do not generate `break` or `continue`. |
 | Run (include) | `run file.rlab` | Execute a .rlab script; merges variables and functions into current scope. With no path jail, cwd becomes the script directory for the run and is restored afterwards |
 | Line continuation | `x = a + ...` (newline) `  b` | `...` skips rest of line; statement continues on next line |

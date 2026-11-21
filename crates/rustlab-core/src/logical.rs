@@ -149,6 +149,52 @@ impl LogicalArray {
         })
     }
 
+    /// Write one element (0-based row and column). `false` when out of range.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_core::LogicalArray;
+    /// let mut m = LogicalArray::filled(2, 2, false).unwrap();
+    /// assert!(m.set(1, 0, true));
+    /// assert!(m.get(1, 0).unwrap());
+    /// assert!(!m.set(2, 0, true));
+    /// ```
+    pub fn set(&mut self, r: usize, c: usize, value: bool) -> bool {
+        if r >= self.rows || c >= self.cols {
+            return false;
+        }
+        self.data[r * self.cols + c] = u8::from(value);
+        true
+    }
+
+    /// A `rows × cols` copy with the existing elements in place and every
+    /// new element `false`. Neither dimension may shrink.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_core::LogicalArray;
+    /// let m = LogicalArray::from_flags(vec![true, false], 1, 2).unwrap();
+    /// let g = m.resized(2, 3).unwrap();
+    /// assert!(g.get(0, 0).unwrap());
+    /// assert_eq!(g.count_true(), 1);
+    /// ```
+    pub fn resized(&self, rows: usize, cols: usize) -> Result<Self, CoreError> {
+        if rows < self.rows || cols < self.cols {
+            return Err(CoreError::InvalidParameter(format!(
+                "logical array cannot shrink from {}x{} to {rows}x{cols}",
+                self.rows, self.cols
+            )));
+        }
+        let mut out = Self::filled(rows, cols, false)?;
+        for r in 0..self.rows {
+            let src = &self.data[r * self.cols..(r + 1) * self.cols];
+            out.data[r * cols..r * cols + self.cols].copy_from_slice(src);
+        }
+        Ok(out)
+    }
+
     /// One row. An empty list is `1 × 0`.
     ///
     /// # Examples

@@ -1307,7 +1307,7 @@ Approximate stopband attenuation by window:
 | Kaiser (auto β) | user-specified |
 
 ### `convolve(x, h)`
-Linear convolution. Output length = `len(x) + len(h) − 1`.
+Linear convolution. Output length = `len(x) + len(h) − 1`. Real inputs give a real result, as MATLAB `conv` does.
 ```
 y = convolve(signal, h)
 ```
@@ -2143,7 +2143,7 @@ M(2, 3) = 7      % only element (2, 3) updated
 ```
 
 ### Linear and logical write: `M(idx) = c`
-One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, a logical mask, or a scalar logical. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). `true` writes the first element. `false` writes nothing. A one-element logical is that same subscript. A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. Writing into a logical array (`L(i) = false`) is not supported.
+One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, a logical mask, or a scalar logical. The mask is a logical array from a comparison (`M > 0`) or a numeric 0/1 array of the same length (a vector) or the same shape (a matrix). `true` writes the first element. `false` writes nothing. A one-element logical is that same subscript. A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape. A logical right-hand side into a numeric target stores 0/1.
 
 `zeros(size(v))` is a matrix (a row when `v` is a vector). `g(idx) = c` writes that matrix.
 ```
@@ -2153,6 +2153,15 @@ g(v > 0) = 7          % [7, 0, 7]
 g([1, 3]) = [9, 8]    % [9, 0, 8]
 ```
 A `1×N` or `N×1` matrix grows when a numeric index runs past the end (a row grows along columns, a column grows along rows). A general 2-D matrix does not grow: an index past the last element is an error. A logical mask does not grow. A scalar index still uses the legacy row write `M(i) = row_vector`.
+
+### Write into a logical array: `L(i) = v`, `L(i, j) = v`
+A logical array stays logical, as in MATLAB. `L(i, j)`, `L(:, k)`, `L(rows, cols)`, `L(idx)`, `L(:)`, and a mask `L(L) = false` all work. A number is stored as `true` when it is nonzero and `false` when it is zero; `NaN` and a complex value with a nonzero imaginary part are errors. A scalar fills every selected element. Otherwise the value needs one element per target, in the region's shape, or as any vector when the region is one row or one column. A write past the end grows the array with `false`: a row grows along its columns, a column along its rows, and two subscripts grow both dimensions. One index past the last element of a matrix that is not a vector is an error (MATLAB: ambiguous dimension). A new variable first written with a logical value is logical: `x(3) = true` is `[false, false, true]`.
+```
+D = false(2, 3)
+D(1, :) = [1, 0, 2]     % [true, false, true]
+D(:, 3) = false
+D(3, 1) = true          % grows to 3x3
+```
 
 ### Row write: `M(i, :) = vec` (preferred) or `M(i) = vec` (legacy)
 Assign a length-`ncols` Vector into row `i`. The two-argument form is symmetric with the row-read `M(i, :)`. The single-argument form is the legacy row-write that still works for back-compat.

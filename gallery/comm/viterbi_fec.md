@@ -171,7 +171,7 @@ xlabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/viterbi_fec/plot-1-864560f1.svg)
+![plot 1](plots/viterbi_fec/plot-1-bfc53ed0.svg)
 
 <!-- rustlab:output-end -->
 
@@ -208,17 +208,53 @@ function T = make_code(G, P)
   T.rate = size(P, 2) / sum(sum(P));
 end
 
-# One frame through the channel: returns the number of bit errors.
-function e = frame_errors(N, ebn0_db, T, hard)
-  u = randi([0, 1], 1, N);
-  x = 1 - 2 * conv_encode(u, T.G);
-  M = puncture_mask(T.P, size(x, 2));
+# The same decoder for F frames side by side in Y (n x (L*F)). The path
+# metrics are a 64 x F matrix, one column per frame, so each trellis step is
+# one set of array operations for every frame. U: F x (L-6) decoded bits.
+function U = viterbi_frames(Y, F, P0, P1, C0, C1)
+  if F == 1
+    U = viterbi(Y, P0, P1, C0, C1);
+    return;
+  end
+  L = size(Y, 2) / F;
+  cols = L * (0:F-1);              # column of step 0 in each frame
+  pm = -1e9 * ones(64, F);
+  pm(1, :) = 0;
+  D = false(L, 64 * F);            # one row per step; frame f is columns 64*(f-1)+1 : 64*f
+  for t = 1:L
+    Yt = Y(:, cols + t);           # step t of every frame, n x F
+    a = pm(P0, :) + C0 * Yt;
+    b = pm(P1, :) + C1 * Yt;
+    d = b > a;
+    D(t, :) = d(:);
+    pm = max(a, b);
+  end
+  s = zeros(1, F);
+  base = 64 * (0:F-1);
+  U = zeros(L, F);
+  for t = L:-1:1
+    U(t, :) = floor(s / 32);
+    s = mod(s, 32) * 2 + D(t, base + s + 1);
+  end
+  U = U(1:L-6, :)';
+end
+
+# F frames of N bits through the channel at one Eb/N0, decoded together.
+# Returns the total number of bit errors.
+function e = frame_errors(N, F, ebn0_db, T, hard)
+  u = randi([0, 1], F, N);
+  L = N + 6;
+  X = zeros(size(T.G, 1), F * L);
+  for f = 1:F
+    X(:, (f - 1) * L + 1 : f * L) = 1 - 2 * conv_encode(u(f, :), T.G);
+  end
+  M = repmat(puncture_mask(T.P, L), 1, F);   # each frame restarts the pattern
   sigma = sqrt(1 / (2 * T.rate * 10^(ebn0_db / 10)));
-  Y = (x + sigma * randn(size(x, 1), size(x, 2))) .* M;
+  Y = (X + sigma * randn(size(X, 1), size(X, 2))) .* M;
   if hard
     Y = sign(Y);
   end
-  e = sum(viterbi(Y, T.P0, T.P1, T.C0, T.C1) != u);
+  e = sum(sum(viterbi_frames(Y, F, T.P0, T.P1, T.C0, T.C1) != u));
 end
 
 # Uncoded BPSK: one symbol per bit, decided by sign.
@@ -241,10 +277,13 @@ six steps to a 10,000-bit frame.
 
 ## Bit error rate vs. $E_b/N_0$
 
-Each point decodes `n_frames` frames of 10,000 bits. The frames are
-independent, so `parmap` spreads them over all cores; its per-task random
-streams are derived from the master `seed`, so the result does not depend
-on the thread count.
+Each point decodes `n_frames` frames of 10,000 bits in one call to
+`viterbi_frames`, the decoder above run on a $64 \times F$ matrix of path
+metrics, one column per frame. Each trellis step is then one set of array
+operations for all 40 frames instead of 40 sets of 64-element ones. The
+points are independent, so `parmap` spreads them over all
+cores; its per-task random streams are derived from the master `seed`, so
+the result does not depend on the thread count.
 
 The theory curve for uncoded BPSK is $P_b = Q\!\left(\sqrt{2 E_b/N_0}\right)$.
 rustlab has no `erfc`, so $Q$ comes from Craig's exact integral
@@ -282,24 +321,24 @@ nE = length(ebn0);
 n_frames = 40;
 n_codes = 4;
 
-# Task k is one frame of one code at one Eb/N0.
+# Task k is all n_frames frames of one code at one Eb/N0.
 function e = ber_task(k, codes, N, n_frames, ebn0)
   nE = length(ebn0);
-  code = floor((k - 1) / (nE * n_frames)) + 1;
-  db = ebn0(mod(floor((k - 1) / n_frames), nE) + 1);
+  code = floor((k - 1) / nE) + 1;
+  db = ebn0(mod(k - 1, nE) + 1);
   if code == 1
-    e = frame_errors(N, db, codes.r13, false);
+    e = frame_errors(N, n_frames, db, codes.r13, false);
   elseif code == 2
-    e = frame_errors(N, db, codes.r12, false);
+    e = frame_errors(N, n_frames, db, codes.r12, false);
   elseif code == 3
-    e = frame_errors(N, db, codes.r23, false);
+    e = frame_errors(N, n_frames, db, codes.r23, false);
   else
-    e = frame_errors(N, db, codes.r34, false);
+    e = frame_errors(N, n_frames, db, codes.r34, false);
   end
 end
 
-errs = parmap(@(k) ber_task(k, codes, N, n_frames, ebn0), 1:(n_codes * nE * n_frames));
-ber = reshape(sum(reshape(errs, n_frames, n_codes * nE), 1), nE, n_codes)' / (N * n_frames);
+errs = parmap(@(k) ber_task(k, codes, N, n_frames, ebn0), 1:(n_codes * nE));
+ber = reshape(errs, nE, n_codes)' / (N * n_frames);
 ```
 
 `ber` has one row per code. At every whole dB, next to uncoded BPSK in
@@ -333,10 +372,10 @@ end
 ```text
 Eb/N0 (dB)                0        1        2        3        4        5        6
 uncoded (theory)    7.9e-02  5.6e-02  3.8e-02  2.3e-02  1.3e-02  6.0e-03  2.4e-03
-rate 1/3            7.8e-02  1.6e-02  1.9e-03  1.0e-04        -        -        -
-rate 1/2            1.5e-01  4.1e-02  4.9e-03  3.4e-04  1.5e-05        -        -
-rate 2/3            3.0e-01  1.2e-01  2.3e-02  2.1e-03  4.5e-05        -        -
-rate 3/4            3.8e-01  2.3e-01  6.4e-02  6.3e-03  2.5e-04  2.5e-05        -
+rate 1/3            7.9e-02  1.7e-02  1.6e-03  1.2e-04  2.5e-06        -        -
+rate 1/2            1.5e-01  3.9e-02  4.4e-03  3.2e-04  1.0e-05        -        -
+rate 2/3            3.0e-01  1.2e-01  2.3e-02  1.8e-03  7.5e-05        -        -
+rate 3/4            3.8e-01  2.3e-01  6.7e-02  7.3e-03  3.8e-04  1.2e-04        -
 ```
 
 <!-- rustlab:output-end -->
@@ -363,7 +402,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/viterbi_fec/plot-2-11f368c1.svg)
+![plot 2](plots/viterbi_fec/plot-2-5f90286b.svg)
 
 <!-- rustlab:output-end -->
 
@@ -416,22 +455,22 @@ end
 ```text
 code               bits/sym     Eb/N0 @ 1e-4   coding gain   Shannon limit
 uncoded (theory)      1.000          8.39 dB             -         1.76 dB
-rate 1/3              0.333          3.00 dB       5.39 dB        -0.55 dB
-rate 1/2              0.500          3.54 dB       4.85 dB         0.00 dB
-rate 2/3              0.667          3.79 dB       4.60 dB         0.57 dB
-rate 3/4              0.750          4.33 dB       4.06 dB         0.86 dB
+rate 1/3              0.333          3.04 dB       5.35 dB        -0.55 dB
+rate 1/2              0.500          3.33 dB       5.06 dB         0.00 dB
+rate 2/3              0.667          3.91 dB       4.48 dB         0.57 dB
+rate 3/4              0.750          4.31 dB       4.08 dB         0.86 dB
 ```
 
 <!-- rustlab:output-end -->
 
-At $10^{-4}$ the rate-1/2 code needs 3.5 dB where uncoded BPSK
-needs 8.4 dB. That 4.8 dB is about
+At $10^{-4}$ the rate-1/2 code needs 3.3 dB where uncoded BPSK
+needs 8.4 dB. That 5.1 dB is about
 3× less transmit power per bit, paid for
 with half the throughput. Rate 1/3 buys another
-0.5 dB for half as many symbols again. Puncturing to
-3/4 gives back 0.8 dB and sends a third fewer
+0.3 dB for half as many symbols again. Puncturing to
+3/4 gives back 1.0 dB and sends a third fewer
 symbols than rate 1/2. Every rate stays about
-3.5 dB from its Shannon limit, the gap that
+3.3 dB from its Shannon limit, the gap that
 turbo and LDPC codes closed in the 1990s.
 
 ## Hard vs. soft decisions
@@ -446,12 +485,12 @@ ebn0_h = 2:0.5:6;
 nH = length(ebn0_h);
 function e = hs_task(k, T, N, n_frames, ebn0_h)
   nH = length(ebn0_h);
-  hard = k > nH * n_frames;
-  db = ebn0_h(mod(floor((k - 1) / n_frames), nH) + 1);
-  e = frame_errors(N, db, T, hard);
+  hard = k > nH;
+  db = ebn0_h(mod(k - 1, nH) + 1);
+  e = frame_errors(N, n_frames, db, T, hard);
 end
-e_hs = parmap(@(k) hs_task(k, codes.r12, N, n_frames, ebn0_h), 1:(2 * nH * n_frames));
-ber_hs = reshape(sum(reshape(e_hs, n_frames, 2 * nH), 1), nH, 2)' / (N * n_frames);
+e_hs = parmap(@(k) hs_task(k, codes.r12, N, n_frames, ebn0_h), 1:(2 * nH));
+ber_hs = reshape(e_hs, nH, 2)' / (N * n_frames);
 
 clf
 keep_s = find(ber_hs(1, :) > 0);
@@ -473,17 +512,17 @@ fprintf("Eb/N0 at BER 1e-4: soft %.2f dB, hard %.2f dB, soft-decision gain %.2f 
 
 <!-- rustlab:output-start -->
 ```text
-Eb/N0 at BER 1e-4: soft 3.58 dB, hard 5.75 dB, soft-decision gain 2.17 dB
+Eb/N0 at BER 1e-4: soft 3.54 dB, hard 5.80 dB, soft-decision gain 2.25 dB
 ```
 
-![plot 3](plots/viterbi_fec/plot-3-78036944.svg)
+![plot 3](plots/viterbi_fec/plot-3-29ee9fd6.svg)
 
 <!-- rustlab:output-end -->
 
 The textbook figure for unquantized soft decisions on AWGN is about 2 dB,
-and the simulation gives 2.2 dB: knowing which
+and the simulation gives 2.3 dB: knowing which
 symbols are unreliable is worth
-45 % of everything the
+44 % of everything the
 code gains at this BER.
 
 ## Error bursts
@@ -522,7 +561,7 @@ fprintf("%d bit errors in %d bursts, %.1f errors per burst\n", length(pos), n_bu
 57 bit errors in 6 bursts, 9.5 errors per burst
 ```
 
-![plot 4](plots/viterbi_fec/plot-4-9a5236ee.svg)
+![plot 4](plots/viterbi_fec/plot-4-7a0d0c92.svg)
 
 <!-- rustlab:output-end -->
 

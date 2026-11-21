@@ -1,3 +1,4 @@
+use rustlab_core::Sum0;
 use super::tensor3_lift;
 use super::shared::Shared;
 use crate::error::ScriptError;
@@ -709,6 +710,12 @@ fn builtin_convolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let h = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let result = convolve(&x, &h)?;
+    // Real inputs give a real result (MATLAB `conv`). The imaginary parts
+    // are signed zeros from `re·0` terms; the real parts are kept as is.
+    let real = |v: &CVector| v.iter().all(|z| z.im == 0.0);
+    if real(&x) && real(&h) {
+        return Ok(Value::real_vector(result.mapv(|z| z.re)));
+    }
     Ok(Value::Vector(result.into()))
 }
 
@@ -2458,6 +2465,64 @@ fn builtin_max_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Script
 /// Multi-return (`nargout >= 2`) is only valid for the single-vector / matrix
 /// forms and the 3-arg axis form. The two-argument elementwise form
 /// (`max(a, b)`) errors on multi-return; index has no defined meaning there.
+/// Elementwise `max(a, b)` / `min(a, b)` when both operands are real-stored
+/// arrays of one shape, or one is a real scalar. Same rule as the complex
+/// path on real data (a NaN loses, a tie keeps `a`), without widening, and
+/// the result stays real-stored. `None` sends every other case there.
+fn minmax_real_stored(a: &Value, b: &Value, is_max: bool) -> Option<Value> {
+    let pick = |x: f64, y: f64| -> f64 {
+        if x.is_nan() {
+            return y;
+        }
+        if y.is_nan() {
+            return x;
+        }
+        let take_y = if is_max { y > x } else { y < x };
+        if take_y {
+            y
+        } else {
+            x
+        }
+    };
+    let zip = |xs: &[f64], ys: &[f64]| -> Vec<f64> {
+        xs.iter().zip(ys).map(|(&x, &y)| pick(x, y)).collect()
+    };
+    let left = |xs: &[f64], y: f64| -> Vec<f64> { xs.iter().map(|&x| pick(x, y)).collect() };
+    let right = |x: f64, ys: &[f64]| -> Vec<f64> { ys.iter().map(|&y| pick(x, y)).collect() };
+    let matrix = |shape: &[usize], d: Vec<f64>| -> Option<Value> {
+        Some(Value::real_matrix(
+            Array2::from_shape_vec((shape[0], shape[1]), d).ok()?,
+        ))
+    };
+    match (a, b) {
+        (Value::Matrix(x), Value::Matrix(y)) if Shared::shape(x) == Shared::shape(y) => matrix(
+            Shared::shape(x),
+            zip(Shared::real_slice(x)?, Shared::real_slice(y)?),
+        ),
+        (Value::Matrix(x), Value::Scalar(y)) => {
+            matrix(Shared::shape(x), left(Shared::real_slice(x)?, *y))
+        }
+        (Value::Scalar(x), Value::Matrix(y)) => {
+            matrix(Shared::shape(y), right(*x, Shared::real_slice(y)?))
+        }
+        (Value::Vector(x), Value::Vector(y)) if Shared::len(x) == Shared::len(y) => Some(
+            Value::real_vector(Array1::from_vec(zip(
+                Shared::real_slice(x)?,
+                Shared::real_slice(y)?,
+            ))),
+        ),
+        (Value::Vector(x), Value::Scalar(y)) => Some(Value::real_vector(Array1::from_vec(left(
+            Shared::real_slice(x)?,
+            *y,
+        )))),
+        (Value::Scalar(x), Value::Vector(y)) => Some(Value::real_vector(Array1::from_vec(right(
+            *x,
+            Shared::real_slice(y)?,
+        )))),
+        _ => None,
+    }
+}
+
 fn builtin_extremum_nargout(
     args: Vec<Value>,
     nargout: usize,
@@ -2579,6 +2644,9 @@ fn builtin_extremum_nargout(
                 "{0}: multi-return form is not defined for the elementwise two-argument form; use [m, i] = {0}(v) on a single vector",
                 fn_name
             )));
+        }
+        if let Some(v) = minmax_real_stored(&args[0], &args[1], is_max) {
+            return Ok(v);
         }
         let all_real = value_all_real(&args[0]) && value_all_real(&args[1]);
         let pick = |x: C64, y: C64| -> C64 {
@@ -9360,6 +9428,13 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("repmat", &args, 3)?;
     let reps_r = count_arg(&args[1])?;
     let reps_c = count_arg(&args[2])?;
+    // Tiling copies values, so a real input gives a real-stored result.
+    let real_in = match &args[0] {
+        Value::Matrix(m) => Shared::is_real(m),
+        Value::Vector(v) => Shared::is_real(v),
+        Value::Scalar(_) => true,
+        _ => false,
+    };
     // Normalise to a matrix block
     let block: CMatrix = match &args[0] {
         Value::Matrix(m) => (**m).clone(),
@@ -9394,6 +9469,9 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
                 }
             }
         }
+    }
+    if real_in {
+        return Ok(Value::real_matrix(out.mapv(|z| z.re)));
     }
     Ok(Value::Matrix(out.into()))
 }
@@ -9833,15 +9911,15 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 2.0
             };
             let n = if p == 1.0 {
-                v.iter().map(|c| c.norm()).sum::<f64>()
+                v.iter().map(|c| c.norm()).sum0()
             } else if p == 2.0 {
-                v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt()
+                v.iter().map(|c| c.norm_sqr()).sum0().sqrt()
             } else if p == f64::INFINITY {
                 v.iter().map(|c| c.norm()).fold(0.0_f64, f64::max)
             } else {
                 v.iter()
                     .map(|c| c.norm().powf(p))
-                    .sum::<f64>()
+                    .sum0()
                     .powf(1.0 / p)
             };
             Ok(Value::Scalar(n))
@@ -9856,19 +9934,19 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             } {
                 Some(p) => p,
                 None => {
-                    let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+                    let n = m.iter().map(|c| c.norm_sqr()).sum0().sqrt();
                     return Ok(Value::Scalar(n));
                 }
             };
             let n = if p == 1.0 {
                 // Maximum absolute column sum.
                 (0..m.ncols())
-                    .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+                    .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum0())
                     .fold(0.0_f64, f64::max)
             } else if p == f64::INFINITY {
                 // Maximum absolute row sum.
                 (0..m.nrows())
-                    .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+                    .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum0())
                     .fold(0.0_f64, f64::max)
             } else if p == 2.0 {
                 // Largest singular value only. A full SVD also builds every
@@ -9890,12 +9968,12 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 2.0
             };
             let n = if p == 1.0 {
-                sv.entries.iter().map(|(_, c)| c.norm()).sum::<f64>()
+                sv.entries.iter().map(|(_, c)| c.norm()).sum0()
             } else if p == 2.0 {
                 sv.entries
                     .iter()
                     .map(|(_, c)| c.norm_sqr())
-                    .sum::<f64>()
+                    .sum0()
                     .sqrt()
             } else if p == f64::INFINITY {
                 sv.entries
@@ -9906,7 +9984,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                 sv.entries
                     .iter()
                     .map(|(_, c)| c.norm().powf(p))
-                    .sum::<f64>()
+                    .sum0()
                     .powf(1.0 / p)
             };
             Ok(Value::Scalar(n))
@@ -9924,11 +10002,12 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             };
             match requested {
                 None => {
+                    // `fold` from +0: an empty `sum::<f64>()` is -0.
                     let n = sm
                         .entries
                         .iter()
                         .map(|(_, _, c)| c.norm_sqr())
-                        .sum::<f64>()
+                        .fold(0.0_f64, |acc, x| acc + x)
                         .sqrt();
                     Ok(Value::Scalar(n))
                 }
@@ -10057,11 +10136,11 @@ fn builtin_cond(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn induced_norm(m: &CMatrix, columns: bool) -> f64 {
     if columns {
         (0..m.ncols())
-            .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+            .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum0())
             .fold(0.0_f64, f64::max)
     } else {
         (0..m.nrows())
-            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum0())
             .fold(0.0_f64, f64::max)
     }
 }
@@ -10348,7 +10427,7 @@ fn matrix_expm(a: &CMatrix) -> Result<CMatrix, String> {
 
     // 1-norm (largest column sum of absolute values)
     let norm1: f64 = (0..n)
-        .map(|j| (0..n).map(|i| a[[i, j]].norm()).sum::<f64>())
+        .map(|j| (0..n).map(|i| a[[i, j]].norm()).sum0())
         .fold(0.0_f64, f64::max);
 
     // Scale so ||A/2^s||_1 <= theta_6 (Higham 2008, Table A.1)
@@ -13460,7 +13539,7 @@ fn builtin_gelu_grad(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn layernorm_slice_inplace(slice: &mut [C64], eps: f64) {
     let n = slice.len() as f64;
     let mean: C64 = slice.iter().copied().sum::<C64>() / n;
-    let variance: f64 = slice.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / n;
+    let variance: f64 = slice.iter().map(|&x| (x - mean).norm_sqr()).sum0() / n;
     let std_dev = (variance + eps).sqrt();
     for x in slice.iter_mut() {
         *x = (*x - mean) / std_dev;
@@ -14472,7 +14551,7 @@ fn hermitian_eigh(g: &Array2<C64>) -> Result<(Vec<f64>, Array2<C64>), ScriptErro
 fn normalize_column(a: &mut Array2<C64>, col: usize) {
     let nrm = (0..a.nrows())
         .map(|r| a[[r, col]].norm_sqr())
-        .sum::<f64>()
+        .sum0()
         .sqrt();
     if nrm > 0.0 {
         for r in 0..a.nrows() {
@@ -14509,7 +14588,7 @@ fn complete_orthonormal(a: &mut Array2<C64>, filled: &[bool]) {
                     cand[r] -= dot * a[[r, c]];
                 }
             }
-            let nrm = cand.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            let nrm = cand.iter().map(|z| z.norm_sqr()).sum0().sqrt();
             if nrm > 1e-10 {
                 for r in 0..rows {
                     a[[r, col]] = cand[r] / nrm;

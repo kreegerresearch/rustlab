@@ -12,6 +12,7 @@
 //! `Q D Z` are orthonormal. Real input stays real throughout: every
 //! reflector phase is `x / |x|`, which is exactly `±1` for real `x`.
 
+use crate::Sum0;
 use super::MAX_ITER_PER_EIGENVALUE;
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
@@ -46,7 +47,7 @@ fn tridiagonalize(a: &CMatrix, want_q: bool) -> (Vec<f64>, Vec<f64>, Option<CMat
     let zero = C64::new(0.0, 0.0);
     for k in 0..n.saturating_sub(2) {
         // Reflector H = I - 2 v vᴴ (‖v‖ = 1) mapping t[k+1.., k] onto e1.
-        let norm = (k + 1..n).map(|i| t[[i, k]].norm_sqr()).sum::<f64>().sqrt();
+        let norm = (k + 1..n).map(|i| t[[i, k]].norm_sqr()).sum0().sqrt();
         if norm == 0.0 {
             continue;
         }
@@ -58,7 +59,7 @@ fn tridiagonalize(a: &CMatrix, want_q: bool) -> (Vec<f64>, Vec<f64>, Option<CMat
             v[i] = t[[i, k]];
         }
         v[k + 1] -= alpha;
-        let vnorm = (k + 1..n).map(|i| v[i].norm_sqr()).sum::<f64>().sqrt();
+        let vnorm = (k + 1..n).map(|i| v[i].norm_sqr()).sum0().sqrt();
         if vnorm == 0.0 {
             continue;
         }

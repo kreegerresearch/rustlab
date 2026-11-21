@@ -8,6 +8,7 @@
 //! nearest negligible subdiagonal entry above it — while the rotations are
 //! still applied to all of `T` and `Q`, so `T` ends as a full Schur form.
 
+use crate::Sum0;
 use super::{abs1, MAX_ITER_PER_EIGENVALUE};
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
@@ -31,7 +32,7 @@ fn hessenberg(a: &CMatrix) -> (CMatrix, CMatrix) {
     let mut h = a.clone();
     let mut q: CMatrix = Array2::eye(n);
     for k in 0..n.saturating_sub(2) {
-        let norm = (k + 1..n).map(|i| h[[i, k]].norm_sqr()).sum::<f64>().sqrt();
+        let norm = (k + 1..n).map(|i| h[[i, k]].norm_sqr()).sum0().sqrt();
         if norm == 0.0 {
             continue;
         }
@@ -43,7 +44,7 @@ fn hessenberg(a: &CMatrix) -> (CMatrix, CMatrix) {
             v[i] = h[[i, k]];
         }
         v[k + 1] -= alpha;
-        let vnorm = (k + 1..n).map(|i| v[i].norm_sqr()).sum::<f64>().sqrt();
+        let vnorm = (k + 1..n).map(|i| v[i].norm_sqr()).sum0().sqrt();
         if vnorm == 0.0 {
             continue;
         }
@@ -80,7 +81,7 @@ fn schur(t: &mut CMatrix, q: &mut CMatrix) -> Result<(), CoreError> {
     let n = t.nrows();
     let eps = f64::EPSILON;
     let zero = C64::new(0.0, 0.0);
-    let norm: f64 = t.iter().map(|z| abs1(*z)).sum();
+    let norm: f64 = t.iter().map(|z| abs1(*z)).sum0();
     if n < 2 || norm == 0.0 {
         return Ok(());
     }

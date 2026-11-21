@@ -10,6 +10,7 @@
 //! segment, the buffer keeps the last `noverlap = win_len − hop`
 //! samples so the next segment overlaps correctly.
 
+use rustlab_core::Sum0;
 use crate::convolution::next_power_of_two;
 use crate::error::DspError;
 use crate::fft::fft_raw;
@@ -126,7 +127,7 @@ pub fn pwelch_stream_init(
             )));
         }
     }
-    let win_pow: f64 = window.iter().map(|w| w * w).sum();
+    let win_pow: f64 = window.iter().map(|w| w * w).sum0();
     if !(win_pow > 0.0) {
         return Err(DspError::InvalidParameter(
             "pwelch_stream_init: window has zero energy".into(),

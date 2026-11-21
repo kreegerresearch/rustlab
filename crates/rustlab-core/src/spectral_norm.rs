@@ -9,6 +9,7 @@
 //! Entries are scaled by the largest magnitude so a matrix of `1e200` does
 //! not overflow the product. [`NormCancelled`] is how a caller stops early.
 
+use crate::Sum0;
 use ndarray::Array2;
 
 use crate::sparse_eig::sym_eig_jacobi;
@@ -688,7 +689,7 @@ fn jacobi_largest(a: &Array2<f64>) -> f64 {
                 off += t[[i, j]] * t[[i, j]];
             }
         }
-        let diag: f64 = (0..n).map(|i| t[[i, i]] * t[[i, i]]).sum();
+        let diag: f64 = (0..n).map(|i| t[[i, i]] * t[[i, i]]).sum0();
         if off <= 1e-28 * (diag + off) {
             break;
         }
