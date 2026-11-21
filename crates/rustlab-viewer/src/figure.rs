@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use crate::render;
 use crate::surface::{Surface3dData, SurfaceCamera};
-use crate::view::{bounds_action, zoom_factor_from_scroll, AxisLimits, BoundsAction, PanelView};
+use crate::view::{
+    bounds_action, expand_to_aspect, zoom_factor_from_scroll, AxisLimits, BoundsAction, PanelView,
+};
 
 /// Pre-rendered heatmap image ready for egui display.
 pub struct HeatmapImage {
@@ -47,6 +49,11 @@ pub struct PanelState {
     pub xlim: AxisLimits,
     pub ylim: AxisLimits,
     pub axis_equal: bool,
+    /// Hide the Cartesian axes and grid (a Smith chart). Reset by each
+    /// `PanelUpdate`; set by `PanelDecor`.
+    pub hide_axes: bool,
+    /// Labels in data coordinates, drawn over the series.
+    pub texts: Vec<rustlab_proto::WireText>,
     pub heatmap: Option<HeatmapImage>,
     /// 3D surface data + camera. When present, the panel renders a rotatable
     /// surface instead of the 2D egui_plot chart.
@@ -71,6 +78,8 @@ impl PanelState {
             xlim: (None, None),
             ylim: (None, None),
             axis_equal: false,
+            hide_axes: false,
+            texts: Vec::new(),
             heatmap: None,
             surface: None,
             surface_tex: None,
@@ -413,8 +422,8 @@ impl FigureWindow {
                             .id(panel_plot_id(fig_id, src_row, src_col))
                             .width(plot_width)
                             .height(plot_height)
-                            .show_axes([true, true])
-                            .show_grid([true, true])
+                            .show_axes([!panel.hide_axes, !panel.hide_axes])
+                            .show_grid([!panel.hide_axes, !panel.hide_axes])
                             .allow_zoom(true)
                             .allow_drag(true)
                             // Plain scroll zooms (handled below), so
@@ -587,6 +596,17 @@ impl FigureWindow {
                                             (Some(a), Some(b)) => (a, b),
                                             _ => (*cur.range_y().start(), *cur.range_y().end()),
                                         };
+                                        let ((x0, x1), (y0, y1)) = if panel.axis_equal {
+                                            let f = plot_ui.transform().frame();
+                                            expand_to_aspect(
+                                                (x0, x1),
+                                                (y0, y1),
+                                                f.width() as f64,
+                                                f.height() as f64,
+                                            )
+                                        } else {
+                                            ((x0, x1), (y0, y1))
+                                        };
                                         plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                                             [x0, y0],
                                             [x1, y1],
@@ -622,6 +642,13 @@ impl FigureWindow {
 
                                 for series in &panel.series {
                                     render::render_series(plot_ui, series);
+                                }
+                                let (sx, sy) = {
+                                    let t = plot_ui.transform();
+                                    (t.dpos_dvalue_x(), t.dpos_dvalue_y())
+                                };
+                                for t in &panel.texts {
+                                    render::render_text(plot_ui, t, sx, sy);
                                 }
                             });
 

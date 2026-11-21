@@ -824,13 +824,27 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
         // to a min/max envelope here, before msgpack, so a 1e8-point plot
         // never becomes a multi-gigabyte frame the viewer has to reject.
         // The size warning, when there is one, was printed above.
-        let (wire_series, _, _) = series_to_wire(&panel.series, &panel.x_labels)?;
+        let (mut wire_series, _, _) = series_to_wire(&panel.series, &panel.x_labels)?;
+        if let Some(grid) = panel.smith {
+            let mut with_grid = smith_grid_wire(grid);
+            with_grid.append(&mut wire_series);
+            wire_series = with_grid;
+        }
 
         conn.client.send_nowait(&ViewerMsg::PanelUpdate {
             fig_id,
             panel: idx as u16,
             series: wire_series,
         })?;
+
+        if let Some(grid) = panel.smith {
+            conn.client.send_nowait(&ViewerMsg::PanelDecor {
+                fig_id,
+                panel: idx as u16,
+                hide_axes: true,
+                texts: smith_labels_wire(grid),
+            })?;
+        }
 
         conn.client.send_nowait(&ViewerMsg::PanelLabels {
             fig_id,
@@ -856,6 +870,59 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
 
     conn.client.send(&ViewerMsg::Redraw { fig_id })?;
     Ok(())
+}
+
+/// Colours for the viewer's dark egui theme.
+fn smith_viewer_colors() -> crate::smith::SmithColors {
+    crate::smith::SmithColors::for_theme((27, 27, 27), (220, 220, 220))
+}
+
+/// The Smith grid as unlabelled line series, drawn under the data.
+pub(crate) fn smith_grid_wire(grid: crate::smith::SmithGrid) -> Vec<WireSeries> {
+    let colors = smith_viewer_colors();
+    crate::smith::build_grid(grid, crate::smith::ARC_RESOLUTION)
+        .into_iter()
+        .map(|arc| {
+            let (r, g, b) = colors.of(arc.family);
+            let (x, y): (Vec<f64>, Vec<f64>) = arc.points.into_iter().unzip();
+            WireSeries {
+                label: String::new(),
+                x,
+                y,
+                color: rustlab_proto::WireColor::Rgb(r, g, b),
+                style: rustlab_proto::WireLineStyle::Solid,
+                kind: rustlab_proto::WirePlotKind::Line,
+                x_labels: None,
+            }
+        })
+        .collect()
+}
+
+/// The grid value labels for the viewer.
+pub(crate) fn smith_labels_wire(grid: crate::smith::SmithGrid) -> Vec<rustlab_proto::WireText> {
+    let (r, g, b) = smith_viewer_colors().label;
+    crate::smith::grid_labels(grid)
+        .into_iter()
+        .map(|l| rustlab_proto::WireText {
+            x: l.x,
+            y: l.y,
+            dx: l.dx_px as f32,
+            dy: l.dy_px as f32,
+            h: match l.h {
+                crate::smith::HAnchor::Left => -1,
+                crate::smith::HAnchor::Center => 0,
+                crate::smith::HAnchor::Right => 1,
+            },
+            v: match l.v {
+                crate::smith::VAnchor::Bottom => -1,
+                crate::smith::VAnchor::Middle => 0,
+                crate::smith::VAnchor::Top => 1,
+            },
+            text: l.text,
+            color: rustlab_proto::WireColor::Rgb(r, g, b),
+            size: crate::smith::LABEL_FONT_PX as f32,
+        })
+        .collect()
 }
 
 struct PreparedSeries {
@@ -1304,6 +1371,22 @@ mod tests {
         );
         assert!(matches!(color_to_wire(&SeriesColor::Black), WireColor::Named(s) if s == "black"));
         assert!(matches!(color_to_wire(&SeriesColor::White), WireColor::Named(s) if s == "white"));
+    }
+
+    #[test]
+    fn smith_panel_sends_unlabelled_grid_and_anchored_labels() {
+        let grid = smith_grid_wire(crate::smith::SmithGrid::Impedance);
+        assert_eq!(grid.len(), 17);
+        assert!(grid.iter().all(|s| s.label.is_empty()));
+        assert!(grid
+            .iter()
+            .all(|s| s.x.iter().chain(&s.y).all(|v| v.is_finite())));
+        let labels = smith_labels_wire(crate::smith::SmithGrid::Impedance);
+        assert_eq!(labels.len(), 15);
+        let top = labels.iter().find(|t| t.text == "+j1.0").unwrap();
+        assert_eq!((top.x, top.y, top.h, top.v), (0.0, 1.0, 0, -1));
+        let bottom = labels.iter().find(|t| t.text == "-j1.0").unwrap();
+        assert_eq!((bottom.h, bottom.v), (0, 1));
     }
 
     #[test]

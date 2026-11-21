@@ -65,6 +65,23 @@ impl ViewerApp {
                         let idx = panel as usize;
                         if idx < fig.panels.len() {
                             fig.panels[idx].series = series;
+                            fig.panels[idx].hide_axes = false;
+                            fig.panels[idx].texts.clear();
+                            fig.dirty = true;
+                        }
+                    }
+                }
+                ViewerMsg::PanelDecor {
+                    fig_id,
+                    panel,
+                    hide_axes,
+                    texts,
+                } => {
+                    if let Some(fig) = self.figures.get_mut(&fig_id) {
+                        let idx = panel as usize;
+                        if idx < fig.panels.len() {
+                            fig.panels[idx].hide_axes = hide_axes;
+                            fig.panels[idx].texts = texts;
                             fig.dirty = true;
                         }
                     }

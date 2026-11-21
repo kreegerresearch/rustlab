@@ -100,6 +100,29 @@ pub fn zoom_factor_from_scroll(scroll: f32) -> f32 {
     ((delta * SCROLL_ZOOM_SPEED).exp()).clamp(1.0 / MAX_ZOOM_STEP, MAX_ZOOM_STEP) as f32
 }
 
+/// Widen `[x0, x1] × [y0, y1]` about its centre so that one data unit
+/// spans the same number of pixels on both axes of a `w × h` frame.
+///
+/// `egui_plot` meets `data_aspect` with explicit bounds by changing the y
+/// range, so a wide panel cropped the top and bottom of an equal-aspect
+/// view (a Smith chart lost its rim). Expanding first keeps every edge the
+/// script asked for in view.
+pub fn expand_to_aspect(
+    (x0, x1): (f64, f64),
+    (y0, y1): (f64, f64),
+    w: f64,
+    h: f64,
+) -> ((f64, f64), (f64, f64)) {
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    if !(w > 0.0 && h > 0.0 && dx > 0.0 && dy > 0.0) {
+        return ((x0, x1), (y0, y1));
+    }
+    let per_px = (dx / w).max(dy / h);
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let (hx, hy) = (per_px * w / 2.0, per_px * h / 2.0);
+    ((cx - hx, cx + hx), (cy - hy, cy + hy))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +263,19 @@ mod tests {
             zoom_factor_from_scroll(-100_000.0),
             (1.0 / MAX_ZOOM_STEP) as f32
         );
+    }
+
+    #[test]
+    fn expand_to_aspect_keeps_the_requested_square_in_a_wide_frame() {
+        let ((x0, x1), (y0, y1)) =
+            super::expand_to_aspect((-1.15, 1.15), (-1.15, 1.15), 800.0, 400.0);
+        assert!(
+            (y0 + 1.15).abs() < 1e-12 && (y1 - 1.15).abs() < 1e-12,
+            "y kept"
+        );
+        assert!((x1 - x0 - 4.6).abs() < 1e-12, "x widened to 2:1");
+        // Tall frame: y widens instead.
+        let ((x0, x1), (y0, y1)) = super::expand_to_aspect((-1.0, 1.0), (-1.0, 1.0), 300.0, 600.0);
+        assert!((x1 - x0 - 2.0).abs() < 1e-12 && (y1 - y0 - 4.0).abs() < 1e-12);
     }
 }

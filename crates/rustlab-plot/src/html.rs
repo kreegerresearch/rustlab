@@ -343,6 +343,22 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 text = theme.text.as_ref(),
                 plot_bg = theme.plot_bg.as_ref(),
             ));
+        } else if panel.smith.is_some() {
+            // Smith chart: no Cartesian axes. The grid, its labels, and the
+            // unit-disk framing are drawn below as traces and annotations.
+            let h = crate::smith::VIEW_HALF_WIDTH;
+            layout_axes.push_str(&format!(
+                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], anchor: "{y_id}", range: [{lo}, {hi}], visible: false, constrain: "domain" }},
+yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", range: [{lo}, {hi}], visible: false, scaleanchor: "{x_id}", constrain: "domain" }},
+"#,
+                ax = axis_suffix,
+                x_id = xaxis_ref,
+                y_id = yaxis_ref,
+                x0 = x_start, x1 = x_end,
+                y0 = y_start, y1 = y_end,
+                lo = -h,
+                hi = h,
+            ));
         } else {
             // Log-scaled axes (semilogx/semilogy/loglog): Plotly renders real
             // data on a `type: "log"` axis with decade ticks natively. An
@@ -617,6 +633,63 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 xa = xaxis_ref,
                 ya = yaxis_ref,
             ));
+        }
+
+        if let Some(grid) = panel.smith {
+            let colors = crate::smith::colors_for(theme);
+            let arcs = crate::smith::build_grid(grid, crate::smith::ARC_RESOLUTION);
+            for family in [
+                crate::smith::SmithFamily::Impedance,
+                crate::smith::SmithFamily::Admittance,
+                crate::smith::SmithFamily::Frame,
+            ] {
+                let paths: Vec<Vec<(f64, f64)>> = arcs
+                    .iter()
+                    .filter(|a| a.family == family)
+                    .map(|a| a.points.clone())
+                    .collect();
+                if paths.is_empty() {
+                    continue;
+                }
+                let (xs, ys) = paths_to_polyline(&paths);
+                traces.push_str(&format!(
+                    r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                    x = xs,
+                    y = ys,
+                    color = crate::smith::hex(colors.of(family)),
+                    xa = xaxis_ref,
+                    ya = yaxis_ref,
+                ));
+            }
+            // Plotly sizes the figure to its container; a notebook plot is
+            // 450 px tall, which sets how many labels fit.
+            let px_per_unit = 450.0 * (y_end - y_start) / (2.0 * crate::smith::VIEW_HALF_WIDTH);
+            for l in crate::smith::grid_labels_at(grid, px_per_unit) {
+                let xanchor = match l.h {
+                    crate::smith::HAnchor::Left => "left",
+                    crate::smith::HAnchor::Center => "center",
+                    crate::smith::HAnchor::Right => "right",
+                };
+                let yanchor = match l.v {
+                    crate::smith::VAnchor::Top => "top",
+                    crate::smith::VAnchor::Middle => "middle",
+                    crate::smith::VAnchor::Bottom => "bottom",
+                };
+                annotations.push_str(&format!(
+                    r#"{{ text: "{text}", xref: "{xa}", yref: "{ya}", x: {x}, y: {y}, xanchor: "{xanchor}", yanchor: "{yanchor}", xshift: {dx:.1}, yshift: {dy:.1}, showarrow: false, font: {{ size: {size}, color: "{color}" }} }},
+"#,
+                    text = escape_js(&l.text),
+                    xa = xaxis_ref,
+                    ya = yaxis_ref,
+                    x = l.x,
+                    y = l.y,
+                    dx = l.dx_px,
+                    dy = l.dy_px,
+                    size = crate::smith::LABEL_FONT_PX,
+                    color = crate::smith::hex(colors.label),
+                ));
+            }
         }
 
         // Traces for each series
