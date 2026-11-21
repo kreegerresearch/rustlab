@@ -2,13 +2,13 @@
 
 **Status:** record only. This branch is the plan. It does not change the interpreter, the docs users read, or the workspace version.
 **Current phase:** phases 1–7 and 9–11 are on `main`. Phase 8 (`freqz`) and the `eigs` `D` shape are the exceptions. See [Still open](#still-open).
-**Checked against:** `origin/main` `42b5370`, workspace **0.3.58**, PR #138. That commit merged into this branch on 2026-11-06 (merge, not rebase). The merge was clean. The only file this branch adds is this one.
+**Checked against:** `origin/main` `9c09536`, workspace **0.3.78**, PR #160. That commit merged into this branch on 2026-11-21 (merge, not rebase). The merge was clean. The only file this branch adds is this one. The phase map and the open items were first checked on 2026-11-06 against `42b5370` (0.3.58); the 2026-11-21 re-check found them still true on 0.3.78.
 **First written:** 2026-10-29, against 0.3.24 (`9e7c6ad`, PR #100), when every phase below was still "not started".
-**Date of this record:** 2026-11-06.
+**Date of this record:** 2026-11-06, re-checked 2026-11-21.
 
 **Direction (Michael, 2026-10-29):** match MATLAB whenever that is possible, including `\`. A behavior that is not MATLAB's stays only with a quantified performance reason in this file. Core math stays hand-rolled Rust. No new dependencies.
 
-This refresh does not bump `Cargo.toml`. A plan rewrite does not change what a script does, so it is not a release. Draft PR #139 (`cursor/coding-guidelines-adfd`) is the draft that adds `docs/coding-guidelines.md` and claims 0.3.59. That file is not part of this branch. Script style for `.rlab` is already on `main` in [`docs/agent-guide.md`](../../docs/agent-guide.md) (PR #134, 0.3.54).
+This refresh does not bump `Cargo.toml`. A plan rewrite does not change what a script does, so it is not a release. [`docs/coding-guidelines.md`](../../docs/coding-guidelines.md) is on `main` from PR #139 (0.3.63), not from this branch. Script style for `.rlab` is on `main` in [`docs/agent-guide.md`](../../docs/agent-guide.md) (PR #134, 0.3.54).
 
 Live behavior is in [`CHANGELOG.md`](../../CHANGELOG.md), [`docs/functions.md`](../../docs/functions.md), and [`docs/quickref.md`](../../docs/quickref.md). [`octave_compat_divergences.md`](octave_compat_divergences.md) already records the same shipped rows. This file is the phase map and the remaining decisions. It does not restate the function reference.
 
@@ -66,7 +66,7 @@ Checked with `gh pr view`. The merged phase branches were deleted. Two closed br
 
 Leave the defaults these shipped. Later phases extended them; they did not replace them.
 
-| Shipped in 0.3.24 | Still true on 0.3.58 |
+| Shipped in 0.3.24 | Still true on 0.3.78 |
 |---|---|
 | Unpivoted `[Q, R] = qr(A)`, economy `qr(A, 0)`, one output is `R`, `diag(R)` real and non-negative | Phase 4 added a third output. One and two outputs stay this factor. |
 | Dense `[L, U, P] = lu(A)` with `P` a matrix, `P*A = L*U`. `[L, U]` absorbs the pivot. One dense output errors. Sparse `lu` is the factor handle | Phase 6 added `"vector"`. The matrix form is still the default third output. |
@@ -108,9 +108,9 @@ PR #122 capped the Lanczos. The changelog records a random 512×512: **256 s** i
 
 **Not shipped.** This was never one of the numbered phases. It is still open. See [Still open](#still-open).
 
-On 0.3.58, `[V, D] = eigs(...)` returns `D` as a length-k vector. `D(k)` is the k-th eigenvalue. `docs/functions.md` says that. Dense `eig` is different: two outputs already return a diagonal matrix, with `"vector"` / `"matrix"` overrides (that surface shipped in 2026-05, octave item 8).
+On 0.3.78, `[V, D] = eigs(...)` returns `D` as a length-k vector. `D(k)` is the k-th eigenvalue. `docs/functions.md` says that. Dense `eig` is different: two outputs already return a diagonal matrix, with `"vector"` / `"matrix"` overrides (that surface shipped in 2026-05, octave item 8).
 
-The 2026-10-29 text recommended a k×k diagonal for `eigs`, plus the same `"vector"` flag, so the default would match MATLAB. [`octave_compat_divergences.md`](octave_compat_divergences.md) on current `main` still lists the vector as intentional: a diagonal would make `D(2)` a structural zero under column-major linear indexing, and the examples use `D(k)`. No pull request after 2026-10-29 changed it. Implicit restart and shift-invert are still deferred in `dev/plans/em_requests_queue.md`; they are a different piece of work.
+The 2026-10-29 text recommended a k×k diagonal for `eigs`, plus the same `"vector"` flag, so the default would match MATLAB. [`octave_compat_divergences.md`](octave_compat_divergences.md) on current `main` still lists the vector as intentional: a diagonal would make `D(2)` a structural zero under column-major linear indexing, and the examples use `D(k)`. No pull request after 2026-10-29 changed it. Smallest-magnitude pairs of a real matrix now use shift-and-invert at `σ = 0`; implicit restart is still deferred in `dev/plans/em_requests_queue.md`. Both are a different piece of work.
 
 ## 5. `sort` and `median`
 
@@ -283,7 +283,7 @@ Every other `cursor/matlab-phase*-1f33` branch from this series was merged and d
 
 ## Docs this record agrees with
 
-Checked on 2026-11-06 against the merged `main`. This plan does not edit them.
+Checked on 2026-11-06 against the merged `main`, re-checked on 2026-11-21 against 0.3.78. This plan does not edit them.
 
 | Document | Agreement |
 |---|---|
@@ -293,4 +293,4 @@ Checked on 2026-11-06 against the merged `main`. This plan does not edit them.
 | [`roadmap.md`](roadmap.md) C12 | Done in 0.3.26. |
 | [`real_storage.md`](real_storage.md), [`perf_flywheel_iter03.md`](perf_flywheel_iter03.md) | The type split and the training-step numbers. |
 | [`docs/agent-guide.md`](../../docs/agent-guide.md) § Script style for agents | On `main` via #134. Not this branch. |
-| Draft #139, `docs/coding-guidelines.md` | Not this branch. That draft also edits `Cargo.toml`, `CHANGELOG.md`, and `AGENTS.md` for 0.3.59. This branch does not. |
+| [`docs/coding-guidelines.md`](../../docs/coding-guidelines.md) | On `main` via #139 (0.3.63). Not this branch. |
