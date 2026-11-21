@@ -6,7 +6,7 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.69
+## 0.3.79
 
 ### Fixed
 - **Smith chart grid is exact.** The constant-x arcs were a 96-point circle clipped to the disk. The x = ±0.2 arcs kept about six vertices and stopped up to 0.3 short of the rim, and every arc's clip gap was drawn in SVG/PNG/PDF as a straight stroke to the frame's lower-left corner. Each arc now runs from Γ(jx) on the unit circle to Γ = 1, sampled from Γ = (z − 1)/(z + 1); constant-r circles meet the real axis at (r − 1)/(r + 1).
@@ -28,6 +28,80 @@ should re-validate against those entries when upgrading.
 - **Smith chart text in SVG/PNG/PDF scales with the chart.** Grid labels and legend entries are about 20 px on a 900 × 500 panel (they were 11 and 14 px, about 4 and 5 pt once LaTeX set the plot at the text width; now about 7 pt). The chart is a little smaller to leave room for them.
 - **`smith_circle` on a Smith chart draws only the arc inside |Γ| = 1.** A stability circle wholly outside the chart (the unconditionally stable case) now draws nothing instead of fragments in the corners of the view; check `min(abs(cs) - real(rs)) > 1` instead. Off a Smith chart the full circle is still drawn.
 - **`plot` after `smith` autoscales.** The unit-disk limits and equal aspect that `smith` set are dropped when another plot replaces the chart.
+
+## 0.3.78
+
+### Fixed
+- **`S(:, k)` and `S(k, :)` on a sparse matrix no longer densify the whole matrix.** 0.3.74 kept `S(rows, cols)` sparse, but a selection of one row or one column still built a dense copy of `S` before slicing, which asked for ~76 GB on the 41³ operator in `rustlab_em`. The line is now filled from that row's or column's stored entries (O(nnz) time, memory the size of the result). Results and shapes are unchanged: `S(:, k)` is a dense `N×1` column, `S(k, :)` a dense row, and one element a scalar.
+- **Empty sparse selections are empty sparse matrices, and `numel` / `length` accept sparse values.** `S(:, [])` is an empty sparse `m×0`, `S([], :)` a `0×n`, and `S([], [])` a `0×0`, as in MATLAB. All-false logical masks behave the same way in either position. `S(k, [])` and `S([], k)` used to be dense `1×0` / `0×1`; they are now sparse of that shape. `numel` and `length` used to reject every sparse matrix and sparse vector ("unsupported type sparse"); they now return `rows·cols` and `max(rows, cols)`. A bad subscript on a sparse matrix (`S(5, 1)`, `S(0, :)`, `S(1.5, 2)`) now gives the same error text as on a dense matrix (`index 5 out of bounds (size 4)` instead of `index (5,1) out of bounds for 4×5 sparse matrix`).
+
+### Added
+- **`isempty(x)`.** True when any dimension is 0 (`numel(x) == 0`) or `x` is the empty string. Works on dense, sparse, logical, integer, string-array, and table values. `isempty(S(:, []))` is true.
+
+### Documentation
+- **`pin_dirichlet` and writing `b` afterwards.** With the default `"scale", "auto"`, a pinned row holds `d_k` on the diagonal and `b(k) = d_k · value`. A script that pins and then writes its own `b` on pinned rows (`b(k) = 1` to drive one conductor) gets a pinned value of `1 / d_k` instead; in `rustlab_em` Lesson 15 the capacitance C′ came out about 13.7× too low. Such scripts should pin with `"scale", 1` or write `b(k) = A(k, k) · value`. The default is unchanged. Noted in `docs/functions.md`, `docs/quickref.md`, `AGENTS.md`, and `help pin_dirichlet`.
+
+## 0.3.77
+
+### Fixed
+- **`plot` over `quiver`, `contour`, `streamplot`, or `imagesc` is drawn in SVG, PNG, and PDF.** A panel holding one of those overlays took a separate render path that drew the field and never its line, stem, bar, or scatter series, so `hold on; plot(cos(t), sin(t))` over a `quiver` was missing from the saved file with no warning (`rustlab_em`'s `stokes_loop.svg` shipped without its loop). The live viewer rasterises those panels through the same path and lost the series too. Series are now drawn on top of the overlays, with a legend when one is labelled. Without a heatmap, the axes grow to include the series, as MATLAB's `hold on` does; a heatmap keeps its cell extent. HTML already drew both and is unchanged. Saved figures that combine a field with `plot` change (the line now appears).
+
+## 0.3.76
+
+### Added
+- **`gradient(..., "order", 2)` for 1-D endpoints.** The 1-D `gradient` keeps MATLAB's first-order endpoints `(f(2) - f(1))/h` by default, while the 2-D and 3-D stencils use second-order one-sided boundaries. `"order", 2` (last, after `h` or `x`) uses second-order one-sided endpoints: `(-3f(1) + 4f(2) - f(3))/(2h)` and its mirror, or on coordinates the derivative of the parabola through the first (last) three samples. The interior is unchanged. A quadratic is exact at every sample: on `x = [0.4 0.6 0.8 1.0 1.4 2.0]`, `gradient(x.^2, x)` ends at `1.0` and `3.4`, `gradient(x.^2, x, "order", 2)` at the exact `0.8` and `4.0`. In `rustlab_em` Lesson 15 the first-order ends put the endpoint forces 13–34% off. Needs at least 3 samples. A 2-D matrix accepts `"order", 2` and rejects `"order", 1`. `docs/quickref.md` now states the default endpoint order.
+
+## 0.3.75
+
+### Breaking / behavior changes
+- **Reads that MATLAB returns as a column are an `N×1` column.** These used to return a 1-D vector, which `size` reports as `[1, N]`:
+  - `x(:)` of a vector, matrix, `Tensor3`, or logical array (column-major order, unchanged);
+  - `reshape(x, N, 1)`;
+  - `M(rows, k)` that selects one column and more than one row (`M(:, k)`, `D(2:end, 61)`), including a sparse `S(:, k)`, which is a dense `N×1` column;
+  - a non-scalar subscript into an `N×1` column (`c(2:3)`, `c(c > 0)`), and an `N×1` subscript into a matrix;
+  - `T(:, j, k)` on a `Tensor3`.
+
+  `M(k, :)`, a subscript into a row vector (`v(2:4)`, `v(mask)`), `reshape(x, 1, N)`, and a single element are unchanged. `L * V(:)` now works, and `L * reshape(V, numel(V), 1)` no longer fails with "cannot multiply matrix by row vector". `[fliplr(D(2:end, 61)'), D(:, 1)']` is one row, as in MATLAB.
+
+  **Migration.** The old idiom `x(:)'` (and `M(:, k)'`) was the way to get a column; it now gives a `1×N` row. Remove the `'`:
+  - `A * V(:)'` and `A * V(:, k)'` are now a dimension error; write `A * V(:)` and `A * V(:, k)`. For a complex `V` the old form also conjugated the values, so results that went through it change sign in the imaginary part.
+  - `b = rho(:)'` passed to `spsolve` still works (any orientation is accepted), but `b = rho(:)` is the idiom. The examples and notebooks in this repo now use it.
+  - A column next to a same-length vector is still element-wise (`M(:, 1) + v` has length `N`), but a column next to a `1×N` matrix (`zeros(1, N)`, `x(:)'`) expands to `N×N`, as in MATLAB.
+  - `for x = M(:, k)` is an error (as `for` over any `N×1` column already was); the message says to loop over `M(:, k).'`.
+  - `arrayfun` and `parmap` accept a column input, and a column return (`r = M(:)`) is still one vector result per call, so their output shapes do not change.
+  - `[a, M(:, k)]` with a row `a` is now a dimension error; use `[a, M(:, k).']` or `[a; M(:, k)]`.
+
+## 0.3.74
+
+### Fixed
+- **Sparse submatrix indexing no longer densifies.** `S(rows, cols)` on a sparse matrix built the full dense matrix first and then indexed it; for a 41³ Laplacian (`L(fr, fr)` with about 30k free nodes) that asked for 76 GB. A selection with more than one row and more than one column is now gathered from the stored entries in O(nnz + selected entries) and returned as a **sparse** matrix, so symmetric Dirichlet elimination (`A_ff V_f = −A_fp V_p`) with Cholesky works at that size. Subscripts may be vectors, ranges, `end`, `:`, or logical masks, in any order and with repeats.
+
+### Breaking / behavior changes
+- **`S(rows, cols)` of a sparse matrix is sparse.** It was a dense matrix. Arithmetic with a dense partner still promotes to dense, and `full(...)` gives the old value. `S(i, j)` is still the element, and a single row or column (`S(k, :)`, `S(:, k)`) is still a dense vector (MATLAB returns sparse there). Migration: wrap in `full(...)` where a dense matrix is needed, for example before `imagesc` or a dense-only builtin.
+
+## 0.3.73
+
+### Fixed
+- **`pin_dirichlet` keeps pinned values exact at small grid spacing.** A pinned row was an identity row (diagonal 1) next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`). The sparse LU then pivoted on the large entries in the pinned column, and a conductor pinned at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4` (`2.4e-11` at `h = 1e-2`). In `rustlab_em` Lesson 18 the energy identity `2U = Q·V0` drifted from 2e-14 to 9e-9. The pinned row is now scaled to the operator's own diagonal, and the same repro is exact at every `h` from 1 to 1e-6.
+
+### Added
+- **`pin_dirichlet(..., "scale", s)`.** `s` is `"auto"` (the default) or a positive number used as every pinned row's diagonal; `"scale", 1` gives the old identity rows.
+
+### Breaking / behavior changes
+- **`pin_dirichlet` pinned rows are `d_k·e_k`, not `e_k`.** Row `k` of the returned `A` has `d_k = |A(k, k)|` on the diagonal (if that is 0, the largest `|A(k, :)|`; if the row is empty, 1), and `b(k)` is `d_k · value`. Solutions are the same in exact arithmetic and now more accurate; only the last digits of an interior solution can move. A script that reads `A(k, k) == 1` or `b(k) == value` back from the outputs, or reuses `b` with a different operator, will see the scaled values. Migration: pass `"scale", 1` for the old rows.
+
+## 0.3.72
+
+### Added
+- **Element-wise `Tensor3` comparisons, logic, and math.** `T > 0`, `R <= a`, `T == U`, `!T`, and `and` / `or` / `xor` work on a `Tensor3` with a scalar or a same-size `Tensor3` partner. So do `abs`, `sign`, `sqrt`, `exp`, `log`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, `mod`, the trig and hyperbolic functions, and two-argument `min(T, s)` / `max(T, s)`. The result keeps the `(m, n, p)` shape. There is no rank-3 logical, so comparisons return 0/1 doubles (as `cat(3, L, L)` already did): mask with `.*`, or gather with `T(find(M))`. `T(M)` with a `Tensor3` mask is still an error. A matrix or vector next to a `Tensor3` is an error, as for `+`. These used to fail with `comparison requires compatible operands` or `unsupported type tensor3`.
+- **`find` on a `Tensor3`.** `find(T)` returns column-major linear indices (the `T(:)` order). As in MATLAB, `[r, c] = find(T)` merges the trailing dimensions into `c` (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values; for three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
+
+## 0.3.71
+
+### Added
+- **`tan`, `cot`, `sec`, `csc`.** Element-wise tangent and the reciprocal trig functions, complex-aware like `sin` / `cos`. A pole is infinite as in MATLAB: `cot(0)` and `csc(0)` are `Inf`. Scripts that wrote `sin(x) ./ cos(x)` can use `tan(x)`.
+- **`asinh`, `acosh`, `atanh`.** Element-wise inverse hyperbolics. A real input outside the real domain gives MATLAB's principal complex value instead of `NaN`: `acosh(0.5)` is `1.0472i`, `acosh(-2)` is `1.317 + πi`, `atanh(2)` is `0.5493 + 1.5708i`, and `atanh(±1)` is `±Inf`. `acosh(x)` replaces the `log(x + sqrt(x.*x - 1))` workaround.
+- **`isnan`, `isinf`, `isfinite`.** Element-wise predicates. A scalar gives `true` / `false`; a vector or matrix gives a logical array of the same shape, so `v(isnan(v)) = 0` works. A complex element is `NaN` (or infinite) when either part is, and finite only when both are. Integer values are always finite. A `Tensor3` gives a 0/1 `Tensor3`.
 
 ## 0.3.68
 

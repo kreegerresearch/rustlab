@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-cache"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "blake3",
  "rusqlite",
@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-cli"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "anyhow",
  "clap",
@@ -3936,7 +3936,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-config"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -3945,7 +3945,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-core"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "blake3",
  "ndarray",
@@ -3957,7 +3957,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-dsp"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "ndarray",
  "num-complex",
@@ -3969,7 +3969,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-notebook"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "anyhow",
  "axum",
@@ -3996,7 +3996,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-plot"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "crossterm",
  "gif",
@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-proto"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "libc",
  "rmp-serde",
@@ -4022,7 +4022,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-script"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "blake3",
  "ndarray",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "rustlab-viewer"
-version = "0.3.69"
+version = "0.3.79"
 dependencies = [
  "eframe",
  "egui",

@@ -701,6 +701,69 @@ pub fn gradient_1d_coords(f: &[C64], x: &[f64]) -> Result<Vec<C64>, DspError> {
     Ok(g)
 }
 
+fn check_endpoint_order(order: u32, n: usize) -> Result<(), DspError> {
+    match order {
+        1 => Ok(()),
+        2 if n >= 3 => Ok(()),
+        2 => Err(DspError::InvalidParameter(format!(
+            "gradient: \"order\", 2 needs at least 3 samples, got {n}"
+        ))),
+        _ => Err(DspError::InvalidParameter(format!(
+            "gradient: \"order\" must be 1 or 2, got {order}"
+        ))),
+    }
+}
+
+/// [`gradient_1d`] with the endpoint order chosen. Order 1 is MATLAB's
+/// first-order endpoints. Order 2 uses the three-point one-sided
+/// differences `(-3f[0] + 4f[1] - f[2]) / (2h)` and
+/// `(3f[n-1] - 4f[n-2] + f[n-3]) / (2h)`, the boundary order of
+/// [`gradient_2d`]; it needs length ≥ 3. The interior is the same.
+pub fn gradient_1d_order(f: &[C64], h: f64, order: u32) -> Result<Vec<C64>, DspError> {
+    check_endpoint_order(order, f.len())?;
+    let mut g = gradient_1d(f, h)?;
+    if order == 2 {
+        let n = f.len();
+        let two_h = 2.0 * h;
+        g[0] = (f[0] * -3.0 + f[1] * 4.0 - f[2]) / two_h;
+        g[n - 1] = (f[n - 1] * 3.0 - f[n - 2] * 4.0 + f[n - 3]) / two_h;
+    }
+    Ok(g)
+}
+
+/// [`gradient_1d_coords`] with the endpoint order chosen. Order 2 fits the
+/// parabola through the first (last) three samples and differentiates it at
+/// the end point, so it is exact for a quadratic on any spacing. With
+/// `h1 = x[1] - x[0]` and `h2 = x[2] - x[1]`:
+/// `g[0] = -(2h1 + h2)/(h1(h1 + h2))·f[0] + (h1 + h2)/(h1·h2)·f[1] - h1/(h2(h1 + h2))·f[2]`,
+/// and the mirror image at the other end.
+pub fn gradient_1d_coords_order(f: &[C64], x: &[f64], order: u32) -> Result<Vec<C64>, DspError> {
+    let mut g = gradient_1d_coords(f, x)?;
+    check_endpoint_order(order, f.len())?;
+    if order == 2 {
+        let n = f.len();
+        let (h1, h2) = (x[1] - x[0], x[2] - x[1]);
+        if h2 == 0.0 {
+            return Err(DspError::InvalidParameter(
+                "gradient: adjacent coordinates must differ".to_string(),
+            ));
+        }
+        g[0] = f[0] * (-(2.0 * h1 + h2) / (h1 * (h1 + h2)))
+            + f[1] * ((h1 + h2) / (h1 * h2))
+            - f[2] * (h1 / (h2 * (h1 + h2)));
+        let (a, b) = (x[n - 2] - x[n - 3], x[n - 1] - x[n - 2]);
+        if a == 0.0 {
+            return Err(DspError::InvalidParameter(
+                "gradient: adjacent coordinates must differ".to_string(),
+            ));
+        }
+        g[n - 1] = f[n - 1] * ((2.0 * b + a) / (b * (a + b)))
+            - f[n - 2] * ((a + b) / (a * b))
+            + f[n - 3] * (b / (a * (a + b)));
+    }
+    Ok(g)
+}
+
 // ─── Test helpers ────────────────────────────────────────────────────────────
 
 /// Convenience constructor for filling a CMatrix from a real-valued closure.

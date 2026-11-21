@@ -1405,4 +1405,31 @@ mod tests {
         assert!(len > 1_000_000, "sibling plotly bundle too small: {len}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn plot_over_quiver_keeps_both_traces() {
+        // The SVG/PNG path used to drop the line; Plotly must keep emitting it.
+        let mut fig = FigureState::new();
+        let sp = fig.current_mut();
+        sp.quivers.push(crate::figure::QuiverData {
+            x: vec![0.0, 1.0],
+            y: vec![0.0, 1.0],
+            u: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            v: vec![vec![0.0, 0.0], vec![0.0, 0.0]],
+            scale: 1.0,
+            color: None,
+            title: None,
+        });
+        sp.series.push(Series {
+            label: String::new(),
+            x_data: vec![0.25, 0.5, 0.75],
+            y_data: vec![0.5, 0.75, 0.5],
+            color: SeriesColor::Red,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert_eq!(div.matches(r#"type: "scatter""#).count(), 2, "{div}");
+        assert!(div.contains("0.25,0.5,0.75"), "line samples missing:\n{div}");
+    }
 }
