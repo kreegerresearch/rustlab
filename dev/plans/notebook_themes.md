@@ -992,7 +992,7 @@ Implemented against `main` at 0.3.80, version 0.3.82.
   fixed with the smallest change that passes: the ⋯ menu button opacity
   (0.72 → 0.85; Latte was 3.48:1), the stale-cell opacity (0.65 → 0.85;
   Frappé 4.38:1, Latte 3.10:1), and form-field boundaries (`border`,
-  1.27–1.46:1 → `text_dim` mixed 75% into the page, ≥ 3.04:1). No palette
+  1.17–1.59:1 → `text_dim` mixed 75% into the page, ≥ 3.04:1). No palette
   hex changed.
 - **Schema:** `name`, `inherits` (default `mocha`), `[palette]`,
   `[colors]` (33 page roles plus `shadow`, `scrim`, `banner_bg`,

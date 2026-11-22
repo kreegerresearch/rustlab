@@ -23,7 +23,7 @@ should re-validate against those entries when upgrading.
 - **Legibility fixes** from a WCAG audit of the four builtins (HTML, watch chrome, and PDF; every other pair already passed):
   - the ⋯ menu button's text was 3.48:1 on Latte at `opacity: 0.72`; it is now `0.85` (4.63:1 Latte, at least 6.96:1 on the dark themes);
   - a stale cell (an edited cell waiting for its re-run) at `opacity: .65` was 4.38:1 on Frappé and 3.10:1 on Latte; it is now `0.85` (6.34:1 Frappé, 4.91:1 Latte);
-  - form-field boundaries (widget number inputs, the watch compare-ref field, the inline cell editor) used the `border` role, 1.27–1.46:1 against the page or menu; they now use `text_dim` mixed 75% into the page, at least 3.04:1 against page, menu, and code panel.
+  - form-field boundaries (widget number inputs, the watch compare-ref field, the inline cell editor) used the `border` role, 1.17–1.59:1 against the page, menu, or code panel; they now use `text_dim` mixed 75% into the page, at least 3.04:1 against page, menu, and code panel.
   The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.80.
 - **Watch page shadows and banner** are written as `color-mix(in srgb, var(--rl-shadow-color, #000000) N%, transparent)` and `var(--rl-banner-bg, #aa2233)`; they paint the same pixels as before. The comment popup rule (in every HTML page that shows comments) changes the same way.
 

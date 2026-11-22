@@ -332,7 +332,7 @@ fn load_file(
             format!("more than {MAX_CHAIN} levels of inherits"),
         ));
     }
-    if stack.iter().any(|n| *n == name) {
+    if stack.contains(&name) {
         let mut chain = stack.clone();
         chain.push(name.clone());
         return Err(format!("theme inheritance cycle: {}", chain.join(" -> ")));
@@ -781,7 +781,7 @@ fn number(s: &str) -> Result<String, String> {
     let int = parts.next().unwrap_or("");
     let frac = parts.next();
     let digits = |p: &str| !p.is_empty() && p.len() <= 6 && p.bytes().all(|b| b.is_ascii_digit());
-    let ok = digits(int) && frac.map_or(true, digits);
+    let ok = digits(int) && frac.is_none_or(digits);
     if ok {
         Ok(s.to_string())
     } else {
