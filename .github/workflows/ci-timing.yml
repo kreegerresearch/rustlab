@@ -1,0 +1,108 @@
+name: ci-timing
+
+on:
+  push:
+    branches: ["cursor/ci-timing-**"]
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: o0
+            prof: dev
+            cfg: ""
+          - name: o2
+            prof: ci
+            cfg: >-
+              --config 'profile.ci.inherits="dev"'
+              --config 'profile.ci.opt-level=2'
+              --config 'profile.ci.debug="line-tables-only"'
+          - name: o1ws-o2deps
+            prof: ci
+            cfg: >-
+              --config 'profile.ci.inherits="dev"'
+              --config 'profile.ci.opt-level=1'
+              --config 'profile.ci.debug="line-tables-only"'
+              --config 'profile.ci.package."*".opt-level=2'
+          - name: hot
+            prof: ci
+            cfg: >-
+              --config 'profile.ci.inherits="dev"'
+              --config 'profile.ci.debug="line-tables-only"'
+              --config 'profile.ci.package."*".opt-level=2'
+              --config 'profile.ci.package.rustlab-core.opt-level=2'
+              --config 'profile.ci.package.rustlab-dsp.opt-level=2'
+    name: timing (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System deps
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends chktex tidy
+      - uses: taiki-e/install-action@nextest
+      - name: Runner info
+        run: nproc; free -g; lscpu | grep -E 'Model name|Thread|Core'; rustc -V
+      - name: Nextest config
+        run: |
+          mkdir -p .config
+          cat > .config/nextest.toml <<'EOF'
+          [profile.default]
+          slow-timeout = { period = "60s" }
+          fail-fast = false
+          [profile.default.junit]
+          path = "junit.xml"
+          EOF
+      - name: Cold build
+        run: |
+          s=$(date +%s)
+          cargo nextest run --workspace --no-run ${{ matrix.cfg }} --cargo-profile ${{ matrix.prof }}
+          echo "TIMING cold_build $(( $(date +%s)-s ))"
+      - name: Test run (nextest)
+        run: |
+          s=$(date +%s)
+          cargo nextest run --workspace ${{ matrix.cfg }} --cargo-profile ${{ matrix.prof }} || true
+          echo "TIMING nextest_run $(( $(date +%s)-s ))"
+      - name: Top tests
+        run: |
+          python3 - <<'EOF'
+          import xml.etree.ElementTree as ET
+          r = ET.parse('target/nextest/default/junit.xml').getroot(); t = []
+          for ts in r.iter('testsuite'):
+              for tc in ts.iter('testcase'):
+                  t.append((float(tc.get('time')), ts.get('name'), tc.get('name')))
+          t.sort(reverse=True)
+          print('sum %.0f n %d' % (sum(x[0] for x in t), len(t)))
+          for x in t[:25]:
+              print('%7.1f  %s  %s' % x)
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.name }}
+          path: target/nextest/default/junit.xml
+      - name: Plain cargo test (same profile)
+        if: matrix.name == 'o2'
+        run: |
+          s=$(date +%s)
+          cargo test --workspace ${{ matrix.cfg }} --profile ${{ matrix.prof }} 2>&1 | grep -E "Running|Doc-tests|test result" || true
+          echo "TIMING cargo_test $(( $(date +%s)-s ))"
+      - name: Doctests
+        if: matrix.name == 'o0'
+        run: |
+          s=$(date +%s)
+          cargo test --workspace --doc 2>&1 | tail -3
+          echo "TIMING doctests $(( $(date +%s)-s ))"
+      - name: Warm rebuild after a workspace source change
+        run: |
+          echo "// timing" >> crates/rustlab-core/src/lib.rs
+          s=$(date +%s)
+          cargo nextest run --workspace --no-run ${{ matrix.cfg }} --cargo-profile ${{ matrix.prof }} 2>&1 | grep -cE "Compiling" || true
+          echo "TIMING warm_rebuild $(( $(date +%s)-s ))"
+      - name: Target size
+        run: du -sh target ~/.cargo/registry
