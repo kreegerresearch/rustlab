@@ -936,7 +936,7 @@ rustlab run examples/dsp/lowpass.rlab   # must exit 0 with a plot
 
 **Key files:**
 - `src/types.rs` — type aliases: `C64 = Complex<f64>`, `CVector = Array1<C64>`, `CMatrix = Array2<C64>`, `RVector = Array1<f64>`, `RMatrix = Array2<f64>`
-- `src/logical.rs` — `LogicalArray`, a row-major grid of `0`/`1` bytes (not a bit pack). Comparisons and masks use it. `get` is one load. A release scan of 1e6 flags (about one third set), best of five: count 364 µs byte vs 92 µs packed; true-position list 1.10 ms vs 695 µs. Bytes stay, matching MATLAB's one-byte `logical`.
+- `src/logical.rs` — `LogicalArray`, a row-major grid of `0`/`1` bytes (not a bit pack). Comparisons and masks use it. `get` is one load. A release scan of 1e6 flags (about one third set), best of five: count 364 µs byte vs 92 µs packed; true-position list 1.10 ms vs 695 µs. Bytes stay, matching MATLAB's one-byte `logical`. `column_major_bytes`, `gather_column_major`, and `set_region` are the byte-copy paths behind `L(:)`, linear reads, and logical region writes (`D(t, :) = d(:)`); keep hot paths on them rather than per-element `get_column_major` / `set`.
 - `src/traits/filter.rs` — `Filter` trait: `apply(&CVector)`, `frequency_response(n_points)`
 - `src/traits/transform.rs` — `Transform` trait: `forward`, `inverse`
 - `src/traits/decompose.rs` — `Decomposable` trait + marker traits `LuDecomposable`, `SvdDecomposable`, `CholeskyDecomposable`, `EigenDecomposable` (stubs — no implementors yet)

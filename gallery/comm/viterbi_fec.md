@@ -244,10 +244,11 @@ end
 function e = frame_errors(N, F, ebn0_db, T, hard)
   u = randi([0, 1], F, N);
   L = N + 6;
-  X = zeros(size(T.G, 1), F * L);
-  for f = 1:F
-    X(:, (f - 1) * L + 1 : f * L) = 1 - 2 * conv_encode(u(f, :), T.G);
-  end
+  # All frames back to back, each followed by its six tail zeros. The tail
+  # empties the register, so one encode of the stream is every frame's
+  # encode side by side (conv_encode appends the last frame's tail).
+  stream = reshape([u, zeros(F, 6)]', 1, F * L);
+  X = 1 - 2 * conv_encode(stream(1 : F * L - 6), T.G);
   M = repmat(puncture_mask(T.P, L), 1, F);   # each frame restarts the pattern
   sigma = sqrt(1 / (2 * T.rate * 10^(ebn0_db / 10)));
   Y = (X + sigma * randn(size(X, 1), size(X, 2))) .* M;
@@ -273,17 +274,29 @@ rate_34 = codes.r34.rate
 
 The 3/4 pattern covers three steps (three information bits) and keeps
 four of their six symbols. The tail bits are ignored in the rate; they add
-six steps to a 10,000-bit frame.
+six steps to a 1,000-bit frame, 0.6 % more energy per bit than the rate
+says, under 0.03 dB.
 
 ## Bit error rate vs. $E_b/N_0$
 
-Each point decodes `n_frames` frames of 10,000 bits in one call to
-`viterbi_frames`, the decoder above run on a $64 \times F$ matrix of path
-metrics, one column per frame. Each trellis step is then one set of array
-operations for all 40 frames instead of 40 sets of 64-element ones. The
-points are independent, so `parmap` spreads them over all
-cores; its per-task random streams are derived from the master `seed`, so
-the result does not depend on the thread count.
+Each point decodes frames of 1,000 bits with `viterbi_frames`, the
+decoder above run on a $64 \times F$ matrix of path metrics, one column per
+frame. Each trellis step is then one set of array operations for all $F$
+frames instead of $F$ sets of 64-element ones, so many short frames side by
+side cost far fewer steps than a few long ones.
+
+A point needs enough errors, not a fixed number of bits. Each point first
+decodes `n_first` = 40 frames (40,000 bits). If that already produced
+`min_errors` = 300 errors, the point stops there; otherwise it decodes up
+to `n_frames` = 400 frames (400,000 bits). Viterbi errors come in bursts of
+about ten, so 300 errors are some thirty independent bursts and pin the
+BER to within about 20 %, a sliver of a decade on the plot. The low
+$E_b/N_0$ points, where errors are plentiful, stop early; every point with
+a BER under $300 / 40{,}000 = 7.5 \times 10^{-3}$ gets all 400,000 bits.
+
+The points are independent, so `parmap` spreads them over all cores; its
+per-task random streams are derived from the master `seed`, so the result
+does not depend on the thread count.
 
 The theory curve for uncoded BPSK is $P_b = Q\!\left(\sqrt{2 E_b/N_0}\right)$.
 rustlab has no `erfc`, so $Q$ comes from Craig's exact integral
@@ -304,41 +317,60 @@ function q = qfunc(x)
   end
 end
 
-N = 10000;
-
-# Uncoded BPSK is cheap: simulate it out to 10 dB.
+# Uncoded BPSK is cheap: simulate it out to 10 dB, 12 blocks of 10,000 bits
+# per point.
+N_u = 10000;
 ebn0_u = 0:0.5:10;
 n_frames_u = 12;
 seed(2026);
-e_u = parmap(@(k) uncoded_errors(N, ebn0_u(floor((k - 1) / n_frames_u) + 1)), 1:(length(ebn0_u) * n_frames_u));
-ber_u = sum(reshape(e_u, n_frames_u, length(ebn0_u)), 1) / (N * n_frames_u);
+e_u = parmap(@(k) uncoded_errors(N_u, ebn0_u(floor((k - 1) / n_frames_u) + 1)), 1:(length(ebn0_u) * n_frames_u));
+ber_u = sum(reshape(e_u, n_frames_u, length(ebn0_u)), 1) / (N_u * n_frames_u);
 theory = qfunc(sqrt(2 * 10.^(ebn0_u / 10)));
 
-# The coded links, 40 frames (400,000 bits) per point up to 6 dB.
+# The coded links: frames of N bits, up to 400 frames (400,000 bits) per
+# point, 0 to 6 dB.
+N = 1000;
 names = {"rate 1/3", "rate 1/2", "rate 2/3", "rate 3/4"};
 ebn0 = 0:0.5:6;
 nE = length(ebn0);
-n_frames = 40;
+n_first = 40;
+n_frames = 400;
+min_errors = 300;
 n_codes = 4;
 
-# Task k is all n_frames frames of one code at one Eb/N0.
-function e = ber_task(k, codes, N, n_frames, ebn0)
+# One point: n_first frames, then the rest of n_frames unless min_errors
+# errors are already counted.  Returns [errors, frames decoded].
+function r = point_errors(T, db, hard, N, n_first, n_frames, min_errors)
+  e = frame_errors(N, n_first, db, T, hard);
+  f = n_first;
+  if e < min_errors
+    e = e + frame_errors(N, n_frames - n_first, db, T, hard);
+    f = n_frames;
+  end
+  r = [e, f];
+end
+
+# Task k is one code at one Eb/N0.
+function r = ber_task(k, codes, ebn0, N, n_first, n_frames, min_errors)
   nE = length(ebn0);
   code = floor((k - 1) / nE) + 1;
   db = ebn0(mod(k - 1, nE) + 1);
   if code == 1
-    e = frame_errors(N, n_frames, db, codes.r13, false);
+    T = codes.r13;
   elseif code == 2
-    e = frame_errors(N, n_frames, db, codes.r12, false);
+    T = codes.r12;
   elseif code == 3
-    e = frame_errors(N, n_frames, db, codes.r23, false);
+    T = codes.r23;
   else
-    e = frame_errors(N, n_frames, db, codes.r34, false);
+    T = codes.r34;
   end
+  r = point_errors(T, db, false, N, n_first, n_frames, min_errors);
 end
 
-errs = parmap(@(k) ber_task(k, codes, N, n_frames, ebn0), 1:(n_codes * nE));
-ber = reshape(errs, nE, n_codes)' / (N * n_frames);
+R = parmap(@(k) ber_task(k, codes, ebn0, N, n_first, n_frames, min_errors), 1:(n_codes * nE));
+errs = reshape(R(:, 1), nE, n_codes)';
+bits = N * reshape(R(:, 2), nE, n_codes)';
+ber = errs ./ bits;
 ```
 
 `ber` has one row per code. At every whole dB, next to uncoded BPSK in
@@ -372,10 +404,10 @@ end
 ```text
 Eb/N0 (dB)                0        1        2        3        4        5        6
 uncoded (theory)    7.9e-02  5.6e-02  3.8e-02  2.3e-02  1.3e-02  6.0e-03  2.4e-03
-rate 1/3            7.9e-02  1.7e-02  1.6e-03  1.2e-04  2.5e-06        -        -
-rate 1/2            1.5e-01  3.9e-02  4.4e-03  3.2e-04  1.0e-05        -        -
-rate 2/3            3.0e-01  1.2e-01  2.3e-02  1.8e-03  7.5e-05        -        -
-rate 3/4            3.8e-01  2.3e-01  6.7e-02  7.3e-03  3.8e-04  1.2e-04        -
+rate 1/3            8.2e-02  1.6e-02  1.8e-03  1.4e-04        -        -        -
+rate 1/2            1.6e-01  3.8e-02  4.9e-03  2.3e-04        -        -        -
+rate 2/3            2.9e-01  1.1e-01  2.3e-02  1.4e-03  5.0e-05        -        -
+rate 3/4            3.8e-01  2.3e-01  6.0e-02  5.2e-03  3.5e-04        -        -
 ```
 
 <!-- rustlab:output-end -->
@@ -402,7 +434,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/viterbi_fec/plot-2-5f90286b.svg)
+![plot 2](plots/viterbi_fec/plot-2-ed676296.svg)
 
 <!-- rustlab:output-end -->
 
@@ -455,10 +487,10 @@ end
 ```text
 code               bits/sym     Eb/N0 @ 1e-4   coding gain   Shannon limit
 uncoded (theory)      1.000          8.39 dB             -         1.76 dB
-rate 1/3              0.333          3.04 dB       5.35 dB        -0.55 dB
-rate 1/2              0.500          3.33 dB       5.06 dB         0.00 dB
-rate 2/3              0.667          3.91 dB       4.48 dB         0.57 dB
-rate 3/4              0.750          4.31 dB       4.08 dB         0.86 dB
+rate 1/3              0.333          3.11 dB       5.29 dB        -0.55 dB
+rate 1/2              0.500          3.26 dB       5.13 dB         0.00 dB
+rate 2/3              0.667          3.82 dB       4.58 dB         0.57 dB
+rate 3/4              0.750          4.46 dB       3.93 dB         0.86 dB
 ```
 
 <!-- rustlab:output-end -->
@@ -467,8 +499,8 @@ At $10^{-4}$ the rate-1/2 code needs 3.3 dB where uncoded BPSK
 needs 8.4 dB. That 5.1 dB is about
 3× less transmit power per bit, paid for
 with half the throughput. Rate 1/3 buys another
-0.3 dB for half as many symbols again. Puncturing to
-3/4 gives back 1.0 dB and sends a third fewer
+0.2 dB for half as many symbols again. Puncturing to
+3/4 gives back 1.2 dB and sends a third fewer
 symbols than rate 1/2. Every rate stays about
 3.3 dB from its Shannon limit, the gap that
 turbo and LDPC codes closed in the 1990s.
@@ -477,20 +509,15 @@ turbo and LDPC codes closed in the 1990s.
 
 A hard-decision receiver turns each sample into a bit before decoding,
 here by replacing $Y$ with `sign(Y)`. The decoder is unchanged; it now
-counts agreements instead of weighing confidence.
+counts agreements instead of weighing confidence. The soft-decision curve
+is the rate-1/2 row of `ber` from 2 dB up; only the hard-decision points
+are new, with the same frame and error rule.
 
 ```rustlab
 seed(11);
 ebn0_h = 2:0.5:6;
-nH = length(ebn0_h);
-function e = hs_task(k, T, N, n_frames, ebn0_h)
-  nH = length(ebn0_h);
-  hard = k > nH;
-  db = ebn0_h(mod(k - 1, nH) + 1);
-  e = frame_errors(N, n_frames, db, T, hard);
-end
-e_hs = parmap(@(k) hs_task(k, codes.r12, N, n_frames, ebn0_h), 1:(2 * nH));
-ber_hs = reshape(e_hs, nH, 2)' / (N * n_frames);
+R_h = parmap(@(db) point_errors(codes.r12, db, true, N, n_first, n_frames, min_errors), ebn0_h);
+ber_hs = [ber(2, ebn0 >= 2); (R_h(:, 1) ./ (N * R_h(:, 2)))'];
 
 clf
 keep_s = find(ber_hs(1, :) > 0);
@@ -512,10 +539,10 @@ fprintf("Eb/N0 at BER 1e-4: soft %.2f dB, hard %.2f dB, soft-decision gain %.2f 
 
 <!-- rustlab:output-start -->
 ```text
-Eb/N0 at BER 1e-4: soft 3.54 dB, hard 5.80 dB, soft-decision gain 2.25 dB
+Eb/N0 at BER 1e-4: soft 3.26 dB, hard 5.53 dB, soft-decision gain 2.27 dB
 ```
 
-![plot 3](plots/viterbi_fec/plot-3-29ee9fd6.svg)
+![plot 3](plots/viterbi_fec/plot-3-3221b1cb.svg)
 
 <!-- rustlab:output-end -->
 
