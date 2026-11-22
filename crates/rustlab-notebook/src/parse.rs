@@ -570,6 +570,9 @@ pub struct Frontmatter {
     /// An unrecognised value is left `None` (falls through to rc / open);
     /// `notebook check` warns.
     pub code_open: Option<bool>,
+    /// `theme: NAME`. A builtin or a theme-file name, never a path; the
+    /// renderer checks the name and resolves it (`theme_select`).
+    pub theme: Option<String>,
 }
 
 /// Extract YAML frontmatter and the remaining body from a notebook source.
@@ -750,6 +753,11 @@ fn parse_frontmatter(src: &str) -> Frontmatter {
                 "collapsed" => fm.code_open = Some(false),
                 _ => {}
             },
+            "theme" => {
+                if !val.is_empty() {
+                    fm.theme = Some(val);
+                }
+            }
             _ => {}
         }
     }

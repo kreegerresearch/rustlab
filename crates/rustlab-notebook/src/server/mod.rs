@@ -761,6 +761,15 @@ pub(super) fn render_for_server_cancellable(
     // the stripped text made every comment on a rendered file answer
     // 409 ("This notebook changed") and shifted deletes off the real spans.
     let source = crate::strip_render_artifacts(&raw);
+    // Frontmatter `theme:`. A bad name keeps the server's theme so the
+    // page still renders; the reason goes to the terminal.
+    let theme: &'static ThemeColors = match crate::theme_select::for_source(theme, &source) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("warning: {}: {e}; using the default theme", input.display());
+            theme
+        }
+    };
 
     // Canonicalize the host directory before the chdir so the embed expander
     // resolves siblings against the correct absolute location.
