@@ -891,7 +891,15 @@ For the degenerate single-element case, rustlab follows the Octave / MATLAB conv
 For `n = 0`, returns an empty vector.
 
 ### `len(v)` / `length(v)`
-Number of elements in a vector, rows in a matrix, or characters in a string.
+Number of elements in a vector, or characters in a string. A matrix returns its largest dimension, `max(size(M))`.
+
+An array with any dimension of 0 has length 0, as in MATLAB (`length(X)` is 0 when `isempty(X)`, else `max(size(X))`). This holds for dense, complex, logical, integer, `Tensor3`, and sparse arrays.
+```
+length(zeros(3, 7))   # → 7
+length(zeros(4, 0))   # → 0, not 4
+S = speye(4);
+length(S(:, []))      # → 0 (4×0 sparse)
+```
 
 A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 

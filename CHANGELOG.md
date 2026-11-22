@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.81
+
+### Breaking / behavior changes
+- **`length` of an empty array is 0.** `length(X)` (and its alias `len`) returned the largest dimension even when another was 0, so `length(zeros(4, 0))` was 4 and `length(S(:, []))` on a 4×5 sparse matrix was 4. MATLAB returns 0 whenever `isempty(X)`, else `max(size(X))`, and rustlab now does too, for dense, complex, logical, integer, `Tensor3`, and sparse arrays. Non-empty arrays are unchanged, and `numel`, `isempty`, and `size` already agreed with MATLAB. Migration: a script that used `length` of an `m×0` or `0×n` array as a row or column count should use `size(X, 1)` or `size(X, 2)`.
+
 ## 0.3.80
 
 ### Added
