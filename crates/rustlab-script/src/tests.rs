@@ -21838,6 +21838,81 @@ mod michael_bug_batch {
         assert!(matches!(ev.get("isl"), Some(Value::Bool(true))));
     }
 
+    /// `d(:)` of a logical matrix walks columns, and a logical matrix written
+    /// into a logical region keeps its own (row, column) layout. The Viterbi
+    /// notebook stores its decisions with `D(t, :) = d(:)`.
+    #[test]
+    fn logical_flatten_and_region_writes_keep_matlab_order() {
+        let ev = eval(
+            "a = [1 5 2; 4 0 7] > [3 3 3; 3 3 3];
+             c = a(:);
+             D = false(3, 6);
+             D(2, :) = a(:);
+             E = false(3, 4);
+             E(2:3, [4 1 2]) = a;
+             G = true(2, 6);
+             G(:, 4:6) = a;
+             H = false(2, 3);
+             H(:, 2) = a(:, 3)';
+             r = a(4:6);",
+        );
+        // a = [0 1 0; 1 0 1], column-major 0 1 1 0 0 1.
+        let c = logical_of(&ev, "c");
+        assert_eq!((c.rows(), c.cols()), (6, 1));
+        assert_eq!(c.as_slice(), &[0, 1, 1, 0, 0, 1]);
+        assert_eq!(
+            flags(&logical_of(&ev, "D")),
+            vec![vec![0; 6], vec![0, 1, 1, 0, 0, 1], vec![0; 6]]
+        );
+        assert_eq!(
+            flags(&logical_of(&ev, "E")),
+            vec![vec![0, 0, 0, 0], vec![1, 0, 0, 0], vec![0, 1, 0, 1]]
+        );
+        assert_eq!(
+            flags(&logical_of(&ev, "G")),
+            vec![vec![1, 1, 1, 0, 1, 0], vec![1, 1, 1, 1, 0, 1]]
+        );
+        assert_eq!(
+            flags(&logical_of(&ev, "H")),
+            vec![vec![0, 0, 0], vec![0, 1, 0]]
+        );
+        assert_eq!(flags(&logical_of(&ev, "r")), vec![vec![0, 0, 1]]);
+    }
+
+    /// Elementwise `max` / `min` of two real matrices: a NaN loses to a
+    /// number, two NaNs give NaN, and a tie keeps the first operand.
+    #[test]
+    fn elementwise_max_min_nan_and_tie_rules() {
+        let ev = eval(
+            "a = [1, NaN, NaN, -0, 3; 2, 5, -Inf, 4, 7];
+             b = [2, 4, NaN, 0, 3; 1, NaN, Inf, -1, 8];
+             mx = max(a, b);
+             mn = min(a, b);
+             mxs = max(a, 4);
+             mns = min(NaN, b);",
+        );
+        let m = |name: &str| -> Vec<f64> {
+            match ev.get(name) {
+                Some(Value::Matrix(m)) => m.iter().map(|z| z.re).collect(),
+                other => panic!("{name}: {other:?}"),
+            }
+        };
+        let same = |got: Vec<f64>, want: &[f64]| {
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(want) {
+                assert!(
+                    (g.is_nan() && w.is_nan()) || g.to_bits() == w.to_bits(),
+                    "{got:?} vs {want:?}"
+                );
+            }
+        };
+        let nan = f64::NAN;
+        same(m("mx"), &[2.0, 4.0, nan, -0.0, 3.0, 2.0, 5.0, f64::INFINITY, 4.0, 8.0]);
+        same(m("mn"), &[1.0, 4.0, nan, -0.0, 3.0, 1.0, 5.0, f64::NEG_INFINITY, -1.0, 7.0]);
+        same(m("mxs"), &[4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 5.0, 4.0, 4.0, 7.0]);
+        same(m("mns"), &[2.0, 4.0, nan, 0.0, 3.0, 1.0, nan, f64::INFINITY, -1.0, 8.0]);
+    }
+
     /// Writing past the end grows a logical array with `false`. A row grows
     /// along its columns, a column along its rows, and two subscripts grow
     /// both. A new variable assigned a logical value is logical.

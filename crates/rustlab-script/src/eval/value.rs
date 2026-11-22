@@ -1371,15 +1371,24 @@ impl Value {
                 Self::logical_row(Vec::new())
             };
         }
+        let row = |bytes: Vec<u8>| -> Result<Value, String> {
+            let n = bytes.len();
+            LogicalArray::from_bytes(bytes, 1, n)
+                .map(Value::Logical)
+                .map_err(|e| e.to_string())
+        };
         let gather = |pos: Vec<usize>| -> Result<Value, String> {
-            let flags: Vec<bool> = pos
-                .iter()
-                .map(|&k| a.get_column_major(k).unwrap_or(false))
-                .collect();
-            Self::logical_row(flags)
+            match a.gather_column_major(&pos) {
+                Some(bytes) => row(bytes),
+                None => Self::logical_row(
+                    pos.iter()
+                        .map(|&k| a.get_column_major(k).unwrap_or(false))
+                        .collect(),
+                ),
+            }
         };
         match idx {
-            Value::All => gather((0..a.len()).collect()),
+            Value::All => row(a.column_major_bytes()),
             Value::Scalar(n) => {
                 let k = Self::one_based_to_zero(n)?;
                 match a.get_column_major(k) {
