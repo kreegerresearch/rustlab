@@ -46,7 +46,12 @@ impl Lanczos {
     /// Run up to `max_dim` Lanczos steps. Stops early on invariant
     /// subspace detection (β below `tol`). The closure `matvec` performs
     /// `A · v` for any input `v`.
-    pub fn run<F>(&mut self, matvec: F, max_dim: usize, tol: f64) -> Result<(), SparseEigError>
+    pub fn run<F>(
+        &mut self,
+        matvec: F,
+        max_dim: usize,
+        tol: f64,
+    ) -> Result<(), SparseEigError>
     where
         F: Fn(&[f64]) -> Vec<f64>,
     {

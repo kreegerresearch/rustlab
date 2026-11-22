@@ -37,10 +37,7 @@ fn reals(ev: &Evaluator, name: &str) -> Vec<f64> {
         Some(Value::Matrix(m)) => {
             // Column-major, the order MATLAB prints `x(:)` in.
             let (r, c) = m.dim();
-            (0..c)
-                .flat_map(|j| (0..r).map(move |i| (i, j)))
-                .map(|(i, j)| m[[i, j]].re)
-                .collect()
+            (0..c).flat_map(|j| (0..r).map(move |i| (i, j))).map(|(i, j)| m[[i, j]].re).collect()
         }
         other => panic!("{name}: expected a real array, got {other:?}"),
     }
@@ -118,10 +115,7 @@ fn matrix_column_slices_are_columns() {
     assert_eq!(size(&ev, "r"), vec![1.0, 120.0], "a single row stays a row");
     assert_eq!(size(&ev, "s"), vec![1.0, 4.0]);
     assert_eq!(size(&ev, "e"), vec![1.0, 1.0]);
-    assert_eq!(
-        reals(&ev, "c"),
-        vec![1.0 * 61.0 + 5.0, 1.0 * 61.0 + 1.0, 1.0 * 61.0 + 9.0]
-    );
+    assert_eq!(reals(&ev, "c"), vec![1.0 * 61.0 + 5.0, 1.0 * 61.0 + 1.0, 1.0 * 61.0 + 9.0]);
 }
 
 #[test]
@@ -150,11 +144,7 @@ fn subscript_into_a_column_keeps_the_column() {
     assert_eq!(size(&ev, "b"), vec![2.0, 1.0]);
     assert_eq!(size(&ev, "m"), vec![3.0, 1.0]);
     assert_eq!(size(&ev, "k"), vec![1.0, 1.0]);
-    assert_eq!(
-        size(&ev, "r"),
-        vec![1.0, 2.0],
-        "a row vector's slice stays a row"
-    );
+    assert_eq!(size(&ev, "r"), vec![1.0, 2.0], "a row vector's slice stays a row");
     assert_eq!(size(&ev, "w"), vec![1.0, 4.0]);
     assert_eq!(reals(&ev, "b"), vec![40.0, 10.0]);
     assert_eq!(reals(&ev, "m"), vec![20.0, 30.0, 40.0]);
@@ -199,11 +189,7 @@ fn complex_field_is_not_conjugated() {
          t = V(:).'; tc = imag(t(1));
          size_h = size(h); size_t = size(t);",
     );
-    assert_eq!(
-        reals(&ev, "im1"),
-        vec![4.0],
-        "2 * imag(1 + 2j), not conjugated"
-    );
+    assert_eq!(reals(&ev, "im1"), vec![4.0], "2 * imag(1 + 2j), not conjugated");
     assert_eq!(reals(&ev, "im3"), vec![-1.0], "V(1, 2) = 3 - 1j");
     assert_eq!(reals(&ev, "hc"), vec![-2.0], "' conjugates");
     assert_eq!(reals(&ev, "tc"), vec![2.0], ".' does not");
@@ -215,10 +201,7 @@ fn complex_field_is_not_conjugated() {
 fn old_transposed_idiom_is_now_a_row() {
     // Migration check: A * V(:)' multiplies by a 1×n row and is an error.
     let e = eval_err("V = ones(2, 2); A = eye(4); y = A * V(:)';");
-    assert!(
-        e.contains("dimension") || e.contains("multiply") || e.contains("mismatch"),
-        "{e}"
-    );
+    assert!(e.contains("dimension") || e.contains("multiply") || e.contains("mismatch"), "{e}");
 }
 
 #[test]

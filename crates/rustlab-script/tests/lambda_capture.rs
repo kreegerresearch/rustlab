@@ -370,14 +370,8 @@ fn handle_calls_the_function_not_a_shadowing_variable() {
     let ev = run(
         "function y = sq(x)\n  y = x * x;\nend\nsq = [10, 20, 30]; h = @sq; y = h(4); z = sq(1);",
     );
-    assert!(
-        (scalar(&ev, "y") - 16.0).abs() < 1e-12,
-        "handle must call the user function"
-    );
-    assert!(
-        (scalar(&ev, "z") - 10.0).abs() < 1e-12,
-        "a direct call still indexes the variable"
-    );
+    assert!((scalar(&ev, "y") - 16.0).abs() < 1e-12, "handle must call the user function");
+    assert!((scalar(&ev, "z") - 10.0).abs() < 1e-12, "a direct call still indexes the variable");
 
     // `@f` while f holds a lambda copies that lambda. Later writes to f
     // do not change the handle.

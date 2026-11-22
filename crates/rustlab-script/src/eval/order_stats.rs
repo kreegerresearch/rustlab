@@ -579,11 +579,9 @@ mod tests {
         assert!(variance_f64("std", &[f64::INFINITY], &Weight::Sample)
             .unwrap()
             .is_nan());
-        assert!(
-            variance("var", &[C64::new(f64::INFINITY, 0.0)], &Weight::Population)
-                .unwrap()
-                .is_nan()
-        );
+        assert!(variance("var", &[C64::new(f64::INFINITY, 0.0)], &Weight::Population)
+            .unwrap()
+            .is_nan());
         assert_eq!(variance_f64("std", &[4.0], &Weight::Sample).unwrap(), 0.0);
     }
 

@@ -36,7 +36,10 @@ impl<T: SparseScalar> SparseChol<T> {
     /// Non-Hermitian or non-positive-definite inputs return
     /// `SparseSolveError::NotSpd` when a diagonal pivot turns negative or
     /// non-real during elimination.
-    pub fn factor<O: OrderingMethod>(a: &SparseCsc<T>, ord: &O) -> Result<Self, SparseSolveError> {
+    pub fn factor<O: OrderingMethod>(
+        a: &SparseCsc<T>,
+        ord: &O,
+    ) -> Result<Self, SparseSolveError> {
         if !a.is_square() {
             return Err(SparseSolveError::NotSquare {
                 rows: a.nrows(),
@@ -198,7 +201,10 @@ impl<T: SparseScalar> SparseChol<T> {
 /// Linear in `nnz(c)` for trees of bounded depth, and the standard
 /// O(nnz(c) log n) in pathological cases. Reuses `ereach` — the same
 /// machinery the numeric pass uses to walk the row pattern.
-fn compute_col_counts<T: SparseScalar>(c: &SparseCsc<T>, parent: &[Option<usize>]) -> Vec<usize> {
+fn compute_col_counts<T: SparseScalar>(
+    c: &SparseCsc<T>,
+    parent: &[Option<usize>],
+) -> Vec<usize> {
     let n = c.ncols();
     let mut col_count: Vec<usize> = vec![1; n]; // 1 per diagonal
     let mut mark: Vec<usize> = vec![usize::MAX; n];
@@ -372,11 +378,7 @@ mod tests {
         let x = chol.solve(&b).unwrap();
         let r = a.spmv(&x);
         for k in 0..4 {
-            assert!(
-                close(r[k], b[k], 1e-10),
-                "residual {} at row {k}",
-                r[k] - b[k]
-            );
+            assert!(close(r[k], b[k], 1e-10), "residual {} at row {k}", r[k] - b[k]);
         }
     }
 
@@ -474,7 +476,8 @@ mod tests {
                 let k = j * ny + i;
                 let xi = (i + 1) as f64 / (ny + 1) as f64;
                 let xj = (j + 1) as f64 / (nx + 1) as f64;
-                v_exact[k] = (std::f64::consts::PI * xi).sin() * (std::f64::consts::PI * xj).sin();
+                v_exact[k] =
+                    (std::f64::consts::PI * xi).sin() * (std::f64::consts::PI * xj).sin();
             }
         }
         let rhs = a.spmv(&v_exact);

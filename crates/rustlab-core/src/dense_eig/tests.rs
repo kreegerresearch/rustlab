@@ -34,9 +34,7 @@ fn rand_matrix(n: usize, seed: u64, complex: bool) -> CMatrix {
         s ^= s << 17;
         (s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
     };
-    Array2::from_shape_fn((n, n), |_| {
-        C64::new(next(), if complex { next() } else { 0.0 })
-    })
+    Array2::from_shape_fn((n, n), |_| C64::new(next(), if complex { next() } else { 0.0 }))
 }
 
 fn fro(m: &CMatrix) -> f64 {
@@ -73,10 +71,7 @@ fn assert_same_set(got: &[C64], want: &[C64], tol: f64) {
             .map(|(k, g)| (k, (g - w).norm()))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap();
-        assert!(
-            d <= tol * w.norm().max(1.0),
-            "eigenvalue {w} missing (closest off by {d:e}); got {got:?}"
-        );
+        assert!(d <= tol * w.norm().max(1.0), "eigenvalue {w} missing (closest off by {d:e}); got {got:?}");
         left.remove(k);
     }
 }
@@ -102,10 +97,7 @@ fn block_diagonal_matrices_get_every_block_right() {
     let cases = [
         (blkdiag(&[a.clone(), b.clone()]), both(&ea, &eb, &[])),
         (blkdiag(&[a.clone(), a.clone()]), both(&ea, &ea, &[])),
-        (
-            blkdiag(&[b.clone(), rot, a.clone()]),
-            both(&eb, &[C64::new(0.0, 2.0), C64::new(0.0, -2.0)], &ea),
-        ),
+        (blkdiag(&[b.clone(), rot, a.clone()]), both(&eb, &[C64::new(0.0, 2.0), C64::new(0.0, -2.0)], &ea)),
     ];
     for (m, want) in cases {
         let (vals, _) = check_decomposition(&m, 1e-12);
@@ -117,12 +109,7 @@ fn block_diagonal_matrices_get_every_block_right() {
 
 #[test]
 fn triangular_eigenvalues_are_the_diagonal() {
-    let t = real(&[
-        &[4.0, 1.0, 2.0, 3.0],
-        &[0.0, -2.0, 5.0, 1.0],
-        &[0.0, 0.0, 7.0, 2.0],
-        &[0.0, 0.0, 0.0, 0.5],
-    ]);
+    let t = real(&[&[4.0, 1.0, 2.0, 3.0], &[0.0, -2.0, 5.0, 1.0], &[0.0, 0.0, 7.0, 2.0], &[0.0, 0.0, 0.0, 0.5]]);
     let (vals, _) = check_decomposition(&t, 1e-14);
     assert_same_set(&vals, &[c(4.0), c(-2.0), c(7.0), c(0.5)], 1e-14);
 }
@@ -133,18 +120,9 @@ fn rotations_and_roots_of_unity() {
     assert_same_set(&vals, &[C64::new(0.0, 1.0), C64::new(0.0, -1.0)], 1e-15);
     // Companion matrix of x⁴ - 1: a zero Wilkinson shift, needs the
     // exceptional shift.
-    let comp = real(&[
-        &[0.0, 0.0, 0.0, 1.0],
-        &[1.0, 0.0, 0.0, 0.0],
-        &[0.0, 1.0, 0.0, 0.0],
-        &[0.0, 0.0, 1.0, 0.0],
-    ]);
+    let comp = real(&[&[0.0, 0.0, 0.0, 1.0], &[1.0, 0.0, 0.0, 0.0], &[0.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 0.0]]);
     let (vals, _) = check_decomposition(&comp, 1e-14);
-    assert_same_set(
-        &vals,
-        &[c(1.0), c(-1.0), C64::new(0.0, 1.0), C64::new(0.0, -1.0)],
-        1e-14,
-    );
+    assert_same_set(&vals, &[c(1.0), c(-1.0), C64::new(0.0, 1.0), C64::new(0.0, -1.0)], 1e-14);
 }
 
 #[test]
@@ -154,10 +132,7 @@ fn real_matrices_give_exact_conjugate_pairs() {
     let v = v.unwrap();
     for (k, z) in vals.iter().enumerate() {
         if z.im != 0.0 {
-            assert!(
-                vals.iter().any(|w| *w == z.conj()),
-                "{z} has no exact conjugate"
-            );
+            assert!(vals.iter().any(|w| *w == z.conj()), "{z} has no exact conjugate");
         } else {
             // A real eigenvalue of a real matrix has a real eigenvector.
             assert!((0..12).all(|i| v[[i, k]].im == 0.0));
@@ -175,14 +150,8 @@ fn hermitian_input_is_real_ascending_and_orthonormal() {
     };
     for m in [h, sym] {
         let (vals, v) = check_decomposition(&m, 1e-13);
-        assert!(
-            vals.iter().all(|z| z.im == 0.0),
-            "Hermitian eigenvalues must be real: {vals:?}"
-        );
-        assert!(
-            vals.windows(2).all(|w| w[0].re <= w[1].re),
-            "not ascending: {vals:?}"
-        );
+        assert!(vals.iter().all(|z| z.im == 0.0), "Hermitian eigenvalues must be real: {vals:?}");
+        assert!(vals.windows(2).all(|w| w[0].re <= w[1].re), "not ascending: {vals:?}");
         let gram = v.t().mapv(|z| z.conj()).dot(&v);
         let off = fro(&(gram - Array2::<C64>::eye(6)));
         assert!(off < 1e-13, "VᴴV - I = {off:e}");
@@ -195,24 +164,14 @@ fn repeated_eigenvalues_get_independent_eigenvectors() {
     for m in [
         Array2::<C64>::eye(3),
         real(&[&[2.0, 1.0, 1.0], &[1.0, 2.0, 1.0], &[1.0, 1.0, 2.0]]),
-        blkdiag(&[
-            real(&[&[2.0, 1.0], &[1.0, 3.0]]),
-            real(&[&[2.0, 1.0], &[1.0, 3.0]]),
-        ]),
+        blkdiag(&[real(&[&[2.0, 1.0], &[1.0, 3.0]]), real(&[&[2.0, 1.0], &[1.0, 3.0]])]),
         blkdiag(&[rand_matrix(3, 14, false), rand_matrix(3, 14, false)]),
     ] {
         let (_, v) = check_decomposition(&m, 1e-13);
         // Independent columns ⇔ VᴴV (Hermitian, PSD) has no eigenvalue near 0.
         let gram = v.t().mapv(|z| z.conj()).dot(&v);
-        let smallest = eigenvalues(&gram)
-            .unwrap()
-            .iter()
-            .map(|z| z.re)
-            .fold(f64::INFINITY, f64::min);
-        assert!(
-            smallest > 1e-6,
-            "eigenvectors nearly dependent (λmin(VᴴV) = {smallest:e})"
-        );
+        let smallest = eigenvalues(&gram).unwrap().iter().map(|z| z.re).fold(f64::INFINITY, f64::min);
+        assert!(smallest > 1e-6, "eigenvectors nearly dependent (λmin(VᴴV) = {smallest:e})");
     }
 }
 
@@ -222,11 +181,7 @@ fn huge_and_tiny_entries_do_not_overflow() {
         let a = real(&[&[1.0, 2.0], &[3.0, 4.0]]).mapv(|z| z * s);
         let (vals, _) = check_decomposition(&a, 1e-14);
         let r = 33.0_f64.sqrt();
-        assert_same_set(
-            &vals,
-            &[c((5.0 + r) / 2.0 * s), c((5.0 - r) / 2.0 * s)],
-            1e-14,
-        );
+        assert_same_set(&vals, &[c((5.0 + r) / 2.0 * s), c((5.0 - r) / 2.0 * s)], 1e-14);
     }
     let big = rand_matrix(5, 15, false).mapv(|z| z * 1e250);
     check_decomposition(&big, 1e-13);
@@ -234,10 +189,7 @@ fn huge_and_tiny_entries_do_not_overflow() {
 
 #[test]
 fn badly_scaled_matrices_keep_accuracy() {
-    let a = blkdiag(&[
-        real(&[&[1e6, 1.0], &[0.0, 2e6]]),
-        real(&[&[1e-6, 0.0], &[1.0, 3e-6]]),
-    ]);
+    let a = blkdiag(&[real(&[&[1e6, 1.0], &[0.0, 2e6]]), real(&[&[1e-6, 0.0], &[1.0, 3e-6]])]);
     let (vals, _) = check_decomposition(&a, 1e-14);
     assert_same_set(&vals, &[c(1e6), c(2e6), c(1e-6), c(3e-6)], 1e-12);
 }

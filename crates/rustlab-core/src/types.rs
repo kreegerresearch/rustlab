@@ -36,8 +36,10 @@ impl SparseVec {
         for (i, v) in raw {
             *map.entry(i).or_insert(Complex::new(0.0, 0.0)) += v;
         }
-        let mut entries: Vec<(usize, C64)> =
-            map.into_iter().filter(|(_, v)| sparse_keep(v)).collect();
+        let mut entries: Vec<(usize, C64)> = map
+            .into_iter()
+            .filter(|(_, v)| sparse_keep(v))
+            .collect();
         entries.sort_by_key(|(i, _)| *i);
         Self { len, entries }
     }
@@ -859,10 +861,7 @@ mod tests {
         assert_eq!(IntClass::Int8.from_f64(2.4, OverflowMode::Saturate), 2);
         // Out of range saturates after rounding.
         assert_eq!(IntClass::Int8.from_f64(999.9, OverflowMode::Saturate), 127);
-        assert_eq!(
-            IntClass::Uint8.from_f64(f64::NAN, OverflowMode::Saturate),
-            0
-        );
+        assert_eq!(IntClass::Uint8.from_f64(f64::NAN, OverflowMode::Saturate), 0);
     }
 
     #[test]
@@ -888,7 +887,10 @@ mod tests {
             IntClass::smallest_unsigned_for(u64::MAX as u128),
             Some(IntClass::Uint64)
         );
-        assert_eq!(IntClass::smallest_unsigned_for(u64::MAX as u128 + 1), None);
+        assert_eq!(
+            IntClass::smallest_unsigned_for(u64::MAX as u128 + 1),
+            None
+        );
     }
 
     // ── SparseMat error paths ───────────────────────────────────────────────

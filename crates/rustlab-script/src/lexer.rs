@@ -139,10 +139,12 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                             || nxt == '['
                             || nxt == '{'
                             || nxt == '"'
-                            || (nxt == '.' && next_after.map_or(false, |c| c.is_ascii_digit()));
+                            || (nxt == '.'
+                                && next_after.map_or(false, |c| c.is_ascii_digit()));
                         let is_unary_signed = (nxt == '+' || nxt == '-')
-                            && next_after
-                                .map_or(false, |c| !matches!(c, ' ' | '\t' | '\r' | '\n' | '='));
+                            && next_after.map_or(false, |c| {
+                                !matches!(c, ' ' | '\t' | '\r' | '\n' | '=')
+                            });
                         if starts_operand || is_unary_signed {
                             tokens.push(Spanned {
                                 token: Token::Comma,
@@ -534,10 +536,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                         while j < chars.len() && (chars[j].is_digit(radix) || chars[j] == '_') {
                             j += 1;
                         }
-                        let digit_str: String = chars[digits_start..j]
-                            .iter()
-                            .filter(|c| **c != '_')
-                            .collect();
+                        let digit_str: String =
+                            chars[digits_start..j].iter().filter(|c| **c != '_').collect();
                         if digit_str.is_empty() {
                             return Err(ScriptError::Lex {
                                 line,
@@ -546,7 +546,9 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                         }
                         // A trailing identifier char means a typed suffix like
                         // `0xFFu8` — unsupported; the cast form covers it.
-                        if j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                        if j < chars.len()
+                            && (chars[j].is_alphanumeric() || chars[j] == '_')
+                        {
                             return Err(ScriptError::Lex {
                                 line,
                                 msg: "typed integer literal suffixes are not supported; \

@@ -8,15 +8,12 @@
 //! nearest negligible subdiagonal entry above it — while the rotations are
 //! still applied to all of `T` and `Q`, so `T` ends as a full Schur form.
 
-use super::{abs1, MAX_ITER_PER_EIGENVALUE};
 use crate::Sum0;
+use super::{abs1, MAX_ITER_PER_EIGENVALUE};
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
 
-pub(super) fn eig(
-    a: &CMatrix,
-    want_vectors: bool,
-) -> Result<(Vec<C64>, Option<CMatrix>), CoreError> {
+pub(super) fn eig(a: &CMatrix, want_vectors: bool) -> Result<(Vec<C64>, Option<CMatrix>), CoreError> {
     let n = a.nrows();
     let (mut t, mut q) = hessenberg(a);
     schur(&mut t, &mut q)?;
@@ -40,11 +37,7 @@ fn hessenberg(a: &CMatrix) -> (CMatrix, CMatrix) {
             continue;
         }
         let x0 = h[[k + 1, k]];
-        let phase = if x0 == zero {
-            C64::new(1.0, 0.0)
-        } else {
-            x0 / x0.norm()
-        };
+        let phase = if x0 == zero { C64::new(1.0, 0.0) } else { x0 / x0.norm() };
         let alpha = -phase * norm;
         let mut v = vec![zero; n];
         for i in k + 1..n {
@@ -125,12 +118,7 @@ fn schur(t: &mut CMatrix, q: &mut CMatrix) -> Result<(), CoreError> {
             // (e.g. the roots-of-unity companion matrix, whose shift is 0).
             t[[hi, hi]] + C64::new(0.75 * abs1(t[[hi, hi - 1]]), 0.0)
         } else {
-            wilkinson(
-                t[[hi - 1, hi - 1]],
-                t[[hi - 1, hi]],
-                t[[hi, hi - 1]],
-                t[[hi, hi]],
-            )
+            wilkinson(t[[hi - 1, hi - 1]], t[[hi - 1, hi]], t[[hi, hi - 1]], t[[hi, hi]])
         };
         // Implicit single-shift sweep on rows / columns lo..=hi.
         let mut x = t[[lo, lo]] - shift;
@@ -186,11 +174,7 @@ fn wilkinson(a: C64, b: C64, c: C64, d: C64) -> C64 {
     let disc = (half * half + b * c).sqrt();
     // d + (half ∓ disc): pick the sign that keeps the root nearer d, written
     // as d - bc / (half ± disc) so there is no cancellation.
-    let den = if (half + disc).norm() >= (half - disc).norm() {
-        half + disc
-    } else {
-        half - disc
-    };
+    let den = if (half + disc).norm() >= (half - disc).norm() { half + disc } else { half - disc };
     if den.norm() == 0.0 {
         d
     } else {

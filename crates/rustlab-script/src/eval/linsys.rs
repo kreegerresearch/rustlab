@@ -192,19 +192,11 @@ fn triangular_solve(a: &Array2<C64>, b: &Array2<C64>, upper: bool) -> (Array2<C6
     let p = b.ncols();
     let mut x = Array2::<C64>::zeros((n, p));
     let mut singular = false;
-    let idxs: Vec<usize> = if upper {
-        (0..n).rev().collect()
-    } else {
-        (0..n).collect()
-    };
+    let idxs: Vec<usize> = if upper { (0..n).rev().collect() } else { (0..n).collect() };
     for col in 0..p {
         for &i in &idxs {
             let mut s = b[[i, col]];
-            let js: Vec<usize> = if upper {
-                ((i + 1)..n).collect()
-            } else {
-                (0..i).collect()
-            };
+            let js: Vec<usize> = if upper { ((i + 1)..n).collect() } else { (0..i).collect() };
             for j in js {
                 let u = a[[i, j]];
                 if u.norm() == 0.0 {
@@ -294,17 +286,14 @@ fn value_to_matrix(v: Value, name: &str) -> Result<Array2<C64>, String> {
         }
         Value::Scalar(x) => Ok(Array2::from_elem((1, 1), C64::new(x, 0.0))),
         Value::Complex(z) => Ok(Array2::from_elem((1, 1), z)),
-        Value::Bool(b) => Ok(Array2::from_elem(
-            (1, 1),
-            C64::new(if b { 1.0 } else { 0.0 }, 0.0),
-        )),
-        Value::SparseMatrix(sm) => sm
-            .to_dense()
-            .map_err(|_| rustlab_core::variable_too_large("to_dense", &[sm.rows, sm.cols])),
+        Value::Bool(b) => Ok(Array2::from_elem((1, 1), C64::new(if b { 1.0 } else { 0.0 }, 0.0))),
+        Value::SparseMatrix(sm) => sm.to_dense().map_err(|_| {
+            rustlab_core::variable_too_large("to_dense", &[sm.rows, sm.cols])
+        }),
         Value::SparseVector(sv) => {
-            let d = sv
-                .to_dense()
-                .map_err(|_| rustlab_core::variable_too_large("to_dense", &[sv.len]))?;
+            let d = sv.to_dense().map_err(|_| {
+                rustlab_core::variable_too_large("to_dense", &[sv.len])
+            })?;
             let n = d.len();
             Ok(Array2::from_shape_fn((n, 1), |(i, _)| d[i]))
         }
@@ -352,11 +341,7 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
             "qr: returns at most [Q, R, p]".to_string(),
         ));
     }
-    let opt = if args.len() == 2 {
-        Some(qr_option(&args[1])?)
-    } else {
-        None
-    };
+    let opt = if args.len() == 2 { Some(qr_option(&args[1])?) } else { None };
     // "vector" and "matrix" only choose the third output. One and two
     // outputs stay the unpivoted factor; those flags would be ignored.
     if nargout < 3 && matches!(opt, Some(QrOption::Vector | QrOption::Matrix)) {
@@ -367,9 +352,7 @@ pub(crate) fn builtin_qr(args: Vec<Value>, nargout: usize) -> Result<Value, Scri
     let economy = matches!(opt, Some(QrOption::Economy));
     let a = as_matrix(&args[0], "qr")?;
     if !entries_finite(&a) {
-        return Err(ScriptError::type_err(
-            "qr: entries must be finite".to_string(),
-        ));
+        return Err(ScriptError::type_err("qr: entries must be finite".to_string()));
     }
     let real = value_is_real(&args[0]);
     // Pivot only when the caller asks for the permutation. Two outputs
@@ -417,9 +400,7 @@ fn qr_option(v: &Value) -> Result<QrOption, ScriptError> {
 /// 1-based column order. `p(j)` is the original column now at position `j`,
 /// so `A(:, p) = Q R`. A length-1 result stays a vector, not a scalar.
 fn permutation_vector(piv: &[usize]) -> Value {
-    Value::real_vector(ndarray::Array1::from_iter(
-        piv.iter().map(|&j| (j + 1) as f64),
-    ))
+    Value::real_vector(ndarray::Array1::from_iter(piv.iter().map(|&j| (j + 1) as f64)))
 }
 
 /// `A * P = Q R`. Column `j` of `P` has a one in row `piv[j]`.
@@ -461,8 +442,7 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
     };
     if vector_perm && nargout != 3 {
         return Err(ScriptError::type_err(
-            "lu: \"vector\" selects the third output; use [L, U, p] = lu(A, \"vector\")"
-                .to_string(),
+            "lu: \"vector\" selects the third output; use [L, U, p] = lu(A, \"vector\")".to_string(),
         ));
     }
     if nargout <= 1 {
@@ -477,9 +457,7 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
     }
     let a = as_matrix(&args[0], "lu")?;
     if !entries_finite(&a) {
-        return Err(ScriptError::type_err(
-            "lu: entries must be finite".to_string(),
-        ));
+        return Err(ScriptError::type_err("lu: entries must be finite".to_string()));
     }
     let real = value_is_real(&args[0]);
     let f = lu::lu(&a);
@@ -504,9 +482,7 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
 /// 1-based row permutation. MATLAB's `whos` example is `1×n` (a row).
 /// A rustlab vector has `size` `[1, n]`, so `A(p, :) = L*U` indexes that row.
 fn one_based_perm(perm: &[usize]) -> Value {
-    Value::real_vector(ndarray::Array1::from_iter(
-        perm.iter().map(|&i| (i + 1) as f64),
-    ))
+    Value::real_vector(ndarray::Array1::from_iter(perm.iter().map(|&i| (i + 1) as f64)))
 }
 
 /// Dense `R = chol(A)`, `[R, p] = chol(A)`, and `"lower"`.
@@ -543,16 +519,10 @@ pub(crate) fn builtin_chol_dense(args: &[Value], nargout: usize) -> Result<Value
     };
     let a = as_matrix(&args[0], "chol")?;
     if !entries_finite(&a) {
-        return Err(ScriptError::type_err(
-            "chol: entries must be finite".to_string(),
-        ));
+        return Err(ScriptError::type_err("chol: entries must be finite".to_string()));
     }
     let real = value_is_real(&args[0]);
-    let f = if lower {
-        chol::lower(&a)
-    } else {
-        chol::upper(&a)
-    };
+    let f = if lower { chol::lower(&a) } else { chol::upper(&a) };
     let f = f.map_err(ScriptError::type_err)?;
     if nargout <= 1 && f.p != 0 {
         return Err(ScriptError::type_err(format!(
@@ -637,11 +607,7 @@ pub(crate) fn builtin_polyfit(args: Vec<Value>, nargout: usize) -> Result<Value,
     let rows = coeff.ncols();
     let flipped = Array2::from_shape_fn((rows, coeff.nrows()), |(i, j)| coeff[[j, i]]);
     let packed = pack(&flipped, real);
-    let p = if y.ncols() == 1 {
-        as_row(packed)
-    } else {
-        packed
-    };
+    let p = if y.ncols() == 1 { as_row(packed) } else { packed };
     if nargout <= 1 {
         return Ok(p);
     }

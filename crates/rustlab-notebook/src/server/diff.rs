@@ -105,10 +105,7 @@ pub fn split_blocks(html: &str) -> Vec<Block> {
             }
         }
         let block_html = html[open_at..close_end].to_string();
-        out.push(Block {
-            id,
-            html: block_html,
-        });
+        out.push(Block { id, html: block_html });
         cursor = close_end;
     }
     out
@@ -442,12 +439,12 @@ mod tests {
     fn compute_changes_finds_modified_block_by_position() {
         let prev = vec![
             block("b-old1", "<section ...>old A</section>"),
-            block("b-bbb", "<section ...>B</section>"),
+            block("b-bbb",  "<section ...>B</section>"),
         ];
         let new = vec![
             // Content edit → new content-hash id, same position.
             block("b-new1", "<section ...>NEW A</section>"),
-            block("b-bbb", "<section ...>B</section>"),
+            block("b-bbb",  "<section ...>B</section>"),
         ];
         let changes = compute_changes(&prev, &new).expect("counts match");
         assert_eq!(changes.len(), 1);
@@ -460,7 +457,7 @@ mod tests {
         // Inserted blocks change structure → caller falls back to Full.
         let prev = vec![block("b-a", "<section ...>A</section>")];
         let new = vec![
-            block("b-a", "<section ...>A</section>"),
+            block("b-a",   "<section ...>A</section>"),
             block("b-new", "<section ...>NEW</section>"),
         ];
         assert!(compute_changes(&prev, &new).is_none());
@@ -528,8 +525,8 @@ mod tests {
         ];
         let new = vec![
             block("b-A2", "<section ...>A!</section>"), // changed
-            block("b-b", "<section ...>B</section>"),
-            block("b-c", "<section ...>C</section>"),
+            block("b-b",  "<section ...>B</section>"),
+            block("b-c",  "<section ...>C</section>"),
         ];
         match classify(&prev, &new, true) {
             Broadcast::Partial(diffs) => {
@@ -594,10 +591,7 @@ mod tests {
                 assert_eq!(items.len(), 3);
                 assert!(items[0].html.is_none(), "A reusable");
                 assert_eq!(items[1].id, "b-new");
-                assert!(
-                    items[1].html.as_deref().unwrap().contains("NEW"),
-                    "new block carries html"
-                );
+                assert!(items[1].html.as_deref().unwrap().contains("NEW"), "new block carries html");
                 assert!(items[2].html.is_none(), "B reusable");
             }
             other => panic!("expected Reconcile, got {other:?}"),
@@ -618,29 +612,17 @@ mod tests {
 
     #[test]
     fn is_flat_detects_exercise_and_solution() {
-        assert!(is_flat(
-            "<main><section class=\"rl-block\" id=\"b-a\">x</section></main>"
-        ));
-        assert!(!is_flat(
-            "<div class=\"exercise\"><section class=\"rl-block\">x</section></div>"
-        ));
-        assert!(!is_flat(
-            "<details class=\"solution\"><summary>s</summary></details>"
-        ));
+        assert!(is_flat("<main><section class=\"rl-block\" id=\"b-a\">x</section></main>"));
+        assert!(!is_flat("<div class=\"exercise\"><section class=\"rl-block\">x</section></div>"));
+        assert!(!is_flat("<details class=\"solution\"><summary>s</summary></details>"));
         // code-details wraps content *inside* a block, not other sections.
-        assert!(is_flat(
-            "<section class=\"rl-block\"><details class=\"code-details\">x</details></section>"
-        ));
+        assert!(is_flat("<section class=\"rl-block\"><details class=\"code-details\">x</details></section>"));
     }
 
     #[test]
     fn reconcile_envelope_omits_html_for_reusable_blocks() {
         let items = vec![
-            ReconcileItem {
-                id: "b-a".into(),
-                html: None,
-                code_idx: None,
-            },
+            ReconcileItem { id: "b-a".into(), html: None, code_idx: None },
             ReconcileItem {
                 id: "b-new".into(),
                 html: Some("<section>NEW</section>".into()),
@@ -664,19 +646,14 @@ mod tests {
                    <div class=\"code-block\">x</div>\n</section>\n";
         let blocks = split_blocks(doc);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(
-            blocks[0].id, "b-code0000",
-            "id must stop at its closing quote"
-        );
+        assert_eq!(blocks[0].id, "b-code0000", "id must stop at its closing quote");
         assert!(blocks[0].html.ends_with("</section>"));
     }
 
     #[test]
     fn code_idx_extraction_reads_own_open_tag_only() {
         assert_eq!(
-            code_idx_of(
-                "<section class=\"rl-block\" id=\"b-a\" data-code-idx=\"7\">body</section>"
-            ),
+            code_idx_of("<section class=\"rl-block\" id=\"b-a\" data-code-idx=\"7\">body</section>"),
             Some(7)
         );
         // No attribute on the outer tag → None, even when a nested
@@ -698,18 +675,11 @@ mod tests {
             block("b-c", code_html),
         ];
         // Same blocks reordered: both reusable, code block keeps ordinal.
-        let new = vec![
-            block("b-c", code_html),
-            block("b-p", "<section class=\"rl-block\" id=\"b-p\">p</section>"),
-        ];
+        let new = vec![block("b-c", code_html), block("b-p", "<section class=\"rl-block\" id=\"b-p\">p</section>")];
         let items = reconcile_items(&prev, &new);
         assert_eq!(items[0].id, "b-c");
         assert!(items[0].html.is_none(), "reused");
-        assert_eq!(
-            items[0].code_idx,
-            Some(1),
-            "reused code node still reports its ordinal"
-        );
+        assert_eq!(items[0].code_idx, Some(1), "reused code node still reports its ordinal");
         assert_eq!(items[1].code_idx, None);
     }
 
@@ -728,10 +698,7 @@ mod tests {
 
     #[test]
     fn partial_envelope_round_trips_through_json() {
-        let diffs = vec![BlockDiff {
-            position: 3,
-            html: "<section>A</section>".into(),
-        }];
+        let diffs = vec![BlockDiff { position: 3, html: "<section>A</section>".into() }];
         let env = partial_envelope(&diffs);
         let parsed: serde_json::Value = serde_json::from_str(&env).unwrap();
         assert_eq!(parsed["kind"], "partial");

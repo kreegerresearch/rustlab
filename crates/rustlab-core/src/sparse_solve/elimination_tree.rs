@@ -172,9 +172,7 @@ mod tests {
         let post = post_order(&parent);
         // Both chains must appear, children before parents.
         assert_eq!(post.len(), 4);
-        let pos: Vec<_> = (0..4)
-            .map(|k| post.iter().position(|&x| x == k).unwrap())
-            .collect();
+        let pos: Vec<_> = (0..4).map(|k| post.iter().position(|&x| x == k).unwrap()).collect();
         assert!(pos[0] < pos[1], "0 before its parent 1");
         assert!(pos[2] < pos[3], "2 before its parent 3");
     }

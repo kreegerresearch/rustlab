@@ -49,9 +49,7 @@ const XS: &str = "x = [0.4, 0.6, 0.8, 1.0, 1.4, 2.0]; y = x.^2;";
 #[test]
 fn default_endpoints_stay_first_order() {
     // The request's numbers: interior exact, ends 1.0 and 3.4 (exact 0.8, 4.0).
-    let ev = eval(&format!(
-        "{XS} g = gradient(y, x); g1 = gradient(y, x, \"order\", 1);"
-    ));
+    let ev = eval(&format!("{XS} g = gradient(y, x); g1 = gradient(y, x, \"order\", 1);"));
     assert_close(&reals(&ev, "g"), &[1.0, 1.2, 1.6, 2.0, 2.8, 3.4], 1e-12);
     assert_eq!(reals(&ev, "g"), reals(&ev, "g1"));
 }

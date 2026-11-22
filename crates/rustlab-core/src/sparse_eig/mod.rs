@@ -200,9 +200,7 @@ pub fn eigs(
 fn run_shift_invert_sm(a: &SparseMat, n: usize, m: usize) -> Result<EigPairs, SparseEigError> {
     // Complex shift-invert is not implemented; let the caller fall back.
     if a.entries.iter().any(|(_, _, v)| v.im.abs() >= 1e-12) {
-        return Err(SparseEigError::Internal(
-            "shift-invert: complex A unsupported".into(),
-        ));
+        return Err(SparseEigError::Internal("shift-invert: complex A unsupported".into()));
     }
     let n_size = a.rows;
     let a_csc: SparseCsc<f64> = a.to_csc()?;
@@ -328,9 +326,7 @@ pub fn eigs_gen(
     // We use the same Lanczos implementation but via a custom matvec.
     let matvec_box: Box<dyn Fn(&[f64]) -> Vec<f64>> = Box::new(move |v: &[f64]| {
         // y = L^{-T} v   (solve L^T y = v)
-        let y = chol
-            .solve(v)
-            .expect("Cholesky solve cannot fail on factored B");
+        let y = chol.solve(v).expect("Cholesky solve cannot fail on factored B");
         // To get y back into "A · y" the Cholesky solve already did
         // L^{-1} L^{-T} = B^{-1}; we want only L^{-T} v. So reconstruct.
         // (See the matvec_via_chol helper for the actual decomposition.)
@@ -491,18 +487,12 @@ fn run_arnoldi_with_matvec(
 
     let mut idx: Vec<usize> = (0..m_actual).collect();
     match which {
-        Which::SmallestMagnitude => idx.sort_by(|&i, &j| {
-            ritz_vals[i]
-                .norm()
-                .partial_cmp(&ritz_vals[j].norm())
-                .unwrap()
-        }),
-        Which::LargestMagnitude => idx.sort_by(|&i, &j| {
-            ritz_vals[j]
-                .norm()
-                .partial_cmp(&ritz_vals[i].norm())
-                .unwrap()
-        }),
+        Which::SmallestMagnitude => {
+            idx.sort_by(|&i, &j| ritz_vals[i].norm().partial_cmp(&ritz_vals[j].norm()).unwrap())
+        }
+        Which::LargestMagnitude => {
+            idx.sort_by(|&i, &j| ritz_vals[j].norm().partial_cmp(&ritz_vals[i].norm()).unwrap())
+        }
     }
     idx.truncate(n);
 

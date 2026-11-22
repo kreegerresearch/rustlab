@@ -10,13 +10,13 @@
 //! segment, the buffer keeps the last `noverlap = win_len − hop`
 //! samples so the next segment overlaps correctly.
 
+use rustlab_core::Sum0;
 use crate::convolution::next_power_of_two;
 use crate::error::DspError;
 use crate::fft::fft_raw;
 use crate::welch::Sided;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
-use rustlab_core::Sum0;
 use rustlab_core::{CMatrix, CVector, RMatrix, RVector, C64};
 use std::collections::VecDeque;
 

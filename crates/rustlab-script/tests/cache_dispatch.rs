@@ -264,14 +264,8 @@ fn inline_defined_impure_fn_under_all_scope_is_not_cached() {
     // happened.
     let c = ev.cache_counters();
     assert_eq!(c.hits, 0, "impure fn must never hit");
-    assert_eq!(
-        c.misses, 0,
-        "impure fn must never miss either (skipped before lookup)"
-    );
-    assert!(
-        c.impurity_skips >= 1,
-        "impurity gate should fire at FunctionDef time"
-    );
+    assert_eq!(c.misses, 0, "impure fn must never miss either (skipped before lookup)");
+    assert!(c.impurity_skips >= 1, "impurity gate should fire at FunctionDef time");
     assert!(!ev.is_fn_cache_scoped("noisy"));
 }
 
@@ -291,10 +285,7 @@ fn pre_existing_user_fn_gets_gated_on_cache_enable() {
     )
     .unwrap();
     run(&mut ev, &format!("cache enable \"{}\"\n", store.display())).unwrap();
-    assert!(
-        !ev.is_fn_cache_scoped("noisy"),
-        "scan should drop impure fns"
-    );
+    assert!(!ev.is_fn_cache_scoped("noisy"), "scan should drop impure fns");
     assert!(ev.is_fn_cache_scoped("pure"), "pure fns survive the scan");
 }
 
@@ -341,11 +332,12 @@ fn redefining_a_pure_fn_as_impure_drops_it_from_scope() {
     .unwrap();
     assert!(ev.is_fn_cache_scoped("f"));
 
-    run(&mut ev, "function y = f(x)\n  y = x + rand()\nend\n").unwrap();
-    assert!(
-        !ev.is_fn_cache_scoped("f"),
-        "impure redefinition drops scope"
-    );
+    run(
+        &mut ev,
+        "function y = f(x)\n  y = x + rand()\nend\n",
+    )
+    .unwrap();
+    assert!(!ev.is_fn_cache_scoped("f"), "impure redefinition drops scope");
 }
 
 #[test]
@@ -550,11 +542,7 @@ fn two_session_counts(
     second_run: &str,
 ) -> rustlab_script::cache_registry::CacheCounters {
     let mut ev1 = Evaluator::new();
-    run(
-        &mut ev1,
-        &format!("cache enable \"{}\"\n{populate}", store_path.display()),
-    )
-    .unwrap();
+    run(&mut ev1, &format!("cache enable \"{}\"\n{populate}", store_path.display())).unwrap();
     let mut ev2 = Evaluator::new();
     run(
         &mut ev2,
@@ -612,10 +600,7 @@ fn function_name_rename_preserves_cache_entry() {
         "function y = expensive(x); y = x * x; end\na = expensive(7)\n",
         "function y = quick(x); y = x * x; end\nb = quick(7)\n",
     );
-    assert_eq!(
-        counters.hits, 1,
-        "renaming function expensive→quick must not bust"
-    );
+    assert_eq!(counters.hits, 1, "renaming function expensive→quick must not bust");
     assert_eq!(counters.misses, 0);
 }
 
@@ -732,10 +717,7 @@ fn mutual_recursion_terminates_and_is_stable() {
     // each runs once. Second ping(4) hits the top-level entry
     // without descending.
     assert_eq!(c.hits, 1, "second ping(4) call hits the top-level entry");
-    assert_eq!(
-        c.misses, 5,
-        "five intermediate cache keys from the recursion"
-    );
+    assert_eq!(c.misses, 5, "five intermediate cache keys from the recursion");
 }
 
 #[test]
@@ -915,10 +897,7 @@ fn stale_wire_version_blob_triggers_recompute_each_call() {
     // subsequent calls hit it cleanly.
     run(&mut ev2, "cache clear\nd = sq(7)\ne = sq(7)\n").unwrap();
     let post_clear = ev2.cache_counters();
-    assert_eq!(
-        post_clear.hits, 1,
-        "after `cache clear` the cache works again: {post_clear:?}"
-    );
+    assert_eq!(post_clear.hits, 1, "after `cache clear` the cache works again: {post_clear:?}");
     assert_eq!(post_clear.misses, 1);
 }
 
@@ -927,7 +906,11 @@ fn file_to_inline_move_preserves_cache_when_body_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("move.rcache");
     let helpers = dir.path().join("helpers.rlab");
-    std::fs::write(&helpers, "function y = helper(x); y = x * 3; end\n").unwrap();
+    std::fs::write(
+        &helpers,
+        "function y = helper(x); y = x * 3; end\n",
+    )
+    .unwrap();
 
     // Session 1: load via `cache add file`, populate.
     let mut ev1 = Evaluator::new();

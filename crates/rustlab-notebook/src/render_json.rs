@@ -352,7 +352,7 @@ mod tests {
                 details: None,
                 grid_cols: None,
                 source_open: None,
-                widget_reads: Vec::new(),
+            widget_reads: Vec::new(),
             },
         ];
         let doc = render_json("My Notebook", &blocks, theme());
@@ -403,10 +403,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         assert_eq!(doc2.blocks.len(), 1);
         let v2 = serde_json::to_value(&doc2).unwrap();
-        assert_eq!(
-            v["blocks"][0]["source_hash"],
-            v2["blocks"][0]["source_hash"]
-        );
+        assert_eq!(v["blocks"][0]["source_hash"], v2["blocks"][0]["source_hash"]);
     }
 
     #[test]
@@ -476,11 +473,7 @@ mod tests {
         assert_eq!(plots.len(), 1);
         assert_eq!(plots[0]["format"], "svg");
         let svg = plots[0]["data"].as_str().unwrap();
-        assert!(
-            svg.starts_with("<?xml") || svg.starts_with("<svg"),
-            "got: {}",
-            &svg[..80.min(svg.len())]
-        );
+        assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"), "got: {}", &svg[..80.min(svg.len())]);
         assert!(svg.contains("</svg>"));
     }
 
@@ -515,7 +508,9 @@ mod tests {
 
     #[test]
     fn json_html_leaves_currency_alone() {
-        let blocks = vec![Rendered::Markdown("prose $5 and $10 dollars".to_string())];
+        let blocks = vec![Rendered::Markdown(
+            "prose $5 and $10 dollars".to_string(),
+        )];
         let doc = render_json("t", &blocks, theme());
         let v = serde_json::to_value(&doc).unwrap();
         let html = v["blocks"][0]["html"].as_str().unwrap();

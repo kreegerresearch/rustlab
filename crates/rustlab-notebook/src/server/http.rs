@@ -548,9 +548,12 @@ async fn git_changes(State(state): State<Arc<ServerState>>, req: Request) -> Res
     }
     let nb = slug.as_deref().and_then(|s| state.notebook(s));
     let body = match nb {
-        _ if !state.git_enabled => {
-            crate::gitdiff::changes_json_if(false, std::path::Path::new("."), None, false)
-        }
+        _ if !state.git_enabled => crate::gitdiff::changes_json_if(
+            false,
+            std::path::Path::new("."),
+            None,
+            false,
+        ),
         None => serde_json::json!({ "error": "notebook not found" }).to_string(),
         Some(nb) => {
             let comments_on = cm.unwrap_or(state.comments_on);

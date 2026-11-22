@@ -7,24 +7,17 @@
 //! A complex conjugate pair comes out of one 2×2 block of the Schur form,
 //! so the pair is exactly conjugate and real eigenvalues are exactly real.
 
-use super::MAX_ITER_PER_EIGENVALUE;
 use crate::Sum0;
+use super::MAX_ITER_PER_EIGENVALUE;
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
 
-pub(super) fn eig(
-    a: &Array2<f64>,
-    want_vectors: bool,
-) -> Result<(Vec<C64>, Option<CMatrix>), CoreError> {
+pub(super) fn eig(a: &Array2<f64>, want_vectors: bool) -> Result<(Vec<C64>, Option<CMatrix>), CoreError> {
     let n = a.nrows();
     let mut h = a.clone();
     // Without eigenvectors the orthogonal transform is not needed: an empty
     // `v` turns every update of it into a no-op.
-    let mut v: Array2<f64> = if want_vectors {
-        Array2::eye(n)
-    } else {
-        Array2::zeros((0, 0))
-    };
+    let mut v: Array2<f64> = if want_vectors { Array2::eye(n) } else { Array2::zeros((0, 0)) };
     orthes(&mut h, &mut v);
     let mut d = vec![0.0; n];
     let mut e = vec![0.0; n];
@@ -296,8 +289,7 @@ fn hqr2(
                     break;
                 }
                 if h[[m, m - 1]].abs() * (q.abs() + r.abs())
-                    < eps
-                        * (p.abs() * (h[[m - 1, m - 1]].abs() + z.abs() + h[[m + 1, m + 1]].abs()))
+                    < eps * (p.abs() * (h[[m - 1, m - 1]].abs() + z.abs() + h[[m + 1, m + 1]].abs()))
                 {
                     break;
                 }
@@ -402,11 +394,7 @@ fn hqr2(
                         q = (d[i] - p) * (d[i] - p) + e[i] * e[i];
                         t = (x * s - z * r) / q;
                         h[[i, nu]] = t;
-                        h[[i + 1, nu]] = if x.abs() > z.abs() {
-                            (-r - w * t) / x
-                        } else {
-                            (-s - y * t) / z
-                        };
+                        h[[i + 1, nu]] = if x.abs() > z.abs() { (-r - w * t) / x } else { (-s - y * t) / z };
                     }
                     // Overflow control.
                     t = h[[i, nu]].abs();
@@ -454,8 +442,7 @@ fn hqr2(
                         if vr == 0.0 && vi == 0.0 {
                             vr = eps * norm * (w.abs() + q.abs() + x.abs() + y.abs() + z.abs());
                         }
-                        let (cr, ci) =
-                            cdiv(x * r - z * ra + q * sa, x * s - z * sa - q * ra, vr, vi);
+                        let (cr, ci) = cdiv(x * r - z * ra + q * sa, x * s - z * sa - q * ra, vr, vi);
                         h[[i, nu - 1]] = cr;
                         h[[i, nu]] = ci;
                         if x.abs() > z.abs() + q.abs() {

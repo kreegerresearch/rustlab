@@ -189,10 +189,7 @@ mod tests {
 
     #[test]
     fn hash_stable_for_identical_source() {
-        assert_eq!(
-            hash_block_source("plot(1:10)"),
-            hash_block_source("plot(1:10)")
-        );
+        assert_eq!(hash_block_source("plot(1:10)"), hash_block_source("plot(1:10)"));
     }
 
     #[test]
@@ -294,10 +291,7 @@ mod tests {
         assert_eq!(first.total_blocks, 2);
 
         let second = drive(src, &mut cache);
-        assert_eq!(
-            second.cached_blocks, 2,
-            "identical re-render must hit every block"
-        );
+        assert_eq!(second.cached_blocks, 2, "identical re-render must hit every block");
         assert_eq!(second.total_blocks, 2);
     }
 
@@ -308,10 +302,7 @@ mod tests {
         let second = "```rustlab\nx = 5;\n```\n\nEntirely different prose.\n";
         drive(first, &mut cache);
         let outcome = drive(second, &mut cache);
-        assert_eq!(
-            outcome.cached_blocks, 1,
-            "prose-only change → block stays cached"
-        );
+        assert_eq!(outcome.cached_blocks, 1, "prose-only change → block stays cached");
     }
 
     #[test]
@@ -345,10 +336,7 @@ mod tests {
         let second = "```rustlab\nx = 1;\n```\n\n```rustlab\ny = 2;\n```\n";
         drive(first, &mut cache);
         let outcome = drive(second, &mut cache);
-        assert_eq!(
-            outcome.cached_blocks, 1,
-            "new block at end runs against cached prefix"
-        );
+        assert_eq!(outcome.cached_blocks, 1, "new block at end runs against cached prefix");
         assert_eq!(outcome.total_blocks, 2);
     }
 
@@ -368,10 +356,7 @@ mod tests {
 ```rustlab\nprint(b)\n```\n";
         drive(first, &mut cache);
         let outcome = drive(second, &mut cache);
-        assert_eq!(
-            outcome.cached_blocks, 1,
-            "block 0 cached; blocks 1 & 2 re-execute"
-        );
+        assert_eq!(outcome.cached_blocks, 1, "block 0 cached; blocks 1 & 2 re-execute");
 
         // Third Rendered::Code must report 200 in its text_output.
         let third = outcome
@@ -408,15 +393,10 @@ mod tests {
 
         let second = drive(src, &mut cache);
         assert_eq!(second.cached_blocks, 1, "second render must hit");
-        let saw_sentinel = second.rendered.iter().any(|r| {
-            matches!(
-                r,
-                Rendered::Code { text_output, .. } if text_output == "SENTINEL_TAMPERED"
-            )
-        });
-        assert!(
-            saw_sentinel,
-            "cached output must be used verbatim (cache really skipped execution)"
-        );
+        let saw_sentinel = second.rendered.iter().any(|r| matches!(
+            r,
+            Rendered::Code { text_output, .. } if text_output == "SENTINEL_TAMPERED"
+        ));
+        assert!(saw_sentinel, "cached output must be used verbatim (cache really skipped execution)");
     }
 }

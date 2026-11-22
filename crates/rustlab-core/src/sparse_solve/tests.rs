@@ -10,10 +10,7 @@ fn coo_to_csc_real_path_rejects_complex() {
     let entries = vec![(0, 0, Complex::new(1.0, 0.1))];
     let m = SparseMat::new(1, 1, entries);
     let res: Result<crate::sparse_solve::SparseCsc<f64>, _> = m.to_csc();
-    assert!(matches!(
-        res,
-        Err(SparseSolveError::ComplexInRealPath { .. })
-    ));
+    assert!(matches!(res, Err(SparseSolveError::ComplexInRealPath { .. })));
 }
 
 #[test]

@@ -13,68 +13,43 @@
 ///
 /// Returns `None` if the point lies outside the grid or any surrounding
 /// corner is non-finite.
-pub fn sample(
-    u: &[Vec<f64>],
-    v: &[Vec<f64>],
-    x: &[f64],
-    y: &[f64],
-    px: f64,
-    py: f64,
-) -> Option<(f64, f64)> {
+pub fn sample(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], px: f64, py: f64)
+    -> Option<(f64, f64)>
+{
     let nrows = u.len();
-    if nrows < 2 {
-        return None;
-    }
+    if nrows < 2 { return None; }
     let ncols = u[0].len();
-    if ncols < 2 || x.len() < ncols || y.len() < nrows {
-        return None;
-    }
-    if !px.is_finite() || !py.is_finite() {
-        return None;
-    }
+    if ncols < 2 || x.len() < ncols || y.len() < nrows { return None; }
+    if !px.is_finite() || !py.is_finite() { return None; }
 
     if px < x[0] || px > x[ncols - 1] || py < y[0] || py > y[nrows - 1] {
         return None;
     }
 
     // Locate bracketing column: largest c with x[c] <= px (stops one before end).
-    let c = match x[..ncols]
-        .binary_search_by(|v| v.partial_cmp(&px).unwrap_or(std::cmp::Ordering::Equal))
-    {
+    let c = match x[..ncols].binary_search_by(|v| v.partial_cmp(&px).unwrap_or(std::cmp::Ordering::Equal)) {
         Ok(i) => i.min(ncols - 2),
         Err(i) => i.saturating_sub(1).min(ncols - 2),
     };
-    let r = match y[..nrows]
-        .binary_search_by(|v| v.partial_cmp(&py).unwrap_or(std::cmp::Ordering::Equal))
-    {
+    let r = match y[..nrows].binary_search_by(|v| v.partial_cmp(&py).unwrap_or(std::cmp::Ordering::Equal)) {
         Ok(i) => i.min(nrows - 2),
         Err(i) => i.saturating_sub(1).min(nrows - 2),
     };
 
-    let x0 = x[c];
-    let x1 = x[c + 1];
-    let y0 = y[r];
-    let y1 = y[r + 1];
+    let x0 = x[c]; let x1 = x[c + 1];
+    let y0 = y[r]; let y1 = y[r + 1];
     let dx = x1 - x0;
     let dy = y1 - y0;
-    if dx <= 0.0 || dy <= 0.0 {
-        return None;
-    }
+    if dx <= 0.0 || dy <= 0.0 { return None; }
     let tx = (px - x0) / dx;
     let ty = (py - y0) / dy;
 
-    let u00 = u[r][c];
-    let u10 = u[r][c + 1];
-    let u01 = u[r + 1][c];
-    let u11 = u[r + 1][c + 1];
-    let v00 = v[r][c];
-    let v10 = v[r][c + 1];
-    let v01 = v[r + 1][c];
-    let v11 = v[r + 1][c + 1];
+    let u00 = u[r][c];     let u10 = u[r][c + 1];
+    let u01 = u[r + 1][c]; let u11 = u[r + 1][c + 1];
+    let v00 = v[r][c];     let v10 = v[r][c + 1];
+    let v01 = v[r + 1][c]; let v11 = v[r + 1][c + 1];
     for &z in &[u00, u10, u01, u11, v00, v10, v01, v11] {
-        if !z.is_finite() {
-            return None;
-        }
+        if !z.is_finite() { return None; }
     }
 
     let lerp = |a: f64, b: f64, t: f64| a * (1.0 - t) + b * t;
@@ -87,15 +62,9 @@ pub fn sample(
 
 /// RK4 step of signed size `h`. Returns `None` if any intermediate sample
 /// falls outside the domain or is non-finite.
-fn rk4_step(
-    u: &[Vec<f64>],
-    v: &[Vec<f64>],
-    x: &[f64],
-    y: &[f64],
-    px: f64,
-    py: f64,
-    h: f64,
-) -> Option<(f64, f64)> {
+fn rk4_step(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64],
+            px: f64, py: f64, h: f64) -> Option<(f64, f64)>
+{
     let (k1x, k1y) = sample(u, v, x, y, px, py)?;
     let (k2x, k2y) = sample(u, v, x, y, px + 0.5 * h * k1x, py + 0.5 * h * k1y)?;
     let (k3x, k3y) = sample(u, v, x, y, px + 0.5 * h * k2x, py + 0.5 * h * k2y)?;
@@ -113,16 +82,11 @@ fn rk4_step(
 /// caps each direction. `min_speed` terminates when the field magnitude
 /// drops to effectively zero.
 pub fn integrate(
-    u: &[Vec<f64>],
-    v: &[Vec<f64>],
-    x: &[f64],
-    y: &[f64],
-    sx: f64,
-    sy: f64,
-    step: f64,
-    max_steps: usize,
-    min_speed: f64,
-) -> Vec<(f64, f64)> {
+    u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64],
+    sx: f64, sy: f64,
+    step: f64, max_steps: usize, min_speed: f64,
+) -> Vec<(f64, f64)>
+{
     if sample(u, v, x, y, sx, sy).is_none() {
         return Vec::new();
     }
@@ -182,16 +146,8 @@ pub fn integrate(
 /// Default arc-length step: 1/5 of the smaller grid spacing. Keeps traces
 /// inside the bracketing cell each RK4 evaluation.
 pub fn default_step(x: &[f64], y: &[f64]) -> f64 {
-    let dx = if x.len() >= 2 {
-        (x[x.len() - 1] - x[0]).abs() / (x.len() - 1) as f64
-    } else {
-        1.0
-    };
-    let dy = if y.len() >= 2 {
-        (y[y.len() - 1] - y[0]).abs() / (y.len() - 1) as f64
-    } else {
-        1.0
-    };
+    let dx = if x.len() >= 2 { (x[x.len() - 1] - x[0]).abs() / (x.len() - 1) as f64 } else { 1.0 };
+    let dy = if y.len() >= 2 { (y[y.len() - 1] - y[0]).abs() / (y.len() - 1) as f64 } else { 1.0 };
     0.2 * dx.min(dy).max(1e-300)
 }
 
@@ -200,14 +156,10 @@ pub fn default_step(x: &[f64], y: &[f64]) -> f64 {
 /// across the interior of the domain. `density = 1.0` ≈ 100 seeds, which
 /// reads well on typical 20–50-cell grids without producing megabyte HTML.
 pub fn default_seeds(x: &[f64], y: &[f64], density: f64) -> Vec<(f64, f64)> {
-    if x.len() < 2 || y.len() < 2 {
-        return Vec::new();
-    }
+    if x.len() < 2 || y.len() < 2 { return Vec::new(); }
     let n = ((10.0 * density.max(0.0)).ceil() as usize).max(2);
-    let x0 = x[0];
-    let x1 = x[x.len() - 1];
-    let y0 = y[0];
-    let y1 = y[y.len() - 1];
+    let x0 = x[0]; let x1 = x[x.len() - 1];
+    let y0 = y[0]; let y1 = y[y.len() - 1];
     let mut seeds = Vec::with_capacity(n * n);
     for r in 0..n {
         let ty = (r as f64 + 0.5) / n as f64;
@@ -233,18 +185,11 @@ mod tests {
         (u, v, x, y)
     }
 
-    fn vortex(
-        nx: usize,
-        ny: usize,
-        lo: f64,
-        hi: f64,
-    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
-        let x: Vec<f64> = (0..nx)
-            .map(|i| lo + (hi - lo) * i as f64 / (nx - 1) as f64)
-            .collect();
-        let y: Vec<f64> = (0..ny)
-            .map(|i| lo + (hi - lo) * i as f64 / (ny - 1) as f64)
-            .collect();
+    fn vortex(nx: usize, ny: usize, lo: f64, hi: f64)
+        -> (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>)
+    {
+        let x: Vec<f64> = (0..nx).map(|i| lo + (hi - lo) * i as f64 / (nx - 1) as f64).collect();
+        let y: Vec<f64> = (0..ny).map(|i| lo + (hi - lo) * i as f64 / (ny - 1) as f64).collect();
         let mut u = vec![vec![0.0; nx]; ny];
         let mut v = vec![vec![0.0; nx]; ny];
         for r in 0..ny {
@@ -274,7 +219,8 @@ mod tests {
     #[test]
     fn integrate_uniform_is_horizontal() {
         let (u, v, x, y) = uniform_field(20, 20);
-        let pts = integrate(&u, &v, &x, &y, 10.0, 10.0, default_step(&x, &y), 200, 1e-10);
+        let pts = integrate(&u, &v, &x, &y, 10.0, 10.0,
+                            default_step(&x, &y), 200, 1e-10);
         // All y-values should stay at the seed y within numerical tolerance.
         for (_, py) in &pts {
             assert!((py - 10.0).abs() < 1e-6, "py drifted: {}", py);
@@ -282,14 +228,15 @@ mod tests {
         // And the trace should span a meaningful horizontal extent.
         let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
         let span = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-            - xs.iter().cloned().fold(f64::INFINITY, f64::min);
+                 - xs.iter().cloned().fold(f64::INFINITY, f64::min);
         assert!(span > 5.0, "trace too short: {}", span);
     }
 
     #[test]
     fn integrate_vortex_is_approximately_circular() {
         let (u, v, x, y) = vortex(41, 41, -5.0, 5.0);
-        let pts = integrate(&u, &v, &x, &y, 3.0, 0.0, default_step(&x, &y), 800, 1e-10);
+        let pts = integrate(&u, &v, &x, &y, 3.0, 0.0,
+                            default_step(&x, &y), 800, 1e-10);
         // Radius should be preserved (field is (-y, x) → pure rotation).
         let r0 = (3.0_f64.powi(2)).sqrt();
         for (px, py) in &pts {
@@ -302,7 +249,8 @@ mod tests {
     fn integrate_terminates_on_nan() {
         let (mut u, v, x, y) = uniform_field(10, 10);
         u[5][5] = f64::NAN;
-        let pts = integrate(&u, &v, &x, &y, 0.0, 5.0, default_step(&x, &y), 200, 1e-10);
+        let pts = integrate(&u, &v, &x, &y, 0.0, 5.0,
+                            default_step(&x, &y), 200, 1e-10);
         // Should still produce a usable trace that stops before the NaN cell.
         assert!(!pts.is_empty());
     }

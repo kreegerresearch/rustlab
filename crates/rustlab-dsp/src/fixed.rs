@@ -11,8 +11,8 @@
 //!    output [`QFmtSpec`] and quantizes its result accordingly.
 //! 4. Measure degradation with [`snr_db`].
 
-use crate::error::DspError;
 use rustlab_core::Sum0;
+use crate::error::DspError;
 use rustlab_core::{OverflowMode, RoundMode};
 
 // ─── QFmtSpec ─────────────────────────────────────────────────────────────

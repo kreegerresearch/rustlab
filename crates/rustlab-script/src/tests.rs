@@ -134,19 +134,10 @@ mod bool_tests {
 
     #[test]
     fn not_on_scalar_is_logical() {
-        assert!(matches!(
-            Value::Bool(true).not().unwrap(),
-            Value::Bool(false)
-        ));
+        assert!(matches!(Value::Bool(true).not().unwrap(), Value::Bool(false)));
         // A numeric scalar is truthy when nonzero, so `!` is a bool, not an error.
-        assert!(matches!(
-            Value::Scalar(1.0).not().unwrap(),
-            Value::Bool(false)
-        ));
-        assert!(matches!(
-            Value::Scalar(0.0).not().unwrap(),
-            Value::Bool(true)
-        ));
+        assert!(matches!(Value::Scalar(1.0).not().unwrap(), Value::Bool(false)));
+        assert!(matches!(Value::Scalar(0.0).not().unwrap(), Value::Bool(true)));
         assert!(Value::Str("no".into()).not().is_err());
     }
 
@@ -164,11 +155,10 @@ mod bool_tests {
     #[test]
     fn and_or_reject_matrix_operand() {
         // Matlab requires any()/all() to collapse a matrix before &&/||.
-        let m = Value::Matrix(
-            ndarray::Array2::from_shape_vec((1, 2), vec![num_complex::Complex::new(1.0, 0.0); 2])
-                .unwrap()
-                .into(),
-        );
+        let m = Value::Matrix(ndarray::Array2::from_shape_vec(
+            (1, 2),
+            vec![num_complex::Complex::new(1.0, 0.0); 2],
+        ).unwrap().into());
         assert!(Value::binop(BinOp::And, m, Value::Scalar(1.0)).is_err());
     }
 
@@ -614,9 +604,10 @@ mod value_tests {
     #[test]
     fn transpose_complex_vector_conjugates() {
         // Transposing a complex row vector produces an n×1 Matrix with conjugated values
-        let v = Value::Vector(
-            Array1::from_vec(vec![Complex::new(1.0, 2.0), Complex::new(3.0, -1.0)]).into(),
-        );
+        let v = Value::Vector(Array1::from_vec(vec![
+            Complex::new(1.0, 2.0),
+            Complex::new(3.0, -1.0),
+        ]).into());
         match v.transpose().unwrap() {
             Value::Matrix(m) => {
                 assert!(close(m[[0, 0]].im, -2.0));
@@ -697,11 +688,7 @@ mod value_tests {
 
     fn mat_val(rows: usize, cols: usize, data: &[f64]) -> Value {
         let v: Vec<C64> = data.iter().map(|&x| C64::new(x, 0.0)).collect();
-        Value::Matrix(
-            ndarray::Array2::from_shape_vec((rows, cols), v)
-                .unwrap()
-                .into(),
-        )
+        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap().into())
     }
 
     #[test]
@@ -721,13 +708,7 @@ mod value_tests {
     #[test]
     fn elempow_scalar_base_matrix_exponent_stays_real() {
         // 2 .^ [1, 2, 10] → [2, 4, 1024], exact real.
-        match Value::binop(
-            BinOp::ElemPow,
-            scalar(2.0),
-            mat_val(1, 3, &[1.0, 2.0, 10.0]),
-        )
-        .unwrap()
-        {
+        match Value::binop(BinOp::ElemPow, scalar(2.0), mat_val(1, 3, &[1.0, 2.0, 10.0])).unwrap() {
             Value::Matrix(r) => {
                 for (k, want) in [2.0, 4.0, 1024.0].into_iter().enumerate() {
                     assert_eq!(r[[0, k]].re, want);
@@ -1157,9 +1138,7 @@ mod evaluator_tests {
         match ev.get("R").unwrap() {
             Value::Matrix(m) => {
                 assert_eq!((m.nrows(), m.ncols()), (1, 4));
-                assert!(m
-                    .iter()
-                    .all(|c| (c.re - 1.0).abs() < 1e-12 && c.im.abs() < 1e-12));
+                assert!(m.iter().all(|c| (c.re - 1.0).abs() < 1e-12 && c.im.abs() < 1e-12));
             }
             other => panic!("ones(1, 4) should stay a 1×4 matrix, got {other:?}"),
         }
@@ -2297,7 +2276,9 @@ mod eig_tests {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
             // `eig(A)` returns an N×1 column vector (matlab orientation).
-            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => m.iter().copied().collect(),
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected Vector or 1D Matrix for '{name}', got {other:?}"),
         }
     }
@@ -2428,8 +2409,9 @@ r3 = norm(A * V(:,3) - D(3) * V(:,3));
     #[test]
     fn eig_two_output_vector_eigenvalues_match_one_output() {
         // [V, D] = eig(A, "vector") D should match eig(A) (modulo order).
-        let ev =
-            eval_str("A = [3, 1, 0; 0, 2, 1; 0, 0, 5]\nd1 = eig(A)\n[V, d2] = eig(A, \"vector\")");
+        let ev = eval_str(
+            "A = [3, 1, 0; 0, 2, 1; 0, 0, 5]\nd1 = eig(A)\n[V, d2] = eig(A, \"vector\")",
+        );
         let mut a = get_complex_vector(&ev, "d1");
         let mut b = get_complex_vector(&ev, "d2");
         a.sort_by(|x, y| x.re.partial_cmp(&y.re).unwrap());
@@ -3570,7 +3552,9 @@ mod phase1_tests {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
             // `eig(A)` returns an N×1 column matrix; accept that shape too.
-            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => m.iter().copied().collect(),
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
@@ -3680,18 +3664,9 @@ function [a, b, c] = triple(x)\n\
 end\n\
 [p, q, r] = triple(4)\n";
         let ev = eval_str(src);
-        let p = match ev.get("p").unwrap() {
-            Value::Scalar(n) => *n,
-            _ => panic!(),
-        };
-        let q = match ev.get("q").unwrap() {
-            Value::Scalar(n) => *n,
-            _ => panic!(),
-        };
-        let r = match ev.get("r").unwrap() {
-            Value::Scalar(n) => *n,
-            _ => panic!(),
-        };
+        let p = match ev.get("p").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
+        let q = match ev.get("q").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
+        let r = match ev.get("r").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
         assert!((p - 4.0).abs() < 1e-12);
         assert!((q - 8.0).abs() < 1e-12);
         assert!((r - 12.0).abs() < 1e-12);
@@ -3708,32 +3683,10 @@ end\n\
 v = consts()\n\
 w = parmap(@(k) k * true + false, 1:3)\n";
         let ev = eval_str(src);
-        let want = [
-            1.0,
-            0.0,
-            std::f64::consts::PI,
-            std::f64::consts::E,
-            f64::INFINITY,
-            0.0,
-            1.0,
-        ];
-        let got: Vec<f64> = ev
-            .get("v")
-            .unwrap()
-            .to_cvector()
-            .unwrap()
-            .iter()
-            .map(|c| c.re)
-            .collect();
+        let want = [1.0, 0.0, std::f64::consts::PI, std::f64::consts::E, f64::INFINITY, 0.0, 1.0];
+        let got: Vec<f64> = ev.get("v").unwrap().to_cvector().unwrap().iter().map(|c| c.re).collect();
         assert_eq!(got, want);
-        let w: Vec<f64> = ev
-            .get("w")
-            .unwrap()
-            .to_cvector()
-            .unwrap()
-            .iter()
-            .map(|c| c.re)
-            .collect();
+        let w: Vec<f64> = ev.get("w").unwrap().to_cvector().unwrap().iter().map(|c| c.re).collect();
         assert_eq!(w, [1.0, 2.0, 3.0]);
     }
 
@@ -3789,10 +3742,7 @@ end\n\
                 break;
             }
         }
-        assert!(
-            got_err,
-            "asking for 3 outputs from a 2-output fn should error"
-        );
+        assert!(got_err, "asking for 3 outputs from a 2-output fn should error");
     }
 
     #[test]
@@ -3967,7 +3917,9 @@ mod phase2_tests {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
             // `eig(A)` returns an N×1 column matrix; accept that shape too.
-            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => m.iter().copied().collect(),
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
@@ -4112,7 +4064,9 @@ mod phase3_tests {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
             // `eig(A)` returns an N×1 column matrix; accept that shape too.
-            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => m.iter().copied().collect(),
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
@@ -4281,7 +4235,9 @@ mod phase3_tests {
     #[test]
     fn tf_ss_mass_spring_damper() {
         // m=1, b=0.5, k=4 → G(s) = 1/(s² + 0.5s + 4)
-        let ev = eval_str("A = [0,1; -4,-0.5]\nB = [0;1]\nC = [1,0]\nD = 0\nG = tf(A, B, C, D)");
+        let ev = eval_str(
+            "A = [0,1; -4,-0.5]\nB = [0;1]\nC = [1,0]\nD = 0\nG = tf(A, B, C, D)",
+        );
         let (num, den) = get_tf(&ev, "G");
         vec_close(&num, &[1.0], 1e-10);
         vec_close(&den, &[1.0, 0.5, 4.0], 1e-10);
@@ -4707,7 +4663,8 @@ mod phase4_tests {
              y(3) = 1;\n\
              plot(x, y);",
         );
-        let series = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.clone());
+        let series = rustlab_plot::figure::FIGURE
+            .with(|f| f.borrow().current().series.clone());
         assert_eq!(series.len(), 1, "expected one series, got {}", series.len());
         assert_eq!(series[0].x_data.len(), 5);
         assert_eq!(series[0].y_data.len(), 5);
@@ -4729,15 +4686,8 @@ mod phase4_tests {
             assert_eq!(sp.series[0].y_data, vec![12.0, 19.0, 14.0, 22.0, 18.0]);
             assert_eq!(
                 sp.x_labels.as_deref(),
-                Some(
-                    &[
-                        "Mon".to_string(),
-                        "Tue".to_string(),
-                        "Wed".to_string(),
-                        "Thu".to_string(),
-                        "Fri".to_string()
-                    ][..]
-                ),
+                Some(&["Mon".to_string(), "Tue".to_string(), "Wed".to_string(),
+                       "Thu".to_string(), "Fri".to_string()][..]),
                 "categorical labels must be stored on the subplot",
             );
         });
@@ -4773,7 +4723,8 @@ mod phase4_tests {
              y(2) = 1;\n\
              plot(x, y);",
         );
-        let series = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.clone());
+        let series = rustlab_plot::figure::FIGURE
+            .with(|f| f.borrow().current().series.clone());
         assert_eq!(series.len(), 1, "expected one series, got {}", series.len());
         assert_eq!(series[0].x_data.len(), 4);
         assert_eq!(series[0].y_data.len(), 4);
@@ -4977,12 +4928,7 @@ mod phase4_tests {
         let expected_bin = f
             .iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                (**a - 100.0)
-                    .abs()
-                    .partial_cmp(&(**b - 100.0).abs())
-                    .unwrap()
-            })
+            .min_by(|(_, a), (_, b)| (**a - 100.0).abs().partial_cmp(&(**b - 100.0).abs()).unwrap())
             .unwrap()
             .0;
         for col in 0..s.ncols() {
@@ -5015,10 +4961,7 @@ mod phase4_tests {
         let (rows, cols, kind, colorscale) = rustlab_plot::figure::FIGURE.with(|f| {
             let fig = f.borrow();
             let sp = fig.current();
-            let hm = sp
-                .heatmap
-                .as_ref()
-                .expect("spectrogram should push a heatmap");
+            let hm = sp.heatmap.as_ref().expect("spectrogram should push a heatmap");
             (
                 hm.z.len(),
                 hm.z[0].len(),
@@ -5083,11 +5026,7 @@ mod phase4_tests {
         let (path, bytes) = spectrogram_savefig("svg");
         let s = String::from_utf8_lossy(&bytes);
         assert!(s.contains("<svg"), "SVG output missing <svg> root");
-        assert!(
-            s.len() > 500,
-            "SVG output suspiciously small: {} bytes",
-            s.len()
-        );
+        assert!(s.len() > 500, "SVG output suspiciously small: {} bytes", s.len());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -5100,11 +5039,7 @@ mod phase4_tests {
             s.contains("Plotly") || s.contains("plotly"),
             "HTML output missing Plotly bootstrap"
         );
-        assert!(
-            s.len() > 1000,
-            "HTML output suspiciously small: {} bytes",
-            s.len()
-        );
+        assert!(s.len() > 1000, "HTML output suspiciously small: {} bytes", s.len());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -5178,10 +5113,7 @@ mod phase4_tests {
         let (rows, cols, kind) = rustlab_plot::figure::FIGURE.with(|f| {
             let fig = f.borrow();
             let sp = fig.current();
-            let hm = sp
-                .heatmap
-                .as_ref()
-                .expect("scalogram should push a heatmap");
+            let hm = sp.heatmap.as_ref().expect("scalogram should push a heatmap");
             (hm.z.len(), hm.z[0].len(), hm.kind.clone())
         });
         assert_eq!(rows, 64);
@@ -5296,10 +5228,7 @@ mod phase4_tests {
         let result = std::panic::catch_unwind(|| eval_str(src));
         // Restore for other tests.
         rustlab_plot::set_plot_context(rustlab_plot::PlotContext::Terminal);
-        assert!(
-            result.is_ok(),
-            "headless streaming pipeline should not panic"
-        );
+        assert!(result.is_ok(), "headless streaming pipeline should not panic");
     }
 
     #[test]
@@ -5845,36 +5774,16 @@ mod new_builtins_tests {
         // a row vector was taken as a column, so kron(c, v) of a column and a
         // row stacked instead of forming the outer product.
         let cases: [(&str, (usize, usize), &[f64]); 6] = [
-            (
-                "kron([1, 2, 3], [4; 5])",
-                (2, 3),
-                &[4.0, 5.0, 8.0, 10.0, 12.0, 15.0],
-            ),
-            (
-                "kron([1; 2], [3, 4, 5])",
-                (2, 3),
-                &[3.0, 6.0, 4.0, 8.0, 5.0, 10.0],
-            ),
-            (
-                "kron([1, 2], [3, 4, 5])",
-                (1, 6),
-                &[3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
-            ),
-            (
-                "kron([1, 2; 3, 4], [1, -1])",
-                (2, 4),
-                &[1.0, 3.0, -1.0, -3.0, 2.0, 4.0, -2.0, -4.0],
-            ),
+            ("kron([1, 2, 3], [4; 5])", (2, 3), &[4.0, 5.0, 8.0, 10.0, 12.0, 15.0]),
+            ("kron([1; 2], [3, 4, 5])", (2, 3), &[3.0, 6.0, 4.0, 8.0, 5.0, 10.0]),
+            ("kron([1, 2], [3, 4, 5])", (1, 6), &[3.0, 4.0, 5.0, 6.0, 8.0, 10.0]),
+            ("kron([1, 2; 3, 4], [1, -1])", (2, 4), &[1.0, 3.0, -1.0, -3.0, 2.0, 4.0, -2.0, -4.0]),
             ("kron(2, [1, 2, 3])", (1, 3), &[2.0, 4.0, 6.0]),
             ("kron(2, 3)", (1, 1), &[6.0]),
         ];
         for (expr, shape, values) in cases {
             let ev = eval_str(&format!("K = {expr}"));
-            assert_eq!(
-                shape_and_values(&ev, "K"),
-                (shape, values.to_vec()),
-                "{expr}"
-            );
+            assert_eq!(shape_and_values(&ev, "K"), (shape, values.to_vec()), "{expr}");
         }
     }
 
@@ -5882,39 +5791,20 @@ mod new_builtins_tests {
     fn diag_builds_from_any_vector_shape() {
         // A column, a 1×n matrix and a scalar are vectors to diag, as in Octave.
         let cases: [(&str, (usize, usize), &[f64]); 5] = [
-            (
-                "diag([1; 2; 3])",
-                (3, 3),
-                &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
-            ),
-            (
-                "diag([1, 2, 3]')",
-                (3, 3),
-                &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0],
-            ),
-            (
-                "diag([1; 2], -1)",
-                (3, 3),
-                &[0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
-            ),
+            ("diag([1; 2; 3])", (3, 3), &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]),
+            ("diag([1, 2, 3]')", (3, 3), &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0]),
+            ("diag([1; 2], -1)", (3, 3), &[0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]),
             ("diag(5)", (1, 1), &[5.0]),
             ("diag(5, 1)", (2, 2), &[0.0, 0.0, 5.0, 0.0]),
         ];
         for (expr, shape, values) in cases {
             let ev = eval_str(&format!("D = {expr}"));
-            assert_eq!(
-                shape_and_values(&ev, "D"),
-                (shape, values.to_vec()),
-                "{expr}"
-            );
+            assert_eq!(shape_and_values(&ev, "D"), (shape, values.to_vec()), "{expr}");
         }
         let src = "x = diag([1, 2], 1.5)\n";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let stmts = crate::parser::parse(tokens).unwrap();
-        let err = Evaluator::new()
-            .exec_stmt(&stmts[0])
-            .unwrap_err()
-            .to_string();
+        let err = Evaluator::new().exec_stmt(&stmts[0]).unwrap_err().to_string();
         assert!(err.contains("integer"), "{err}");
     }
 
@@ -6391,11 +6281,7 @@ mod ml_tests {
              err = max(max(abs(gelu_grad(z) - y)));\n\
              g0 = gelu_grad(0);",
         );
-        assert!(
-            get_scalar(&ev, "err") < 1e-14,
-            "err {}",
-            get_scalar(&ev, "err")
-        );
+        assert!(get_scalar(&ev, "err") < 1e-14, "err {}", get_scalar(&ev, "err"));
         assert!(close(get_scalar(&ev, "g0"), 0.5));
     }
 
@@ -6504,10 +6390,7 @@ mod ml_tests {
         let stmts = parser::parse(tokens).unwrap();
         let mut ev = Evaluator::new();
         let result = ev.exec_stmt(&stmts[0]);
-        assert!(
-            result.is_err(),
-            "layernorm vector form with 3 args should error"
-        );
+        assert!(result.is_err(), "layernorm vector form with 3 args should error");
     }
 
     // ── layernorm matrix overload (per-row by default) ────────────────────────
@@ -6558,8 +6441,7 @@ mod ml_tests {
         };
         // Each row still has zero mean.
         for i in 0..m.nrows() {
-            let row_mean: f64 =
-                (0..m.ncols()).map(|j| m[[i, j]].re).sum::<f64>() / m.ncols() as f64;
+            let row_mean: f64 = (0..m.ncols()).map(|j| m[[i, j]].re).sum::<f64>() / m.ncols() as f64;
             assert!(row_mean.abs() < 1e-10);
         }
     }
@@ -7330,16 +7212,8 @@ mod profiling_tests {
         let b = find(&report, "b").expect("b");
         let sleep = find(&report, "sleep").expect("sleep");
         assert_eq!(sleep.call_count, 2);
-        assert!(
-            ms(a.total_ns) >= 100.0 && ms(a.total_ns) < 160.0,
-            "a total {}",
-            ms(a.total_ns)
-        );
-        assert!(
-            ms(b.total_ns) >= 60.0 && ms(b.total_ns) < 110.0,
-            "b total {}",
-            ms(b.total_ns)
-        );
+        assert!(ms(a.total_ns) >= 100.0 && ms(a.total_ns) < 160.0, "a total {}", ms(a.total_ns));
+        assert!(ms(b.total_ns) >= 60.0 && ms(b.total_ns) < 110.0, "b total {}", ms(b.total_ns));
         // Sleeping is in the `sleep` rows, so a and b keep almost no self time.
         assert!(ms(a.self_ns) < 20.0, "a self {}", ms(a.self_ns));
         assert!(ms(b.self_ns) < 20.0, "b self {}", ms(b.self_ns));
@@ -7352,17 +7226,9 @@ mod profiling_tests {
                    A = randn(40, 40);\nfor k = 1:30\n  z = f(A) + 1;\nend";
         let (_, report) = run_profiled(src, None);
         let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level row");
-        let self_sum: u64 = report
-            .iter()
-            .filter(|(_, s)| !s.parallel)
-            .map(|(_, s)| s.self_ns)
-            .sum();
+        let self_sum: u64 = report.iter().filter(|(_, s)| !s.parallel).map(|(_, s)| s.self_ns).sum();
         let diff = (self_sum as f64 - top.total_ns as f64).abs();
-        assert!(
-            diff <= 0.01 * top.total_ns as f64 + 1e5,
-            "sum {self_sum} vs wall {}",
-            top.total_ns
-        );
+        assert!(diff <= 0.01 * top.total_ns as f64 + 1e5, "sum {self_sum} vs wall {}", top.total_ns);
     }
 
     #[test]
@@ -7372,20 +7238,14 @@ mod profiling_tests {
         let f = find(&report, "fact").expect("fact");
         let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level");
         assert_eq!(f.call_count, 8);
-        assert!(
-            f.total_ns <= top.total_ns,
-            "recursive inclusive time must not exceed wall time"
-        );
+        assert!(f.total_ns <= top.total_ns, "recursive inclusive time must not exceed wall time");
     }
 
     #[test]
     fn matmul_row_always_ops_rows_only_on_request() {
         let src = "A = ones(8, 8); B = A * A; C = A + A; D = A';";
         let (_, report) = run_profiled(src, None);
-        assert_eq!(
-            find(&report, "[matmul]").expect("[matmul] row").call_count,
-            1
-        );
+        assert_eq!(find(&report, "[matmul]").expect("[matmul] row").call_count, 1);
         assert!(find(&report, "[+]").is_none());
         assert!(find(&report, "[transpose]").is_none());
 
@@ -7398,12 +7258,7 @@ mod profiling_tests {
         let report = ev.take_profile();
         assert_eq!(find(&report, "[matmul]").unwrap().call_count, 1);
         assert_eq!(find(&report, "[+]").expect("[+] with ops").call_count, 1);
-        assert_eq!(
-            find(&report, "[transpose]")
-                .expect("[transpose]")
-                .call_count,
-            1
-        );
+        assert_eq!(find(&report, "[transpose]").expect("[transpose]").call_count, 1);
         // Scalar multiply is an operator row, not a matrix product.
         let (_, r2) = run_profiled("x = 2 * 3;", None);
         assert!(find(&r2, "[matmul]").is_none());
@@ -7497,12 +7352,7 @@ mod profiling_tests {
         assert_eq!(t.output_bytes, 16 * 8);
         assert_eq!(find(&report, "[index]").expect("[index]").input_bytes, 0);
         assert_eq!(find(&report, "[index]").unwrap().output_bytes, 0);
-        assert_eq!(
-            find(&report, "[index-assign]")
-                .expect("[index-assign]")
-                .input_bytes,
-            0
-        );
+        assert_eq!(find(&report, "[index-assign]").expect("[index-assign]").input_bytes, 0);
 
         let src = "x = 2 * 3;";
         let tokens = lexer::tokenize(src).unwrap();
@@ -7529,12 +7379,7 @@ mod profiling_tests {
         ev.run(&stmts).unwrap();
         let report = ev.take_profile();
         assert_eq!(find(&report, "[index]").expect("[index]").call_count, 1);
-        assert_eq!(
-            find(&report, "[index-assign]")
-                .expect("[index-assign]")
-                .call_count,
-            1
-        );
+        assert_eq!(find(&report, "[index-assign]").expect("[index-assign]").call_count, 1);
     }
 
     #[test]
@@ -7546,28 +7391,15 @@ mod profiling_tests {
         let w = find(&report, "parmap:sq").expect("worker rows merged");
         assert_eq!(w.call_count, 6);
         assert!(w.parallel);
-        assert_eq!(
-            find(&report, "parmap:abs")
-                .expect("nested worker row")
-                .call_count,
-            6
-        );
-        assert!(
-            find(&report, "sq").is_none(),
-            "worker calls are not main-thread rows"
-        );
+        assert_eq!(find(&report, "parmap:abs").expect("nested worker row").call_count, 6);
+        assert!(find(&report, "sq").is_none(), "worker calls are not main-thread rows");
     }
 
     #[test]
     fn whitelist_filters_rows_and_drops_top_level() {
         let src = "function y = f(x)\n  y = abs(x);\nend\nfor k = 1:3\n  f(k);\nend";
         let (_, report) = run_profiled(src, Some(vec!["f"]));
-        assert_eq!(
-            report.len(),
-            1,
-            "only f: {:?}",
-            report.iter().map(|r| &r.0).collect::<Vec<_>>()
-        );
+        assert_eq!(report.len(), 1, "only f: {:?}", report.iter().map(|r| &r.0).collect::<Vec<_>>());
         assert_eq!(find(&report, "f").unwrap().call_count, 3);
     }
 
@@ -7593,11 +7425,7 @@ mod profiling_tests {
         crate::eval::shared::set_real_storage(None);
         let s = find(&report, "fft").expect("fft tracked");
         assert_eq!(s.input_bytes, 16 * 8, "16-element real vector = 128 bytes");
-        assert_eq!(
-            s.output_bytes,
-            16 * 16,
-            "16-element complex vector = 256 bytes"
-        );
+        assert_eq!(s.output_bytes, 16 * 16, "16-element complex vector = 256 bytes");
     }
 }
 
@@ -9262,8 +9090,7 @@ mod figure_state_tests {
     #[test]
     fn surf_rejects_mismatched_axis_length() {
         reset_figure();
-        let src =
-            "x = [1.0, 2.0]; y = [1.0, 2.0]; Z = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]; surf(x, y, Z);\n";
+        let src = "x = [1.0, 2.0]; y = [1.0, 2.0]; Z = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]; surf(x, y, Z);\n";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let stmts = crate::parser::parse(tokens).unwrap();
         let mut ev = crate::Evaluator::new();
@@ -9336,9 +9163,10 @@ mod figure_state_tests {
     #[test]
     fn saveanim_rejects_unknown_extension() {
         rustlab_plot::clear_frames();
-        let err =
-            run_or_err("imagesc([1,2;3,4]);\nframe();\nsaveanim(\"/tmp/rustlab_anim_bad.mp4\");")
-                .expect_err("should error");
+        let err = run_or_err(
+            "imagesc([1,2;3,4]);\nframe();\nsaveanim(\"/tmp/rustlab_anim_bad.mp4\");",
+        )
+        .expect_err("should error");
         assert!(
             err.to_string().contains(".html") && err.to_string().contains(".gif"),
             "error should mention both supported extensions: {err}"
@@ -9360,11 +9188,7 @@ mod figure_state_tests {
         // GIF89a header — 6-byte ASCII signature.
         assert_eq!(&bytes[..6], b"GIF89a", "gif header missing");
         // Should be more than just the header.
-        assert!(
-            bytes.len() > 100,
-            "gif body too small: {} bytes",
-            bytes.len()
-        );
+        assert!(bytes.len() > 100, "gif body too small: {} bytes", bytes.len());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -9777,7 +9601,10 @@ mod optional_arg_tests {
             crate::Value::Scalar(v) => *v,
             other => panic!("expected Scalar, got {other:?}"),
         };
-        assert!((0.0..1.0).contains(&x), "rand() out of [0,1): {x}");
+        assert!(
+            (0.0..1.0).contains(&x),
+            "rand() out of [0,1): {x}"
+        );
     }
 
     #[test]
@@ -10467,7 +10294,10 @@ mod sparse_tests {
         );
         let diff_ac = get_scalar(&ev, "diff_ac");
         let diff_al = get_scalar(&ev, "diff_al");
-        assert!(diff_ac < 1e-10, "auto vs cholesky disagreement: {diff_ac}");
+        assert!(
+            diff_ac < 1e-10,
+            "auto vs cholesky disagreement: {diff_ac}"
+        );
         assert!(diff_al < 1e-7, "auto vs lu disagreement: {diff_al}");
     }
 
@@ -10492,8 +10322,9 @@ mod sparse_tests {
 
     #[test]
     fn spsolve_unknown_mode_errors() {
-        let result =
-            std::panic::catch_unwind(|| eval_str("x = spsolve(speye(3), [1; 2; 3], \"banana\")"));
+        let result = std::panic::catch_unwind(|| {
+            eval_str("x = spsolve(speye(3), [1; 2; 3], \"banana\")")
+        });
         assert!(result.is_err());
     }
 
@@ -10628,7 +10459,9 @@ mod sparse_tests {
     fn solve_rejects_non_factor_first_arg() {
         // solve(A, b) with a raw matrix instead of a factor should
         // raise a clear error pointing at chol/lu.
-        let result = std::panic::catch_unwind(|| eval_str("x = solve(speye(3), [1; 2; 3])"));
+        let result = std::panic::catch_unwind(|| {
+            eval_str("x = solve(speye(3), [1; 2; 3])")
+        });
         assert!(result.is_err());
     }
 
@@ -10668,7 +10501,10 @@ mod sparse_tests {
         let v = ev.vars().into_iter().find(|(n, _)| *n == "L").unwrap().1;
         match v {
             crate::Value::SparseMatrix(sm) => {
-                assert_eq!(sm.ordering_hint, Some(rustlab_core::OrderingHint::Identity));
+                assert_eq!(
+                    sm.ordering_hint,
+                    Some(rustlab_core::OrderingHint::Identity)
+                );
             }
             _ => panic!("expected sparse matrix"),
         }
@@ -10694,7 +10530,10 @@ mod sparse_tests {
         let v = ev.vars().into_iter().find(|(n, _)| *n == "M").unwrap().1;
         match v {
             crate::Value::SparseMatrix(sm) => {
-                assert_eq!(sm.ordering_hint, Some(rustlab_core::OrderingHint::Identity));
+                assert_eq!(
+                    sm.ordering_hint,
+                    Some(rustlab_core::OrderingHint::Identity)
+                );
             }
             _ => panic!("expected sparse matrix"),
         }
@@ -10707,9 +10546,10 @@ mod sparse_tests {
         let ev = eval_str("S = speye(5);");
         let v = ev.vars().into_iter().find(|(n, _)| *n == "S").unwrap().1;
         match v {
-            crate::Value::SparseMatrix(sm) => {
-                assert_eq!(sm.ordering_hint, Some(rustlab_core::OrderingHint::Identity))
-            }
+            crate::Value::SparseMatrix(sm) => assert_eq!(
+                sm.ordering_hint,
+                Some(rustlab_core::OrderingHint::Identity)
+            ),
             _ => panic!("expected sparse matrix"),
         }
     }
@@ -10719,9 +10559,10 @@ mod sparse_tests {
         let ev = eval_str("Z = spzeros(4, 4);");
         let v = ev.vars().into_iter().find(|(n, _)| *n == "Z").unwrap().1;
         match v {
-            crate::Value::SparseMatrix(sm) => {
-                assert_eq!(sm.ordering_hint, Some(rustlab_core::OrderingHint::Identity))
-            }
+            crate::Value::SparseMatrix(sm) => assert_eq!(
+                sm.ordering_hint,
+                Some(rustlab_core::OrderingHint::Identity)
+            ),
             _ => panic!("expected sparse matrix"),
         }
     }
@@ -11428,23 +11269,31 @@ mod sparse_tests {
     #[test]
     fn loglog_smoke_test() {
         // Just verifies it runs and labels the axes.
-        eval_str("loglog([1, 10, 100], [1, 100, 10000])");
+        eval_str(
+            "loglog([1, 10, 100], [1, 100, 10000])",
+        );
     }
 
     #[test]
     fn loglog_rejects_nonpositive() {
-        let result = std::panic::catch_unwind(|| eval_str("loglog([-1, 1, 10], [1, 1, 1])"));
+        let result = std::panic::catch_unwind(|| {
+            eval_str("loglog([-1, 1, 10], [1, 1, 1])")
+        });
         assert!(result.is_err());
     }
 
     #[test]
     fn semilogx_smoke_test() {
-        eval_str("semilogx([1, 10, 100], [0.5, 1.0, 1.5])");
+        eval_str(
+            "semilogx([1, 10, 100], [0.5, 1.0, 1.5])",
+        );
     }
 
     #[test]
     fn semilogy_smoke_test() {
-        eval_str("semilogy([1, 2, 3], [1, 10, 100])");
+        eval_str(
+            "semilogy([1, 2, 3], [1, 10, 100])",
+        );
     }
 
     #[test]
@@ -13129,7 +12978,8 @@ mod pin_dirichlet_tests {
     /// is untouched.
     #[test]
     fn mask_pins_row_to_identity() {
-        let ev = run("A = laplacian_2d(3, 3);
+        let ev = run(
+            "A = laplacian_2d(3, 3);
              b = zeros(1, 9);
              mask = zeros(3, 3);
              mask(2, 2) = 1;
@@ -13140,18 +12990,11 @@ mod pin_dirichlet_tests {
              off_sum = sum(abs(D(k, :))) - abs(D(k, k));
              rhs = b2(k);
              other = b2(1);
-             untouched = D(1, 1);");
+             untouched = D(1, 1);",
+        );
         assert_eq!(scalar(&ev, "diag_val"), 4.0, "pinned diagonal is |A(k,k)|");
-        assert_eq!(
-            scalar(&ev, "off_sum"),
-            0.0,
-            "pinned row has no off-diagonals"
-        );
-        assert_eq!(
-            scalar(&ev, "rhs"),
-            20.0,
-            "b carries the scaled pinned value"
-        );
+        assert_eq!(scalar(&ev, "off_sum"), 0.0, "pinned row has no off-diagonals");
+        assert_eq!(scalar(&ev, "rhs"), 20.0, "b carries the scaled pinned value");
         assert_eq!(scalar(&ev, "other"), 0.0, "unpinned b untouched");
         assert!(
             scalar(&ev, "untouched").abs() > 0.0,
@@ -13163,12 +13006,14 @@ mod pin_dirichlet_tests {
     /// the interior is the linear interpolant between the pinned ends.
     #[test]
     fn spsolve_reproduces_pinned_potentials() {
-        let ev = run("n = 5;
+        let ev = run(
+            "n = 5;
              A = laplacian_1d(n);
              b = zeros(1, n);
              [A2, b2] = pin_dirichlet(A, b, [1, 5], [1.0, 9.0]);
              v = spsolve(A2, b2);
-             v1 = v(1); v3 = v(3); v5 = v(5);");
+             v1 = v(1); v3 = v(3); v5 = v(5);",
+        );
         assert!((scalar(&ev, "v1") - 1.0).abs() < 1e-10);
         assert!((scalar(&ev, "v5") - 9.0).abs() < 1e-10);
         // Laplace in 1-D → straight line: midpoint = 5.
@@ -13178,7 +13023,8 @@ mod pin_dirichlet_tests {
     /// Index-list form ≡ mask form.
     #[test]
     fn index_list_matches_mask() {
-        let ev = run("A = laplacian_2d(3, 3);
+        let ev = run(
+            "A = laplacian_2d(3, 3);
              b = zeros(1, 9);
              mask = zeros(3, 3);
              mask(1, 1) = 1;
@@ -13187,7 +13033,8 @@ mod pin_dirichlet_tests {
              ks = [ij2k(1, 1, 3), ij2k(3, 3, 3)];
              [Ai, bi] = pin_dirichlet(A, b, ks, 2.0);
              d_a = nnz(Am - Ai);
-             d_b = sum(abs(bm - bi));");
+             d_b = sum(abs(bm - bi));",
+        );
         assert_eq!(scalar(&ev, "d_a"), 0.0);
         assert_eq!(scalar(&ev, "d_b"), 0.0);
     }
@@ -13195,11 +13042,13 @@ mod pin_dirichlet_tests {
     /// Per-pin values follow mask column-major order.
     #[test]
     fn vector_values_align_with_mask_order() {
-        let ev = run("A = speye(4);
+        let ev = run(
+            "A = speye(4);
              b = zeros(1, 4);
              mask = [1, 0; 0, 1];   % column-major nonzeros: k=1 then k=4
              [A2, b2] = pin_dirichlet(A, b, mask, [7.0, 8.0]);
-             p1 = b2(1); p4 = b2(4);");
+             p1 = b2(1); p4 = b2(4);",
+        );
         assert_eq!(scalar(&ev, "p1"), 7.0);
         assert_eq!(scalar(&ev, "p4"), 8.0);
     }
@@ -13207,7 +13056,8 @@ mod pin_dirichlet_tests {
     /// Tensor3 mask addresses a 3-D operator (ijk2k linearization).
     #[test]
     fn tensor3_mask_on_laplacian_3d() {
-        let ev = run("A = laplacian_3d(2, 2, 2);
+        let ev = run(
+            "A = laplacian_3d(2, 2, 2);
              b = zeros(1, 8);
              mask = zeros3(2, 2, 2);
              mask(2, 1, 2) = 1;
@@ -13215,7 +13065,8 @@ mod pin_dirichlet_tests {
              k = ijk2k(2, 1, 2, 2, 2);
              D = full(A2);
              dv = D(k, k);
-             rhs = b2(k);");
+             rhs = b2(k);",
+        );
         assert_eq!(scalar(&ev, "dv"), 6.0, "|A(k,k)| of laplacian_3d(2, 2, 2)");
         assert_eq!(scalar(&ev, "rhs"), 21.0);
     }
@@ -13223,11 +13074,13 @@ mod pin_dirichlet_tests {
     /// Dense A takes the same surgery.
     #[test]
     fn dense_matrix_path() {
-        let ev = run("A = [2, 1; 1, 2];
+        let ev = run(
+            "A = [2, 1; 1, 2];
              b = zeros(1, 2);
              [A2, b2] = pin_dirichlet(A, b, [1], 4.0);
              a11 = A2(1, 1); a12 = A2(1, 2); a21 = A2(2, 1);
-             r = b2(1);");
+             r = b2(1);",
+        );
         assert_eq!(scalar(&ev, "a11"), 2.0);
         assert_eq!(scalar(&ev, "a12"), 0.0);
         assert_eq!(scalar(&ev, "a21"), 1.0, "other rows untouched");
@@ -13244,10 +13097,7 @@ mod pin_dirichlet_tests {
         let msg = run_err(
             "A = speye(3); [X, y] = pin_dirichlet(A, zeros(1, 3), [1, 2], [1.0, 2.0, 3.0]);",
         );
-        assert!(
-            msg.contains("values") || msg.contains("pinned cells"),
-            "got: {msg}"
-        );
+        assert!(msg.contains("values") || msg.contains("pinned cells"), "got: {msg}");
         // Mask element-count mismatch.
         let msg =
             run_err("A = speye(4); [X, y] = pin_dirichlet(A, zeros(1, 4), zeros(3, 3), 1.0);");
@@ -13345,8 +13195,10 @@ mod ellipke_tests {
 
     #[test]
     fn ellipke_is_elementwise_over_vectors() {
-        let ev = run("[K, E] = ellipke([0, 0.5]);
-             k1 = K(1); k2 = K(2); e1 = E(1); e2 = E(2);");
+        let ev = run(
+            "[K, E] = ellipke([0, 0.5]);
+             k1 = K(1); k2 = K(2); e1 = E(1); e2 = E(2);",
+        );
         assert!((scalar(&ev, "k1") - PI_2).abs() < 1e-15);
         assert!((scalar(&ev, "k2") - 1.854_074_677_301_371_9).abs() < 1e-12);
         assert!((scalar(&ev, "e1") - PI_2).abs() < 1e-15);
@@ -13355,10 +13207,12 @@ mod ellipke_tests {
 
     #[test]
     fn ellipke_matrix_shape_preserved() {
-        let ev = run("[K, E] = ellipke([0, 0.5; 0.25, 0.75]);
+        let ev = run(
+            "[K, E] = ellipke([0, 0.5; 0.25, 0.75]);
              n = numel(K);
              probe = K(2, 2);
-             e_probe = E(1, 1);");
+             e_probe = E(1, 1);",
+        );
         assert_eq!(scalar(&ev, "n"), 4.0);
         assert!(scalar(&ev, "probe") > 0.0, "K(0.75) finite and positive");
         assert!((scalar(&ev, "e_probe") - PI_2).abs() < 1e-15);
@@ -13424,12 +13278,14 @@ mod tic_toc_tests {
     /// The canonical bare-word idiom works: `tic; ...; t = toc;`.
     #[test]
     fn bare_tic_toc_idiom() {
-        let ev = run("tic;
+        let ev = run(
+            "tic;
              s = 0;
              for k = 1:1000
                s = s + k;
              end
-             t = toc;");
+             t = toc;",
+        );
         assert!(scalar(&ev, "t") >= 0.0);
         assert_eq!(scalar(&ev, "s"), 500500.0);
     }
@@ -13437,13 +13293,15 @@ mod tic_toc_tests {
     /// toc doesn't clear: two tocs against one tic are monotonic.
     #[test]
     fn toc_is_repeatable_and_monotonic() {
-        let ev = run("tic;
+        let ev = run(
+            "tic;
              a = toc;
              s = 0;
              for k = 1:2000
                s = s + k;
              end
-             b = toc;");
+             b = toc;",
+        );
         assert!(scalar(&ev, "b") >= scalar(&ev, "a"));
     }
 
@@ -13457,14 +13315,16 @@ mod tic_toc_tests {
     /// tic resets the stopwatch.
     #[test]
     fn second_tic_resets() {
-        let ev = run("tic;
+        let ev = run(
+            "tic;
              s = 0;
              for k = 1:5000
                s = s + k;
              end
              a = toc;
              tic;
-             b = toc;");
+             b = toc;",
+        );
         // b measures a nearly-empty window; a measured the loop.
         assert!(scalar(&ev, "b") <= scalar(&ev, "a") + 1e-3);
     }
@@ -13519,9 +13379,11 @@ mod tensor3_flatten_tests {
     /// index_1d arm). It must flatten column-major to a vector.
     #[test]
     fn tensor3_colon_flattens_without_panicking() {
-        let ev = run("T = zeros3(2, 3, 4);
+        let ev = run(
+            "T = zeros3(2, 3, 4);
              v = T(:);
-             n = numel(v);");
+             n = numel(v);",
+        );
         assert_eq!(scalar(&ev, "n"), 24.0);
     }
 
@@ -13529,23 +13391,27 @@ mod tensor3_flatten_tests {
     /// linearization (i fastest, then j, then page k).
     #[test]
     fn tensor3_flatten_order_matches_ijk2k() {
-        let ev = run("T = zeros3(2, 3, 4);
+        let ev = run(
+            "T = zeros3(2, 3, 4);
              T(2, 3, 4) = 7.5;
              v = T(:);
              k = ijk2k(2, 3, 4, 2, 3);
-             probe = v(k);");
+             probe = v(k);",
+        );
         assert_eq!(scalar(&ev, "probe"), 7.5);
     }
 
     /// Round-trip: reshape(T(:), m, n, p) reproduces T elementwise.
     #[test]
     fn tensor3_flatten_reshape_round_trip() {
-        let ev = run("T = zeros3(2, 2, 3);
+        let ev = run(
+            "T = zeros3(2, 2, 3);
              T(1, 2, 2) = 3.0;
              T(2, 1, 3) = -4.0;
              R = reshape(T(:), 2, 2, 3);
              a = R(1, 2, 2);
-             b = R(2, 1, 3);");
+             b = R(2, 1, 3);",
+        );
         assert_eq!(scalar(&ev, "a"), 3.0);
         assert_eq!(scalar(&ev, "b"), -4.0);
     }
@@ -13553,10 +13419,12 @@ mod tensor3_flatten_tests {
     /// Scalar linear indexing (T(k)) and `end` bind to the flat view.
     #[test]
     fn tensor3_scalar_linear_index_and_end() {
-        let ev = run("T = zeros3(2, 2, 2);
+        let ev = run(
+            "T = zeros3(2, 2, 2);
              T(2, 2, 2) = 9.0;
              last = T(end);
-             first = T(1);");
+             first = T(1);",
+        );
         assert_eq!(scalar(&ev, "last"), 9.0);
         assert_eq!(scalar(&ev, "first"), 0.0);
     }
@@ -13564,12 +13432,14 @@ mod tensor3_flatten_tests {
     /// Index-vector picks from the flat view.
     #[test]
     fn tensor3_index_vector_picks() {
-        let ev = run("T = zeros3(2, 2, 2);
+        let ev = run(
+            "T = zeros3(2, 2, 2);
              T(1, 1, 1) = 1.0;
              T(2, 2, 2) = 8.0;
              v = T([1, 8]);
              a = v(1);
-             b = v(2);");
+             b = v(2);",
+        );
         assert_eq!(scalar(&ev, "a"), 1.0);
         assert_eq!(scalar(&ev, "b"), 8.0);
     }
@@ -14093,9 +13963,12 @@ mod tensor3_arith_tests {
 
     #[test]
     fn matrix_plus_tensor3_errors() {
-        let err = run_expect_err("A = ones3(2, 2, 2); M = ones(2, 2); C = M + A");
+        let err = run_expect_err(
+            "A = ones3(2, 2, 2); M = ones(2, 2); C = M + A",
+        );
         assert!(
-            err.to_lowercase().contains("matrix") && err.to_lowercase().contains("tensor3"),
+            err.to_lowercase().contains("matrix")
+                && err.to_lowercase().contains("tensor3"),
             "expected matrix + tensor3 error, got: {err}"
         );
     }
@@ -14171,9 +14044,7 @@ mod tensor3_ergonomic_tests {
     fn reshape_to_tensor3_column_major() {
         // reshape(1:24, 2, 3, 4) — column-major walk: A(1,1,1)=1, A(2,1,1)=2,
         // A(1,2,1)=3, A(2,3,4)=24.
-        let ev = run(
-            "A = reshape(1:24, 2, 3, 4); v1=A(1,1,1); v2=A(2,1,1); v3=A(1,2,1); v_last=A(2,3,4)",
-        );
+        let ev = run("A = reshape(1:24, 2, 3, 4); v1=A(1,1,1); v2=A(2,1,1); v3=A(1,2,1); v_last=A(2,3,4)");
         assert_eq!(scalar(&ev, "v1"), 1.0);
         assert_eq!(scalar(&ev, "v2"), 2.0);
         assert_eq!(scalar(&ev, "v3"), 3.0);
@@ -14204,9 +14075,11 @@ mod tensor3_ergonomic_tests {
 
     #[test]
     fn cat_dim3_two_matrices() {
-        let ev = run("M1 = [1, 2; 3, 4]; M2 = [5, 6; 7, 8]; T = cat(3, M1, M2); \
+        let ev = run(
+            "M1 = [1, 2; 3, 4]; M2 = [5, 6; 7, 8]; T = cat(3, M1, M2); \
              s1 = size(T, 1); s2 = size(T, 2); s3 = size(T, 3); \
-             v1 = T(1, 1, 1); v2 = T(2, 2, 2)");
+             v1 = T(1, 1, 1); v2 = T(2, 2, 2)",
+        );
         assert_eq!(scalar(&ev, "s1"), 2.0);
         assert_eq!(scalar(&ev, "s2"), 2.0);
         assert_eq!(scalar(&ev, "s3"), 2.0);
@@ -14216,8 +14089,10 @@ mod tensor3_ergonomic_tests {
 
     #[test]
     fn cat_dim3_tensor3_plus_matrix() {
-        let ev = run("T = zeros3(2, 2, 3); M = [1, 2; 3, 4]; \
-             U = cat(3, T, M); s3 = size(U, 3); v = U(1, 2, 4)");
+        let ev = run(
+            "T = zeros3(2, 2, 3); M = [1, 2; 3, 4]; \
+             U = cat(3, T, M); s3 = size(U, 3); v = U(1, 2, 4)",
+        );
         assert_eq!(scalar(&ev, "s3"), 4.0);
         assert_eq!(scalar(&ev, "v"), 2.0);
     }
@@ -14234,7 +14109,9 @@ mod tensor3_ergonomic_tests {
     #[test]
     fn cat_dim1_defers_to_vertcat() {
         // Smoke test: cat(1, M1, M2) should equal vertcat(M1, M2).
-        let ev = run("M1 = [1, 2; 3, 4]; M2 = [5, 6; 7, 8]; V = cat(1, M1, M2); s1 = size(V, 1)");
+        let ev = run(
+            "M1 = [1, 2; 3, 4]; M2 = [5, 6; 7, 8]; V = cat(1, M1, M2); s1 = size(V, 1)",
+        );
         assert_eq!(scalar(&ev, "s1"), 4.0);
     }
 
@@ -14259,9 +14136,11 @@ mod tensor3_ergonomic_tests {
     fn permute_swap_axes_1_and_2() {
         // A is (2, 3, 4). Swap first two axes → B is (3, 2, 4).
         // A(i, j, k) goes to B(j, i, k).
-        let ev = run("A = reshape(1:24, 2, 3, 4); B = permute(A, [2, 1, 3]); \
+        let ev = run(
+            "A = reshape(1:24, 2, 3, 4); B = permute(A, [2, 1, 3]); \
              s1 = size(B, 1); s2 = size(B, 2); s3 = size(B, 3); \
-             v_src = A(2, 3, 4); v_dst = B(3, 2, 4)");
+             v_src = A(2, 3, 4); v_dst = B(3, 2, 4)",
+        );
         assert_eq!(scalar(&ev, "s1"), 3.0);
         assert_eq!(scalar(&ev, "s2"), 2.0);
         assert_eq!(scalar(&ev, "s3"), 4.0);
@@ -14350,13 +14229,9 @@ mod tensor3_io_tests {
 
     fn temp_path(name: &str) -> String {
         let dir = std::env::temp_dir();
-        dir.join(format!(
-            "rustlab_tensor3_test_{}_{}",
-            std::process::id(),
-            name
-        ))
-        .to_string_lossy()
-        .into_owned()
+        dir.join(format!("rustlab_tensor3_test_{}_{}", std::process::id(), name))
+            .to_string_lossy()
+            .into_owned()
     }
 
     // ── TOML round-trip ─────────────────────────────────────────────────────
@@ -14616,8 +14491,10 @@ mod mask_tests {
 
     #[test]
     fn rect_mask_unit_square_inclusive() {
-        let ev = run("[X, Y] = meshgrid(linspace(0, 1, 11), linspace(0, 1, 11));
-             M = rect_mask(X, Y, 0, 0, 1, 1);");
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(0, 1, 11), linspace(0, 1, 11));
+             M = rect_mask(X, Y, 0, 0, 1, 1);",
+        );
         assert_eq!(matrix_shape(&ev, "M"), (11, 11));
         assert_eq!(matrix_count(&ev, "M"), 11 * 11);
     }
@@ -14661,8 +14538,10 @@ mod mask_tests {
 
     #[test]
     fn polygon_mask_triangle() {
-        let ev = run("[X, Y] = meshgrid(linspace(0, 1, 21), linspace(0, 1, 21));
-             T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1]);");
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(0, 1, 21), linspace(0, 1, 21));
+             T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1]);",
+        );
         // Triangle area = 0.5 → expect ~50% of grid cells inside.
         let count = matrix_count(&ev, "T");
         assert!(
@@ -14674,8 +14553,7 @@ mod mask_tests {
     #[test]
     fn rect_mask_arity_error() {
         let mut ev = Evaluator::new();
-        let src =
-            "[X, Y] = meshgrid(linspace(0,1,3), linspace(0,1,3))\nM = rect_mask(X, Y, 0, 0, 1)\n";
+        let src = "[X, Y] = meshgrid(linspace(0,1,3), linspace(0,1,3))\nM = rect_mask(X, Y, 0, 0, 1)\n";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let stmts = crate::parser::parse(tokens).unwrap();
         let err = ev.run(&stmts).unwrap_err();
@@ -14774,7 +14652,10 @@ mod parmap_phase2_dispatch {
         let stmts = crate::parser::parse(tokens).unwrap();
         let mut ev = Evaluator::new();
         let err = ev.run(&stmts).unwrap_err();
-        assert!(err.to_string().contains("vector or scalar"), "got: {err}");
+        assert!(
+            err.to_string().contains("vector or scalar"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -14966,7 +14847,9 @@ mod parmap_phase3_correctness {
     /// derivation.
     #[test]
     fn parmap_nested_recursive_works() {
-        let ev = eval_str("y = parmap(@(i) sum(parmap(@(j) i * j, 1:3)), 1:4);");
+        let ev = eval_str(
+            "y = parmap(@(i) sum(parmap(@(j) i * j, 1:3)), 1:4);",
+        );
         let y = get_vec(&ev, "y");
         // Each outer i: sum over j=1..3 of i*j = i * (1+2+3) = 6*i.
         assert_eq!(y, vec![6.0, 12.0, 18.0, 24.0]);
@@ -14998,8 +14881,7 @@ mod struct_field_borrow {
 
     #[test]
     fn nested_chain_reads_field() {
-        let ev = run_src("in.b = 7; in.c = [1, 2, 3]; S.a = in; x = S.a.b; v = S.a.c; y = v(3);")
-            .unwrap();
+        let ev = run_src("in.b = 7; in.c = [1, 2, 3]; S.a = in; x = S.a.b; v = S.a.c; y = v(3);").unwrap();
         assert_eq!(scalar(&ev, "x"), 7.0);
         assert_eq!(scalar(&ev, "y"), 3.0);
     }
@@ -15035,20 +14917,13 @@ mod transpose_layout {
     use num_complex::Complex;
 
     fn filled(r: usize, c: usize) -> Array2<Complex<f64>> {
-        Array2::from_shape_fn((r, c), |(i, j)| {
-            Complex::new(i as f64 * 7.0 - j as f64, (i * j % 5) as f64 - 2.0)
-        })
+        Array2::from_shape_fn((r, c), |(i, j)| Complex::new(i as f64 * 7.0 - j as f64, (i * j % 5) as f64 - 2.0))
     }
 
     fn assert_transpose(m: &Array2<Complex<f64>>, got: &Value, conj: bool) {
-        let Value::Matrix(t) = got else {
-            panic!("expected Matrix, got {got:?}")
-        };
+        let Value::Matrix(t) = got else { panic!("expected Matrix, got {got:?}") };
         assert_eq!(t.dim(), (m.ncols(), m.nrows()));
-        assert!(
-            t.as_slice().is_some(),
-            "transpose must be row-major contiguous"
-        );
+        assert!(t.as_slice().is_some(), "transpose must be row-major contiguous");
         for i in 0..m.nrows() {
             for j in 0..m.ncols() {
                 let want = if conj { m[[i, j]].conj() } else { m[[i, j]] };
@@ -15060,45 +14935,20 @@ mod transpose_layout {
     #[test]
     fn blocked_transpose_matches_definition() {
         // Shapes straddling the 32-element tiles, plus degenerate ones.
-        for &(r, c) in &[
-            (1, 1),
-            (1, 70),
-            (70, 1),
-            (31, 33),
-            (33, 31),
-            (129, 512),
-            (64, 64),
-            (0, 3),
-            (3, 0),
-        ] {
+        for &(r, c) in &[(1, 1), (1, 70), (70, 1), (31, 33), (33, 31), (129, 512), (64, 64), (0, 3), (3, 0)] {
             let m = filled(r, c);
-            assert_transpose(
-                &m,
-                &Value::Matrix(m.clone().into()).transpose().unwrap(),
-                true,
-            );
-            assert_transpose(
-                &m,
-                &Value::Matrix(m.clone().into())
-                    .non_conj_transpose()
-                    .unwrap(),
-                false,
-            );
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).transpose().unwrap(), true);
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).non_conj_transpose().unwrap(), false);
         }
         // A column-major input takes the generic path, still row-major out.
         let data: Vec<_> = filled(5, 7).iter().copied().collect();
         let f = Array2::from_shape_vec((5, 7).f(), data).unwrap();
-        assert_transpose(
-            &f,
-            &Value::Matrix(f.clone().into()).transpose_ref().unwrap(),
-            true,
-        );
+        assert_transpose(&f, &Value::Matrix(f.clone().into()).transpose_ref().unwrap(), true);
     }
 
     #[test]
     fn evaluator_transpose_of_a_variable_matches_value_transpose() {
-        let src =
-            "A = [1 + 2j, 3; -1j, 4; 5, 6 - 1j];\nB = A';\nC = A.';\nv = [1j, 2, 3];\nw = v';\n";
+        let src = "A = [1 + 2j, 3; -1j, 4; 5, 6 - 1j];\nB = A';\nC = A.';\nv = [1j, 2, 3];\nw = v';\n";
         let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
         let mut ev = Evaluator::new();
         ev.run(&stmts).unwrap();
@@ -15157,9 +15007,7 @@ mod copy_on_write {
     fn assignment_shares_until_one_side_is_written() {
         let mut ev = eval("a = [1, 2, 3]; b = a;");
         match (ev.get("a").unwrap(), ev.get("b").unwrap()) {
-            (Value::Vector(a), Value::Vector(b)) => {
-                assert!(Shared::ptr_eq(a, b), "b = a should not copy")
-            }
+            (Value::Vector(a), Value::Vector(b)) => assert!(Shared::ptr_eq(a, b), "b = a should not copy"),
             _ => unreachable!(),
         }
         more(&mut ev, "b(1) = 5;");
@@ -15270,9 +15118,7 @@ mod reshape_and_concat {
 
     /// A distinct complex value per position, so a misplaced element shows.
     fn matrix(r: usize, c: usize) -> Value {
-        let m = Array2::from_shape_fn((r, c), |(i, j)| {
-            C::new((i * c + j) as f64, -(i as f64) - 0.5)
-        });
+        let m = Array2::from_shape_fn((r, c), |(i, j)| C::new((i * c + j) as f64, -(i as f64) - 0.5));
         Value::Matrix(m.into())
     }
 
@@ -15300,20 +15146,14 @@ mod reshape_and_concat {
         let got = ev.get("B").unwrap();
         if n == 1 && m != 1 {
             // An m×1 shape is a column (MATLAB).
-            let Value::Matrix(b) = got else {
-                panic!("{m}×{n}: {got:?}")
-            };
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
             assert_eq!(b.dim(), (m, 1), "{m}×{n}");
             assert_eq!(col_major(got), flat, "{m}×{n}");
         } else if m == 1 || n == 1 {
-            let Value::Vector(v) = got else {
-                panic!("{m}×{n}: {got:?}")
-            };
+            let Value::Vector(v) = got else { panic!("{m}×{n}: {got:?}") };
             assert_eq!(v.to_vec(), flat, "{m}×{n}");
         } else {
-            let Value::Matrix(b) = got else {
-                panic!("{m}×{n}: {got:?}")
-            };
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
             assert_eq!(b.dim(), (m, n));
             assert!(b.is_standard_layout(), "{m}×{n} result is row-major");
             for c in 0..n {
@@ -15331,17 +15171,11 @@ mod reshape_and_concat {
         assert!(big > PAR_MIN_LEN);
         for (src, shapes) in [
             (vector(12), vec![(3, 4), (4, 3), (1, 12), (12, 1), (2, 6)]),
-            (
-                matrix(3, 4),
-                vec![(4, 3), (2, 6), (12, 1), (1, 12), (3, 4), (6, 2)],
-            ),
+            (matrix(3, 4), vec![(4, 3), (2, 6), (12, 1), (1, 12), (3, 4), (6, 2)]),
             (matrix(1, 12), vec![(3, 4), (12, 1), (1, 12)]),
             (matrix(12, 1), vec![(4, 3), (1, 12)]),
             (vector(big), vec![(3, big / 3), (big / 3, 3), (1, big)]),
-            (
-                matrix(3, big / 3),
-                vec![(big / 3, 3), (1, big), (37, big / 37)],
-            ),
+            (matrix(3, big / 3), vec![(big / 3, 3), (1, big), (37, big / 37)]),
             (matrix(big / 3, 3), vec![(3, big / 3)]),
         ] {
             for (m, n) in shapes {
@@ -15354,13 +15188,9 @@ mod reshape_and_concat {
     fn reshape_errors_on_the_element_count() {
         let mut ev = Evaluator::new();
         ev.set("A", matrix(3, 4));
-        let stmts =
-            crate::parser::parse(crate::lexer::tokenize("B = reshape(A, 5, 3);").unwrap()).unwrap();
+        let stmts = crate::parser::parse(crate::lexer::tokenize("B = reshape(A, 5, 3);").unwrap()).unwrap();
         let err = ev.run(&stmts).unwrap_err().to_string();
-        assert!(
-            err.contains("cannot reshape 12 elements into 5×3 (= 15 elements)"),
-            "{err}"
-        );
+        assert!(err.contains("cannot reshape 12 elements into 5×3 (= 15 elements)"), "{err}");
     }
 
     #[test]
@@ -15396,9 +15226,7 @@ mod reshape_and_concat {
             names.push(name);
         }
         run(&mut ev, &format!("out = [{}];", names.join(", ")));
-        let Value::Vector(v) = ev.get("out").unwrap() else {
-            panic!()
-        };
+        let Value::Vector(v) = ev.get("out").unwrap() else { panic!() };
         assert_eq!(v.to_vec(), want, "{} pieces", names.len());
     }
 
@@ -15406,12 +15234,7 @@ mod reshape_and_concat {
     fn one_row_concat_matches_appending() {
         let n = PAR_MIN_LEN / 3 + 7;
         let z = C::new(1.5, -2.0);
-        check_concat(vec![
-            Value::Scalar(1.0),
-            vector(5),
-            Value::Complex(z),
-            matrix(1, 4),
-        ]);
+        check_concat(vec![Value::Scalar(1.0), vector(5), Value::Complex(z), matrix(1, 4)]);
         check_concat(vec![vector(0), vector(3), vector(0)]);
         // Long enough for parallel chunks; pieces end mid-chunk, scalars and
         // empty vectors sit on chunk boundaries.
@@ -15431,33 +15254,23 @@ mod reshape_and_concat {
     fn lone_vector_in_brackets_is_shared() {
         let mut ev = Evaluator::new();
         run(&mut ev, "v = 1:4; w = [v];");
-        let (Value::Vector(v), Value::Vector(w)) = (ev.get("v").unwrap(), ev.get("w").unwrap())
-        else {
+        let (Value::Vector(v), Value::Vector(w)) = (ev.get("v").unwrap(), ev.get("w").unwrap()) else {
             panic!()
         };
         assert!(crate::eval::shared::Shared::ptr_eq(v, w));
         run(&mut ev, "w(1) = 9;");
-        let Value::Vector(v) = ev.get("v").unwrap() else {
-            panic!()
-        };
+        let Value::Vector(v) = ev.get("v").unwrap() else { panic!() };
         assert_eq!(v[0].re, 1.0);
     }
 
     #[test]
     fn taller_blocks_still_take_the_general_path() {
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            "A = [1, 2; 3, 4]; B = [A, [5; 6]]; C = [1, 2; 3, 4];",
-        );
-        let Value::Matrix(b) = ev.get("B").unwrap() else {
-            panic!()
-        };
+        run(&mut ev, "A = [1, 2; 3, 4]; B = [A, [5; 6]]; C = [1, 2; 3, 4];");
+        let Value::Matrix(b) = ev.get("B").unwrap() else { panic!() };
         assert_eq!(b.dim(), (2, 3));
         assert_eq!(b[[1, 2]].re, 6.0);
-        let Value::Matrix(c) = ev.get("C").unwrap() else {
-            panic!()
-        };
+        let Value::Matrix(c) = ev.get("C").unwrap() else { panic!() };
         assert_eq!(c.dim(), (2, 2));
     }
 }
@@ -15517,15 +15330,11 @@ mod interpreter_fast_paths {
             }
         }
         assert_eq!(mat(&ev, "M"), want, "M({rows}, {cols}) = {rhs}");
-        assert_eq!(
-            mat(&ev, "M0"),
-            {
-                let mut ev0 = Evaluator::new();
-                run(&mut ev0, "M0 = reshape(1:60, 6, 10) + 1j;").unwrap();
-                mat(&ev0, "M0")
-            },
-            "the shared copy is unchanged"
-        );
+        assert_eq!(mat(&ev, "M0"), {
+            let mut ev0 = Evaluator::new();
+            run(&mut ev0, "M0 = reshape(1:60, 6, 10) + 1j;").unwrap();
+            mat(&ev0, "M0")
+        }, "the shared copy is unchanged");
     }
 
     #[test]
@@ -15545,10 +15354,7 @@ mod interpreter_fast_paths {
     fn region_write_shape_errors_are_unchanged() {
         let mut ev = Evaluator::new();
         let err = run(&mut ev, "M = zeros(4, 4); M(1:2, 2:4) = ones(3, 2);").unwrap_err();
-        assert!(
-            err.contains("RHS shape 3×2 does not match target region 2×3"),
-            "{err}"
-        );
+        assert!(err.contains("RHS shape 3×2 does not match target region 2×3"), "{err}");
         let err = run(&mut ev, "M(1:2, 2:4) = [1, 2, 3, 4];").unwrap_err();
         assert!(err.contains("vector of length 4 does not match"), "{err}");
     }
@@ -15559,13 +15365,10 @@ mod interpreter_fast_paths {
         // complex input, against applying the function to each element.
         for n in [PAR_MAP_MIN_LEN / 4 + 3, PAR_MAP_MIN_LEN * 2 + 11] {
             let mut ev = Evaluator::new();
-            run(
-                &mut ev,
-                &format!(
-                    "seed(3); x = randn({n}, 1)'; X = reshape(x, 1, {n}); Z = x + 0.5j * x; \
+            run(&mut ev, &format!(
+                "seed(3); x = randn({n}, 1)'; X = reshape(x, 1, {n}); Z = x + 0.5j * x; \
                  a = gelu(x); b = gelu_grad(x); c = tanh(Z); d = exp(x);"
-                ),
-            )
+            ))
             .unwrap();
             let get = |s: &str| -> Vec<C> {
                 match ev.get(s).unwrap() {
@@ -15576,21 +15379,10 @@ mod interpreter_fast_paths {
             };
             let x = get("x");
             let z = get("Z");
-            let bits = |v: &[C]| {
-                v.iter()
-                    .map(|c| (c.re.to_bits(), c.im.to_bits()))
-                    .collect::<Vec<_>>()
-            };
+            let bits = |v: &[C]| v.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect::<Vec<_>>();
             let one = |name: &str, k: usize, v: C| -> C {
                 let mut e = Evaluator::new();
-                e.set(
-                    "t",
-                    if v.im == 0.0 {
-                        Value::Scalar(v.re)
-                    } else {
-                        Value::Complex(v)
-                    },
-                );
+                e.set("t", if v.im == 0.0 { Value::Scalar(v.re) } else { Value::Complex(v) });
                 run(&mut e, &format!("r = {name}(t);")).unwrap();
                 match e.get("r").unwrap() {
                     Value::Scalar(r) => C::new(*r, 0.0),
@@ -15600,12 +15392,7 @@ mod interpreter_fast_paths {
             };
             // Spot-check a spread of positions, including chunk edges.
             let picks: Vec<usize> = (0..x.len()).step_by(4093).chain([x.len() - 1]).collect();
-            for (name, input, out) in [
-                ("gelu", &x, "a"),
-                ("gelu_grad", &x, "b"),
-                ("tanh", &z, "c"),
-                ("exp", &x, "d"),
-            ] {
+            for (name, input, out) in [("gelu", &x, "a"), ("gelu_grad", &x, "b"), ("tanh", &z, "c"), ("exp", &x, "d")] {
                 let got = get(out);
                 assert_eq!(got.len(), input.len());
                 let want: Vec<C> = picks.iter().map(|&k| one(name, k, input[k])).collect();
@@ -15618,11 +15405,7 @@ mod interpreter_fast_paths {
     #[test]
     fn rebinding_in_a_loop_keeps_one_binding() {
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            "acc = 0; for k = 1:1000\n acc = acc + k;\nend\nv = [1, 2, 3]; w = v(end);",
-        )
-        .unwrap();
+        run(&mut ev, "acc = 0; for k = 1:1000\n acc = acc + k;\nend\nv = [1, 2, 3]; w = v(end);").unwrap();
         assert!(matches!(ev.get("acc"), Some(Value::Scalar(x)) if *x == 500500.0));
         assert!(matches!(ev.get("k"), Some(Value::Scalar(x)) if *x == 1000.0));
         assert!(matches!(ev.get("w"), Some(Value::Scalar(x)) if *x == 3.0));
@@ -15698,10 +15481,7 @@ mod transposed_matmul {
             let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
             Evaluator::new().run(&stmts).err().unwrap().to_string()
         };
-        assert_eq!(
-            run("A = ones(3, 4); B = ones(5, 2); C = A' * B;"),
-            run("A = ones(3, 4); B = ones(5, 2); At = A'; C = At * B;")
-        );
+        assert_eq!(run("A = ones(3, 4); B = ones(5, 2); C = A' * B;"), run("A = ones(3, 4); B = ones(5, 2); At = A'; C = At * B;"));
     }
 
     #[test]
@@ -15729,44 +15509,20 @@ mod scalar_fast_path {
 
     #[test]
     fn matches_binop_bit_for_bit() {
-        let vals = [
-            0.0,
-            -0.0,
-            1.5,
-            -2.0,
-            3.0,
-            1e308,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-        ];
-        let ops = [
-            ("+", BinOp::Add),
-            ("-", BinOp::Sub),
-            ("*", BinOp::Mul),
-            (".*", BinOp::ElemMul),
-            ("/", BinOp::Div),
-            ("./", BinOp::ElemDiv),
-        ];
+        let vals = [0.0, -0.0, 1.5, -2.0, 3.0, 1e308, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+        let ops = [("+", BinOp::Add), ("-", BinOp::Sub), ("*", BinOp::Mul), (".*", BinOp::ElemMul), ("/", BinOp::Div), ("./", BinOp::ElemDiv)];
         for &a in &vals {
             for &b in &vals {
                 for (sym, op) in ops {
                     let mut ev = Evaluator::new();
                     ev.set("a", Value::Scalar(a));
                     ev.set("b", Value::Scalar(b));
-                    let stmts = crate::parser::parse(
-                        crate::lexer::tokenize(&format!("x = a {sym} b;\n")).unwrap(),
-                    )
-                    .unwrap();
+                    let stmts = crate::parser::parse(crate::lexer::tokenize(&format!("x = a {sym} b;\n")).unwrap()).unwrap();
                     ev.run(&stmts).unwrap();
                     let want = Value::binop(op, Value::Scalar(a), Value::Scalar(b)).unwrap();
                     match (ev.get("x").unwrap(), &want) {
                         (Value::Scalar(g), Value::Scalar(w)) => {
-                            assert_eq!(
-                                g.to_bits(),
-                                w.to_bits(),
-                                "{a:?} {sym} {b:?}: {g:?} vs {w:?}"
-                            )
+                            assert_eq!(g.to_bits(), w.to_bits(), "{a:?} {sym} {b:?}: {g:?} vs {w:?}")
                         }
                         (g, w) => panic!("{a:?} {sym} {b:?}: {g:?} vs {w:?}"),
                     }
@@ -15897,14 +15653,9 @@ mod parmap_worker_env {
         // Same rule as a sequential call: a user function has its own scope.
         let src = "big = 5;\nfunction r = h(x)\n r = x + big;\nend\n";
         let seq = run_src(&format!("{src}y = h(1);")).err().unwrap();
-        let par = run_src(&format!("{src}y = parmap(@h, 1:3);"))
-            .err()
-            .unwrap();
+        let par = run_src(&format!("{src}y = parmap(@h, 1:3);")).err().unwrap();
         assert!(seq.contains("big"), "sequential: {seq}");
-        assert!(
-            par.contains("parmap") && par.contains("big"),
-            "parmap: {par}"
-        );
+        assert!(par.contains("parmap") && par.contains("big"), "parmap: {par}");
     }
 
     #[test]
@@ -16390,10 +16141,7 @@ mod parmap_vector_outputs {
         // (k+1 keeps every length > 1 so we never collapse to a Scalar.)
         let err = run_err("y = parmap(@(k) ones(1, k + 1)(1, :), 1:3);");
         assert!(err.contains("trial 2"), "msg: {err}");
-        assert!(
-            err.contains("length 2") && err.contains("length 3"),
-            "msg: {err}"
-        );
+        assert!(err.contains("length 2") && err.contains("length 3"), "msg: {err}");
     }
 
     /// Lambda returning a matrix → parmap stacks pages into a Tensor3
@@ -16834,7 +16582,9 @@ mod sparameters_phase2_tests {
     #[test]
     fn cascade_three_argument_form_works() {
         // 3-stage cascade of 10 dB pads → |S21| = 10^(-30/20) = 0.0316...
-        let src = format!("{ATT_10DB_SETUP}\n c = cascade(s, s, s); s21mag = abs(s21(c)(1));");
+        let src = format!(
+            "{ATT_10DB_SETUP}\n c = cascade(s, s, s); s21mag = abs(s21(c)(1));"
+        );
         let ev = run(&src);
         match ev.get("s21mag").unwrap() {
             Value::Scalar(v) => {
@@ -16999,7 +16749,10 @@ mod sparameters_phase3_tests {
     }
 
     fn render_smith_to_svg(setup: &str, path: &std::path::Path) {
-        let src = format!("{setup}\nsavefig(\"{}\")\n", path.display());
+        let src = format!(
+            "{setup}\nsavefig(\"{}\")\n",
+            path.display()
+        );
         run(&src);
     }
 
@@ -17219,14 +16972,12 @@ mod sparameters_phase3_tests {
         // BitMapBackend. Smoke test that the file is non-empty and well-formed.
         let tmp = std::env::temp_dir().join("rustlab_phase3_grid.png");
         let tmp_str = tmp.to_string_lossy().replace('\\', "/");
-        let setup = format!("smith(0.5 + 0.1*j); savefig(\"{tmp_str}\");");
+        let setup = format!(
+            "smith(0.5 + 0.1*j); savefig(\"{tmp_str}\");"
+        );
         run(&setup);
         let bytes = std::fs::read(&tmp).unwrap();
-        assert!(
-            bytes.len() > 1000,
-            "PNG suspiciously small: {} bytes",
-            bytes.len()
-        );
+        assert!(bytes.len() > 1000, "PNG suspiciously small: {} bytes", bytes.len());
         // PNG magic.
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
         let _ = std::fs::remove_file(&tmp);
@@ -17254,10 +17005,7 @@ mod sparameters_phase3_tests {
             .filter(|s| matches!(s.kind, rustlab_plot::figure::PlotKind::Scatter))
             .map(|s| s.label.clone())
             .collect();
-        assert_eq!(
-            scatter_labels,
-            vec!["matched".to_string(), "open".to_string()]
-        );
+        assert_eq!(scatter_labels, vec!["matched".to_string(), "open".to_string()]);
     }
 
     #[test]
@@ -17325,10 +17073,7 @@ mod sparameters_phase3_tests {
     #[test]
     fn smith_rejects_unsupported_arg_count() {
         let err = run_err("smith(0.5, 1);"); // 2 positional, not a valid form
-        assert!(
-            err.contains("argument") || err.contains("port"),
-            "msg: {err}"
-        );
+        assert!(err.contains("argument") || err.contains("port"), "msg: {err}");
     }
 
     #[test]
@@ -17423,12 +17168,7 @@ mod sparameters_phase4_tests {
             .collect();
         assert_eq!(
             labels,
-            vec![
-                "S11".to_string(),
-                "S21".to_string(),
-                "S12".to_string(),
-                "S22".to_string()
-            ]
+            vec!["S11".to_string(), "S21".to_string(), "S12".to_string(), "S22".to_string()]
         );
     }
 
@@ -17463,7 +17203,8 @@ mod sparameters_phase4_tests {
 
     #[test]
     fn rfplot_single_trace_db_form() {
-        let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 2, 1);"));
+        let state =
+            rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 2, 1);"));
         assert_eq!(state.subplots.len(), 1);
         let sp = state.current();
         let y = &sp
@@ -17493,7 +17234,8 @@ mod sparameters_phase4_tests {
 
     #[test]
     fn rfplot_phase_of_real_positive_S_is_zero() {
-        let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"phase\", 2, 1);"));
+        let state =
+            rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"phase\", 2, 1);"));
         let sp = state.current();
         let y = &sp.series.iter().find(|s| s.label == "S21").unwrap().y_data;
         for &v in y {
@@ -17580,13 +17322,7 @@ mod sparameters_phase4_tests {
         let state = rfplot_figure_state(setup);
         // Should NOT promote to 2x2 — only 1 subplot.
         assert_eq!(state.subplots.len(), 1);
-        let y = &state
-            .current()
-            .series
-            .iter()
-            .find(|s| s.label == "S11")
-            .unwrap()
-            .y_data;
+        let y = &state.current().series.iter().find(|s| s.label == "S11").unwrap().y_data;
         for &v in y {
             assert!((v - (-5.0)).abs() < 1e-9, "S11 dB: {v}");
         }
@@ -17696,7 +17432,9 @@ mod sparameters_phase5_tests {
 
     #[test]
     fn insertion_loss_10dB_pad_reads_10dB() {
-        let ev = run(&format!("{ATT_10DB_SETUP}\n il = insertion_loss(s, 2, 1);"));
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n il = insertion_loss(s, 2, 1);"
+        ));
         for v in extract_real_vec(&ev, "il") {
             assert!((v - 10.0).abs() < 1e-12, "IL: {v}");
         }
@@ -17778,7 +17516,9 @@ mod sparameters_phase5_tests {
     fn stabilitymu_returns_tuple_of_two_vectors() {
         // [mu1, mu2] = stabilitymu(s) — destructuring assignment per the
         // existing convention used by bode/eig/etc.
-        let ev = run(&format!("{ATT_10DB_SETUP}\n [m1, m2] = stabilitymu(s);"));
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n [m1, m2] = stabilitymu(s);"
+        ));
         let m1 = extract_real_vec(&ev, "m1");
         let m2 = extract_real_vec(&ev, "m2");
         for &v in &m1 {
@@ -17852,7 +17592,9 @@ mod sparameters_phase5_tests {
 
     #[test]
     fn gain_circles_returns_tagged_struct() {
-        let ev = run(&format!("{ATT_10DB_SETUP}\n c = gain_circles(s, -15);"));
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n c = gain_circles(s, -15);"
+        ));
         match ev.get("c").unwrap() {
             Value::Struct(f) => {
                 let kind = match f.get("__kind__").unwrap() {
@@ -17880,11 +17622,7 @@ mod sparameters_phase5_tests {
         let circle = sp.series.last().unwrap();
         assert_eq!(circle.label, "|Γ|=0.5");
         // The circle's x-data should oscillate between roughly -0.5 and 0.5.
-        let max_x = circle
-            .x_data
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let max_x = circle.x_data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let min_x = circle.x_data.iter().cloned().fold(f64::INFINITY, f64::min);
         assert!((max_x - 0.5).abs() < 1e-9, "max_x: {max_x}");
         assert!((min_x - (-0.5)).abs() < 1e-9, "min_x: {min_x}");
@@ -18331,12 +18069,14 @@ mod builtin_coverage_tests {
     #[test]
     fn real_angle_abs_recompose_complex() {
         // z = m*exp(j*a) decomposition identity: re = m*cos(a), im = m*sin(a).
-        let ev = run("z = 3 + j*4;
+        let ev = run(
+            "z = 3 + j*4;
              r = real(z);
              a = angle(z);
              m = abs(z);
              rc = m * cos(a);
-             ic = m * sin(a);");
+             ic = m * sin(a);",
+        );
         assert!(close(get_scalar(&ev, "r"), 3.0));
         assert!(close(get_scalar(&ev, "m"), 5.0));
         assert!(close(get_scalar(&ev, "a"), (4.0f64).atan2(3.0)));
@@ -18400,8 +18140,10 @@ mod builtin_coverage_tests {
     fn ifft_inverts_fft() {
         // fft/ifft are length-preserving, so the round-trip is exact up
         // to floating-point noise at every length (radix-2 path here).
-        let ev = run("x = [1, 2, 3, 4, 5, 6, 7, 8];
-             y = real(ifft(fft(x)));");
+        let ev = run(
+            "x = [1, 2, 3, 4, 5, 6, 7, 8];
+             y = real(ifft(fft(x)));",
+        );
         let y = get_vec(&ev, "y");
         assert_eq!(y.len(), 8);
         for (k, &v) in y.iter().enumerate() {
@@ -18418,8 +18160,10 @@ mod builtin_coverage_tests {
     fn trapz_vector_unit_and_shared_axis() {
         // Unit spacing: (1+2)/2 + (2+3)/2 = 4. Non-uniform axis
         // x = [0, 1, 3]: 0.5*(1+2)*1 + 0.5*(2+3)*2 = 1.5 + 5 = 6.5.
-        let ev = run("a = trapz([1, 2, 3]);
-             b = trapz([0, 1, 3], [1, 2, 3]);");
+        let ev = run(
+            "a = trapz([1, 2, 3]);
+             b = trapz([0, 1, 3], [1, 2, 3]);",
+        );
         assert_eq!(get_scalar(&ev, "a"), 4.0);
         assert_eq!(get_scalar(&ev, "b"), 6.5);
     }
@@ -18428,11 +18172,13 @@ mod builtin_coverage_tests {
     fn trapz_matrix_integrates_per_column() {
         // Columns [1;3;5] and [2;4;6] at unit spacing:
         // (1+3)/2 + (3+5)/2 = 6 and (2+4)/2 + (4+6)/2 = 8.
-        let ev = run("M = [1, 2; 3, 4; 5, 6];
+        let ev = run(
+            "M = [1, 2; 3, 4; 5, 6];
              r = trapz(M);
              n = numel(r);
              a = r(1);
-             b = r(2);");
+             b = r(2);",
+        );
         assert_eq!(get_scalar(&ev, "n"), 2.0);
         assert_eq!(get_scalar(&ev, "a"), 6.0);
         assert_eq!(get_scalar(&ev, "b"), 8.0);
@@ -18442,10 +18188,12 @@ mod builtin_coverage_tests {
     fn trapz_matrix_with_shared_axis() {
         // x = [0, 1, 3]: col1 = 0.5*(1+3)*1 + 0.5*(3+5)*2 = 10,
         //                col2 = 0.5*(2+4)*1 + 0.5*(4+6)*2 = 13.
-        let ev = run("M = [1, 2; 3, 4; 5, 6];
+        let ev = run(
+            "M = [1, 2; 3, 4; 5, 6];
              r = trapz([0, 1, 3], M);
              a = r(1);
-             b = r(2);");
+             b = r(2);",
+        );
         assert_eq!(get_scalar(&ev, "a"), 10.0);
         assert_eq!(get_scalar(&ev, "b"), 13.0);
     }
@@ -18454,8 +18202,10 @@ mod builtin_coverage_tests {
     fn trapz_one_d_shaped_matrix_stays_scalar() {
         // A 1-row slice of a matrix integrates like a vector → scalar,
         // matching the sum/mean reduction convention for 1-D shapes.
-        let ev = run("M = [1, 2, 3; 1, 2, 3];
-             r1 = trapz(M(1, :));");
+        let ev = run(
+            "M = [1, 2, 3; 1, 2, 3];
+             r1 = trapz(M(1, :));",
+        );
         assert_eq!(get_scalar(&ev, "r1"), 4.0);
     }
 
@@ -18471,11 +18221,13 @@ mod builtin_coverage_tests {
     fn trapz_two_dimensional_integral_idiom() {
         // The downstream surface-integral idiom: integrate columns, then
         // the resulting row — double integral of 1 over [0,2]x[0,3] = 6.
-        let ev = run("xs = [0, 1, 2];
+        let ev = run(
+            "xs = [0, 1, 2];
              ys = [0, 1.5, 3];
              F = ones(3, 3);
              row_int = trapz(xs, F);
-             total = trapz(ys, row_int);");
+             total = trapz(ys, row_int);",
+        );
         assert_eq!(get_scalar(&ev, "total"), 6.0);
     }
 
@@ -18484,38 +18236,41 @@ mod builtin_coverage_tests {
         // The old behavior silently padded to the next power of two —
         // frequency axes built from length(x) were wrong. Now
         // length(fft(x)) == length(x) always.
-        let ev = run("X = fft(ones(1, 5));
+        let ev = run(
+            "X = fft(ones(1, 5));
              n = length(X);
-             dc = real(X(1));");
+             dc = real(X(1));",
+        );
         assert_eq!(get_scalar(&ev, "n"), 5.0);
         assert_eq!(get_scalar(&ev, "dc"), 5.0);
     }
 
     #[test]
     fn fft_second_arg_pads_and_truncates() {
-        let ev = run("a = fft([1, 2, 3], 8);
+        let ev = run(
+            "a = fft([1, 2, 3], 8);
              b = fft([1, 2, 3, 0, 0, 0, 0, 0]);
              d_pad = max(abs(a - b));
              c = fft([1, 2, 3, 4], 2);
              e = fft([1, 2]);
              d_cut = max(abs(c - e));
              na = length(a);
-             nc = length(c);");
+             nc = length(c);",
+        );
         assert_eq!(get_scalar(&ev, "na"), 8.0);
         assert_eq!(get_scalar(&ev, "nc"), 2.0);
         assert!(get_scalar(&ev, "d_pad") < 1e-12, "fft(x, n) pad mismatch");
-        assert!(
-            get_scalar(&ev, "d_cut") < 1e-12,
-            "fft(x, n) truncate mismatch"
-        );
+        assert!(get_scalar(&ev, "d_cut") < 1e-12, "fft(x, n) truncate mismatch");
     }
 
     #[test]
     fn ifft_round_trip_any_length() {
-        let ev = run("x = [1, 2, 3, 4, 5, 6];
+        let ev = run(
+            "x = [1, 2, 3, 4, 5, 6];
              y = real(ifft(fft(x)));
              err = max(abs(y - x));
-             n = length(y);");
+             n = length(y);",
+        );
         assert_eq!(get_scalar(&ev, "n"), 6.0);
         assert!(get_scalar(&ev, "err") < 1e-9, "non-pow2 round trip");
     }
@@ -18523,9 +18278,11 @@ mod builtin_coverage_tests {
     #[test]
     fn fftfreq_axis_matches_fft_length() {
         // The always-correct axis idiom: fftfreq(length(X), fs).
-        let ev = run("X = fft(ones(1, 6));
+        let ev = run(
+            "X = fft(ones(1, 6));
              f = fftfreq(length(X), 600);
-             n = length(f);");
+             n = length(f);",
+        );
         assert_eq!(get_scalar(&ev, "n"), 6.0);
         let f = get_vec(&ev, "f");
         assert_eq!(f[1], 100.0, "bin spacing fs/n = 100 Hz");
@@ -18551,9 +18308,11 @@ mod builtin_coverage_tests {
     fn spectrum_shape_and_dc_bin() {
         // fft(ones(1, 8)) = [8, 0, ..., 0]; spectrum() centers DC, so the DC
         // bin lands at column n/2 + 1 with frequency 0.
-        let ev = run("x = ones(1, 8);
+        let ev = run(
+            "x = ones(1, 8);
              X = fft(x);
-             H = spectrum(X, 800);");
+             H = spectrum(X, 800);",
+        );
         let h = get_matrix(&ev, "H");
         assert_eq!(h.dim(), (2, 8));
         assert!(close(h[[0, 0]].re, -400.0), "leftmost bin is -fs/2");
@@ -18566,10 +18325,12 @@ mod builtin_coverage_tests {
 
     #[test]
     fn freqz_lowpass_dc_gain_is_one() {
-        let ev = run("h = fir_lowpass(31, 100, 1000, \"hamming\");
+        let ev = run(
+            "h = fir_lowpass(31, 100, 1000, \"hamming\");
              H = freqz(h, 64, 1000);
              f0 = real(H(1, 1));
-             dc = abs(H(2, 1));");
+             dc = abs(H(2, 1));",
+        );
         assert!(close(get_scalar(&ev, "f0"), 0.0), "first bin is DC");
         // Windowed-sinc lowpass is normalized to unity DC gain.
         assert!(
@@ -18582,11 +18343,13 @@ mod builtin_coverage_tests {
     fn filtfilt_zero_phase_impulse_is_symmetric() {
         // FIR path (a = [1]): forward-backward filtering of a centered
         // impulse yields conv(b, reverse(b)), symmetric about the impulse.
-        let ev = run("b = [0.25, 0.5, 0.25];
+        let ev = run(
+            "b = [0.25, 0.5, 0.25];
              a = [1];
              x = zeros(1, 15);
              x(8) = 1;
-             y = filtfilt(b, a, x);");
+             y = filtfilt(b, a, x);",
+        );
         let y = get_vec(&ev, "y");
         assert_eq!(y.len(), 15);
         assert!(close(y[7], 0.375), "peak = sum(b.^2) at the impulse");
@@ -18609,11 +18372,13 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_highpass_dc_and_nyquist_gains() {
-        let ev = run("h = fir_highpass(31, 200, 1000, \"hamming\");
+        let ev = run(
+            "h = fir_highpass(31, 200, 1000, \"hamming\");
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
-             nyq = abs(sum(h .* cos(pi * k)));");
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
         // Spectral inversion of a unity-DC lowpass → exactly zero DC gain.
         assert!(get_scalar(&ev, "dc") < 1e-9, "highpass blocks DC");
         assert!(
@@ -18624,13 +18389,15 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_bandpass_dc_center_and_nyquist_gains() {
-        let ev = run("h = fir_bandpass(63, 150, 250, 1000, \"hamming\");
+        let ev = run(
+            "h = fir_bandpass(63, 150, 250, 1000, \"hamming\");
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
              nyq = abs(sum(h .* cos(pi * k)));
              w = 2*pi*200/1000;
-             g0 = abs(sum(h .* exp(0 - j*w*k)));");
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
         // Difference of two unity-DC lowpasses → exactly zero DC gain.
         assert!(get_scalar(&ev, "dc") < 1e-9, "bandpass blocks DC");
         assert!(get_scalar(&ev, "nyq") < 0.05, "bandpass blocks Nyquist");
@@ -18642,11 +18409,13 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_lowpass_kaiser_gains() {
-        let ev = run("h = fir_lowpass_kaiser(100, 40, 60, 1000);
+        let ev = run(
+            "h = fir_lowpass_kaiser(100, 40, 60, 1000);
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
-             nyq = abs(sum(h .* cos(pi * k)));");
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
         assert!(
             (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,
             "normalized unity DC gain"
@@ -18656,11 +18425,13 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_highpass_kaiser_gains() {
-        let ev = run("h = fir_highpass_kaiser(200, 40, 60, 1000);
+        let ev = run(
+            "h = fir_highpass_kaiser(200, 40, 60, 1000);
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
-             nyq = abs(sum(h .* cos(pi * k)));");
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
         assert!(get_scalar(&ev, "dc") < 1e-9, "highpass blocks DC");
         assert!(
             (get_scalar(&ev, "nyq") - 1.0).abs() < 0.01,
@@ -18670,13 +18441,15 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_bandpass_kaiser_gains() {
-        let ev = run("h = fir_bandpass_kaiser(150, 250, 40, 60, 1000);
+        let ev = run(
+            "h = fir_bandpass_kaiser(150, 250, 40, 60, 1000);
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
              nyq = abs(sum(h .* cos(pi * k)));
              w = 2*pi*200/1000;
-             g0 = abs(sum(h .* exp(0 - j*w*k)));");
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
         assert!(get_scalar(&ev, "dc") < 1e-9, "bandpass blocks DC");
         assert!(get_scalar(&ev, "nyq") < 0.01, "bandpass blocks Nyquist");
         assert!(
@@ -18687,32 +18460,33 @@ mod builtin_coverage_tests {
 
     #[test]
     fn fir_notch_gains() {
-        let ev = run("h = fir_notch(200, 100, 1000, 151, \"hamming\");
+        let ev = run(
+            "h = fir_notch(200, 100, 1000, 151, \"hamming\");
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
              w = 2*pi*200/1000;
-             g0 = abs(sum(h .* exp(0 - j*w*k)));");
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
         // Spectral inversion of a zero-DC bandpass → exactly unity DC gain.
         assert!(
             (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,
             "notch passes DC"
         );
-        assert!(
-            get_scalar(&ev, "g0") < 0.05,
-            "notch rejects center frequency"
-        );
+        assert!(get_scalar(&ev, "g0") < 0.05, "notch rejects center frequency");
     }
 
     // ── Parks-McClellan equiripple FIR ──────────────────────────────────
 
     #[test]
     fn firpm_lowpass_band_gains() {
-        let ev = run("h = firpm(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0], [1, 1]);
+        let ev = run(
+            "h = firpm(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0], [1, 1]);
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
-             nyq = abs(sum(h .* cos(pi * k)));");
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
         assert_eq!(get_vec(&ev, "h").len(), 31);
         assert!(
             (get_scalar(&ev, "dc") - 1.0).abs() < 0.05,
@@ -18731,14 +18505,16 @@ mod builtin_coverage_tests {
         // firpmq scales the design so the largest tap maps exactly to
         // 2^(bits-1) - 1 (32767 for the default 16 bits); a unit-gain
         // response is recovered by dividing by sum(h), not by 2^15 - 1.
-        let ev = run("h = firpmq(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0]);
+        let ev = run(
+            "h = firpmq(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0]);
              frac = sum(abs(h - round(h)));
              pk = max(abs(h));
              n = length(h);
              k = 0:(n - 1);
              dc = abs(sum(h));
              nyq = abs(sum(h .* cos(pi * k)));
-             rel = nyq / dc;");
+             rel = nyq / dc;",
+        );
         assert!(
             close(get_scalar(&ev, "frac"), 0.0),
             "all coefficients are integers"
@@ -18797,9 +18573,11 @@ mod builtin_coverage_tests {
     #[test]
     fn curl_of_rotational_field() {
         // Rigid rotation F = (-Y, X): curl_z = dFy/dx - dFx/dy = 2 everywhere.
-        let ev = run("[X, Y] = meshgrid(0:4, 0:3);
+        let ev = run(
+            "[X, Y] = meshgrid(0:4, 0:3);
              N = 0 - Y;
-             C = curl(N, X);");
+             C = curl(N, X);",
+        );
         let c = get_matrix(&ev, "C");
         for z in c.iter() {
             assert!(close(z.re, 2.0), "curl = 2, got {}", z.re);
@@ -18906,12 +18684,14 @@ mod builtin_coverage_tests {
         // These builtins write to the script output stream and return None;
         // the assertion is that they execute without error and leave
         // surrounding state intact.
-        let ev = run("s = struct(\"beta\", 1, \"alpha\", 2);
+        let ev = run(
+            "s = struct(\"beta\", 1, \"alpha\", 2);
              fieldnames(s);
              disp(42);
              disp(\"hello\");
              print(\"x =\", 1, [1, 2]);
-             after = 99;");
+             after = 99;",
+        );
         assert!(close(get_scalar(&ev, "after"), 99.0));
     }
 
@@ -18926,10 +18706,12 @@ mod builtin_coverage_tests {
     #[test]
     fn quantize_snaps_to_q8_4_grid() {
         // Q8.4, default floor rounding: step = 1/16.
-        let ev = run("f = qfmt(8, 4);
+        let ev = run(
+            "f = qfmt(8, 4);
              a = quantize(0.3, f);
              b = quantize(-0.3, f);
-             c = quantize(100, f);");
+             c = quantize(100, f);",
+        );
         assert!(close(get_scalar(&ev, "a"), 0.25), "floor(4.8)/16");
         assert!(close(get_scalar(&ev, "b"), -0.3125), "floor(-4.8)/16");
         // Saturation at the top of the 8-bit range: 127/16.
@@ -19111,10 +18893,12 @@ mod eval_edge_semantics_tests {
 
     #[test]
     fn sum_mean_std_along_rows() {
-        let ev = run("M = [1, 2, 3; 4, 5, 6];
+        let ev = run(
+            "M = [1, 2, 3; 4, 5, 6];
              s = sum(M, 2);
              m = mean(M, 2);
-             d = std(M, 0, 2);");
+             d = std(M, 0, 2);",
+        );
         let s = get_matrix(&ev, "s");
         assert_eq!(s.dim(), (2, 1));
         assert!(close(s[[0, 0]].re, 6.0) && close(s[[1, 0]].re, 15.0));
@@ -19242,8 +19026,10 @@ mod eval_edge_semantics_tests {
 
     #[test]
     fn region_write_matching_shape_succeeds() {
-        let ev = run("M = [1, 2, 3; 4, 5, 6; 7, 8, 9];
-             M(1:2, 1:2) = [10, 20; 30, 40];");
+        let ev = run(
+            "M = [1, 2, 3; 4, 5, 6; 7, 8, 9];
+             M(1:2, 1:2) = [10, 20; 30, 40];",
+        );
         let m = get_matrix(&ev, "M");
         assert!(close(m[[0, 0]].re, 10.0) && close(m[[0, 1]].re, 20.0));
         assert!(close(m[[1, 0]].re, 30.0) && close(m[[1, 1]].re, 40.0));
@@ -19475,6 +19261,7 @@ mod round2_regressions {
         assert!(err.contains("comparison length mismatch"), "{err}");
     }
 
+
     // E2 — logical mask indexing (read + assign) on vectors and matrices.
     #[test]
     fn logical_mask_indexing() {
@@ -19484,10 +19271,7 @@ mod round2_regressions {
         // matrix mask M(M>2) → 3 + 4
         assert_eq!(scalar(&eval("M=[1,2;3,4]\ns = sum(M(M>2))"), "s"), 7.0);
         // masked assignment
-        assert_eq!(
-            scalar(&eval("v=[1,2,3,4,5]\nv(v>3)=0\ns = sum(v)"), "s"),
-            6.0
-        );
+        assert_eq!(scalar(&eval("v=[1,2,3,4,5]\nv(v>3)=0\ns = sum(v)"), "s"), 6.0);
         // explicit position indexing is unaffected
         assert_eq!(scalar(&eval("v=[10,20,30]\ns = sum(v([1,3]))"), "s"), 40.0);
     }
@@ -19536,16 +19320,8 @@ mod round2_regressions {
              s = sum(S)\nr = norm(U*diag(S)*V' - A)",
         );
         // singular values are 2 and 0 → sum 2; reconstruction is exact.
-        assert!(
-            (scalar(&ev, "s") - 2.0).abs() < 1e-9,
-            "sum(S) = {}",
-            scalar(&ev, "s")
-        );
-        assert!(
-            scalar(&ev, "r") < 1e-9,
-            "reconstruction residual = {}",
-            scalar(&ev, "r")
-        );
+        assert!((scalar(&ev, "s") - 2.0).abs() < 1e-9, "sum(S) = {}", scalar(&ev, "s"));
+        assert!(scalar(&ev, "r") < 1e-9, "reconstruction residual = {}", scalar(&ev, "r"));
     }
 
     // E6 — eigs on a complex Hermitian sparse matrix computes (no internal error).
@@ -19556,11 +19332,7 @@ mod round2_regressions {
              [V,D] = eigs(A, 2, \"lm\")\ns = real(D(1)) + real(D(2))",
         );
         // eigenvalues of [[2,i],[-i,2]] are 1 and 3 → sum 4.
-        assert!(
-            (scalar(&ev, "s") - 4.0).abs() < 1e-6,
-            "sum = {}",
-            scalar(&ev, "s")
-        );
+        assert!((scalar(&ev, "s") - 4.0).abs() < 1e-6, "sum = {}", scalar(&ev, "s"));
     }
 
     // E7 — fixed-point quantize propagates NaN instead of turning it into 0.
@@ -19599,10 +19371,7 @@ mod round2_regressions {
                     .map(|h| (h.z.len(), h.z.first().map(|row| row.len()).unwrap_or(0)))
             })
             .expect("scalogram should push a heatmap");
-        assert_eq!(
-            cols, 20000,
-            "figure should keep full time resolution, got {cols}"
-        );
+        assert_eq!(cols, 20000, "figure should keep full time resolution, got {cols}");
         let full_cells = rows * cols;
 
         // Render to an SVG; export-time coarsening must keep the <rect> count
@@ -19625,9 +19394,7 @@ mod round2_regressions {
         );
 
         // The CWT matrix the caller receives keeps full time resolution.
-        let ev = eval(
-            "n = 0:19999\nx = sin(2*pi*0.05*n)\n[W,fr,t] = cwt(x, 1000)\nsz = size(W)\nc = sz(2)",
-        );
+        let ev = eval("n = 0:19999\nx = sin(2*pi*0.05*n)\n[W,fr,t] = cwt(x, 1000)\nsz = size(W)\nc = sz(2)");
         assert_eq!(scalar(&ev, "c"), 20000.0);
     }
 }
@@ -19659,11 +19426,7 @@ mod round3_io_regressions {
         let shape_str = if shape.len() == 1 {
             format!("{},", shape[0])
         } else {
-            shape
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
         };
         let hdr = format!(
             "{{'descr': '{}', 'fortran_order': {}, 'shape': ({}), }}",
@@ -19735,10 +19498,7 @@ mod round3_io_regressions {
              t = load(\"{0}\")\nA = t.m",
             p.display()
         ));
-        assert_eq!(
-            matrix(&ev, "A"),
-            vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]
-        );
+        assert_eq!(matrix(&ev, "A"), vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
     }
 
     // IO4 — CSV cells with scientific-notation complex parse correctly.
@@ -20345,11 +20105,7 @@ mod plot_arg_shape_tests {
             let sp = fig.subplots.first().expect("subplot");
             let s = sp.series.last().expect("series stored");
             // MATLAB behaviour: real data is kept; the axis is flagged log-scaled.
-            assert_eq!(
-                s.x_data,
-                vec![1.0, 10.0, 100.0],
-                "x stays real (not log10'd)"
-            );
+            assert_eq!(s.x_data, vec![1.0, 10.0, 100.0], "x stays real (not log10'd)");
             assert_eq!(sp.x_scale, rustlab_plot::AxisScale::Log);
         });
     }
@@ -20529,11 +20285,7 @@ mod plot_arg_shape_tests {
             assert_eq!(series.len(), 2, "one series per Y column");
             assert_eq!(series[0].x_data, vec![10.0, 20.0, 30.0], "col1 x = X(:,1)");
             assert_eq!(series[0].y_data, vec![1.0, 2.0, 3.0]);
-            assert_eq!(
-                series[1].x_data,
-                vec![100.0, 200.0, 300.0],
-                "col2 x = X(:,2)"
-            );
+            assert_eq!(series[1].x_data, vec![100.0, 200.0, 300.0], "col2 x = X(:,2)");
             assert_eq!(series[1].y_data, vec![4.0, 5.0, 6.0]);
         });
     }
@@ -20693,8 +20445,7 @@ mod int_types_tests {
 
     #[test]
     fn same_class_arith_stays_integer_and_saturates() {
-        let e =
-            ev("a = int8(100) + int8(50)\nb = uint8(200) + uint8(100)\nc = int8(10) * int8(20)");
+        let e = ev("a = int8(100) + int8(50)\nb = uint8(200) + uint8(100)\nc = int8(10) * int8(20)");
         assert_eq!(int_of(&e, "a"), (127, "int8".into()));
         assert_eq!(int_of(&e, "b"), (255, "uint8".into()));
         assert_eq!(int_of(&e, "c"), (127, "int8".into()));
@@ -20743,10 +20494,12 @@ mod int_types_tests {
 
     #[test]
     fn intmax_intmin_isinteger_isa_double() {
-        let e = ev("g = intmax(\"int8\")\nh = intmin(\"int16\")\n\
+        let e = ev(
+            "g = intmax(\"int8\")\nh = intmin(\"int16\")\n\
              i = isinteger(int8(3))\nj = isinteger(3.0)\n\
              k = isa(int32(1), \"integer\")\nl = isa(3.0, \"float\")\n\
-             m = double(int16(1000))");
+             m = double(int16(1000))",
+        );
         assert_eq!(int_of(&e, "g"), (127, "int8".into()));
         assert_eq!(int_of(&e, "h"), (-32768, "int16".into()));
         assert!(boolean(&e, "i"));
@@ -20758,8 +20511,10 @@ mod int_types_tests {
 
     #[test]
     fn integers_widen_into_builtins_and_indexing() {
-        let e = ev("c = sqrt(int32(16))\nv = [10, 20, 30]\ne = v(int32(2))\n\
-             g = abs(int8(-7))");
+        let e = ev(
+            "c = sqrt(int32(16))\nv = [10, 20, 30]\ne = v(int32(2))\n\
+             g = abs(int8(-7))",
+        );
         assert!((scalar(&e, "c") - 4.0).abs() < 1e-12); // sqrt widens → double
         assert!((scalar(&e, "e") - 20.0).abs() < 1e-12); // integer index
         assert_eq!(int_of(&e, "g"), (7, "int8".into())); // abs class-preserving
@@ -20838,8 +20593,7 @@ mod int_array_tests {
 
     #[test]
     fn elementwise_arith_and_saturation() {
-        let e =
-            ev("a = int8([100, 100]) + int8([50, 50])\nb = int8([10, 20, 30]) - int8([1, 2, 3])");
+        let e = ev("a = int8([100, 100]) + int8([50, 50])\nb = int8([10, 20, 30]) - int8([1, 2, 3])");
         assert_eq!(arr(&e, "a").0, vec![127, 127]);
         assert_eq!(arr(&e, "b").0, vec![9, 18, 27]);
     }
@@ -20874,8 +20628,10 @@ mod int_array_tests {
 
     #[test]
     fn indexing_scalar_slice_and_2d() {
-        let e = ev("a = int8([10, 20, 30])\nx = a(2)\ns = a(2:3)\n\
-             m = int8([1, 2; 3, 4])\ny = m(2, 1)");
+        let e = ev(
+            "a = int8([10, 20, 30])\nx = a(2)\ns = a(2:3)\n\
+             m = int8([1, 2; 3, 4])\ny = m(2, 1)",
+        );
         assert_eq!(int1(&e, "x"), (20, "int8".into()));
         assert_eq!(arr(&e, "s"), (vec![20, 30], 1, 2, "int8".into()));
         assert_eq!(int1(&e, "y"), (3, "int8".into()));
@@ -20971,10 +20727,12 @@ mod int_width_tests {
         // disp/print/fprintf of uint64 max showed 18446744073709552000.
         use crate::{start_capture, stop_capture};
         start_capture();
-        let _e = ev("disp(uint64(0xFFFFFFFFFFFFFFFF))\n\
+        let _e = ev(
+            "disp(uint64(0xFFFFFFFFFFFFFFFF))\n\
              print(int32([1, 2, 3, -4]))\n\
              fprintf(\"%u\\n\", uint64(0xFFFFFFFFFFFFFFFF))\n\
-             fprintf(\"%d\\n\", int32(-4))\n");
+             fprintf(\"%d\\n\", int32(-4))\n",
+        );
         let out = stop_capture();
         assert!(out.contains("18446744073709551615  (uint64)"), "{out}");
         assert!(out.contains("[1×4] (int32)  1  2  3  -4"), "{out}");
@@ -20985,8 +20743,10 @@ mod int_width_tests {
 
     #[test]
     fn full_uint64_range_is_representable() {
-        let e = ev("a = uint64(0xFFFFFFFFFFFFFFFF)\nb = intmax(\"uint64\")\n\
-             c = uint64(18446744073709551615)");
+        let e = ev(
+            "a = uint64(0xFFFFFFFFFFFFFFFF)\nb = intmax(\"uint64\")\n\
+             c = uint64(18446744073709551615)",
+        );
         let umax: i128 = u64::MAX as i128;
         assert_eq!(int1(&e, "a"), (umax, "uint64".into()));
         assert_eq!(int1(&e, "b"), (umax, "uint64".into()));
@@ -20997,10 +20757,7 @@ mod int_width_tests {
     fn uint64_arithmetic_above_i64_max_is_exact() {
         // 1e19 + 5e18 = 1.5e19, well above i64::MAX (~9.2e18).
         let e = ev("s = uint64(10000000000000000000) + uint64(5000000000000000000)");
-        assert_eq!(
-            int1(&e, "s"),
-            (15_000_000_000_000_000_000i128, "uint64".into())
-        );
+        assert_eq!(int1(&e, "s"), (15_000_000_000_000_000_000i128, "uint64".into()));
     }
 
     #[test]
@@ -21163,10 +20920,12 @@ mod int_widening_regression_tests {
     #[test]
     fn common_builtins_accept_integers_via_widening() {
         // These all rejected integer arrays before central widening.
-        let e = ev("a = min(int8([3, 1, 2]))\nb = max(int8([3, 1, 2]))\n\
+        let e = ev(
+            "a = min(int8([3, 1, 2]))\nb = max(int8([3, 1, 2]))\n\
              s = sort(int8([3, 1, 2]))\nf = find(int8([0, 1, 0, 1]))\n\
              c = cumsum(int8([1, 2, 3]))\nm = mod(int8(7), int8(3))\n\
-             an = any(int8([0, 0, 1]))\nal = all(int8([1, 1, 0]))");
+             an = any(int8([0, 0, 1]))\nal = all(int8([1, 1, 0]))",
+        );
         assert_eq!(scalar(&e, "a"), 1.0);
         assert_eq!(scalar(&e, "b"), 3.0);
         assert_eq!(vec_of(&e, "s"), vec![1.0, 2.0, 3.0]);
@@ -21204,14 +20963,18 @@ mod int_widening_regression_tests {
 
     #[test]
     fn integers_are_truthy_in_conditions() {
-        let e = ev("x = 0\nif int8(1)\nx = 1\nend\ny = 0\nif int8(0)\ny = 1\nelse\ny = 2\nend");
+        let e = ev(
+            "x = 0\nif int8(1)\nx = 1\nend\ny = 0\nif int8(0)\ny = 1\nelse\ny = 2\nend",
+        );
         assert_eq!(scalar(&e, "x"), 1.0);
         assert_eq!(scalar(&e, "y"), 2.0);
     }
 
     #[test]
     fn integer_array_as_index_and_mask() {
-        let e = ev("v = [10, 20, 30]\nsel = v(int8([1, 3]))\nmask = v(int8([1, 0, 1]))");
+        let e = ev(
+            "v = [10, 20, 30]\nsel = v(int8([1, 3]))\nmask = v(int8([1, 0, 1]))",
+        );
         assert_eq!(vec_of(&e, "sel"), vec![10.0, 30.0]);
         assert_eq!(vec_of(&e, "mask"), vec![10.0, 30.0]);
     }
@@ -21293,10 +21056,7 @@ mod log_axis_and_legend_tests {
         run("plot([1, 2, 3], [1, 2, 3], \"r\")");
         current(|sp| {
             assert_eq!(sp.title, "", "colour spec must not become the title");
-            assert_eq!(
-                sp.series.last().unwrap().color,
-                rustlab_plot::SeriesColor::Red
-            );
+            assert_eq!(sp.series.last().unwrap().color, rustlab_plot::SeriesColor::Red);
         });
     }
 
@@ -21306,35 +21066,16 @@ mod log_axis_and_legend_tests {
         // "r--"; log plots pass the spec through `plot` and had the same bug.
         use rustlab_plot::{LineStyle, PlotKind, SeriesColor};
         for (src, color, style, kind) in [
-            (
-                "plot([1, 2, 3], [1, 2, 3], \"r--\")",
-                SeriesColor::Red,
-                LineStyle::Dashed,
-                PlotKind::Line,
-            ),
-            (
-                "plot([1, 2, 3], [1, 2, 3], \"ko\")",
-                SeriesColor::Black,
-                LineStyle::Solid,
-                PlotKind::Scatter,
-            ),
-            (
-                "semilogy([1, 2, 3], [1, 10, 100], \"b:\")",
-                SeriesColor::Blue,
-                LineStyle::Dashed,
-                PlotKind::Line,
-            ),
+            ("plot([1, 2, 3], [1, 2, 3], \"r--\")", SeriesColor::Red, LineStyle::Dashed, PlotKind::Line),
+            ("plot([1, 2, 3], [1, 2, 3], \"ko\")", SeriesColor::Black, LineStyle::Solid, PlotKind::Scatter),
+            ("semilogy([1, 2, 3], [1, 10, 100], \"b:\")", SeriesColor::Blue, LineStyle::Dashed, PlotKind::Line),
         ] {
             run(src);
             current(|sp| {
                 assert_eq!(sp.title, "", "line spec must not become the title: {src}");
                 assert_eq!(sp.series.len(), 1, "{src}");
                 let s = &sp.series[0];
-                assert_eq!(
-                    (s.color, s.style.clone(), s.kind.clone()),
-                    (color, style, kind),
-                    "{src}"
-                );
+                assert_eq!((s.color, s.style.clone(), s.kind.clone()), (color, style, kind), "{src}");
             });
         }
         run("semilogy([1, 2, 3], [1, 10, 100], \"b:\")");
@@ -22183,11 +21924,7 @@ mod michael_bug_batch {
 
     fn flags(a: &rustlab_core::LogicalArray) -> Vec<Vec<u8>> {
         (0..a.rows())
-            .map(|r| {
-                (0..a.cols())
-                    .map(|c| u8::from(a.get(r, c).unwrap()))
-                    .collect()
-            })
+            .map(|r| (0..a.cols()).map(|c| u8::from(a.get(r, c).unwrap())).collect())
             .collect()
     }
 
@@ -22217,14 +21954,8 @@ mod michael_bug_batch {
              F(1:2, 1:2) = [true, false; false, true];
              isl = islogical(A);",
         );
-        assert_eq!(
-            flags(&logical_of(&ev, "L")),
-            vec![vec![1, 1, 0], vec![0, 1, 1]]
-        );
-        assert_eq!(
-            flags(&logical_of(&ev, "A")),
-            vec![vec![0, 0, 0], vec![1, 1, 1]]
-        );
+        assert_eq!(flags(&logical_of(&ev, "L")), vec![vec![1, 1, 0], vec![0, 1, 1]]);
+        assert_eq!(flags(&logical_of(&ev, "A")), vec![vec![0, 0, 0], vec![1, 1, 1]]);
         assert_eq!(flags(&logical_of(&ev, "B")), vec![vec![0, 0, 0, 0]]);
         assert_eq!(flags(&logical_of(&ev, "C")), vec![vec![1, 1, 0, 1]]);
         // `D(:)` fills column-major.
@@ -22325,10 +22056,7 @@ mod michael_bug_batch {
              y(2, 2) = true;",
         );
         assert_eq!(flags(&logical_of(&ev, "R")), vec![vec![0, 0, 0, 0, 1]]);
-        assert_eq!(
-            flags(&logical_of(&ev, "K")),
-            vec![vec![0], vec![0], vec![0], vec![1]]
-        );
+        assert_eq!(flags(&logical_of(&ev, "K")), vec![vec![0], vec![0], vec![0], vec![1]]);
         assert_eq!(
             flags(&logical_of(&ev, "M")),
             vec![vec![1, 1, 0, 0], vec![1, 1, 0, 0], vec![0, 0, 0, 1]]
@@ -22370,11 +22098,7 @@ mod michael_bug_batch {
              n9 = norm(spzeros(3, 3), 1);",
         );
         for name in ["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9"] {
-            assert_eq!(
-                scalar(&ev, name).to_bits(),
-                0.0f64.to_bits(),
-                "{name} is -0"
-            );
+            assert_eq!(scalar(&ev, name).to_bits(), 0.0f64.to_bits(), "{name} is -0");
         }
     }
 
@@ -22414,12 +22138,8 @@ mod michael_bug_batch {
         set_real_storage(None);
         for name in ["a", "b", "va", "vb"] {
             match real.get(name) {
-                Some(Value::Matrix(m)) => {
-                    assert!(Shared::is_real(m), "input {name} is complex-stored")
-                }
-                Some(Value::Vector(m)) => {
-                    assert!(Shared::is_real(m), "input {name} is complex-stored")
-                }
+                Some(Value::Matrix(m)) => assert!(Shared::is_real(m), "input {name} is complex-stored"),
+                Some(Value::Vector(m)) => assert!(Shared::is_real(m), "input {name} is complex-stored"),
                 other => panic!("{name}: {other:?}"),
             }
         }
@@ -22427,18 +22147,8 @@ mod michael_bug_batch {
             let (x, y) = (real.get(name).unwrap(), complex.get(name).unwrap());
             let bits = |v: &Value| -> (String, Vec<u64>) {
                 match v {
-                    Value::Matrix(m) => (
-                        "matrix".into(),
-                        m.iter()
-                            .flat_map(|c| [c.re.to_bits(), c.im.to_bits()])
-                            .collect(),
-                    ),
-                    Value::Vector(m) => (
-                        "vector".into(),
-                        m.iter()
-                            .flat_map(|c| [c.re.to_bits(), c.im.to_bits()])
-                            .collect(),
-                    ),
+                    Value::Matrix(m) => ("matrix".into(), m.iter().flat_map(|c| [c.re.to_bits(), c.im.to_bits()]).collect()),
+                    Value::Vector(m) => ("vector".into(), m.iter().flat_map(|c| [c.re.to_bits(), c.im.to_bits()]).collect()),
                     other => panic!("{name}: {other:?}"),
                 }
             };
@@ -22958,10 +22668,7 @@ mod table_tests {
         assert_eq!(scalar(&ev, "zw"), 1.0);
         assert_eq!(string(&ev, "zn"), "x");
         assert_eq!(scalar(&ev, "tw"), 2.0);
-        assert_eq!(
-            vec_re(&ev, "extra"),
-            (1..=10).map(|k| k as f64 * 10.0).collect::<Vec<_>>()
-        );
+        assert_eq!(vec_re(&ev, "extra"), (1..=10).map(|k| k as f64 * 10.0).collect::<Vec<_>>());
         assert_eq!(scalar(&ev, "eh"), 2.0);
         assert_eq!(scalar(&ev, "ea"), 5.0);
         assert_eq!(string(&ev, "zc"), "vector");
@@ -23074,26 +22781,15 @@ mod real_value_semantics {
         for real_storage in [true, false] {
             crate::eval::shared::set_real_storage(Some(real_storage));
             let mut ev = Evaluator::new();
-            run(
-                &mut ev,
-                "a = [1 Inf -2] * 2; b = 2 * [1 Inf]; c = [1 2] / 0; d = [-1 -2] * -3; \
-                          M = [1 Inf; 2 3] * 2; o = outer([1 Inf], [0 2]); p = [1; Inf] * [0 2];",
-            )
-            .unwrap();
+            run(&mut ev, "a = [1 Inf -2] * 2; b = 2 * [1 Inf]; c = [1 2] / 0; d = [-1 -2] * -3; \
+                          M = [1 Inf; 2 3] * 2; o = outer([1 Inf], [0 2]); p = [1; Inf] * [0 2];").unwrap();
             for name in ["a", "b", "c", "d", "M", "o", "p"] {
                 for z in elems(&ev, name) {
-                    assert_eq!(
-                        z.im.to_bits(),
-                        0,
-                        "{name} (real storage {real_storage}): {z}"
-                    );
+                    assert_eq!(z.im.to_bits(), 0, "{name} (real storage {real_storage}): {z}");
                 }
             }
             assert_eq!(elems(&ev, "a")[1].re, f64::INFINITY);
-            assert!(
-                elems(&ev, "o")[2].re.is_nan(),
-                "Inf * 0 is still NaN in the real part"
-            );
+            assert!(elems(&ev, "o")[2].re.is_nan(), "Inf * 0 is still NaN in the real part");
             // Powers keep their complex results.
             run(&mut ev, "q = [-8 8] .^ (1/3);").unwrap();
             assert!(elems(&ev, "q")[0].im > 1.7);
@@ -23104,14 +22800,10 @@ mod real_value_semantics {
     #[test]
     fn array_division_matches_scalar_division_bit_for_bit() {
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            "seed(7); x = rand(1, 5000) * 10 - 5; y = rand(1, 5000) * 10 + 0.1; \
+        run(&mut ev, "seed(7); x = rand(1, 5000) * 10 - 5; y = rand(1, 5000) * 10 + 0.1; \
                       dv = x ./ y; dm = reshape(x, 50, 100) ./ reshape(y, 50, 100); \
                       dt = reshape(x, 10, 25, 20) ./ reshape(y, 10, 25, 20); \
-                      ds = x ./ 3; dl = 3 ./ y; d2 = x / 3;",
-        )
-        .unwrap();
+                      ds = x ./ 3; dl = 3 ./ y; d2 = x / 3;").unwrap();
         let (x, y) = (elems(&ev, "x"), elems(&ev, "y"));
         let col_major = |name: &str, rows: usize, cols: usize| -> Vec<C> {
             // dm is row-major in storage; reshape walked x column-major.
@@ -23128,28 +22820,17 @@ mod real_value_semantics {
             for k in 0..x.len() {
                 let want = x[k].re / y[k].re;
                 assert_eq!(got[k].re.to_bits(), want.to_bits(), "{name}[{k}]");
-                assert_eq!(
-                    got[k].im.to_bits(),
-                    0.0f64.to_bits(),
-                    "{name}[{k}] imaginary"
-                );
+                assert_eq!(got[k].im.to_bits(), 0.0f64.to_bits(), "{name}[{k}] imaginary");
             }
         }
         let dt = elems(&ev, "dt");
         let mut sorted_t: Vec<u64> = dt.iter().map(|c| c.re.to_bits()).collect();
-        let mut sorted_w: Vec<u64> = x
-            .iter()
-            .zip(&y)
-            .map(|(a, b)| (a.re / b.re).to_bits())
-            .collect();
+        let mut sorted_w: Vec<u64> = x.iter().zip(&y).map(|(a, b)| (a.re / b.re).to_bits()).collect();
         sorted_t.sort();
         sorted_w.sort();
         assert_eq!(sorted_t, sorted_w, "tensor3 ./");
         for (name, f) in [
-            (
-                "ds",
-                Box::new(|k: usize| x[k].re / 3.0) as Box<dyn Fn(usize) -> f64>,
-            ),
+            ("ds", Box::new(|k: usize| x[k].re / 3.0) as Box<dyn Fn(usize) -> f64>),
             ("d2", Box::new(|k: usize| x[k].re / 3.0)),
             ("dl", Box::new(|k: usize| 3.0 / y[k].re)),
         ] {
@@ -23163,12 +22844,8 @@ mod real_value_semantics {
     #[test]
     fn division_by_a_real_number_does_not_overflow() {
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            "a = [1e200, 4] ./ [1e200, 0]; b = [3 + 4j] ./ [1e200]; c = (6 + 8j) / 2; \
-                      d = [6 + 8j, 1] ./ [2, 2];",
-        )
-        .unwrap();
+        run(&mut ev, "a = [1e200, 4] ./ [1e200, 0]; b = [3 + 4j] ./ [1e200]; c = (6 + 8j) / 2; \
+                      d = [6 + 8j, 1] ./ [2, 2];").unwrap();
         let a = elems(&ev, "a");
         assert_eq!(a[0], C::new(1.0, 0.0));
         assert_eq!(a[1], C::new(f64::INFINITY, 0.0));
@@ -23190,26 +22867,16 @@ mod real_value_semantics {
     #[test]
     fn negating_a_real_value_leaves_no_negative_zero() {
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            "a = angle(-[1, 2]); b = angle(-[2, 1j]); c = angle(-(1 + 0j)); \
-                      r = sqrt(-[4, 1j]); p = (-[8, 1j]) .^ (1/3); n = -[3, 4];",
-        )
-        .unwrap();
+        run(&mut ev, "a = angle(-[1, 2]); b = angle(-[2, 1j]); c = angle(-(1 + 0j)); \
+                      r = sqrt(-[4, 1j]); p = (-[8, 1j]) .^ (1/3); n = -[3, 4];").unwrap();
         let pi = std::f64::consts::PI;
         assert_eq!(elems(&ev, "a"), vec![C::new(pi, 0.0), C::new(pi, 0.0)]);
         assert_eq!(elems(&ev, "b")[0], C::new(pi, 0.0));
         assert_eq!(elems(&ev, "c")[0].re, pi);
         let r = elems(&ev, "r")[0];
-        assert!(
-            r.re.abs() < 1e-15 && (r.im - 2.0).abs() < 1e-15,
-            "sqrt(-4) = {r}"
-        );
+        assert!(r.re.abs() < 1e-15 && (r.im - 2.0).abs() < 1e-15, "sqrt(-4) = {r}");
         let p = elems(&ev, "p")[0];
-        assert!(
-            p.im > 0.0,
-            "principal cube root of -8 has a positive imaginary part, got {p}"
-        );
+        assert!(p.im > 0.0, "principal cube root of -8 has a positive imaginary part, got {p}");
         for z in elems(&ev, "n") {
             assert!(z.im.is_sign_positive(), "-[3, 4] left {z:?}");
         }
@@ -23230,30 +22897,20 @@ mod real_value_semantics {
         let csv = dir.join("v.csv");
         let toml = dir.join("v.toml");
         let mut ev = Evaluator::new();
-        run(
-            &mut ev,
-            &format!(
-                "v = [1 + 1e-14j, 2]; save(\"{n}\", v); a = load(\"{n}\"); \
+        run(&mut ev, &format!(
+            "v = [1 + 1e-14j, 2]; save(\"{n}\", v); a = load(\"{n}\"); \
              save(\"{c}\", v); b = load(\"{c}\"); r = [1, 2]; save(\"{n}\", r); s = load(\"{n}\");",
-                n = npy.display(),
-                c = csv.display()
-            ),
-        )
-        .unwrap();
+            n = npy.display(), c = csv.display()
+        )).unwrap();
         assert_eq!(elems(&ev, "a")[0], C::new(1.0, 1e-14));
         assert_eq!(elems(&ev, "b")[0], C::new(1.0, 1e-14));
         assert_eq!(elems(&ev, "s"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0)]);
         // Real data is still written as 8-byte floats.
         let bytes = std::fs::read(&npy).unwrap();
         assert!(String::from_utf8_lossy(&bytes[..128]).contains("<f8"));
-        run(
-            &mut ev,
-            &format!(
-                "t.v = [1 + 1e-20j, 2]; save(\"{f}\", t); u = load(\"{f}\"); w = u.v;",
-                f = toml.display()
-            ),
-        )
-        .unwrap();
+        run(&mut ev, &format!(
+            "t.v = [1 + 1e-20j, 2]; save(\"{f}\", t); u = load(\"{f}\"); w = u.v;", f = toml.display()
+        )).unwrap();
         assert_eq!(elems(&ev, "w"), vec![C::new(1.0, 1e-20), C::new(2.0, 0.0)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -23276,23 +22933,15 @@ mod real_value_semantics {
         for (a, b) in [("z0", "z1"), ("m0", "m1"), ("k0", "k1")] {
             assert_eq!(elems(&ev, a), elems(&ev, b), "{a} vs {b}");
         }
-        assert_eq!(
-            elems(&ev, "r1"),
-            vec![C::new(1.0, 0.0), C::new(2.0, 0.0), C::new(3.0, 0.0)]
-        );
+        assert_eq!(elems(&ev, "r1"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0), C::new(3.0, 0.0)]);
         assert!(matches!(ev.get("zr1"), Some(Value::Scalar(x)) if *x == 1.0));
         // Real arrays stay plain TOML numbers; only complex ones use the table.
         let text = std::fs::read_to_string(&f).unwrap();
         assert!(!text.contains("[r.") && !text.contains("zr."), "{text}");
-        assert!(
-            text.contains("__complex_re") && text.contains("__complex_im"),
-            "{text}"
-        );
-        let err = run(
-            &mut ev,
-            &format!("s.__complex_re = 1; save(\"{}\", s);", f.display()),
-        )
-        .unwrap_err();
+        assert!(text.contains("__complex_re") && text.contains("__complex_im"), "{text}");
+        let err = run(&mut ev, &format!(
+            "s.__complex_re = 1; save(\"{}\", s);", f.display()
+        )).unwrap_err();
         assert!(err.contains("reserved"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -23314,9 +22963,7 @@ mod angle_arrays {
     #[test]
     fn angle_of_a_matrix_is_elementwise_and_keeps_shape() {
         let v = eval("A = angle([1j, -1; 1, -1j]);", "A");
-        let Value::Matrix(m) = v else {
-            panic!("expected Matrix, got {v}")
-        };
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
         assert_eq!(m.shape(), &[2, 2]);
         let want = [[PI / 2.0, PI], [0.0, -PI / 2.0]];
         for r in 0..2 {
@@ -23330,18 +22977,14 @@ mod angle_arrays {
     #[test]
     fn angle_of_a_negated_real_matrix_is_pi() {
         let v = eval("A = angle(-[1, 2; 3, 4]);", "A");
-        let Value::Matrix(m) = v else {
-            panic!("expected Matrix, got {v}")
-        };
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
         assert!(m.iter().all(|c| c.re == PI && c.im == 0.0), "{:?}", *m);
     }
 
     #[test]
     fn angle_of_a_tensor3_keeps_shape() {
         let v = eval("T = angle(-ones3(2, 3, 4));", "T");
-        let Value::Tensor3(t) = v else {
-            panic!("expected Tensor3, got {v}")
-        };
+        let Value::Tensor3(t) = v else { panic!("expected Tensor3, got {v}") };
         assert_eq!(t.shape(), &[2, 3, 4]);
         assert!(t.iter().all(|c| c.re == PI && c.im == 0.0));
     }
@@ -23403,10 +23046,7 @@ mod size_overflow_tests {
     #[test]
     fn infinite_size_vector_is_rejected() {
         let msg = eval_err("zeros([Inf, 1])");
-        assert!(
-            msg.contains("non-negative integer"),
-            "Inf is not a size\n{msg}"
-        );
+        assert!(msg.contains("non-negative integer"), "Inf is not a size\n{msg}");
     }
 
     #[test]

@@ -248,14 +248,11 @@ impl ParmapBackend for LocalRayonBackend {
                         idx + 1,
                         out.len() + 1, // total = handled-so-far + this one + (unprocessed)
                         e
-                    )));
+                    )))
                 }
             }
         }
-        Ok(ParmapOutput {
-            values: out,
-            profiles,
-        })
+        Ok(ParmapOutput { values: out, profiles })
     }
 }
 
@@ -298,21 +295,12 @@ pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn pack_scalar_like(results: Vec<Value>) -> Result<Value, ScriptError> {
     // Real scalars and bools only: a real vector of the same values.
-    if results
-        .iter()
-        .all(|v| matches!(v, Value::Scalar(_) | Value::Bool(_)))
-    {
+    if results.iter().all(|v| matches!(v, Value::Scalar(_) | Value::Bool(_))) {
         let out = results
             .iter()
             .map(|v| match v {
                 Value::Scalar(x) => *x,
-                Value::Bool(b) => {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
+                Value::Bool(b) => if *b { 1.0 } else { 0.0 },
                 _ => unreachable!("checked above"),
             })
             .collect();
@@ -417,27 +405,19 @@ fn pack_real_rows(results: &[Value], row_len: usize) -> Option<Value> {
     let mut flat: Vec<f64> = Vec::with_capacity(n);
     if n > 0 {
         let dst = &mut flat.spare_capacity_mut()[..n];
-        dst.par_chunks_mut(row_len)
-            .zip(rows.par_iter())
-            .for_each(|(chunk, row)| {
-                assert_eq!(
-                    row.len(),
-                    chunk.len(),
-                    "parmap: row fill stopped short of {} elements",
-                    chunk.len()
-                );
-                for (d, &x) in chunk.iter_mut().zip(row.iter()) {
-                    d.write(x);
-                }
-            });
+        dst.par_chunks_mut(row_len).zip(rows.par_iter()).for_each(|(chunk, row)| {
+            assert_eq!(row.len(), chunk.len(), "parmap: row fill stopped short of {} elements", chunk.len());
+            for (d, &x) in chunk.iter_mut().zip(row.iter()) {
+                d.write(x);
+            }
+        });
         // SAFETY: each chunk has length `row_len` and was zipped with a row
         // of that length (asserted first), so every slot was written. The
         // chunks partition `0..n`, and `f64` is `Copy`, so a panic before
         // here drops a len-0 `Vec`.
         unsafe { flat.set_len(n) };
     }
-    let m =
-        ndarray::Array2::from_shape_vec((nrows, row_len), flat).expect("nrows × row_len elements");
+    let m = ndarray::Array2::from_shape_vec((nrows, row_len), flat).expect("nrows × row_len elements");
     Some(Value::real_matrix(m))
 }
 
@@ -447,7 +427,8 @@ fn pack_matrices_as_tensor3(
     cols: usize,
 ) -> Result<Value, ScriptError> {
     let n_pages = results.len();
-    let mut matrices: Vec<ndarray::Array2<num_complex::Complex<f64>>> = Vec::with_capacity(n_pages);
+    let mut matrices: Vec<ndarray::Array2<num_complex::Complex<f64>>> =
+        Vec::with_capacity(n_pages);
     for (idx, v) in results.into_iter().enumerate() {
         match v {
             Value::Matrix(m) => {
@@ -511,12 +492,8 @@ mod tests {
 
     #[test]
     fn pack_scalar_results() {
-        let v = pack_results(vec![
-            Value::Scalar(1.0),
-            Value::Scalar(2.0),
-            Value::Scalar(3.0),
-        ])
-        .unwrap();
+        let v = pack_results(vec![Value::Scalar(1.0), Value::Scalar(2.0), Value::Scalar(3.0)])
+            .unwrap();
         match v {
             Value::Vector(a) => {
                 assert_eq!(a.len(), 3);
@@ -529,26 +506,23 @@ mod tests {
 
     #[test]
     fn pack_mixed_scalar_then_matrix_errors() {
-        let bad = vec![
-            Value::Scalar(1.0),
-            Value::Matrix(ndarray::Array2::zeros((2, 2)).into()),
-        ];
+        let bad = vec![Value::Scalar(1.0), Value::Matrix(ndarray::Array2::zeros((2, 2)).into())];
         let err = pack_results(bad).unwrap_err().to_string();
         assert!(err.contains("trial 2"), "msg: {err}");
         assert!(err.contains("same shape"), "msg: {err}");
     }
 
     fn cvec(xs: &[f64]) -> Value {
-        Value::Vector(
-            ndarray::Array1::from_iter(xs.iter().map(|&x| num_complex::Complex::new(x, 0.0)))
-                .into(),
-        )
+        Value::Vector(ndarray::Array1::from_iter(
+            xs.iter().map(|&x| num_complex::Complex::new(x, 0.0)),
+        ).into())
     }
 
     fn cmat(rows: usize, cols: usize, fill: f64) -> Value {
-        Value::Matrix(
-            ndarray::Array2::from_elem((rows, cols), num_complex::Complex::new(fill, 0.0)).into(),
-        )
+        Value::Matrix(ndarray::Array2::from_elem(
+            (rows, cols),
+            num_complex::Complex::new(fill, 0.0),
+        ).into())
     }
 
     #[test]
@@ -582,10 +556,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("trial 2"), "msg: {err}");
-        assert!(
-            err.contains("scalar") && err.contains("vector"),
-            "msg: {err}"
-        );
+        assert!(err.contains("scalar") && err.contains("vector"), "msg: {err}");
     }
 
     #[test]
@@ -629,10 +600,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("trial 2"), "msg: {err}");
-        assert!(
-            err.contains("vector") && err.contains("matrix"),
-            "msg: {err}"
-        );
+        assert!(err.contains("vector") && err.contains("matrix"), "msg: {err}");
     }
 
     #[test]

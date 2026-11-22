@@ -273,12 +273,7 @@ fn parse_color_rgba(s: &str) -> Option<RGBAColor> {
     } else {
         1.0
     };
-    Some(RGBAColor(
-        r.min(255) as u8,
-        g.min(255) as u8,
-        b.min(255) as u8,
-        a,
-    ))
+    Some(RGBAColor(r.min(255) as u8, g.min(255) as u8, b.min(255) as u8, a))
 }
 
 // ─── Main render entry points ───────────────────────────────────────────────
@@ -463,19 +458,20 @@ pub fn render_panel_to_rgba(
 ) -> Result<Vec<u8>, PlotError> {
     crate::font::ensure_registered();
     let palette = ThemePalette::from(theme);
-    let rgb_len =
-        rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
-            PlotError::FileOutput(rustlab_core::variable_too_large(
-                "plot",
-                &[width as usize, height as usize, 3],
-            ))
-        })?;
+    let rgb_len = rustlab_core::checked_elems(&[width as usize, height as usize, 3], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 3],
+        ))
+    })?;
     let mut rgb = vec![0u8; rgb_len];
     {
-        let root = BitMapBackend::with_buffer(&mut rgb, (width, height)).into_drawing_area();
-        let err = |e: DrawingAreaErrorKind<<BitMapBackend as DrawingBackend>::ErrorType>| {
-            PlotError::FileOutput(e.to_string())
-        };
+        let root =
+            BitMapBackend::with_buffer(&mut rgb, (width, height)).into_drawing_area();
+        let err =
+            |e: DrawingAreaErrorKind<<BitMapBackend as DrawingBackend>::ErrorType>| {
+                PlotError::FileOutput(e.to_string())
+            };
         root.fill(&palette.bg).map_err(err)?;
         if sp.heatmap.is_some()
             || !sp.contours.is_empty()
@@ -488,13 +484,12 @@ pub fn render_panel_to_rgba(
         }
         root.present().map_err(err)?;
     }
-    let rgba_len =
-        rustlab_core::checked_elems(&[width as usize, height as usize, 4], 1).map_err(|_| {
-            PlotError::FileOutput(rustlab_core::variable_too_large(
-                "plot",
-                &[width as usize, height as usize, 4],
-            ))
-        })?;
+    let rgba_len = rustlab_core::checked_elems(&[width as usize, height as usize, 4], 1).map_err(|_| {
+        PlotError::FileOutput(rustlab_core::variable_too_large(
+            "plot",
+            &[width as usize, height as usize, 4],
+        ))
+    })?;
     let mut rgba = Vec::with_capacity(rgba_len);
     for px in rgb.chunks_exact(3) {
         rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
@@ -597,9 +592,12 @@ where
     let xlabel = sp.xlabel.as_str();
     let ylabel = sp.ylabel.as_str();
 
-    let caption_style: TextStyle = ("sans-serif", 22u32, &palette.text).into_text_style(panel);
-    let label_style: TextStyle = ("sans-serif", 12u32, &palette.text).into_text_style(panel);
-    let desc_style: TextStyle = ("sans-serif", 14u32, &palette.text).into_text_style(panel);
+    let caption_style: TextStyle =
+        ("sans-serif", 22u32, &palette.text).into_text_style(panel);
+    let label_style: TextStyle =
+        ("sans-serif", 12u32, &palette.text).into_text_style(panel);
+    let desc_style: TextStyle =
+        ("sans-serif", 14u32, &palette.text).into_text_style(panel);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
     let (panel_w, _panel_h) = panel.dim_in_pixel();
@@ -624,22 +622,14 @@ where
     } else {
         let a = format_linear_tick(y_lo);
         let b = format_linear_tick(y_hi);
-        if a.chars().count() >= b.chars().count() {
-            a
-        } else {
-            b
-        }
+        if a.chars().count() >= b.chars().count() { a } else { b }
     };
     let x_sample = if x_log {
         compact_num(10f64.powf(x_hi))
     } else {
         let a = format_linear_tick(x_lo);
         let b = format_linear_tick(x_hi);
-        if a.chars().count() >= b.chars().count() {
-            a
-        } else {
-            b
-        }
+        if a.chars().count() >= b.chars().count() { a } else { b }
     };
     let y_tick_w = measure_px(panel, &y_sample, 12);
     let y_desc_w = if ylabel.is_empty() { 0 } else { 18 };
@@ -673,8 +663,7 @@ where
     };
 
     let mut built = ChartBuilder::on(&chart_area);
-    built
-        .margin(MARGIN)
+    built.margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
         .y_label_area_size(y_area);
     if title_lines.len() > 1 {
@@ -741,18 +730,14 @@ where
             let n = sp.x_labels.as_ref().map_or(0, |l| l.len());
             mesh.x_labels(n).x_label_formatter(&cat_fmt);
         } else if x_log {
-            mesh.x_labels(tick_budget(pw, x_tick_w))
-                .x_label_formatter(&log_fmt);
+            mesh.x_labels(tick_budget(pw, x_tick_w)).x_label_formatter(&log_fmt);
         } else {
-            mesh.x_labels(tick_budget(pw, x_tick_w))
-                .x_label_formatter(&lin_fmt);
+            mesh.x_labels(tick_budget(pw, x_tick_w)).x_label_formatter(&lin_fmt);
         }
         if y_log {
-            mesh.y_labels(tick_budget(ph, y_tick_w))
-                .y_label_formatter(&log_fmt);
+            mesh.y_labels(tick_budget(ph, y_tick_w)).y_label_formatter(&log_fmt);
         } else {
-            mesh.y_labels(tick_budget(ph, y_tick_w))
-                .y_label_formatter(&lin_fmt);
+            mesh.y_labels(tick_budget(ph, y_tick_w)).y_label_formatter(&lin_fmt);
         }
         mesh.draw().map_err(err)?;
     }
@@ -956,8 +941,9 @@ where
                     )
                     .map_err(err)?;
                 if has_label {
-                    anno.label(label)
-                        .legend(move |(x, y)| Circle::new((x + 10, y), 4, rgb.filled()));
+                    anno.label(label).legend(move |(x, y)| {
+                        Circle::new((x + 10, y), 4, rgb.filled())
+                    });
                 }
             }
         }
@@ -1228,12 +1214,7 @@ where
     // Caption. Wrapped so a long title stays inside the panel.
     let (w_pixels, h_pixels) = root.dim_in_pixel();
     let caption_style: TextStyle = ("sans-serif", 18u32, &palette.text).into_text_style(&root);
-    let caption_lines = wrap_px(
-        &root,
-        caption,
-        18,
-        w_pixels.saturating_sub(2 * MARGIN).max(40),
-    );
+    let caption_lines = wrap_px(&root, caption, 18, w_pixels.saturating_sub(2 * MARGIN).max(40));
     let mut centered = caption_style.clone();
     centered.pos = plotters::style::text_anchor::Pos::new(
         plotters::style::text_anchor::HPos::Center,
@@ -1501,11 +1482,7 @@ where
     // shrink the chart drawing area so its post-margin/post-label data rect
     // is square. This matches Plotly's `scaleanchor: "x"` behaviour and gives
     // `imagesc` cells a 1:1 aspect — parity with the HTML renderer.
-    let caption_h = if sp.title.is_empty() {
-        0u32
-    } else {
-        CAPTION_H_EST
-    };
+    let caption_h = if sp.title.is_empty() { 0u32 } else { CAPTION_H_EST };
     let needs_colorbar = matches!(
         sp.heatmap.as_ref().map(|h| &h.kind),
         Some(crate::figure::HeatmapKind::Imagesc) | Some(crate::figure::HeatmapKind::Heatmap)
@@ -1561,8 +1538,10 @@ where
     let caption = sp.title.clone();
     let caption_style: TextStyle =
         ("sans-serif", 18u32, &palette.text).into_text_style(&chart_area);
-    let label_style: TextStyle = ("sans-serif", 12u32, &palette.text).into_text_style(&chart_area);
-    let desc_style: TextStyle = ("sans-serif", 14u32, &palette.text).into_text_style(&chart_area);
+    let label_style: TextStyle =
+        ("sans-serif", 12u32, &palette.text).into_text_style(&chart_area);
+    let desc_style: TextStyle =
+        ("sans-serif", 14u32, &palette.text).into_text_style(&chart_area);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
     // Heatmap-bearing panels in `ij` orientation (the default) use
@@ -1591,8 +1570,8 @@ where
     // displayed tick to the same value (all "100"s). Reversing the
     // axis directly avoids the formula entirely and works at any
     // scale.
-    let reverse_y_axis =
-        sp.heatmap.is_some() && sp.y_axis_direction == crate::figure::AxisYDirection::Ij;
+    let reverse_y_axis = sp.heatmap.is_some()
+        && sp.y_axis_direction == crate::figure::AxisYDirection::Ij;
     let mut chart = if reverse_y_axis {
         ChartBuilder::on(&chart_area)
             .caption(caption, caption_style)
@@ -1729,7 +1708,8 @@ where
                 let nrows = hm.z.len();
                 let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
                 if nrows > 0 && ncols > 0 {
-                    let vals: Vec<f64> = hm.z.iter().flat_map(|row| row.iter().copied()).collect();
+                    let vals: Vec<f64> =
+                        hm.z.iter().flat_map(|row| row.iter().copied()).collect();
                     // Fixed colour range (both `value_min` and `value_max`
                     // set on the HeatmapData) takes precedence over auto-
                     // scaling. Producers that need a stable colour scale
@@ -1783,9 +1763,7 @@ where
                     const HEATMAP_CELL_BUDGET: usize = 120_000;
                     let total_cells = nrows.saturating_mul(ncols);
                     let stride = if total_cells > HEATMAP_CELL_BUDGET {
-                        ((total_cells as f64 / HEATMAP_CELL_BUDGET as f64)
-                            .sqrt()
-                            .ceil() as usize)
+                        ((total_cells as f64 / HEATMAP_CELL_BUDGET as f64).sqrt().ceil() as usize)
                             .max(1)
                     } else {
                         1
@@ -1820,10 +1798,7 @@ where
                                 .draw_series(std::iter::once(Rectangle::new(
                                     [
                                         (x0, y0),
-                                        (
-                                            x0 + block_c as f64 * cell_w,
-                                            y0 + block_r as f64 * cell_h,
-                                        ),
+                                        (x0 + block_c as f64 * cell_w, y0 + block_r as f64 * cell_h),
                                     ],
                                     color.filled(),
                                 )))
@@ -1957,7 +1932,8 @@ where
         .map_err(err)?;
 
     // Five evenly-spaced tick labels (min, +25%, +50%, +75%, max).
-    let label_font: TextStyle = ("sans-serif", 11u32, &palette.text).into_text_style(cbar_area);
+    let label_font: TextStyle =
+        ("sans-serif", 11u32, &palette.text).into_text_style(cbar_area);
     let label_x = strip_right + 6;
     let range = max_v - min_v;
     for i in 0..5 {
@@ -2391,7 +2367,9 @@ mod tests {
     // (coarsened in both dimensions), not one per cell.
     #[test]
     fn dense_heatmap_svg_rect_count_is_bounded() {
-        use crate::figure::{AxisYDirection, FigureState, HeatmapData, HeatmapKind, HeatmapOrigin};
+        use crate::figure::{
+            AxisYDirection, FigureState, HeatmapData, HeatmapKind, HeatmapOrigin,
+        };
         let (nrows, ncols) = (200usize, 3000usize); // 600k cells ≫ budget
         let z: Vec<Vec<f64>> = (0..nrows)
             .map(|r| (0..ncols).map(|c| ((r + c) as f64).sin()).collect())
@@ -2420,11 +2398,7 @@ mod tests {
         let rects = svg.matches("<rect").count();
         // 600k cells → 600k rects without the cap; bounded near the cell budget.
         assert!(rects < 200_000, "rect count not bounded: {rects}");
-        assert!(
-            svg.len() < 20_000_000,
-            "SVG not bounded: {} bytes",
-            svg.len()
-        );
+        assert!(svg.len() < 20_000_000, "SVG not bounded: {} bytes", svg.len());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -3343,7 +3317,10 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("read SVG");
 
         let dims = extract_rect_dims(&content);
-        let swatches = dims.iter().filter(|(w, _)| *w == COLORBAR_WIDTH).count();
+        let swatches = dims
+            .iter()
+            .filter(|(w, _)| *w == COLORBAR_WIDTH)
+            .count();
         assert!(
             swatches >= COLORBAR_SAMPLES / 2,
             "expected at least {} colorbar swatch rects of width {}, got {}",
@@ -3404,10 +3381,7 @@ mod tests {
             let mut i = 0;
             while let Some(p) = svg[i..].find("points=\"") {
                 let start = i + p + 8;
-                let end = svg[start..]
-                    .find('"')
-                    .map(|e| start + e)
-                    .unwrap_or(svg.len());
+                let end = svg[start..].find('"').map(|e| start + e).unwrap_or(svg.len());
                 for tok in svg[start..end].split_whitespace() {
                     if let Some((x, _)) = tok.split_once(',') {
                         if let Ok(v) = x.parse::<f64>() {
@@ -3474,10 +3448,7 @@ mod tests {
         let mut i = 0;
         while let Some(p) = svg[i..].find("points=\"") {
             let start = i + p + 8;
-            let end = svg[start..]
-                .find('"')
-                .map(|e| start + e)
-                .unwrap_or(svg.len());
+            let end = svg[start..].find('"').map(|e| start + e).unwrap_or(svg.len());
             let mut xs_pl = Vec::new();
             let mut ys_pl = Vec::new();
             for tok in svg[start..end].split_whitespace() {
@@ -3649,17 +3620,13 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
-                value_min: None,
-                value_max: None,
-                origin: crate::figure::HeatmapOrigin::Lower,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
             // Eight contour levels evenly spread across the data range
             // [0, max(z)].
-            let zmax = z
-                .iter()
-                .flat_map(|r| r.iter())
-                .cloned()
-                .fold(f64::NEG_INFINITY, f64::max);
+            let zmax = z.iter().flat_map(|r| r.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
             let levels: Vec<f64> = (1..=8).map(|i| zmax * (i as f64) / 8.0).collect();
             sp.contours.push(crate::figure::ContourData {
                 x: xs,
@@ -3741,9 +3708,9 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
-                value_min: None,
-                value_max: None,
-                origin: crate::figure::HeatmapOrigin::Lower,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -3765,8 +3732,8 @@ mod tests {
 
         // Y-axis tick `0` should be near the BOTTOM (large SVG y) under
         // axis-xy; tick `8` (= nrows) at the top (small SVG y).
-        let y_zero =
-            find_axis_tick_y_matching(&svg, &["0", "0.0"]).expect("y=0 tick label present");
+        let y_zero = find_axis_tick_y_matching(&svg, &["0", "0.0"])
+            .expect("y=0 tick label present");
         let y_n = find_axis_tick_y_matching(&svg, &[&n.to_string(), &format!("{n}.0")])
             .expect("y=nrows tick label present");
         assert!(
@@ -3782,9 +3749,7 @@ mod tests {
 
     #[test]
     fn set_default_axis_y_direction_affects_new_subplots() {
-        use crate::figure::{
-            default_axis_y_direction, set_default_axis_y_direction, AxisYDirection,
-        };
+        use crate::figure::{default_axis_y_direction, set_default_axis_y_direction, AxisYDirection};
         // Save + restore the default around the test so we don't leak to
         // other tests.
         let prior = default_axis_y_direction();
@@ -3845,9 +3810,9 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
-                value_min: None,
-                value_max: None,
-                origin: crate::figure::HeatmapOrigin::Lower,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -3900,8 +3865,8 @@ mod tests {
             .expect("y=0 tick label present (either '0' or '0.0')");
         let n_str = n.to_string();
         let n_dot = format!("{n}.0");
-        let label_y_max =
-            find_axis_tick_y_matching(&svg, &[&n_str, &n_dot]).expect("y=nrows tick label present");
+        let label_y_max = find_axis_tick_y_matching(&svg, &[&n_str, &n_dot])
+            .expect("y=nrows tick label present");
         assert!(
             label_y_zero < label_y_max,
             "tick value 0 must sit above tick value {n} on the reversed y-axis; \
@@ -4220,7 +4185,8 @@ mod tests {
         // Collect every fill colour used by every cell rect (8x8 = 64) and
         // every colorbar swatch (COLORBAR_SAMPLES = 64) — every one of those
         // 128 fills should be the same single mid-viridis colour.
-        let mut fills: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut fills: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut i = 0;
         while let Some(p) = content[i..].find("<rect") {
             let start = i + p;
@@ -4347,7 +4313,8 @@ mod tests {
         // polylines (plotters emits other elements like <text> in theme
         // colour too, so assert no `stroke="#000000"`).
         assert!(
-            !content.contains("stroke=\"#000000\"") && !content.contains("stroke=\"#000\""),
+            !content.contains("stroke=\"#000000\"")
+                && !content.contains("stroke=\"#000\""),
             "found pure-black stroke in dark-theme SVG — contours likely fell \
              back to SeriesColor::Black"
         );
@@ -4384,30 +4351,21 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    fn uniform_field(
-        nx: usize,
-        ny: usize,
-        ux: f64,
-        uy: f64,
-    ) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
-        let x: Vec<f64> = (0..nx)
-            .map(|i| -1.0 + 2.0 * i as f64 / (nx - 1) as f64)
-            .collect();
-        let y: Vec<f64> = (0..ny)
-            .map(|i| -1.0 + 2.0 * i as f64 / (ny - 1) as f64)
-            .collect();
+    fn uniform_field(nx: usize, ny: usize, ux: f64, uy: f64)
+        -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>)
+    {
+        let x: Vec<f64> = (0..nx).map(|i| -1.0 + 2.0 * i as f64 / (nx - 1) as f64).collect();
+        let y: Vec<f64> = (0..ny).map(|i| -1.0 + 2.0 * i as f64 / (ny - 1) as f64).collect();
         let u = vec![vec![ux; nx]; ny];
         let v = vec![vec![uy; nx]; ny];
         (x, y, u, v)
     }
 
-    fn vortex_field(nx: usize, ny: usize) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
-        let x: Vec<f64> = (0..nx)
-            .map(|i| -2.0 + 4.0 * i as f64 / (nx - 1) as f64)
-            .collect();
-        let y: Vec<f64> = (0..ny)
-            .map(|i| -2.0 + 4.0 * i as f64 / (ny - 1) as f64)
-            .collect();
+    fn vortex_field(nx: usize, ny: usize)
+        -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>)
+    {
+        let x: Vec<f64> = (0..nx).map(|i| -2.0 + 4.0 * i as f64 / (nx - 1) as f64).collect();
+        let y: Vec<f64> = (0..ny).map(|i| -2.0 + 4.0 * i as f64 / (ny - 1) as f64).collect();
         let mut u = vec![vec![0.0; nx]; ny];
         let mut v = vec![vec![0.0; nx]; ny];
         for r in 0..ny {
@@ -4428,23 +4386,20 @@ mod tests {
         let (x, y, u, v) = uniform_field(8, 8, 1.0, 0.0);
         let mut sp = SubplotState::new();
         sp.quivers.push(crate::figure::QuiverData {
-            x,
-            y,
-            u,
-            v,
+            x, y, u, v,
             scale: 1.0,
             color: None,
             title: None,
         });
         let theme = Theme::default();
-        let rgba = render_panel_to_rgba(&sp, theme.colors(), 200, 150).expect("panel rgba render");
+        let rgba = render_panel_to_rgba(&sp, theme.colors(), 200, 150)
+            .expect("panel rgba render");
         assert_eq!(rgba.len(), 200 * 150 * 4);
         // At least one pixel should differ from the background colour.
         let bg_r = rgba[0];
         let bg_g = rgba[1];
         let bg_b = rgba[2];
-        let any_diff = rgba
-            .chunks_exact(4)
+        let any_diff = rgba.chunks_exact(4)
             .any(|p| p[0] != bg_r || p[1] != bg_g || p[2] != bg_b);
         assert!(any_diff, "quiver panel rgba is uniformly background");
     }
@@ -4457,10 +4412,7 @@ mod tests {
             let mut fig = fig.borrow_mut();
             fig.reset();
             fig.current_mut().quivers.push(crate::figure::QuiverData {
-                x,
-                y,
-                u,
-                v,
+                x, y, u, v,
                 scale: 1.0,
                 color: None,
                 title: None,
@@ -4473,10 +4425,7 @@ mod tests {
         // the arrow might stick out of bounds. Either polyline or path should
         // show up repeatedly.
         let strokes = content.matches("<polyline").count() + content.matches("<path").count();
-        assert!(
-            strokes > 30,
-            "quiver SVG missing arrow strokes, got {strokes}"
-        );
+        assert!(strokes > 30, "quiver SVG missing arrow strokes, got {strokes}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -4485,17 +4434,12 @@ mod tests {
         let path = tmp_path("_quiver_nan.svg");
         let (x, y, mut u, v) = uniform_field(6, 6, 1.0, 0.0);
         // Poison a handful of cells with NaN.
-        for r in 0..6 {
-            u[r][0] = f64::NAN;
-        }
+        for r in 0..6 { u[r][0] = f64::NAN; }
         FIGURE.with(|fig| {
             let mut fig = fig.borrow_mut();
             fig.reset();
             fig.current_mut().quivers.push(crate::figure::QuiverData {
-                x,
-                y,
-                u,
-                v,
+                x, y, u, v,
                 scale: 1.0,
                 color: None,
                 title: None,
@@ -4515,28 +4459,20 @@ mod tests {
         FIGURE.with(|fig| {
             let mut fig = fig.borrow_mut();
             fig.reset();
-            fig.current_mut()
-                .streamlines
-                .push(crate::figure::StreamlineData {
-                    x,
-                    y,
-                    u,
-                    v,
-                    density: 0.3,
-                    seeds: None,
-                    color: None,
-                    title: None,
-                });
+            fig.current_mut().streamlines.push(crate::figure::StreamlineData {
+                x, y, u, v,
+                density: 0.3,
+                seeds: None,
+                color: None,
+                title: None,
+            });
         });
         render_figure_file(&path).expect("streamplot SVG should render");
         let content = std::fs::read_to_string(&path).expect("read SVG");
         assert!(content.contains("<svg"));
         // Each streamline traces a multi-point polyline; expect several in SVG.
         let strokes = content.matches("<polyline").count() + content.matches("<path").count();
-        assert!(
-            strokes > 5,
-            "streamplot SVG missing line strokes, got {strokes}"
-        );
+        assert!(strokes > 5, "streamplot SVG missing line strokes, got {strokes}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -4556,18 +4492,14 @@ mod tests {
             });
             sp.contours.push(crate::figure::ContourData {
                 z: vec![vec![0.0; 2]; 2],
-                x: x.clone(),
-                y: y.clone(),
+                x: x.clone(), y: y.clone(),
                 levels: vec![0.5],
                 filled: false,
                 line_color: Some(crate::figure::SeriesColor::Black),
                 colorscale: "viridis".to_string(),
             });
             sp.quivers.push(crate::figure::QuiverData {
-                x: qx,
-                y: qy,
-                u,
-                v,
+                x: qx, y: qy, u, v,
                 scale: 1.0,
                 color: Some(crate::figure::SeriesColor::Red),
                 title: None,
@@ -4577,10 +4509,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("read SVG");
         assert!(content.contains("<svg"));
         // Heatmap rectangles + quiver arrow strokes should both be present.
-        assert!(
-            content.matches("<rect").count() > 50,
-            "heatmap cells missing"
-        );
+        assert!(content.matches("<rect").count() > 50, "heatmap cells missing");
         let strokes = content.matches("<polyline").count() + content.matches("<path").count();
         assert!(strokes > 30, "quiver arrows missing, got {strokes}");
         let _ = std::fs::remove_file(&path);
@@ -4629,15 +4558,9 @@ mod tests {
 
     #[test]
     fn parse_color_solid_accepts_hex_rrggbb() {
-        assert_eq!(
-            parse_color_solid("#1a2b3c"),
-            Some(RGBColor(0x1a, 0x2b, 0x3c))
-        );
+        assert_eq!(parse_color_solid("#1a2b3c"), Some(RGBColor(0x1a, 0x2b, 0x3c)));
         // Case-insensitive hex digits, surrounding whitespace trimmed.
-        assert_eq!(
-            parse_color_solid("  #FFffFF  "),
-            Some(RGBColor(255, 255, 255))
-        );
+        assert_eq!(parse_color_solid("  #FFffFF  "), Some(RGBColor(255, 255, 255)));
         assert_eq!(parse_color_solid("#000000"), Some(RGBColor(0, 0, 0)));
     }
 
@@ -4645,51 +4568,26 @@ mod tests {
     fn parse_color_solid_falls_back_to_rgba_forms_dropping_alpha() {
         // Non-6-digit hex and functional forms route through parse_color_rgba;
         // the alpha channel is discarded for the solid variant.
-        assert_eq!(
-            parse_color_solid("#11223380"),
-            Some(RGBColor(0x11, 0x22, 0x33))
-        );
-        assert_eq!(
-            parse_color_solid("rgb(10,20,30)"),
-            Some(RGBColor(10, 20, 30))
-        );
-        assert_eq!(
-            parse_color_solid("rgba(40, 50, 60, 0.25)"),
-            Some(RGBColor(40, 50, 60))
-        );
+        assert_eq!(parse_color_solid("#11223380"), Some(RGBColor(0x11, 0x22, 0x33)));
+        assert_eq!(parse_color_solid("rgb(10,20,30)"), Some(RGBColor(10, 20, 30)));
+        assert_eq!(parse_color_solid("rgba(40, 50, 60, 0.25)"), Some(RGBColor(40, 50, 60)));
     }
 
     #[test]
     fn parse_color_rgba_accepts_hex_with_and_without_alpha() {
-        assert_eq!(
-            parse_color_rgba("#112233"),
-            Some(RGBAColor(0x11, 0x22, 0x33, 1.0))
-        );
+        assert_eq!(parse_color_rgba("#112233"), Some(RGBAColor(0x11, 0x22, 0x33, 1.0)));
         let c = parse_color_rgba("#00010280").expect("8-digit hex");
         assert_eq!((c.0, c.1, c.2), (0, 1, 2));
-        assert!(
-            (c.3 - 128.0 / 255.0).abs() < 1e-12,
-            "alpha should be 0x80/255, got {}",
-            c.3
-        );
+        assert!((c.3 - 128.0 / 255.0).abs() < 1e-12, "alpha should be 0x80/255, got {}", c.3);
     }
 
     #[test]
     fn parse_color_rgba_accepts_functional_forms_and_clamps_channels() {
-        assert_eq!(
-            parse_color_rgba("rgba(1, 2, 3, 0.5)"),
-            Some(RGBAColor(1, 2, 3, 0.5))
-        );
+        assert_eq!(parse_color_rgba("rgba(1, 2, 3, 0.5)"), Some(RGBAColor(1, 2, 3, 0.5)));
         // rgb() defaults alpha to 1.0; prefix match is case-insensitive.
-        assert_eq!(
-            parse_color_rgba("RGB(4,5,6)"),
-            Some(RGBAColor(4, 5, 6, 1.0))
-        );
+        assert_eq!(parse_color_rgba("RGB(4,5,6)"), Some(RGBAColor(4, 5, 6, 1.0)));
         // Out-of-range channels saturate at 255 rather than failing.
-        assert_eq!(
-            parse_color_rgba("rgb(300, 200, 100)"),
-            Some(RGBAColor(255, 200, 100, 1.0))
-        );
+        assert_eq!(parse_color_rgba("rgb(300, 200, 100)"), Some(RGBAColor(255, 200, 100, 1.0)));
     }
 
     #[test]
@@ -4697,18 +4595,8 @@ mod tests {
         // Named colors are NOT supported by these parsers; callers fall back
         // via unwrap_or (see ThemePalette::from).
         for bad in [
-            "",
-            "blue",
-            "#",
-            "#12345",
-            "#1234567",
-            "#GGHHII",
-            "#11223344FF",
-            "rgb(1,2)",
-            "rgb(a,b,c)",
-            "rgba(1,2,3",
-            "rgb 1,2,3",
-            "hsl(10,20,30)",
+            "", "blue", "#", "#12345", "#1234567", "#GGHHII", "#11223344FF",
+            "rgb(1,2)", "rgb(a,b,c)", "rgba(1,2,3", "rgb 1,2,3", "hsl(10,20,30)",
             "rgb(-1,0,0)",
         ] {
             assert_eq!(parse_color_solid(bad), None, "parse_color_solid({bad:?})");
@@ -4769,9 +4657,7 @@ mod tests {
             color: None,
             title: None,
         });
-        let t: Vec<f64> = (0..100)
-            .map(|k| k as f64 * std::f64::consts::TAU / 99.0)
-            .collect();
+        let t: Vec<f64> = (0..100).map(|k| k as f64 * std::f64::consts::TAU / 99.0).collect();
         sp.series.push(crate::figure::Series {
             label: String::new(),
             x_data: t.iter().map(|a| 0.5 + 0.3 * a.cos()).collect(),
@@ -4804,29 +4690,11 @@ mod tests {
         let circle: Vec<&str> = svg
             .split("<polyline")
             .skip(1)
-            .filter(|el| {
-                el.split('>')
-                    .next()
-                    .is_some_and(|attrs| attrs.contains(&red))
-            })
+            .filter(|el| el.split('>').next().is_some_and(|attrs| attrs.contains(&red)))
             .collect();
-        assert_eq!(
-            circle.len(),
-            1,
-            "expected one {red} polyline for the circle"
-        );
-        let points = circle[0]
-            .split("points=\"")
-            .nth(1)
-            .unwrap()
-            .split('"')
-            .next()
-            .unwrap();
-        assert_eq!(
-            points.split_whitespace().count(),
-            100,
-            "every sample of the circle"
-        );
+        assert_eq!(circle.len(), 1, "expected one {red} polyline for the circle");
+        let points = circle[0].split("points=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(points.split_whitespace().count(), 100, "every sample of the circle");
     }
 
     #[test]
@@ -4881,10 +4749,7 @@ mod tests {
             let theme = Theme::default();
             let rgba = render_panel_to_rgba(&sp, theme.colors(), 400, 300).expect("rgba");
             let (r, g, b) = SeriesColor::Magenta.to_rgb();
-            let px = rgba
-                .chunks_exact(4)
-                .filter(|p| (p[0], p[1], p[2]) == (r, g, b))
-                .count();
+            let px = rgba.chunks_exact(4).filter(|p| (p[0], p[1], p[2]) == (r, g, b)).count();
             assert!(px > 200, "{kind}: circle pixels {px}");
         }
     }
@@ -4901,9 +4766,6 @@ mod tests {
         // A heatmap keeps its cell extent: the series is drawn, not used for
         // the bounds.
         sp.heatmap = Some(crate::figure::HeatmapData::default());
-        assert_eq!(
-            overlay_chart_bounds(&sp, (0.0, 1.0, 0.0, 1.0)),
-            (0.0, 1.0, 0.0, 1.0)
-        );
+        assert_eq!(overlay_chart_bounds(&sp, (0.0, 1.0, 0.0, 1.0)), (0.0, 1.0, 0.0, 1.0));
     }
 }

@@ -69,10 +69,7 @@ struct Inner<T: Storage> {
 
 impl<T: Storage> Inner<T> {
     fn complex(c: T) -> Self {
-        Inner {
-            real: None,
-            complex: OnceLock::from(c),
-        }
+        Inner { real: None, complex: OnceLock::from(c) }
     }
 
     /// Turn real storage into complex storage in place, reusing the
@@ -94,10 +91,7 @@ impl<T: Storage> Shared<T> {
 
     /// Real storage.
     pub fn from_real(value: T::Real) -> Self {
-        Shared(Arc::new(Inner {
-            real: Some(value),
-            complex: OnceLock::new(),
-        }))
+        Shared(Arc::new(Inner { real: Some(value), complex: OnceLock::new() }))
     }
 
     /// The real array, when the value is real-stored.
@@ -198,12 +192,7 @@ impl<D: Dimension> Shared<Array<C64, D>> {
     pub fn shape(this: &Self) -> &[usize] {
         match &this.0.real {
             Some(r) => r.shape(),
-            None => this
-                .0
-                .complex
-                .get()
-                .expect("complex storage is always filled")
-                .shape(),
+            None => this.0.complex.get().expect("complex storage is always filled").shape(),
         }
     }
 
@@ -236,10 +225,7 @@ impl<T: Storage> Deref for Shared<T> {
     fn deref(&self) -> &T {
         let inner = &*self.0;
         match &inner.real {
-            None => inner
-                .complex
-                .get()
-                .expect("complex storage is always filled"),
+            None => inner.complex.get().expect("complex storage is always filled"),
             Some(r) => inner.complex.get_or_init(|| {
                 let t = timing();
                 let c = T::widen(r);
@@ -289,9 +275,7 @@ pub fn real_storage() -> bool {
         Some(on) => on,
         None => {
             static ENV_OFF: OnceLock<bool> = OnceLock::new();
-            !*ENV_OFF.get_or_init(|| {
-                std::env::var_os("RUSTLAB_COMPLEX_STORAGE").is_some_and(|v| v != "0")
-            })
+            !*ENV_OFF.get_or_init(|| std::env::var_os("RUSTLAB_COMPLEX_STORAGE").is_some_and(|v| v != "0"))
         }
     })
 }
@@ -326,11 +310,7 @@ pub struct Counter {
 
 impl Counter {
     const fn new() -> Self {
-        Counter {
-            calls: Cell::new(0),
-            elements: Cell::new(0),
-            ns: Cell::new(0),
-        }
+        Counter { calls: Cell::new(0), elements: Cell::new(0), ns: Cell::new(0) }
     }
 }
 
@@ -349,11 +329,7 @@ fn timing() -> Option<std::time::Instant> {
     TIMING.with(|t| t.get()).then(std::time::Instant::now)
 }
 
-fn count(
-    which: &'static std::thread::LocalKey<Counter>,
-    elements: usize,
-    start: Option<std::time::Instant>,
-) {
+fn count(which: &'static std::thread::LocalKey<Counter>, elements: usize, start: Option<std::time::Instant>) {
     let ns = start.map_or(0, |t| t.elapsed().as_nanos() as u64);
     which.with(|c| {
         c.calls.set(c.calls.get() + 1);
@@ -385,11 +361,7 @@ impl std::ops::Sub for Conversions {
 /// built from real storage, and real buffers converted to complex by a
 /// write.
 pub fn conversion_counts() -> (Conversions, Conversions) {
-    let read = |c: &Counter| Conversions {
-        calls: c.calls.get(),
-        elements: c.elements.get(),
-        ns: c.ns.get(),
-    };
+    let read = |c: &Counter| Conversions { calls: c.calls.get(), elements: c.elements.get(), ns: c.ns.get() };
     (WIDEN.with(read), PROMOTE.with(read))
 }
 

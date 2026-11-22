@@ -11,12 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf()
 }
 
 /// Standard output plus every file in the script's folder afterwards.
@@ -50,23 +45,13 @@ fn run(script: &Path, complex: bool) -> Outcome {
         .unwrap();
     let mut files = BTreeMap::new();
     for entry in walk(dir.path()) {
-        let rel = entry
-            .strip_prefix(dir.path())
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let rel = entry.strip_prefix(dir.path()).unwrap().to_string_lossy().into_owned();
         files.insert(rel, std::fs::read(&entry).unwrap());
     }
     // The script path appears in the banner; make it independent of the
     // temporary directory's name.
-    let stdout = String::from_utf8_lossy(&out.stdout)
-        .replace(dir.path().to_str().unwrap(), "<dir>")
-        .into_bytes();
-    Outcome {
-        ok: out.status.success(),
-        stdout,
-        files,
-    }
+    let stdout = String::from_utf8_lossy(&out.stdout).replace(dir.path().to_str().unwrap(), "<dir>").into_bytes();
+    Outcome { ok: out.status.success(), stdout, files }
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -87,10 +72,7 @@ fn first_difference(a: &Outcome, b: &Outcome) -> String {
         return format!("exit status {} vs {}", a.ok, b.ok);
     }
     if a.stdout != b.stdout {
-        let (x, y) = (
-            String::from_utf8_lossy(&a.stdout),
-            String::from_utf8_lossy(&b.stdout),
-        );
+        let (x, y) = (String::from_utf8_lossy(&a.stdout), String::from_utf8_lossy(&b.stdout));
         for (i, (p, q)) in x.lines().zip(y.lines()).enumerate() {
             if p != q {
                 return format!("stdout line {}:\n  real:    {p}\n  complex: {q}", i + 1);
@@ -139,11 +121,7 @@ fn examples_do_not_depend_on_array_storage() {
     });
     assert_eq!(before - scripts.len(), SKIP_LONG_FDTD.len());
     scripts.sort();
-    assert!(
-        scripts.len() > 50,
-        "found only {} example scripts",
-        scripts.len()
-    );
+    assert!(scripts.len() > 50, "found only {} example scripts", scripts.len());
     // Scripts are independent; run them on all cores.
     enum Verdict {
         Same,
@@ -158,11 +136,7 @@ fn examples_do_not_depend_on_array_storage() {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(script) = scripts.get(i) else { break };
-                let name = script
-                    .strip_prefix(workspace_root())
-                    .unwrap()
-                    .display()
-                    .to_string();
+                let name = script.strip_prefix(workspace_root()).unwrap().display().to_string();
                 let real = run(script, false);
                 let verdict = if real != run(script, false) {
                     Verdict::Skipped(name)
@@ -191,10 +165,6 @@ fn examples_do_not_depend_on_array_storage() {
     }
     skipped.sort();
     eprintln!("compared {compared} examples; skipped (not repeatable): {skipped:?}");
-    assert!(
-        failures.is_empty(),
-        "storage is observable:\n{}",
-        failures.join("\n")
-    );
+    assert!(failures.is_empty(), "storage is observable:\n{}", failures.join("\n"));
     assert!(compared >= 40, "only {compared} examples were repeatable");
 }

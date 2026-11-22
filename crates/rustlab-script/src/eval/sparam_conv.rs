@@ -244,7 +244,9 @@ pub fn abcd_to_s(a: &Array3<C64>, z0: f64) -> Result<Array3<C64>, String> {
         let dd = a[[k, 1, 1]];
         let denom = aa + bb / z0c + cc * z0c + dd;
         if denom.norm() < 1e-300 {
-            return Err(format!("abcd2s: denominator ≈ 0 at frequency index {k}"));
+            return Err(format!(
+                "abcd2s: denominator ≈ 0 at frequency index {k}"
+            ));
         }
         s[[k, 0, 0]] = (aa + bb / z0c - cc * z0c - dd) / denom;
         s[[k, 0, 1]] = two * (aa * dd - bb * cc) / denom;
@@ -856,16 +858,8 @@ mod tests {
         let smm = s_to_smm(&s).unwrap();
         for i in 0..2 {
             for j in 2..4 {
-                assert!(
-                    smm[[0, i, j]].norm() < 1e-12,
-                    "Sdc[{i},{j}]: {}",
-                    smm[[0, i, j]]
-                );
-                assert!(
-                    smm[[0, j, i]].norm() < 1e-12,
-                    "Scd[{j},{i}]: {}",
-                    smm[[0, j, i]]
-                );
+                assert!(smm[[0, i, j]].norm() < 1e-12, "Sdc[{i},{j}]: {}", smm[[0, i, j]]);
+                assert!(smm[[0, j, i]].norm() < 1e-12, "Scd[{j},{i}]: {}", smm[[0, j, i]]);
             }
         }
     }

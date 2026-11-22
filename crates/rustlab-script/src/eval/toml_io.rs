@@ -16,13 +16,7 @@ const COMPLEX_RE_KEY: &str = "__complex_re";
 const COMPLEX_IM_KEY: &str = "__complex_im";
 
 fn is_reserved_key(key: &str) -> bool {
-    [
-        TENSOR3_SHAPE_KEY,
-        TENSOR3_DATA_KEY,
-        COMPLEX_RE_KEY,
-        COMPLEX_IM_KEY,
-    ]
-    .contains(&key)
+    [TENSOR3_SHAPE_KEY, TENSOR3_DATA_KEY, COMPLEX_RE_KEY, COMPLEX_IM_KEY].contains(&key)
 }
 
 // ─── Save ────────────────────────────────────────────────────────────────────
@@ -85,9 +79,8 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             } else {
                 let mut out = Vec::with_capacity(*rows);
                 for r in 0..*rows {
-                    let row: Vec<Toml> = (0..*cols)
-                        .map(|c| int_to_toml(data[r * cols + c]))
-                        .collect();
+                    let row: Vec<Toml> =
+                        (0..*cols).map(|c| int_to_toml(data[r * cols + c])).collect();
                     out.push(Toml::Array(row));
                 }
                 Ok(Toml::Array(out))
@@ -180,18 +173,15 @@ fn split_complex(v: &Value) -> Option<(Value, Value)> {
     let im = |c: &Complex<f64>| Complex::new(c.im, 0.0);
     match v {
         Value::Complex(c) if c.im != 0.0 => Some((Value::Scalar(c.re), Value::Scalar(c.im))),
-        Value::Vector(a) if a.iter().any(|c| c.im != 0.0) => Some((
-            Value::Vector(a.map(re).into()),
-            Value::Vector(a.map(im).into()),
-        )),
-        Value::Matrix(a) if a.iter().any(|c| c.im != 0.0) => Some((
-            Value::Matrix(a.map(re).into()),
-            Value::Matrix(a.map(im).into()),
-        )),
-        Value::Tensor3(a) if a.iter().any(|c| c.im != 0.0) => Some((
-            Value::Tensor3(a.map(re).into()),
-            Value::Tensor3(a.map(im).into()),
-        )),
+        Value::Vector(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Vector(a.map(re).into()), Value::Vector(a.map(im).into())))
+        }
+        Value::Matrix(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Matrix(a.map(re).into()), Value::Matrix(a.map(im).into())))
+        }
+        Value::Tensor3(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Tensor3(a.map(re).into()), Value::Tensor3(a.map(im).into())))
+        }
         _ => None,
     }
 }
@@ -202,15 +192,15 @@ fn join_complex(re: Value, im: Value) -> Option<Value> {
     let join = |r: &Complex<f64>, i: &Complex<f64>| Complex::new(r.re, i.re);
     match (re, im) {
         (Value::Scalar(r), Value::Scalar(i)) => Some(Value::Complex(Complex::new(r, i))),
-        (Value::Vector(r), Value::Vector(i)) if r.len() == i.len() => Some(Value::Vector(
-            ndarray::Zip::from(&*r).and(&*i).map_collect(join).into(),
-        )),
-        (Value::Matrix(r), Value::Matrix(i)) if r.dim() == i.dim() => Some(Value::Matrix(
-            ndarray::Zip::from(&*r).and(&*i).map_collect(join).into(),
-        )),
-        (Value::Tensor3(r), Value::Tensor3(i)) if r.dim() == i.dim() => Some(Value::Tensor3(
-            ndarray::Zip::from(&*r).and(&*i).map_collect(join).into(),
-        )),
+        (Value::Vector(r), Value::Vector(i)) if r.len() == i.len() => {
+            Some(Value::Vector(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
+        (Value::Matrix(r), Value::Matrix(i)) if r.dim() == i.dim() => {
+            Some(Value::Matrix(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
+        (Value::Tensor3(r), Value::Tensor3(i)) if r.dim() == i.dim() => {
+            Some(Value::Tensor3(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
         _ => None,
     }
 }
@@ -242,9 +232,7 @@ fn toml_to_value(tv: Toml) -> Value {
             // exactly the two reserved keys. A table with extra keys is a
             // user struct that happens to contain the reserved names — it
             // must load as a struct, not silently drop fields into a tensor.
-            if map.len() == 2
-                && map.contains_key(COMPLEX_RE_KEY)
-                && map.contains_key(COMPLEX_IM_KEY)
+            if map.len() == 2 && map.contains_key(COMPLEX_RE_KEY) && map.contains_key(COMPLEX_IM_KEY)
             {
                 let re = toml_to_value(map[COMPLEX_RE_KEY].clone());
                 let im = toml_to_value(map[COMPLEX_IM_KEY].clone());

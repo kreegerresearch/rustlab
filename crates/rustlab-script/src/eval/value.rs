@@ -1235,8 +1235,7 @@ impl Value {
     /// an `n×1` matrix. A single row (`M(k, :)`) and a row vector's
     /// subscript stay a row.
     fn index_gives_column(&self, indices: &[Value]) -> bool {
-        let count =
-            |idx: &Value, len: usize| Self::resolve_index_dim(idx, len).ok().map(|p| p.len());
+        let count = |idx: &Value, len: usize| Self::resolve_index_dim(idx, len).ok().map(|p| p.len());
         let is_column_shape = |v: &Value| match v {
             Value::Matrix(m) => {
                 let s = Shared::shape(m);
@@ -1296,9 +1295,9 @@ impl Value {
             Value::Vector(v) => {
                 let n = Shared::len(&v);
                 match Shared::into_real(v) {
-                    Ok(r) => {
-                        Value::real_matrix(r.into_shape_with_order((n, 1)).expect("n elements"))
-                    }
+                    Ok(r) => Value::real_matrix(
+                        r.into_shape_with_order((n, 1)).expect("n elements"),
+                    ),
                     Err(v) => Value::Matrix(
                         Shared::into_inner(v)
                             .into_shape_with_order((n, 1))
@@ -2080,13 +2079,12 @@ impl Value {
                     .map(Value::Logical)
                     .map_err(|e| e.to_string())
             }
-            Value::Tensor3(t) => super::tensor3_lift::lift(
-                "!",
-                &[Value::Tensor3(t)],
-                |e| e,
-                |mut a| a.pop().expect("one operand").not(),
-            )
-            .expect("a Tensor3 operand"),
+            Value::Tensor3(t) => {
+                super::tensor3_lift::lift("!", &[Value::Tensor3(t)], |e| e, |mut a| {
+                    a.pop().expect("one operand").not()
+                })
+                .expect("a Tensor3 operand")
+            }
             other => Err(format!(
                 "'!' operator requires bool or a numeric array, got {}",
                 other.type_name()
@@ -2612,12 +2610,9 @@ impl Value {
     fn compare_numeric(op: BinOp, lhs: &Value, rhs: &Value) -> Result<Value, String> {
         if matches!(lhs, Value::Tensor3(_)) || matches!(rhs, Value::Tensor3(_)) {
             let args = [lhs.clone(), rhs.clone()];
-            return super::tensor3_lift::lift(
-                "comparison",
-                &args,
-                |e| e,
-                |a| Self::compare_numeric(op, &a[0], &a[1]),
-            )
+            return super::tensor3_lift::lift("comparison", &args, |e| e, |a| {
+                Self::compare_numeric(op, &a[0], &a[1])
+            })
             .expect("a Tensor3 operand");
         }
         enum Side {

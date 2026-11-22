@@ -67,9 +67,7 @@ mod tests {
     #[test]
     fn map_behaves_like_a_map() {
         let mut m: FxHashMap<String, usize> = FxHashMap::default();
-        let names: Vec<String> = (0..2000)
-            .map(|k| format!("v{k}_{}", "x".repeat(k % 13)))
-            .collect();
+        let names: Vec<String> = (0..2000).map(|k| format!("v{k}_{}", "x".repeat(k % 13))).collect();
         for (k, n) in names.iter().enumerate() {
             m.insert(n.clone(), k);
         }

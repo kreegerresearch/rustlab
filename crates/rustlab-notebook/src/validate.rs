@@ -165,7 +165,11 @@ impl ValidateOutcome {
         ));
         out.push_str(&format!(
             "  {:7}  {:22}  {:8}  {:22}  {}\n",
-            "------", "----------------------", "--------", "----------------------", "------",
+            "------",
+            "----------------------",
+            "--------",
+            "----------------------",
+            "------",
         ));
         for f in &self.results {
             let status = match f.status {
@@ -211,11 +215,7 @@ pub fn cmd_validate(input: PathBuf, opts: ValidateOpts) -> ValidateOutcome {
         Err(detail) => {
             return ValidateOutcome {
                 schema_version: 1,
-                summary: Summary {
-                    pass: 0,
-                    fail: 1,
-                    skipped: 0,
-                },
+                summary: Summary { pass: 0, fail: 1, skipped: 0 },
                 results: vec![Finding {
                     fixture: input.display().to_string(),
                     format: Format::Markdown,
@@ -310,11 +310,7 @@ fn run_loop(
         }
     }
 
-    let mut summary = Summary {
-        pass: 0,
-        fail: 0,
-        skipped: 0,
-    };
+    let mut summary = Summary { pass: 0, fail: 0, skipped: 0 };
     for f in &results {
         match f.status {
             Status::Ok => summary.pass += 1,
@@ -322,11 +318,7 @@ fn run_loop(
             Status::Skip => summary.skipped += 1,
         }
     }
-    ValidateOutcome {
-        schema_version: 1,
-        summary,
-        results,
-    }
+    ValidateOutcome { schema_version: 1, summary, results }
 }
 
 /// Root used to derive a fixture's relative display name. For a single
@@ -466,11 +458,7 @@ fn which_binary(name: &str) -> Option<PathBuf> {
         return None;
     }
     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path))
-    }
+    if path.is_empty() { None } else { Some(PathBuf::from(path)) }
 }
 
 fn finding(
@@ -556,22 +544,14 @@ fn lint_html(fixture: &str, file: &Path, opts: &ValidateOpts) -> Finding {
                     } else {
                         let stderr = String::from_utf8_lossy(&out.stderr);
                         let stdout = String::from_utf8_lossy(&out.stdout);
-                        let line = stderr
-                            .lines()
-                            .chain(stdout.lines())
+                        let line = stderr.lines().chain(stdout.lines())
                             .find(|l| l.starts_with("line "))
                             .unwrap_or("")
                             .to_string();
                         finding(fixture, Format::Html, "tidy-html5", Status::Fail, line)
                     }
                 }
-                Err(e) => finding(
-                    fixture,
-                    Format::Html,
-                    "tidy-html5",
-                    Status::Fail,
-                    format!("spawn error: {e}"),
-                ),
+                Err(e) => finding(fixture, Format::Html, "tidy-html5", Status::Fail, format!("spawn error: {e}")),
             };
         }
         // Fall through — old tidy gets SKIPped.
@@ -635,19 +615,15 @@ fn interpret_html_exit(
     linter: &str,
 ) -> Finding {
     match out {
-        Ok(out) if out.status.success() => finding(fixture, Format::Html, linter, Status::Ok, ""),
+        Ok(out) if out.status.success() => {
+            finding(fixture, Format::Html, linter, Status::Ok, "")
+        }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let first = stderr.lines().next().unwrap_or("").to_string();
             finding(fixture, Format::Html, linter, Status::Fail, first)
         }
-        Err(e) => finding(
-            fixture,
-            Format::Html,
-            linter,
-            Status::Fail,
-            format!("spawn error: {e}"),
-        ),
+        Err(e) => finding(fixture, Format::Html, linter, Status::Fail, format!("spawn error: {e}")),
     }
 }
 
@@ -695,13 +671,7 @@ fn lint_latex(fixture: &str, file: &Path, opts: &ValidateOpts) -> Finding {
                 )
             }
         }
-        Err(e) => finding(
-            fixture,
-            Format::Latex,
-            "chktex",
-            Status::Fail,
-            format!("spawn error: {e}"),
-        ),
+        Err(e) => finding(fixture, Format::Latex, "chktex", Status::Fail, format!("spawn error: {e}")),
     }
 }
 
@@ -830,13 +800,7 @@ fn lint_pdf_qpdf(fixture: &str, file: &Path, opts: &ValidateOpts) -> Finding {
                 finding(fixture, Format::Pdf, "qpdf", Status::Fail, line)
             }
         }
-        Err(e) => finding(
-            fixture,
-            Format::Pdf,
-            "qpdf",
-            Status::Fail,
-            format!("spawn error: {e}"),
-        ),
+        Err(e) => finding(fixture, Format::Pdf, "qpdf", Status::Fail, format!("spawn error: {e}")),
     }
 }
 
@@ -896,13 +860,7 @@ fn run_simple_linter(
             let detail = summarise_failure(&combined);
             finding(fixture, format, linter, Status::Fail, detail)
         }
-        Err(e) => finding(
-            fixture,
-            format,
-            linter,
-            Status::Fail,
-            format!("spawn error: {e}"),
-        ),
+        Err(e) => finding(fixture, format, linter, Status::Fail, format!("spawn error: {e}")),
     }
 }
 
@@ -931,11 +889,7 @@ mod tests {
             return; // fixtures not provisioned in this build env
         }
         let f = lint_pdf_smoke("bad", &bad, &opts_default());
-        assert_ne!(
-            f.status,
-            Status::Ok,
-            "smoke check accepted a non-PDF: {f:?}"
-        );
+        assert_ne!(f.status, Status::Ok, "smoke check accepted a non-PDF: {f:?}");
     }
 
     // ── is_html5_tidy banner detection ────────────────────────────────────
@@ -963,7 +917,10 @@ mod tests {
     #[cfg(unix)]
     fn fake_executable(prefix: &str, body: &str) -> tempfile::TempPath {
         use std::os::unix::fs::PermissionsExt;
-        let mut f = tempfile::Builder::new().prefix(prefix).tempfile().unwrap();
+        let mut f = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempfile()
+            .unwrap();
         writeln!(f, "#!/bin/sh\n{body}").unwrap();
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         f.into_temp_path()
@@ -1033,8 +990,7 @@ mod tests {
             "cat <<'EOF'\nWarning 1 in foo.tex line 1: Use \\(...\\) instead\nWarning 2 in foo.tex line 2: Use \\(...\\) instead\nEOF",
         );
         let mut opts = opts_default();
-        opts.linter_overrides
-            .insert("chktex".into(), fake.to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Ok, "{f:?}");
         assert!(f.detail.contains("2 warning"), "{f:?}");
@@ -1046,8 +1002,7 @@ mod tests {
         let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_chktex("cat <<'EOF'\nError 1 in foo.tex line 1: Unmatched brace\nEOF");
         let mut opts = opts_default();
-        opts.linter_overrides
-            .insert("chktex".into(), fake.to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Fail, "{f:?}");
         assert!(f.detail.contains("1 error"), "{f:?}");
@@ -1059,8 +1014,7 @@ mod tests {
         let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_chktex(":"); // no-op, no output
         let mut opts = opts_default();
-        opts.linter_overrides
-            .insert("chktex".into(), fake.to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Ok, "{f:?}");
         assert_eq!(f.detail, "");
@@ -1072,8 +1026,7 @@ mod tests {
     fn locate_prefers_override_over_path() {
         let mut opts = opts_default();
         let fake = PathBuf::from("/nonexistent/markdownlint-cli2");
-        opts.linter_overrides
-            .insert("markdownlint-cli2".into(), fake.clone());
+        opts.linter_overrides.insert("markdownlint-cli2".into(), fake.clone());
         assert_eq!(locate("markdownlint-cli2", &opts), Some(fake));
     }
 
@@ -1092,11 +1045,7 @@ mod tests {
     fn exit_code_zero_when_clean() {
         let o = ValidateOutcome {
             schema_version: 1,
-            summary: Summary {
-                pass: 3,
-                fail: 0,
-                skipped: 0,
-            },
+            summary: Summary { pass: 3, fail: 0, skipped: 0 },
             results: vec![],
         };
         assert_eq!(o.exit_code(false), 0);
@@ -1107,11 +1056,7 @@ mod tests {
     fn exit_code_one_on_fail_regardless_of_require_all() {
         let o = ValidateOutcome {
             schema_version: 1,
-            summary: Summary {
-                pass: 1,
-                fail: 2,
-                skipped: 1,
-            },
+            summary: Summary { pass: 1, fail: 2, skipped: 1 },
             results: vec![],
         };
         assert_eq!(o.exit_code(false), 1);
@@ -1122,11 +1067,7 @@ mod tests {
     fn exit_code_two_when_require_all_and_skipped() {
         let o = ValidateOutcome {
             schema_version: 1,
-            summary: Summary {
-                pass: 1,
-                fail: 0,
-                skipped: 2,
-            },
+            summary: Summary { pass: 1, fail: 0, skipped: 2 },
             results: vec![],
         };
         assert_eq!(o.exit_code(false), 0);
@@ -1139,11 +1080,7 @@ mod tests {
     fn render_json_has_schema_version_and_summary() {
         let o = ValidateOutcome {
             schema_version: 1,
-            summary: Summary {
-                pass: 1,
-                fail: 1,
-                skipped: 1,
-            },
+            summary: Summary { pass: 1, fail: 1, skipped: 1 },
             results: vec![Finding {
                 fixture: "x".into(),
                 format: Format::Pdf,
@@ -1164,11 +1101,7 @@ mod tests {
     fn render_text_table_has_header_and_summary() {
         let o = ValidateOutcome {
             schema_version: 1,
-            summary: Summary {
-                pass: 1,
-                fail: 0,
-                skipped: 0,
-            },
+            summary: Summary { pass: 1, fail: 0, skipped: 0 },
             results: vec![Finding {
                 fixture: "x".into(),
                 format: Format::Html,
@@ -1190,10 +1123,7 @@ mod tests {
     #[test]
     fn collect_fixtures_single_file() {
         let f = std::env::temp_dir().join("rustlab-validate-test-single.md");
-        std::fs::File::create(&f)
-            .unwrap()
-            .write_all(b"# x")
-            .unwrap();
+        std::fs::File::create(&f).unwrap().write_all(b"# x").unwrap();
         let got = collect_fixtures(&f).expect("single .md file is valid");
         assert_eq!(got, vec![f.clone()]);
         let _ = std::fs::remove_file(&f);

@@ -87,8 +87,8 @@ fn widgets_demo_keeps_full_width_bars() {
     assert!(!has_panel(&html), "widgets_demo must stay bars:\n{html}");
     // Option forms are `class="rl-widget rl-widget-options"`. A prefix of
     // `class="rl-widget` also matches labels and inputs.
-    let forms =
-        html.matches("class=\"rl-widget\"").count() + html.matches("class=\"rl-widget ").count();
+    let forms = html.matches("class=\"rl-widget\"").count()
+        + html.matches("class=\"rl-widget ").count();
     assert_eq!(forms, 3, "{html}");
     assert!(
         html.contains("href=\"#plot-1\""),
