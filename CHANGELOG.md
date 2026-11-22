@@ -6,14 +6,19 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.83
+## 0.3.82
 
 ### Performance
 - **Logical arrays and elementwise `max` / `min`.** `L(:)` and linear reads of a logical array copy bytes in column-major order instead of looking up each element; a logical (or numeric) right-hand side written into a logical region (`D(t, :) = d(:)`, `L(rows, cols) = M`) is written straight into storage (`LogicalArray::column_major_bytes`, `gather_column_major`, `set_region`). Two-argument `max` / `min` of real-stored arrays is one select per element. Results are unchanged (the Viterbi notebook rendered byte-identical before the notebook edits below); one Viterbi decode of 400,000 bits went from 0.66 s to 0.31 s.
-- **`comm/viterbi_fec` default render** 11.4 s → 2.7 s (release build, 4 cores; 11.6–20.4 s on CI runners before), peak memory 255 MB → 300 MB.
+- **`comm/viterbi_fec` default render** 11.4 s → 2.7 s (release build, 4 cores; 11.6–20.4 s → 5.8 s on CI runners), peak memory 255 MB → 300 MB.
 
 ### Breaking / behavior changes
 - **`comm/viterbi_fec`** decodes coded frames of 1,000 bits instead of 10,000 (many short frames side by side cost far fewer trellis steps), encodes all frames of a point in one `conv_encode` call, and stops a BER point after 40,000 bits once it has 300 errors; points below a BER of 7.5e-3 still get 400,000 bits. The hard-vs-soft section reuses the soft rate-1/2 points of the main sweep and simulates only the hard-decision curve. The random draws differ, so the figures move within their noise: Eb/N0 at 1e-4 is 3.11 / 3.26 / 3.82 / 4.46 dB for rates 1/3, 1/2, 2/3, 3/4 (was 3.04 / 3.33 / 3.91 / 4.31), coding gains 5.29 / 5.13 / 4.58 / 3.93 dB (was 5.35 / 5.06 / 4.48 / 4.08), and the soft / hard crossings are 3.26 / 5.53 dB, a 2.27 dB soft-decision gain (was 3.54 / 5.80 dB, 2.25 dB). The uncoded curve and the one-frame burst example are unchanged.
+
+## 0.3.81
+
+### Breaking / behavior changes
+- **`length` of an empty array is 0.** `length(X)` (and its alias `len`) returned the largest dimension even when another was 0, so `length(zeros(4, 0))` was 4 and `length(S(:, []))` on a 4×5 sparse matrix was 4. MATLAB returns 0 whenever `isempty(X)`, else `max(size(X))`, and rustlab now does too, for dense, complex, logical, integer, `Tensor3`, and sparse arrays. Non-empty arrays are unchanged, and `numel`, `isempty`, and `size` already agreed with MATLAB. Migration: a script that used `length` of an `m×0` or `0×n` array as a row or column count should use `size(X, 1)` or `size(X, 2)`.
 
 ## 0.3.80
 

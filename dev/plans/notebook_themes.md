@@ -3,14 +3,15 @@
 **Status:** planning (v2 of this plan). Shipped earlier under v1: F1 (named
 Catppuccin builtins), F2 (luminance dark/light), F5 (`--rl-*` CSS custom
 properties), the user half of F8 (`~/.rustlabrc` `[notebook] theme`), and
-the font-role contrast pass (PR #57). Nothing in this revision is
-implemented.
-**Current phase:** Phase 1 (not started). Michael settled six of the
-twelve open questions on 2026-11-16 (see
-[Decisions](#decisions-2026-11-16)); the six left open do not block
-Phase 1.
+the font-role contrast pass (PR #57). Phase 1 of this revision (design
+tokens) shipped in #147 (0.3.66). Phases 2–9 are not implemented.
+**Current phase:** Phase 2 (theme files, not started; ready to
+implement). Michael settled six of the twelve open questions on
+2026-11-16 (see [Decisions](#decisions-2026-11-16)); the six left open
+do not block Phase 2.
 **Created:** 2026-09-13. **Revised:** 2026-11-13 against `main` at 0.3.65;
-decisions recorded 2026-11-16.
+decisions recorded 2026-11-16; Phase 2 scope updated 2026-11-22 against
+`main` at 0.3.80.
 **Surfaces:** notebook HTML (`render`), `notebook watch`, LaTeX/PDF,
 Plotly and SVG plots inside notebooks, and a new embeddable HTML output.
 The committed `gallery/*.md` stays GitHub-styled; GitHub owns that CSS.
@@ -107,6 +108,8 @@ changing anything.
 - `watch` serves the same HTML and adds chrome (`server/page.rs`,
   `server/cell.rs`, `server/ws.rs`, `comments.rs`). That chrome reads
   `--rl-*` tokens too. It has three hardcoded `rgba(0,0,0,…)` shadows.
+  (At 0.3.80 the literals left are listed in Phase 2's watch chrome
+  item, §8.)
 
 ### Assets and the "self-contained" rule
 
@@ -333,16 +336,25 @@ Rules:
   a list of family names (quoted on output) and generic families. Fonts
   are system stacks only (decision 2): a theme names families the
   reader's machine may have and ends in a generic family. It cannot ship
-  or point at font files, and there is no `@font-face`. Lengths:
+  or point at font files, and there is no `@font-face`. The Liberation
+  Sans compiled into `rustlab-plot` since 0.3.68 (#149) is only the
+  raster plot font (PNG, GIF, viewer); it is not a notebook font and
+  themes cannot name it as a bundled face. Lengths:
   a number with `px`, `rem`, `em`, or `ch`. Nothing else is accepted
   (§7 explains why).
 - Contrast is computed at load time for every role on every surface it is
-  painted on, using the same surface table as the unit tests. Default is
-  a warning per failing pair; `--strict` (and `rustlab-notebook check`)
-  makes it an error. Builtins must pass with no warnings.
+  painted on, using the same surface table as the unit tests. `render`
+  and `watch` print a warning per failing pair and carry on. `theme
+  check` is where contrast fails a build: it exits nonzero on any
+  failing pair. `--strict` is not used for this: `render --strict`
+  already means exit 1 when a cell errors (0.3.44) and `check --strict`
+  promotes info to warnings, so contrast gets its own switch,
+  `render --theme-contrast=error`, for a CI that renders and checks in
+  one step. Builtins must pass with no warnings.
 - `rustlab-notebook theme` subcommand: `theme list` (builtins and
   discovered files), `theme show NAME` (resolved tokens), `theme check
-  FILE` (validation and a contrast table). This is the authoring loop.
+  NAME|FILE` (validation and a contrast table; exit 1 on a contrast or
+  validation failure). This is the authoring loop.
 
 ### 1.4 Where themes come from, and precedence
 
@@ -353,8 +365,22 @@ Carried over from v1 (F4, F6, F8). The project config location is
 2. Notebook frontmatter: `theme: course` (a name, never a path, so a
    notebook cannot read arbitrary files).
 3. Project config: `rustlab.toml` `[notebook] theme`.
-4. User rc: `~/.rustlabrc` `[notebook] theme` (shipped).
+4. User rc: `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml`
+   `[notebook] theme` (shipped; then `[plot] theme`, as today).
 5. Default: `mocha` (decision 1).
+
+In short: CLI > frontmatter > `rustlab.toml` > user rc > `mocha`.
+
+**rc names beyond the four.** Today `[notebook] theme` parses into
+`rustlab_config::ColorTheme`, an enum of `Mocha`, `Macchiato`, `Frappe`,
+`Latte` (plus `dark` / `light`), so any other name is an invalid-value
+error. Phase 2 changes `[notebook] theme` in both the rc and
+`rustlab.toml` to a theme name string that is resolved by the lookup
+below, so a user can set a project or user theme file as their default.
+`[plot] theme` keeps the enum. An unknown name is reported when a
+render resolves it, naming the config file. `docs/rustlabrc.example.toml`
+says "v1 is user-global only. Project-local … out of scope"; Phase 2
+rewrites that line to point at `rustlab.toml` and the precedence above.
 
 **Finding `rustlab.toml`.** The project root is the nearest directory,
 starting at the rendered file's directory (or the input directory for a
@@ -785,7 +811,8 @@ Recommendation:
   head and stripe colours for every theme's print variant.
 - **Accents.** Heading and link colours must reach 4.5:1 on white in the
   print variant. Builtins are tuned to pass; a theme file that fails gets
-  the usual warning, or an error under `--strict`.
+  the usual warning, or an error from `theme check` /
+  `--theme-contrast=error`.
 - **Plots in PDF** use the print variant's plot tokens and colorway, so
   a `paper` PDF and a `paper` web page show the same series colours.
 - `--pdf-theme NAME` lets an author keep a different print look than the
@@ -802,7 +829,7 @@ behaviour, then the code.
 | --- | --- | --- |
 | Golden files | Full HTML, LaTeX, and Markdown output for a fixture set (`quick_look.md`, a table, a callout of each kind, a failing cell, a plot, math) under each builtin theme. Phase 1 refactors must leave the four Catppuccin goldens unchanged except for additive `:root` lines. Regenerated with `UPDATE_GOLDEN=1`; reviewed in the PR diff. | `crates/rustlab-notebook/tests/golden/` |
 | Contrast matrix | Generalise `every_builtin_font_meets_wcag_aa_on_its_surfaces` to iterate over every registered theme, both sides of a pair, and the print variant. Add computed surfaces: table head and stripe (the same mix the CSS uses, computed with `blend_srgb`), callout fill, link on page, focus ring at 3:1, plot text on plot background, each colorway entry at 3:1 on the plot background (WCAG 1.4.11, graphical objects). `contrast` asserts 7:1 for text and accents. | `rustlab-plot/src/theme.rs` tests |
-| Theme files | Parse and resolve: inherit chains, cycle errors, unknown keys, bad hex, unknown palette names, unknown print font, pair resolution, precedence (CLI > frontmatter > `rustlab.toml` > rc > default), `rustlab.toml` discovery (nearest ancestor wins, none found, `theme_dir` escaping the project root refused), font values with a `url(` or `@font-face` rejected, and the value grammar rejecting injection attempts (`red;}`, `</style>`, `url(…)`, `@import`, `expression(`). | `rustlab-plot` and `rustlab-notebook` unit tests |
+| Theme files | Parse and resolve: inherit chains, cycle errors, unknown keys, bad hex, unknown palette names, unknown print font, pair resolution, precedence (CLI > frontmatter > `rustlab.toml` > rc > default), `rustlab.toml` discovery (nearest ancestor wins, none found, `theme_dir` escaping the project root refused), rc and `rustlab.toml` `[notebook] theme` naming a theme file, `theme check` exiting nonzero on a failing pair and `render --strict` unaffected by contrast, font values with a `url(` or `@font-face` rejected, and the value grammar rejecting injection attempts (`red;}`, `</style>`, `url(…)`, `@import`, `expression(`). | `rustlab-plot` and `rustlab-notebook` unit tests |
 | CLI flags | `--embed` with a non-HTML format, embed-only flags without `--embed`, and `--index` / `--no-toc` with `--embed` are each refused before any file is written. | `crates/rustlab-notebook/tests/` |
 | Class rename | No old class name (from the Phase 5 rename table) appears in emitted HTML, CSS, or JS; watch client, cell editor, and gitdiff selectors still match their elements. | `render.rs` and `server/` tests |
 | Embed structure | Fragment has no `<html>`, `<head>`, `<body>`, or `<style>`; no `<script>` except `type="application/json"`; every id carries the prefix; two notebooks rendered into one host fixture have disjoint ids; plot JSON escapes `<`, `>`, `&`, U+2028, U+2029. | `crates/rustlab-notebook/tests/embed.rs` |
@@ -883,22 +910,45 @@ strings cannot close the `<script>` element.
 ## 8. Phases
 
 Each phase is one PR on its own `feature/` branch, with docs, REPL or CLI
-help, `CHANGELOG.md`, and an `AGENTS.md` update in the same PR. Version
-numbers assume no other release lands in between; each phase takes the
-next patch number at the time it merges.
+help, `CHANGELOG.md`, and an `AGENTS.md` update in the same PR. Each
+phase takes the next patch number when it merges ("next patch at
+merge"); other work keeps landing in between, so no phase has a fixed
+number. 0.3.67–0.3.80 are already taken, so Phase 2 is likely about
+0.3.81 or 0.3.82.
 
 | Phase | Scope | Visible change | Version |
 | --- | --- | --- | --- |
 | 0 | This plan | none | none |
-| 1 | Token model refactor: `ResolvedTheme`, owned `ThemeColors`, new token groups with values equal to today's literals, stylesheet reads them, golden-file harness. | Additive `:root` lines only | 0.3.66 |
-| 2 | Theme files: TOML schema, `inherits`, palette, value grammar, contrast warnings, `--theme-file`, `--strict`, `theme list/show/check`, discovery directories, frontmatter `theme:`, project config in `rustlab.toml` (ancestor search, `[notebook] theme` and `theme_dir`). (v1 F3, F4, F6, F8 project half.) | New flags and keys | 0.3.67 |
-| 3 | Light/dark pairs, `--scheme`, `data-rl-scheme`, then the four new builtins (`clean`, `paper`, `docs`, `contrast`) and `catppuccin` pair. Screenshot and axe harness lands here, with baselines. | New themes | 0.3.68 |
-| 4 | Plot theming: colorway token, JSON figure blocks plus `rustlab-notebook.js` for static and watch, runtime template with probe resolution, scheme-switch relayout, SVG colorway parity, Mermaid check. | New themes' plots change colour; Catppuccin unchanged | 0.3.69 |
-| 5 | CSS split and scoping: notebook vs page CSS, `:where(.rl-notebook)`, `@layer rustlab`, `rl-` class renames with the rename table, CHANGELOG migration note, and downstream selector check (§3.3.1), scoped reset, hostile-host hardening. | Standalone looks the same; class names change (breaking for custom CSS) | 0.3.70 |
-| 6 | `--embed` flag on `render` (HTML only): fragment, id prefixing, `--heading-offset`, `--strip-title`, `--embed-toc`, `.meta.json`, `--asset-base` with SRI, `--no-assets` / `--no-katex` / `--no-plotly`, `docs/embedding.md` leading with Hugo and MkDocs (worked examples and a sample site), shorter Jekyll / Astro / Docusaurus recipes, the CSP snippet, lesson-site-pattern update. | New output mode | 0.3.71 |
-| 7 | Inherit mode: `var()` references in theme files, host presets in `docs/themes/hosts/` (generic Hugo, MkDocs, Material for MkDocs first), host dark-mode mapping, Hugo and MkDocs fixture-host screenshot tests. | New theme capability | 0.3.72 |
-| 8 | PDF parity: `[print]` sections, print font list, `rules` and `plain` tables via `booktabs`, `--pdf-theme`, print-variant contrast tests. | `paper` and light themes now theme the PDF; dark themes keep Latte | 0.3.73 |
-| 9 | Watch theme picker (v1 F7): menu of builtins and discovered themes, scheme toggle, optional `theme:` write to frontmatter under `--editable`. | New watch UI | 0.3.74 |
+| 1 | Token model refactor: `ResolvedTheme`, owned `ThemeColors`, new token groups with values equal to today's literals, stylesheet reads them, golden-file harness. | Additive `:root` lines only | 0.3.66 (shipped, #147) |
+| 2 | Theme files: TOML schema, `inherits`, palette, value grammar, contrast warnings, `--theme-file`, `theme list/show/check` (`check` exits nonzero on contrast failures), `render --theme-contrast=error`, discovery directories, frontmatter `theme:`, project config in `rustlab.toml` (ancestor search, `[notebook] theme` and `theme_dir`), rc `[notebook] theme` accepting any theme name, watch chrome colours on tokens (below). (v1 F3, F4, F6, F8 project half.) | New flags and keys | next patch at merge |
+| 3 | Light/dark pairs, `--scheme`, `data-rl-scheme`, then the four new builtins (`clean`, `paper`, `docs`, `contrast`) and `catppuccin` pair. Screenshot and axe harness lands here, with baselines. | New themes | next patch at merge |
+| 4 | Plot theming: colorway token, JSON figure blocks plus `rustlab-notebook.js` for static and watch, runtime template with probe resolution, scheme-switch relayout, SVG colorway parity, Mermaid check. | New themes' plots change colour; Catppuccin unchanged | next patch at merge |
+| 5 | CSS split and scoping: notebook vs page CSS, `:where(.rl-notebook)`, `@layer rustlab`, `rl-` class renames with the rename table, CHANGELOG migration note, and downstream selector check (§3.3.1), scoped reset, hostile-host hardening. | Standalone looks the same; class names change (breaking for custom CSS) | next patch at merge |
+| 6 | `--embed` flag on `render` (HTML only): fragment, id prefixing, `--heading-offset`, `--strip-title`, `--embed-toc`, `.meta.json`, `--asset-base` with SRI, `--no-assets` / `--no-katex` / `--no-plotly`, `docs/embedding.md` leading with Hugo and MkDocs (worked examples and a sample site), shorter Jekyll / Astro / Docusaurus recipes, the CSP snippet, lesson-site-pattern update. | New output mode | next patch at merge |
+| 7 | Inherit mode: `var()` references in theme files, host presets in `docs/themes/hosts/` (generic Hugo, MkDocs, Material for MkDocs first), host dark-mode mapping, Hugo and MkDocs fixture-host screenshot tests. | New theme capability | next patch at merge |
+| 8 | PDF parity: `[print]` sections, print font list, `rules` and `plain` tables via `booktabs`, `--pdf-theme`, print-variant contrast tests. | `paper` and light themes now theme the PDF; dark themes keep Latte | next patch at merge |
+| 9 | Watch theme picker (v1 F7): menu of builtins and discovered themes, scheme toggle, optional `theme:` write to frontmatter under `--editable`. | New watch UI | next patch at merge |
+
+**Phase 2 also covers `notebook watch` chrome.** Customising the live
+`notebook watch` page is a primary use case for theme files, so a custom
+theme must reach every pixel of watch, not only the rendered notebook.
+Phase 1 left these literals in the watch chrome; Phase 2 moves each onto
+a token (`--rl-shadow` for shadows, plus new scrim and banner tokens
+derived from the theme's `bg` / `error_text` so builtins keep today's
+look within the contrast rules):
+
+- `comments.rs`: comment popup shadow `0 10px 28px rgba(0, 0, 0, 0.35)`
+  (and the existing `var(--rl-shadow, …)` fallback stays a fallback);
+- `server/drawer.rs`: scrim `rgba(17, 17, 27, 0.28)` and drawer shadow
+  `8px 0 28px rgba(0, 0, 0, 0.45)`;
+- `server/page.rs`: menu shadow `0 8px 24px rgba(0,0,0,.28)` and source
+  pane shadow `-8px 0 24px rgba(0,0,0,.25)`;
+- `server/ws.rs`: the disconnected banner's inline
+  `background:#a23;color:white`.
+
+A test renders a watch page under a theme file with distinctive token
+values and asserts none of those literals (and no other hex or `rgba(`
+colour) remain in the served chrome CSS and JS.
 
 Ordering notes:
 
@@ -918,8 +968,8 @@ Ordering notes:
 Check a box when that phase's PR is merged. Keep the **Current phase**
 line at the top in sync.
 
-- [ ] Phase 1: token model refactor (status: not started)
-- [ ] Phase 2: theme files (status: not started)
+- [x] Phase 1: token model refactor (status: complete, #147, 0.3.66)
+- [ ] Phase 2: theme files (status: not started; current phase)
 - [ ] Phase 3: pairs and new builtins (status: not started)
 - [ ] Phase 4: plot theming (status: not started)
 - [ ] Phase 5: scoped CSS and class prefix (status: not started)
@@ -934,6 +984,10 @@ line at the top in sync.
 
 Michael answered six of the open questions. The plan text above has been
 updated to match; each item names the sections it changed.
+
+These decisions, with the v2 plan they answer, supersede Michael's
+2026-10-02 decision of "four palettes only, no custom overrides":
+custom theme files (Phase 2) and new builtins (Phase 3) are approved.
 
 1. **Default theme stays `mocha`.** (Was open question 1.) No downstream
    render changes unless an author picks a theme. `clean` and the other
@@ -968,7 +1022,7 @@ updated to match; each item names the sections it changed.
 
 Questions 1–4, 8, and 9 are resolved (see
 [Decisions](#decisions-2026-11-16)); their numbers are kept so earlier
-references still line up. Six remain open. None blocks Phase 1; each
+references still line up. Six remain open. None blocks Phase 2; each
 names the phase that needs the answer.
 
 1. ~~**Default theme.**~~ Resolved: keep `mocha` (decision 1).
@@ -1019,7 +1073,8 @@ The v1 plan listed F1–F8. Where each one went:
 
 v1 decisions that still hold: palette is separate from roles; `inherits`
 with partial override; builtins win name collisions; contrast warns by
-default and errors under `--strict` / `check`; no environment variable
+default and errors under `theme check` / `--theme-contrast=error`
+(v1 said `--strict`; that flag already means cell errors); no environment variable
 for the theme.
 
 ## Appendix B: references
