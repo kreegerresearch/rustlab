@@ -108,7 +108,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "hist", brief: "Histogram — plot and return bin counts",
         detail: "hist(v)        — 10 bins (default)\nhist(v, n)     — n bins\nAssigned form returns a 2×n matrix: row 1 = bin centers, row 2 = counts.\nA bare `hist(v)` line draws the chart and echoes nothing.\n\nAlias: histogram()" },
     HelpEntry { name: "len",      brief: "Length of vector/string  (alias: length)",
-        detail: "len(x)  — number of elements in a vector, rows in a matrix, or chars in a string" },
+        detail: "len(x)  — number of elements in a vector, the largest dimension of a matrix (max(size(M))), or chars in a string. 0 when any dimension is 0: length(zeros(4, 0)) is 0" },
     HelpEntry { name: "length",   brief: "Alias for len",
         detail: "length(x)  — see len" },
     HelpEntry { name: "numel",    brief: "Total number of elements",

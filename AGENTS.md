@@ -1352,7 +1352,7 @@ primary     = NUMBER | STRING | IDENT
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
 | `len` | `len(v)` | Number of elements |
-| `length` | `length(v)` | Alias for `len`. Scalar / complex / bool return `1`; matrix returns `max(size(M))`; Tensor3 returns the longest axis. The `length(scalar)` form was added in 0.3.4 (previously errored) so generic helpers can call `length(x)` without `length([x])` boxing. |
+| `length` | `length(v)` | Alias for `len`. Scalar / complex / bool return `1`; matrix returns `max(size(M))`; Tensor3 returns the longest axis. The `length(scalar)` form was added in 0.3.4 (previously errored) so generic helpers can call `length(x)` without `length([x])` boxing. Any zero dimension gives 0 (MATLAB; `length(zeros(4, 0))` and a 4×0 sparse are 0), since 0.3.81. |
 | `numel` | `numel(x)` | Total elements (rows×cols for dense or sparse matrices, m·n·p for tensor3) |
 | `isempty` | `isempty(x)` | `true` when any dimension is 0 (`numel(x) == 0`) or `x` is `""`. `S(:, [])` / `S([], :)` are empty sparse m×0 / 0×n |
 | `size` | `size(x)` / `size(x, dim)` | `[rows, cols]` or `[m, n, p]` (tensor3) as a Vector; `size(x, 3)` valid only for tensor3 |

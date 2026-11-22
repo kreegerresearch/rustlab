@@ -116,9 +116,9 @@ fn numel_size_isempty_issparse_of_empty_selections() {
     for (n, want) in [("a1", 4.0), ("a2", 0.0), ("b1", 0.0), ("b2", 5.0)] {
         assert_eq!(scalar(&ev, n), want, "{n}");
     }
-    // Dense rule: length is the longest dimension.
-    assert_eq!(scalar(&ev, "lA"), 4.0);
-    assert_eq!(scalar(&ev, "lB"), 5.0);
+    // MATLAB rule (same as dense): an empty array has length 0.
+    assert_eq!(scalar(&ev, "lA"), 0.0);
+    assert_eq!(scalar(&ev, "lB"), 0.0);
 }
 
 #[test]

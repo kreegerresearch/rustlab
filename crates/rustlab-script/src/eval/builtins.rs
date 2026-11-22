@@ -4246,20 +4246,26 @@ fn nextpow2_scalar(abs_x: f64) -> f64 {
     p
 }
 
+/// MATLAB `length`: 0 when any dimension is 0, else the largest dimension.
+fn length_of_dims(dims: &[usize]) -> f64 {
+    if dims.contains(&0) {
+        0.0
+    } else {
+        dims.iter().copied().max().unwrap_or(0) as f64
+    }
+}
+
 fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("len", &args, 1)?;
     match &args[0] {
         Value::Vector(v) => Ok(Value::Scalar(Shared::len(v) as f64)),
-        // Octave/matlab convention: length(M) = max(size(M)). For column or
-        // row vectors this gives the natural length; for general matrices
-        // it gives the longest dimension. Use numel(M) for total element
-        // count and size(M) for full shape information.
-        Value::Matrix(m) => Ok(Value::Scalar(
-            Shared::shape(m)[0].max(Shared::shape(m)[1]) as f64
-        )),
-        Value::IntArray { rows, cols, .. } => Ok(Value::Scalar((*rows).max(*cols) as f64)),
-        Value::Logical(a) => Ok(Value::Scalar(a.rows().max(a.cols()) as f64)),
-        Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
+        // Octave/matlab convention: length(M) = max(size(M)), and 0 when M
+        // is empty (a 4×0 matrix has length 0, not 4). Use numel(M) for
+        // total element count and size(M) for full shape information.
+        Value::Matrix(m) => Ok(Value::Scalar(length_of_dims(Shared::shape(m)))),
+        Value::IntArray { rows, cols, .. } => Ok(Value::Scalar(length_of_dims(&[*rows, *cols]))),
+        Value::Logical(a) => Ok(Value::Scalar(length_of_dims(&[a.rows(), a.cols()]))),
+        Value::Tensor3(t) => Ok(Value::Scalar(length_of_dims(t.shape()))),
         // Scalar / complex / bool are all 1-element values; matlab's
         // length() on a scalar returns 1, not an error. Removes the
         // need for `length([x])` boxing in generic code that handles
@@ -4272,7 +4278,7 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
         Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
         Value::SparseVector(sv) => Ok(Value::Scalar(sv.len as f64)),
-        Value::SparseMatrix(sm) => Ok(Value::Scalar(sm.rows.max(sm.cols) as f64)),
+        Value::SparseMatrix(sm) => Ok(Value::Scalar(length_of_dims(&[sm.rows, sm.cols]))),
         other => Err(ScriptError::type_err(format!(
             "len: unsupported type {}",
             other

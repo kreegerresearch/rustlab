@@ -24,8 +24,13 @@ should re-validate against those entries when upgrading.
   - the ⋯ menu button's text was 3.48:1 on Latte at `opacity: 0.72`; it is now `0.85` (4.63:1 Latte, at least 6.96:1 on the dark themes);
   - a stale cell (an edited cell waiting for its re-run) at `opacity: .65` was 4.38:1 on Frappé and 3.10:1 on Latte; it is now `0.85` (6.34:1 Frappé, 4.91:1 Latte);
   - form-field boundaries (widget number inputs, the watch compare-ref field, the inline cell editor) used the `border` role, 1.17–1.59:1 against the page, menu, or code panel; they now use `text_dim` mixed 75% into the page, at least 3.04:1 against page, menu, and code panel.
-  The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.80.
+  The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.81.
 - **Watch page shadows and banner** are written as `color-mix(in srgb, var(--rl-shadow-color, #000000) N%, transparent)` and `var(--rl-banner-bg, #aa2233)`; they paint the same pixels as before. The comment popup rule (in every HTML page that shows comments) changes the same way.
+
+## 0.3.81
+
+### Breaking / behavior changes
+- **`length` of an empty array is 0.** `length(X)` (and its alias `len`) returned the largest dimension even when another was 0, so `length(zeros(4, 0))` was 4 and `length(S(:, []))` on a 4×5 sparse matrix was 4. MATLAB returns 0 whenever `isempty(X)`, else `max(size(X))`, and rustlab now does too, for dense, complex, logical, integer, `Tensor3`, and sparse arrays. Non-empty arrays are unchanged, and `numel`, `isempty`, and `size` already agreed with MATLAB. Migration: a script that used `length` of an `m×0` or `0×n` array as a row or column count should use `size(X, 1)` or `size(X, 2)`.
 
 ## 0.3.80
 

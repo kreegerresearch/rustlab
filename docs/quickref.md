@@ -139,7 +139,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Scalar, n×n, or m×n integers. A row is `randi(imax, 1, n)` |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
-| `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
+| `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. An array with a zero dimension (`zeros(4, 0)`, sparse `S(:, [])`) has length 0. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count (dense or sparse) |
 | `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`) or `x` is `""`; e.g. `isempty(S(:, []))` |

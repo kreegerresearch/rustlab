@@ -1261,6 +1261,133 @@ mod evaluator_tests {
         assert!(close(get_scalar(&ev, "a"), 7.0));
     }
 
+    /// Evaluate `length(<expr>)` and `len(<expr>)` and return both.
+    fn length_and_len(setup: &str, expr: &str) -> (f64, f64) {
+        let ev = eval_str(&format!("{setup}\na = length({expr});\nb = len({expr});"));
+        (get_scalar(&ev, "a"), get_scalar(&ev, "b"))
+    }
+
+    #[test]
+    fn length_of_empty_dense_is_zero() {
+        // MATLAB: length(X) = 0 when isempty(X), else max(size(X)).
+        for expr in [
+            "zeros(4, 0)",
+            "zeros(0, 5)",
+            "zeros(0, 0)",
+            "ones(0, 3)",
+            "[]",
+        ] {
+            assert_eq!(length_and_len("", expr), (0.0, 0.0), "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_empty_complex_is_zero() {
+        for expr in [
+            "zeros(4, 0) + 1j",
+            "zeros(0, 5) * (1 + 2j)",
+            "zeros(0, 0) + 1j",
+        ] {
+            assert_eq!(length_and_len("", expr), (0.0, 0.0), "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_empty_logical_is_zero() {
+        for expr in [
+            "true(4, 0)",
+            "false(0, 5)",
+            "zeros(0, 0) > 1",
+            "zeros(4, 0) > 1",
+        ] {
+            assert_eq!(length_and_len("", expr), (0.0, 0.0), "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_empty_integer_and_tensor3_is_zero() {
+        for expr in [
+            "int32(zeros(4, 0))",
+            "uint8(zeros(0, 5))",
+            "zeros3(4, 0, 3)",
+            "zeros3(0, 0, 0)",
+        ] {
+            assert_eq!(length_and_len("", expr), (0.0, 0.0), "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_empty_sparse_is_zero() {
+        let setup = "S = sparse([1, 2, 4], [1, 3, 5], [1, 2, 3], 4, 5);";
+        for expr in [
+            "S(:, [])",
+            "S([], :)",
+            "S([], [])",
+            "spzeros(4, 0)",
+            "spzeros(0, 5)",
+        ] {
+            assert_eq!(length_and_len(setup, expr), (0.0, 0.0), "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_empty_string_and_string_array_is_zero() {
+        assert_eq!(length_and_len("", "\"\""), (0.0, 0.0));
+        assert_eq!(length_and_len("", "{}"), (0.0, 0.0));
+    }
+
+    #[test]
+    fn length_agrees_with_isempty_and_numel() {
+        // length is 0 exactly when isempty is true, i.e. numel is 0.
+        let setup = "S = sparse([1, 2, 4], [1, 3, 5], [1, 2, 3], 4, 5);";
+        for expr in [
+            "zeros(4, 0)",
+            "zeros(0, 5)",
+            "zeros(0, 0)",
+            "true(4, 0)",
+            "S(:, [])",
+            "S([], :)",
+            "zeros3(4, 0, 3)",
+            "zeros(3, 7)",
+            "S",
+            "true(2, 6)",
+            "zeros3(2, 5, 3)",
+        ] {
+            let ev = eval_str(&format!(
+                "{setup}\na = length({expr});\nn = numel({expr});\ne = isempty({expr});"
+            ));
+            let empty = matches!(ev.get("e").unwrap(), Value::Bool(true));
+            assert_eq!(empty, get_scalar(&ev, "n") == 0.0, "{expr}");
+            assert_eq!(empty, get_scalar(&ev, "a") == 0.0, "{expr}");
+        }
+    }
+
+    #[test]
+    fn length_of_nonempty_is_unchanged() {
+        let setup = "S = sparse([1, 2, 4], [1, 3, 5], [1, 2, 3], 4, 5);";
+        let cases = [
+            ("zeros(3, 7)", 7.0),
+            ("zeros(7, 3)", 7.0),
+            ("zeros(4, 1)", 4.0),
+            ("zeros(1, 4)", 4.0),
+            ("ones(1, 1)", 1.0),
+            ("[1, 2, 3]", 3.0),
+            ("zeros(2, 5) + 1j", 5.0),
+            ("true(2, 6)", 6.0),
+            ("int32(zeros(6, 2))", 6.0),
+            ("zeros3(2, 5, 3)", 5.0),
+            ("S", 5.0),
+            ("S(:, 2:3)", 4.0),
+            ("sparsevec([1, 3], [1, 1], 6)", 6.0),
+            ("\"abc\"", 3.0),
+            ("{\"a\", \"b\"}", 2.0),
+            ("42", 1.0),
+        ];
+        for (expr, want) in cases {
+            assert_eq!(length_and_len(setup, expr), (want, want), "{expr}");
+        }
+    }
+
     #[test]
     fn vector_indexing_one_based() {
         let ev = eval_str("v = linspace(10, 50, 5)\nx = v(1)");
