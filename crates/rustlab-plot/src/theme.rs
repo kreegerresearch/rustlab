@@ -698,12 +698,49 @@ const FONT_BODY: &str =
     r#"-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif"#;
 const FONT_MONO: &str = r#""SF Mono", "Fira Code", "JetBrains Mono", monospace"#;
 
+/// Themes built at run time (theme files). Each distinct theme is leaked
+/// once and lives for the process, so a render can pass `&'static
+/// ThemeColors` like a builtin. Re-interning an equal theme returns the
+/// existing entry, so a long `watch` does not grow this per render.
+static INTERNED: std::sync::Mutex<Vec<&'static ResolvedTheme>> = std::sync::Mutex::new(Vec::new());
+
+/// Intern `theme` and return the process-lifetime copy.
+pub fn intern_theme(theme: ResolvedTheme) -> &'static ResolvedTheme {
+    let mut all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = all.iter().find(|t| ***t == theme) {
+        return existing;
+    }
+    let leaked: &'static ResolvedTheme = Box::leak(Box::new(theme));
+    all.push(leaked);
+    leaked
+}
+
+/// The most recently interned theme called `name`.
+pub fn interned_theme_named(name: &str) -> Option<&'static ResolvedTheme> {
+    let all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter().rev().find(|t| t.name == name).copied()
+}
+
+fn interned_for_colors(colors: &ThemeColors) -> Option<&'static ResolvedTheme> {
+    let all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter()
+        .find(|t| std::ptr::eq(&t.colors, colors))
+        .copied()
+}
+
 impl ResolvedTheme {
     /// Tokens for a builtin or any other [`ThemeColors`]. The name is
     /// `mocha` / `macchiato` / `frappe` / `latte` when `colors` is one of
     /// those statics, and `custom` otherwise. Design-token values do not
     /// depend on the palette: they point at the color tokens.
+    ///
+    /// The palette of an [`intern_theme`]d theme returns that theme, so its
+    /// typography, shape, and spacing reach the stylesheet through the
+    /// same `&ThemeColors` every renderer already takes.
     pub fn from_colors(colors: &ThemeColors) -> Self {
+        if let Some(t) = interned_for_colors(colors) {
+            return t.clone();
+        }
         let name = if std::ptr::eq(colors, &MOCHA) {
             "mocha"
         } else if std::ptr::eq(colors, &MACCHIATO) {
@@ -1349,6 +1386,29 @@ mod tests {
             assert_ne!(c.dx_add_bar.as_ref(), c.dx_mod_bar.as_ref(), "{name}");
             assert_ne!(c.dx_mod_bar.as_ref(), c.dx_del_bar.as_ref(), "{name}");
         }
+    }
+
+    #[test]
+    fn interned_theme_keeps_its_design_tokens() {
+        let mut t = ResolvedTheme::from_colors(&MOCHA);
+        t.name = "course".to_string();
+        t.colors.bg = Cow::Owned("#101010".to_string());
+        t.typography.measure = "72ch".to_string();
+        let a = intern_theme(t.clone());
+        let b = intern_theme(t.clone());
+        assert!(std::ptr::eq(a, b), "an equal theme is interned once");
+        let back = ResolvedTheme::from_colors(&a.colors);
+        assert_eq!(back.name, "course");
+        assert_eq!(back.typography.measure, "72ch");
+        assert!(back.css_custom_properties().contains("--rl-measure: 72ch;"));
+        // An equal palette that is not the interned one is still `custom`.
+        let copy = a.colors.clone();
+        assert_eq!(ResolvedTheme::from_colors(&copy).name, "custom");
+        assert_eq!(ResolvedTheme::from_colors(&MOCHA).name, "mocha");
+        assert_eq!(
+            interned_theme_named("course").map(|t| t.colors.bg.as_ref()),
+            Some("#101010")
+        );
     }
 
     #[test]
