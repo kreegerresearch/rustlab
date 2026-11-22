@@ -12,9 +12,9 @@ plus the root README.md.
 
 Budget: `--budget` seconds per notebook (default 20). The target is a few
 seconds on a 4-core CI runner and 10 s is the "slow" line. The heaviest
-notebooks (the FDTD patch runs and the Viterbi BER sweep) sit just under it,
-so the budget is twice that line: runner speed varies by tens of percent,
-while the regressions this guards against were 35 to 64 s.
+notebooks (the FDTD patch runs) sit well under it, so the budget is twice
+that line: runner speed varies by tens of percent, while the regressions
+this guards against were 35 to 64 s.
 
 Usage (from the repo root, after a release build):
     python3 dev/notebook-budget.py [--bin PATH] [--budget S] [--report FILE] [NOTEBOOK...]
