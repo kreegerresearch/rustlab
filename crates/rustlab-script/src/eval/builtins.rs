@@ -2470,14 +2470,18 @@ fn builtin_max_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Script
 /// path on real data (a NaN loses, a tie keeps `a`), without widening, and
 /// the result stays real-stored. `None` sends every other case there.
 fn minmax_real_stored(a: &Value, b: &Value, is_max: bool) -> Option<Value> {
+    if is_max {
+        minmax_real_stored_as::<true>(a, b)
+    } else {
+        minmax_real_stored_as::<false>(a, b)
+    }
+}
+
+fn minmax_real_stored_as<const IS_MAX: bool>(a: &Value, b: &Value) -> Option<Value> {
+    // A comparison with NaN is false, so a NaN `y` keeps `x`. Written as one
+    // select per element so the loop vectorizes.
     let pick = |x: f64, y: f64| -> f64 {
-        if x.is_nan() {
-            return y;
-        }
-        if y.is_nan() {
-            return x;
-        }
-        let take_y = if is_max { y > x } else { y < x };
+        let take_y = x.is_nan() | if IS_MAX { y > x } else { y < x };
         if take_y {
             y
         } else {

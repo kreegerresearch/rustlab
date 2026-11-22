@@ -6,7 +6,7 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.82
+## 0.3.83
 
 ### Added
 - **Notebook theme files.** A TOML file `NAME.toml` with `inherits` (a builtin or another theme file; default `mocha`), `[palette]`, `[colors]` (any of the 33 roles plus the watch-only `shadow`, `scrim`, `banner_bg`, `banner_text`), `[typography]` (system font stacks, size, line height, measure), `[shape]`, and `[space]`. Values follow a closed grammar (hex or palette name, font family lists ending in a generic family, lengths in `px` / `rem` / `em` / `ch` / `%`); anything else, including `url()`, `@import`, and `;}`, is an error naming the file and key. Unknown keys are errors. Inheritance cycles print the chain. Files are found in `<project>/themes/` (next to the nearest `rustlab.toml`, or its `[notebook] theme_dir`) and `$XDG_CONFIG_HOME/rustlab/themes/`; builtin names always win. See `docs/notebooks.md` § Theme files.
@@ -24,8 +24,17 @@ should re-validate against those entries when upgrading.
   - the ⋯ menu button's text was 3.48:1 on Latte at `opacity: 0.72`; it is now `0.85` (4.63:1 Latte, at least 6.96:1 on the dark themes);
   - a stale cell (an edited cell waiting for its re-run) at `opacity: .65` was 4.38:1 on Frappé and 3.10:1 on Latte; it is now `0.85` (6.34:1 Frappé, 4.91:1 Latte);
   - form-field boundaries (widget number inputs, the watch compare-ref field, the inline cell editor) used the `border` role, 1.17–1.59:1 against the page, menu, or code panel; they now use `text_dim` mixed 75% into the page, at least 3.04:1 against page, menu, and code panel.
-  The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.81.
+  The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.82.
 - **Watch page shadows and banner** are written as `color-mix(in srgb, var(--rl-shadow-color, #000000) N%, transparent)` and `var(--rl-banner-bg, #aa2233)`; they paint the same pixels as before. The comment popup rule (in every HTML page that shows comments) changes the same way.
+
+## 0.3.82
+
+### Performance
+- **Logical arrays and elementwise `max` / `min`.** `L(:)` and linear reads of a logical array copy bytes in column-major order instead of looking up each element; a logical (or numeric) right-hand side written into a logical region (`D(t, :) = d(:)`, `L(rows, cols) = M`) is written straight into storage (`LogicalArray::column_major_bytes`, `gather_column_major`, `set_region`). Two-argument `max` / `min` of real-stored arrays is one select per element. Results are unchanged (the Viterbi notebook rendered byte-identical before the notebook edits below); one Viterbi decode of 400,000 bits went from 0.66 s to 0.31 s.
+- **`comm/viterbi_fec` default render** 11.4 s → 2.7 s (release build, 4 cores; 11.6–20.4 s → 5.8 s on CI runners), peak memory 255 MB → 300 MB.
+
+### Breaking / behavior changes
+- **`comm/viterbi_fec`** decodes coded frames of 1,000 bits instead of 10,000 (many short frames side by side cost far fewer trellis steps), encodes all frames of a point in one `conv_encode` call, and stops a BER point after 40,000 bits once it has 300 errors; points below a BER of 7.5e-3 still get 400,000 bits. The hard-vs-soft section reuses the soft rate-1/2 points of the main sweep and simulates only the hard-decision curve. The random draws differ, so the figures move within their noise: Eb/N0 at 1e-4 is 3.11 / 3.26 / 3.82 / 4.46 dB for rates 1/3, 1/2, 2/3, 3/4 (was 3.04 / 3.33 / 3.91 / 4.31), coding gains 5.29 / 5.13 / 4.58 / 3.93 dB (was 5.35 / 5.06 / 4.48 / 4.08), and the soft / hard crossings are 3.26 / 5.53 dB, a 2.27 dB soft-decision gain (was 3.54 / 5.80 dB, 2.25 dB). The uncoded curve and the one-frame burst example are unchanged.
 
 ## 0.3.81
 

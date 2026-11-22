@@ -5,7 +5,7 @@ Catppuccin builtins), F2 (luminance dark/light), F5 (`--rl-*` CSS custom
 properties), the user half of F8 (`~/.rustlabrc` `[notebook] theme`), and
 the font-role contrast pass (PR #57). Phase 1 of this revision (design
 tokens) shipped in #147 (0.3.66). Phase 2 (theme files) is implemented
-for 0.3.82 on `cursor/notebook-theme-files-43bf`, in review. Phases 3–9
+for 0.3.83 on `cursor/notebook-theme-files-43bf`, in review. Phases 3–9
 are not implemented.
 **Current phase:** Phase 2 (theme files, implemented, in review; see
 [Phase 2 as built](#phase-2-as-built)). Michael settled six of the twelve open questions on
@@ -971,7 +971,7 @@ Check a box when that phase's PR is merged. Keep the **Current phase**
 line at the top in sync.
 
 - [x] Phase 1: token model refactor (status: complete, #147, 0.3.66)
-- [ ] Phase 2: theme files (status: implemented for 0.3.82, PR in review; check when merged)
+- [ ] Phase 2: theme files (status: implemented for 0.3.83, PR in review; check when merged)
 - [ ] Phase 3: pairs and new builtins (status: not started)
 - [ ] Phase 4: plot theming (status: not started)
 - [ ] Phase 5: scoped CSS and class prefix (status: not started)
@@ -982,7 +982,7 @@ line at the top in sync.
 
 ### Phase 2 as built
 
-Implemented against `main` at 0.3.80, version 0.3.82.
+Implemented against `main` at 0.3.80, merged up to 0.3.82; version 0.3.83.
 
 - **Legibility audit first.** `rustlab_plot::contrast` lists every text
   (4.5:1) and UI (3:1) pair the HTML page, the watch chrome, and the PDF

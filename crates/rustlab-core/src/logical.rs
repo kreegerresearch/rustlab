@@ -168,6 +168,45 @@ impl LogicalArray {
         true
     }
 
+    /// Write `values` (column-major over the region, nonzero is `true`) into
+    /// the elements at `rows × cols` (0-based). `false` and nothing written
+    /// when a position is out of range or the value count is not
+    /// `rows.len() * cols.len()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_core::LogicalArray;
+    /// let mut m = LogicalArray::filled(2, 3, false).unwrap();
+    /// assert!(m.set_region(&[1, 0], &[2, 0], &[1, 0, 0, 1]));
+    /// assert_eq!(m.to_flags(), vec![true, false, false, false, false, true]);
+    /// assert!(!m.set_region(&[2], &[0], &[1]));
+    /// ```
+    pub fn set_region(&mut self, rows: &[usize], cols: &[usize], values: &[u8]) -> bool {
+        if values.len() != rows.len() * cols.len()
+            || rows.iter().any(|&r| r >= self.rows)
+            || cols.iter().any(|&c| c >= self.cols)
+        {
+            return false;
+        }
+        let nc = self.cols;
+        if let [r] = rows {
+            let row = &mut self.data[r * nc..(r + 1) * nc];
+            for (&c, &v) in cols.iter().zip(values) {
+                row[c] = u8::from(v != 0);
+            }
+            return true;
+        }
+        let mut k = 0;
+        for &c in cols {
+            for &r in rows {
+                self.data[r * nc + c] = u8::from(values[k] != 0);
+                k += 1;
+            }
+        }
+        true
+    }
+
     /// A `rows × cols` copy with the existing elements in place and every
     /// new element `false`. Neither dimension may shrink.
     ///
@@ -294,6 +333,52 @@ impl LogicalArray {
             return None;
         }
         Some(self.data[r * self.cols + c] != 0)
+    }
+
+    /// Every element as `0` / `1` bytes in column-major order (the order of
+    /// `L(:)`). A row or a column is its storage order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_core::LogicalArray;
+    /// // [1 0 1; 0 1 1]
+    /// let m = LogicalArray::from_flags(vec![true, false, true, false, true, true], 2, 3).unwrap();
+    /// assert_eq!(m.column_major_bytes(), vec![1, 0, 0, 1, 1, 1]);
+    /// ```
+    pub fn column_major_bytes(&self) -> Vec<u8> {
+        if self.rows <= 1 || self.cols <= 1 {
+            return self.data.clone();
+        }
+        self.transpose().data
+    }
+
+    /// Bytes at 0-based column-major positions `k` (`k = c * rows + r`).
+    /// `None` when a position is outside the array.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustlab_core::LogicalArray;
+    /// let m = LogicalArray::from_flags(vec![true, false, false, true], 2, 2).unwrap();
+    /// assert_eq!(m.gather_column_major(&[3, 1, 0]), Some(vec![1, 0, 1]));
+    /// assert_eq!(m.gather_column_major(&[4]), None);
+    /// ```
+    pub fn gather_column_major(&self, positions: &[usize]) -> Option<Vec<u8>> {
+        let n = self.len();
+        if positions.iter().any(|&k| k >= n) {
+            return None;
+        }
+        if self.cols == 1 || self.rows <= 1 {
+            return Some(positions.iter().map(|&k| self.data[k]).collect());
+        }
+        let (rows, cols) = (self.rows, self.cols);
+        Some(
+            positions
+                .iter()
+                .map(|&k| self.data[(k % rows) * cols + k / rows])
+                .collect(),
+        )
     }
 
     /// Column-major linear element `k` (`k = c * rows + r`), or `None`.

@@ -1063,18 +1063,20 @@ impl Evaluator {
         };
         // Every check runs before the array is touched, so a refused write
         // leaves the variable as it was.
-        let (writes, need): (Vec<(usize, usize)>, (usize, usize)) = match idx {
+        // Region writes go column by column, row by row: the right-hand side
+        // is in column-major order.
+        enum Writes {
+            Region(Vec<usize>, Vec<usize>),
+            Linear(Vec<usize>),
+        }
+        let (writes, need): (Writes, (usize, usize)) = match idx {
             [i, j] => {
                 let rows = logical_dim_positions(i, nr)?;
                 let cols = logical_dim_positions(j, nc)?;
                 rhs.check_region(rows.len(), cols.len())?;
                 let need_r = rows.iter().map(|&r| r + 1).max().unwrap_or(0).max(nr);
                 let need_c = cols.iter().map(|&c| c + 1).max().unwrap_or(0).max(nc);
-                let pairs = cols
-                    .iter()
-                    .flat_map(|&c| rows.iter().map(move |&r| (r, c)))
-                    .collect();
-                (pairs, (need_r, need_c))
+                (Writes::Region(rows, cols), (need_r, need_c))
             }
             [i] => {
                 let total = nr * nc;
@@ -1097,11 +1099,7 @@ impl Evaluator {
                          (linear index {end} into a {nr}x{nc} logical array)"
                     )));
                 };
-                let rows = need.0.max(1);
-                (
-                    positions.iter().map(|&p| (p % rows, p / rows)).collect(),
-                    need,
-                )
+                (Writes::Linear(positions), need)
             }
             _ => {
                 return Err(ScriptError::runtime(
@@ -1110,8 +1108,8 @@ impl Evaluator {
             }
         };
         if !matches!(self.env.get(name), Some(Value::Logical(_))) {
-            let empty = LogicalArray::filled(0, 0, false)
-                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+            let empty =
+                LogicalArray::filled(0, 0, false).map_err(|e| ScriptError::runtime(e.to_string()))?;
             self.set_env(name, Value::Logical(empty));
         }
         let echo = !suppress && self.echo_enabled();
@@ -1123,8 +1121,29 @@ impl Evaluator {
                 .resized(need.0, need.1)
                 .map_err(|e| ScriptError::runtime(e.to_string()))?;
         }
-        for (k, &(r, c)) in writes.iter().enumerate() {
-            a.set(r, c, rhs.at(k));
+        match (&writes, &rhs) {
+            (Writes::Region(rows, cols), LogicalRhs::Data { flags, .. }) => {
+                if !a.set_region(rows, cols, flags) {
+                    return Err(ScriptError::runtime(
+                        "index assignment: logical region out of range".to_string(),
+                    ));
+                }
+            }
+            (Writes::Region(rows, cols), _) => {
+                let mut k = 0;
+                for &c in cols {
+                    for &r in rows {
+                        a.set(r, c, rhs.at(k));
+                        k += 1;
+                    }
+                }
+            }
+            (Writes::Linear(positions), _) => {
+                let rows = need.0.max(1);
+                for (k, &p) in positions.iter().enumerate() {
+                    a.set(p % rows, p / rows, rhs.at(k));
+                }
+            }
         }
         if echo {
             let (r, c) = (a.rows(), a.cols());
@@ -4830,12 +4849,12 @@ fn scalar_logical_assign_positions(bit: bool, total: usize) -> Result<Vec<usize>
     Ok(vec![0])
 }
 
-/// The right-hand side of a write into a logical array, as flags in
-/// column-major order. `Fill` is one value for every target element.
+/// The right-hand side of a write into a logical array, as `0` / `1` bytes
+/// in column-major order. `Fill` is one value for every target element.
 enum LogicalRhs {
     Fill(bool),
     Data {
-        flags: Vec<bool>,
+        flags: Vec<u8>,
         rows: usize,
         cols: usize,
     },
@@ -4857,9 +4876,9 @@ impl LogicalRhs {
     }
 
     fn from_value(val: &Value) -> Result<Self, ScriptError> {
-        let data = |flags: Vec<bool>, rows: usize, cols: usize| {
+        let data = |flags: Vec<u8>, rows: usize, cols: usize| {
             if flags.len() == 1 {
-                LogicalRhs::Fill(flags[0])
+                LogicalRhs::Fill(flags[0] != 0)
             } else {
                 LogicalRhs::Data { flags, rows, cols }
             }
@@ -4869,15 +4888,13 @@ impl LogicalRhs {
             Value::Scalar(x) => LogicalRhs::Fill(Self::flag(*x, 0.0)?),
             Value::Complex(c) => LogicalRhs::Fill(Self::flag(c.re, c.im)?),
             Value::Logical(a) => data(
-                (0..a.len())
-                    .map(|k| a.get_column_major(k).unwrap_or(false))
-                    .collect(),
+                a.column_major_bytes(),
                 a.rows(),
                 a.cols(),
             ),
             Value::Vector(v) => data(
                 v.iter()
-                    .map(|c| Self::flag(c.re, c.im))
+                    .map(|c| Self::flag(c.re, c.im).map(u8::from))
                     .collect::<Result<_, _>>()?,
                 1,
                 v.len(),
@@ -4888,7 +4905,7 @@ impl LogicalRhs {
                 for j in 0..c {
                     for i in 0..r {
                         let z = m[[i, j]];
-                        flags.push(Self::flag(z.re, z.im)?);
+                        flags.push(u8::from(Self::flag(z.re, z.im)?));
                     }
                 }
                 data(flags, r, c)
@@ -4908,19 +4925,17 @@ impl LogicalRhs {
     fn at(&self, k: usize) -> bool {
         match self {
             LogicalRhs::Fill(b) => *b,
-            LogicalRhs::Data { flags, .. } => flags[k],
+            LogicalRhs::Data { flags, .. } => flags[k] != 0,
         }
     }
 
     fn check_count(&self, n: usize) -> Result<(), ScriptError> {
         match self {
-            LogicalRhs::Data { flags, .. } if flags.len() != n => {
-                Err(ScriptError::runtime(format!(
-                    "index assignment: dimension mismatch, {} values for {} positions",
-                    flags.len(),
-                    n
-                )))
-            }
+            LogicalRhs::Data { flags, .. } if flags.len() != n => Err(ScriptError::runtime(format!(
+                "index assignment: dimension mismatch, {} values for {} positions",
+                flags.len(),
+                n
+            ))),
             _ => Ok(()),
         }
     }
