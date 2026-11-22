@@ -1252,7 +1252,8 @@ fn load_project_config(
     start: &std::path::Path,
 ) -> Result<Option<rustlab_config::ProjectConfig>, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let project = rustlab_config::load_project(start, home.as_deref()).map_err(|e| e.to_string())?;
+    let project =
+        rustlab_config::load_project(start, home.as_deref()).map_err(|e| e.to_string())?;
     if let Some(p) = &project {
         for key in &p.unknown_keys {
             eprintln!(
@@ -1281,7 +1282,9 @@ fn run_theme_command(cmd: ThemeCommands) -> i32 {
     let mut out = std::io::stdout();
     match cmd {
         ThemeCommands::List(_) => theme_select::cmd_theme_list(&search, &mut out),
-        ThemeCommands::Show { theme, .. } => theme_select::cmd_theme_show(&theme, &search, &mut out),
+        ThemeCommands::Show { theme, .. } => {
+            theme_select::cmd_theme_show(&theme, &search, &mut out)
+        }
         ThemeCommands::Check { theme, .. } => {
             theme_select::cmd_theme_check(&theme, &search, &mut out)
         }

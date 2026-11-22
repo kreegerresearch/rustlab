@@ -337,7 +337,11 @@ rustlab-notebook watch note.md --git-diff --diff main   # compare each page with
 rustlab-notebook check note.md                  # lint (exit 2 errors / 1 warnings / 0 clean)
 rustlab-notebook clean note.md                  # strip generated header and output sentinels (in place)
 rustlab-notebook strip note.md --in-place       # unwrap ==highlights== and delete %%comments%%
+rustlab-notebook render note.md --theme-file course.toml --theme-contrast=error   # custom theme; exit 1 on a contrast failure
+rustlab-notebook theme check course             # validate a theme file; exit 1 on a failing contrast pair
 ```
+
+Themes: `-t NAME` takes a builtin (`mocha` default, `macchiato`, `frappe`, `latte`) or a theme file `NAME.toml` from `<project>/themes/` (next to `rustlab.toml`) or `~/.config/rustlab/themes/`. Precedence: `--theme` / `--theme-file` > frontmatter `theme:` (a name, never a path) > `rustlab.toml` `[notebook] theme` > `~/.rustlabrc` > `mocha`. `render --strict` is about cell errors only; contrast uses `--theme-contrast=error`. LaTeX and PDF always print Latte.
 
 Authoring features an agent should use (full reference: [`docs/notebooks.md`](notebooks.md)):
 

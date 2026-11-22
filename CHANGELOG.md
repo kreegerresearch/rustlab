@@ -6,6 +6,27 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.82
+
+### Added
+- **Notebook theme files.** A TOML file `NAME.toml` with `inherits` (a builtin or another theme file; default `mocha`), `[palette]`, `[colors]` (any of the 33 roles plus the watch-only `shadow`, `scrim`, `banner_bg`, `banner_text`), `[typography]` (system font stacks, size, line height, measure), `[shape]`, and `[space]`. Values follow a closed grammar (hex or palette name, font family lists ending in a generic family, lengths in `px` / `rem` / `em` / `ch` / `%`); anything else, including `url()`, `@import`, and `;}`, is an error naming the file and key. Unknown keys are errors. Inheritance cycles print the chain. Files are found in `<project>/themes/` (next to the nearest `rustlab.toml`, or its `[notebook] theme_dir`) and `$XDG_CONFIG_HOME/rustlab/themes/`; builtin names always win. See `docs/notebooks.md` § Theme files.
+- **`--theme-file PATH`** on `rustlab-notebook render` and `watch`. `-t` / `--theme` also takes a theme-file name.
+- **Frontmatter `theme: NAME`** picks a theme per notebook (a name, never a path), in HTML, Markdown SVG plots, JSON, and `watch`.
+- **Project config `rustlab.toml`.** The nearest ancestor of the notebook (stopping at `$HOME`) is read for `[notebook] theme` and `[notebook] theme_dir`; other keys warn. Precedence: `--theme` / `--theme-file` > frontmatter > `rustlab.toml` > `~/.rustlabrc` / XDG > `mocha`.
+- **`rustlab-notebook theme list | show | check`.** `check` prints the WCAG contrast table for a theme name or file and exits 1 on a failing pair or an invalid file.
+- **`render --theme-contrast=warn|error`.** `warn` (default) prints each failing pair and renders; `error` exits 1 before writing. `--strict` still means cell errors only.
+- **Contrast checker** `rustlab_plot::contrast`: one list of text (4.5:1) and UI (3:1) pairs for notebook HTML, `watch` chrome, and PDF, used by the builtin tests and by `theme check`.
+- **Watch chrome tokens** `--rl-shadow-color`, `--rl-scrim`, `--rl-banner-bg`, `--rl-banner-text`, declared by `notebook watch` pages only. Menu, source-pane, drawer, and comment-popup shadows, the drawer scrim, and the disconnected banner read them, so a theme file reaches every colour of the watch page.
+
+### Breaking / behavior changes
+- **`[notebook] theme` in `~/.rustlabrc` accepts any theme name.** A name that is not a builtin used to abort with an invalid-value error; it is now looked up as a theme file when a render needs it, and an unknown name is reported then, naming the rc file. A name must be lowercase letters, digits, `-`, and `_` (a builtin in any case or alias is still accepted). `[plot] theme` still takes only the four builtins.
+- **Legibility fixes** from a WCAG audit of the four builtins (HTML, watch chrome, and PDF; every other pair already passed):
+  - the ⋯ menu button's text was 3.48:1 on Latte at `opacity: 0.72`; it is now `0.85` (4.63:1 Latte, at least 6.96:1 on the dark themes);
+  - a stale cell (an edited cell waiting for its re-run) at `opacity: .65` was 4.38:1 on Frappé and 3.10:1 on Latte; it is now `0.85` (6.34:1 Frappé, 4.91:1 Latte);
+  - form-field boundaries (widget number inputs, the watch compare-ref field, the inline cell editor) used the `border` role, 1.27–1.46:1 against the page or menu; they now use `text_dim` mixed 75% into the page, at least 3.04:1 against page, menu, and code panel.
+  The number-input change is one line of every rendered HTML stylesheet; regenerate committed HTML if you pin bytes. Markdown, LaTeX, PDF, and JSON output are unchanged. With no theme selected, rendered HTML is otherwise byte-identical to 0.3.80.
+- **Watch page shadows and banner** are written as `color-mix(in srgb, var(--rl-shadow-color, #000000) N%, transparent)` and `var(--rl-banner-bg, #aa2233)`; they paint the same pixels as before. The comment popup rule (in every HTML page that shows comments) changes the same way.
+
 ## 0.3.80
 
 ### Added

@@ -28,8 +28,13 @@
 #                          (created only when [cache] enabled = true
 #                          or the command passes --cache)
 #
-# v1 is user-global only. Project-local .rustlab/config.toml and
-# startup.rlab are out of scope.
+# Project config: rustlab-notebook also reads rustlab.toml from the
+# nearest ancestor of the notebook (the walk stops at $HOME). It accepts
+# only [notebook] theme and [notebook] theme_dir, and beats this file.
+# Notebook theme precedence, high → low:
+#   --theme / --theme-file  >  frontmatter `theme:`  >  rustlab.toml
+#   >  this file ([notebook] theme, then [plot] theme)  >  mocha
+# startup.rlab is out of scope.
 
 [display]
 # Numeric auto-print mode for the REPL and `rustlab run` (and notebook
@@ -60,9 +65,13 @@ auto_connect = false
 # name = "work"
 
 [notebook]
-# Default for rustlab-notebook render/watch when -t/--theme is omitted.
-# If this key is omitted, [plot] theme is used, then dark.
-theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
+# Default for rustlab-notebook render/watch when no flag, frontmatter
+# `theme:`, or rustlab.toml picks one. If this key is omitted, [plot]
+# theme is used, then mocha. Any theme name works: a builtin, or a theme
+# file NAME.toml in $XDG_CONFIG_HOME/rustlab/themes (~/.config/rustlab/
+# themes) or the project's themes/ directory. An unknown name is reported
+# when a render resolves it. See `rustlab-notebook theme list`.
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light) | a theme file name
 # Initial state of rustlab source disclosures in HTML and notebook watch.
 # A notebook frontmatter `code:` or a cell `<!-- code: -->` overrides this.
 # Missing key, or an unrecognised value (warns once), means open.

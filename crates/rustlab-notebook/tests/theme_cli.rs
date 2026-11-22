@@ -113,10 +113,18 @@ fn theme_check_list_and_show() {
         let o = env.run(dir, &["theme", "check", builtin]);
         assert_eq!(o.status.code(), Some(0), "{builtin}: {}", text(&o));
     }
-    std::fs::write(dir.join("bad.toml"), "[colors]\nbg = \"red; } body { display: none\"\n").unwrap();
+    std::fs::write(
+        dir.join("bad.toml"),
+        "[colors]\nbg = \"red; } body { display: none\"\n",
+    )
+    .unwrap();
     let o = env.run(dir, &["theme", "check", "bad.toml"]);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o));
-    assert!(String::from_utf8_lossy(&o.stdout).contains("colors.bg"), "{}", text(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("colors.bg"),
+        "{}",
+        text(&o)
+    );
 
     let o = env.run(dir, &["theme", "list"]);
     assert!(o.status.success(), "{}", text(&o));
@@ -126,8 +134,20 @@ fn theme_check_list_and_show() {
     }
     // --dir starts the rustlab.toml search elsewhere.
     let other = TempDir::new().unwrap();
-    let o = env.run(other.path(), &["theme", "list", "--dir", dir.join("notes").to_str().unwrap()]);
-    assert!(String::from_utf8_lossy(&o.stdout).contains("course"), "{}", text(&o));
+    let o = env.run(
+        other.path(),
+        &[
+            "theme",
+            "list",
+            "--dir",
+            dir.join("notes").to_str().unwrap(),
+        ],
+    );
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("course"),
+        "{}",
+        text(&o)
+    );
 
     let o = env.run(dir, &["theme", "show", "course"]);
     let shown = String::from_utf8_lossy(&o.stdout);
@@ -153,7 +173,10 @@ fn render_theme_file_and_contrast_switch() {
     assert!(o.status.success(), "{}", text(&o));
     assert!(!html.is_empty());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("warning: theme `faint`: syn_comment on code_bg"), "{err}");
+    assert!(
+        err.contains("warning: theme `faint`: syn_comment on code_bg"),
+        "{err}"
+    );
     // ...--strict is about cells and ignores contrast...
     let (o, _) = render_html(&env, dir, &["--theme", "faint", "--strict"]);
     assert!(o.status.success(), "{}", text(&o));
@@ -165,7 +188,17 @@ fn render_theme_file_and_contrast_switch() {
     assert!(o.status.success(), "{}", text(&o));
 
     // --theme and --theme-file conflict; an unknown name is a usage error.
-    let o = env.run(dir, &["render", "notes/nb.md", "-t", "latte", "--theme-file", "themes/course.toml"]);
+    let o = env.run(
+        dir,
+        &[
+            "render",
+            "notes/nb.md",
+            "-t",
+            "latte",
+            "--theme-file",
+            "themes/course.toml",
+        ],
+    );
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
     let o = env.run(dir, &["render", "notes/nb.md", "-t", "nope"]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
@@ -182,7 +215,11 @@ fn precedence_cli_then_frontmatter_then_project_then_rc_then_mocha() {
         "inherits = \"frappe\"\n[colors]\naccent_tertiary = \"#99d1db\"\n",
     )
     .unwrap();
-    std::fs::write(env.xdg().join("rustlab/config.toml"), "[notebook]\ntheme = \"mine\"\n").unwrap();
+    std::fs::write(
+        env.xdg().join("rustlab/config.toml"),
+        "[notebook]\ntheme = \"mine\"\n",
+    )
+    .unwrap();
 
     // No rustlab.toml: the rc theme applies.
     let bare = TempDir::new().unwrap();
@@ -190,29 +227,53 @@ fn precedence_cli_then_frontmatter_then_project_then_rc_then_mocha() {
     std::fs::write(bare.path().join("notes/nb.md"), NB).unwrap();
     let (o, html) = render_html(&env, bare.path(), &[]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(html.contains("--rl-accent-tertiary: #99d1db;"), "rc theme not applied");
-    assert!(html.contains("--rl-bg: #303446;"), "rc theme inherits frappe");
+    assert!(
+        html.contains("--rl-accent-tertiary: #99d1db;"),
+        "rc theme not applied"
+    );
+    assert!(
+        html.contains("--rl-bg: #303446;"),
+        "rc theme inherits frappe"
+    );
 
     // rustlab.toml beats the rc file.
     let p = project("[notebook]\ntheme = \"course\"\n", NB);
     let (o, html) = render_html(&env, p.path(), &[]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(html.contains("--rl-accent-primary: #5b21b6;"), "project theme not applied");
+    assert!(
+        html.contains("--rl-accent-primary: #5b21b6;"),
+        "project theme not applied"
+    );
 
     // Frontmatter beats rustlab.toml.
-    std::fs::write(p.path().join("notes/nb.md"), format!("---\ntheme: macchiato\n---\n{NB}")).unwrap();
+    std::fs::write(
+        p.path().join("notes/nb.md"),
+        format!("---\ntheme: macchiato\n---\n{NB}"),
+    )
+    .unwrap();
     let (_, html) = render_html(&env, p.path(), &[]);
-    assert!(html.contains("--rl-bg: #24273a;"), "frontmatter theme not applied");
+    assert!(
+        html.contains("--rl-bg: #24273a;"),
+        "frontmatter theme not applied"
+    );
 
     // The CLI beats frontmatter.
     let (_, html) = render_html(&env, p.path(), &["-t", "light"]);
     assert!(html.contains("--rl-bg: #eff1f5;") && !html.contains("#5b21b6"));
 
     // A frontmatter path is refused and names the file.
-    std::fs::write(p.path().join("notes/nb.md"), format!("---\ntheme: ../themes/course.toml\n---\n{NB}")).unwrap();
+    std::fs::write(
+        p.path().join("notes/nb.md"),
+        format!("---\ntheme: ../themes/course.toml\n---\n{NB}"),
+    )
+    .unwrap();
     let (o, _) = render_html(&env, p.path(), &[]);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("cannot give a path"), "{}", text(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("cannot give a path"),
+        "{}",
+        text(&o)
+    );
 
     // Nothing anywhere: mocha.
     let plain = Env::new();
@@ -225,15 +286,27 @@ fn project_theme_dir_and_its_escape() {
     let env = Env::new();
     let p = project("[notebook]\ntheme = \"brand\"\ntheme_dir = \"style\"\n", NB);
     std::fs::create_dir_all(p.path().join("style")).unwrap();
-    std::fs::write(p.path().join("style/brand.toml"), "[colors]\naccent_secondary = \"#a5c8ff\"\n").unwrap();
+    std::fs::write(
+        p.path().join("style/brand.toml"),
+        "[colors]\naccent_secondary = \"#a5c8ff\"\n",
+    )
+    .unwrap();
     let (o, html) = render_html(&env, p.path(), &[]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(html.contains("--rl-accent-secondary: #a5c8ff;"));
 
-    std::fs::write(p.path().join("rustlab.toml"), "[notebook]\ntheme_dir = \"../elsewhere\"\n").unwrap();
+    std::fs::write(
+        p.path().join("rustlab.toml"),
+        "[notebook]\ntheme_dir = \"../elsewhere\"\n",
+    )
+    .unwrap();
     let o = env.run(p.path(), &["render", "notes/nb.md"]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("leaves the project root"), "{}", text(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("leaves the project root"),
+        "{}",
+        text(&o)
+    );
 }
 
 /// `GET path` against the loopback server; `None` until it answers.
@@ -298,18 +371,40 @@ fn watch_page(env: &Env, dir: &Path, args: &[&str], slug: &str) -> String {
 fn watch_serves_a_custom_theme() {
     let env = Env::new();
     let p = project("", NB);
-    let page = watch_page(&env, p.path(), &["notes/nb.md", "--theme-file", "themes/course.toml", "--editable"], "nb");
-    assert!(page.contains("--rl-accent-primary: #5b21b6;"), "page tokens");
+    let page = watch_page(
+        &env,
+        p.path(),
+        &[
+            "notes/nb.md",
+            "--theme-file",
+            "themes/course.toml",
+            "--editable",
+        ],
+        "nb",
+    );
+    assert!(
+        page.contains("--rl-accent-primary: #5b21b6;"),
+        "page tokens"
+    );
     assert!(page.contains("--rl-measure: 68ch;"));
     assert!(page.contains("--rl-banner-bg: #7a1f3d;"), "chrome tokens");
     assert!(page.contains("id=\"rl-toolbar\""), "chrome present");
     assert!(page.contains("color-scheme: light"));
 
     // rustlab.toml and frontmatter reach watch too.
-    let q = project("[notebook]\ntheme = \"course\"\n", &format!("---\ntheme: frappe\n---\n{NB}"));
+    let q = project(
+        "[notebook]\ntheme = \"course\"\n",
+        &format!("---\ntheme: frappe\n---\n{NB}"),
+    );
     std::fs::write(q.path().join("notes/other.md"), NB).unwrap();
     let page = watch_page(&env, q.path(), &["notes/"], "nb");
-    assert!(page.contains("--rl-bg: #303446;"), "frontmatter theme in watch");
+    assert!(
+        page.contains("--rl-bg: #303446;"),
+        "frontmatter theme in watch"
+    );
     let other = watch_page(&env, q.path(), &["notes/"], "other");
-    assert!(other.contains("--rl-accent-primary: #5b21b6;"), "project theme in watch");
+    assert!(
+        other.contains("--rl-accent-primary: #5b21b6;"),
+        "project theme in watch"
+    );
 }
