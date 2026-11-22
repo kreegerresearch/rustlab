@@ -299,10 +299,11 @@ impl Store {
             return Ok(0);
         }
         let conn = self.conn.lock().expect("cache mutex poisoned");
-        let current: i64 = conn
-            .query_row("SELECT COALESCE(SUM(bytes), 0) FROM cache_entries", [], |row| {
-                row.get(0)
-            })?;
+        let current: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM cache_entries",
+            [],
+            |row| row.get(0),
+        )?;
         let mut current = current.max(0) as u64;
         if current <= max_bytes {
             return Ok(0);
@@ -327,8 +328,7 @@ impl Store {
 
         // Collect first so we can release the prepared statement
         // before issuing DELETEs (sqlite locks one stmt at a time).
-        let candidates: Vec<(Vec<u8>, Vec<u8>, u64)> =
-            rows.collect::<Result<_, _>>()?;
+        let candidates: Vec<(Vec<u8>, Vec<u8>, u64)> = rows.collect::<Result<_, _>>()?;
         drop(stmt);
 
         for (entry_id, input_hash, bytes) in candidates {
@@ -750,10 +750,8 @@ mod tests {
             .put_with_meta(&[2u8; 32], &[3u8; 32], b"v3", "tiny")
             .unwrap();
         let rows = store.list_entries(None).unwrap();
-        let names: std::collections::BTreeSet<String> = rows
-            .iter()
-            .filter_map(|r| r.fn_name.clone())
-            .collect();
+        let names: std::collections::BTreeSet<String> =
+            rows.iter().filter_map(|r| r.fn_name.clone()).collect();
         assert_eq!(
             names,
             std::collections::BTreeSet::from(["expensive".to_string(), "tiny".to_string()])
@@ -765,7 +763,10 @@ mod tests {
             .iter()
             .filter(|r| r.fn_name.as_deref() == Some("expensive"))
             .count();
-        assert_eq!(expensive_count, 2, "both input variants of expensive present");
+        assert_eq!(
+            expensive_count, 2,
+            "both input variants of expensive present"
+        );
         for row in &rows {
             assert_eq!(row.entry_id.len(), 32, "full entry_id captured");
         }

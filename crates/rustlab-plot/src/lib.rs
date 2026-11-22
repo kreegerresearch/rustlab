@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod ascii;
 pub mod contour;
+pub mod contrast;
 #[cfg(any(feature = "viewer", test))]
 pub(crate) mod decimate;
 pub mod error;

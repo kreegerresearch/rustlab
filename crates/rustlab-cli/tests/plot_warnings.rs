@@ -38,7 +38,10 @@ fn quiver_without_savefig_warns_exactly_once() {
         1,
         "expected exactly one deferred warning, got:\n{stderr}"
     );
-    assert!(stderr.contains("quiver"), "warning names the plot kind:\n{stderr}");
+    assert!(
+        stderr.contains("quiver"),
+        "warning names the plot kind:\n{stderr}"
+    );
 }
 
 #[test]

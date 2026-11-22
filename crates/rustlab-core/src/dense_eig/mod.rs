@@ -80,7 +80,10 @@ pub fn eig(a: &CMatrix, want_vectors: bool) -> Result<(Vec<C64>, Option<CMatrix>
 
     let (mut vals, vecs) = if is_hermitian(a) {
         let (d, v) = hermitian::eig(&s, want_vectors)?;
-        (d.into_iter().map(|x| C64::new(x, 0.0)).collect::<Vec<_>>(), v)
+        (
+            d.into_iter().map(|x| C64::new(x, 0.0)).collect::<Vec<_>>(),
+            v,
+        )
     } else {
         let (b, d) = balance::balance(&s);
         let (vals, y) = if a.iter().all(|z| z.im == 0.0) {

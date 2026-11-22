@@ -629,7 +629,7 @@ document.addEventListener('click', (e) => {
     flex: 0 0 auto;
     width: 7rem;
     padding: 0.2rem 0.4rem;
-    border: 1px solid var(--rl-border, #313244);
+    border: 1px solid color-mix(in srgb, var(--rl-text-dim, #a6adc8) 75%, var(--rl-bg, #1e1e2e));
     border-radius: 4px;
     background: var(--rl-bg, #1e1e2e);
     color: var(--rl-text, #cdd6f4);
@@ -1148,7 +1148,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-toolbar button:hover { border-color: var(--rl-accent-primary, #cba6f7); }
   #rl-toolbar button.active { background: var(--rl-accent-primary, #cba6f7); color: var(--rl-bg, #1e1e2e); border-color: var(--rl-accent-primary, #cba6f7); }
   #rl-toolbar button[hidden] { display: none; }
-  #rl-toolbar button.rl-quiet { opacity: 0.72; padding: 4px 8px; }
+  #rl-toolbar button.rl-quiet { opacity: 0.85; padding: 4px 8px; }
   .rl-more { position: relative; display: inline-flex; align-items: center; }
   #rl-more-btn { min-width: 2rem; letter-spacing: 0.08em; }
   .rl-diff-dot {
@@ -1239,7 +1239,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-diff input {
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: var(--rl-bg, #1e1e2e); color: var(--rl-text, #cdd6f4);
-    border: 1px solid var(--rl-border, #313244); border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--rl-text-dim, #a6adc8) 75%, var(--rl-bg, #1e1e2e)); border-radius: 6px;
     padding: 4px 6px; width: 100%; box-sizing: border-box;
   }
   #rl-diff input:focus { border-color: var(--rl-accent-primary, #cba6f7); outline: none; }

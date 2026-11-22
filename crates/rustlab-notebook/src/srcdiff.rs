@@ -231,7 +231,9 @@ fn headings(src: &[&str]) -> Vec<Option<String>> {
     for line in src {
         let t = line.trim_start();
         let marker: String = t.chars().take_while(|&c| c == '`' || c == '~').collect();
-        if marker.len() >= 3 && (marker.chars().all(|c| c == '`') || marker.chars().all(|c| c == '~')) {
+        if marker.len() >= 3
+            && (marker.chars().all(|c| c == '`') || marker.chars().all(|c| c == '~'))
+        {
             match &fence {
                 Some(open) if marker.starts_with(open.as_str()) => fence = None,
                 None => fence = Some(marker),
@@ -400,7 +402,9 @@ mod tests {
         assert_eq!((old.len(), new.len()), (a.len(), b.len()));
         assert_eq!(line_diff(&[], &["x"]), vec![Line::Ins(0)]);
         assert_eq!(line_diff(&["x"], &[]), vec![Line::Del(0)]);
-        assert!(line_diff(&a, &a).iter().all(|l| matches!(l, Line::Same(..))));
+        assert!(line_diff(&a, &a)
+            .iter()
+            .all(|l| matches!(l, Line::Same(..))));
     }
 
     /// Many small random edits: the diff must always rebuild both sides,
@@ -452,9 +456,19 @@ mod tests {
             }
             let raw = myers(&a, &b).unwrap();
             let (old, new) = apply(&a, &b, &raw);
-            assert_eq!((old, new), (a.iter().map(|s| s.to_string()).collect::<Vec<_>>(), b.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            assert_eq!(
+                (old, new),
+                (
+                    a.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    b.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                )
+            );
             let edits = raw.iter().filter(|l| !matches!(l, Line::Same(..))).count();
-            assert_eq!(edits, a.len() + b.len() - 2 * dp[a.len()][b.len()], "{a:?} {b:?}");
+            assert_eq!(
+                edits,
+                a.len() + b.len() - 2 * dp[a.len()][b.len()],
+                "{a:?} {b:?}"
+            );
         }
     }
 
@@ -469,7 +483,10 @@ mod tests {
         assert!(html.contains("<ins class=\"rl-w\">53</ins>"), "{html}");
         assert!(html.contains("data-rl-dx=\"modified\""), "{html}");
         // Old line 5 is gone, new line 5 replaces it.
-        assert!(html.contains("<span class=\"rl-dx-n\">5</span><span class=\"rl-dx-n\"></span>"), "{html}");
+        assert!(
+            html.contains("<span class=\"rl-dx-n\">5</span><span class=\"rl-dx-n\"></span>"),
+            "{html}"
+        );
         assert!(html.contains("Gone."), "{html}");
         assert!(source_view(new, new, "x").contains("No changes."));
     }

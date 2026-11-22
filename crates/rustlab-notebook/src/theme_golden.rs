@@ -626,3 +626,45 @@ fn design_tokens_are_emitted_and_read() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The contrast audit (`rustlab_plot::contrast`) blends at fixed opacities
+/// and mixes. The stylesheet must paint those same values, or the audit
+/// checks a page nobody sees.
+#[test]
+fn stylesheet_paints_the_audited_values() {
+    use rustlab_plot::contrast::{FIELD_BORDER_MIX, QUIET_BUTTON_OPACITY, STALE_CELL_OPACITY};
+    let dir = std::env::temp_dir().join(format!("rl-theme-audit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (_, theme) in themes() {
+        let c = theme.colors();
+        let page = watch_page(c, &dir);
+        let field = format!(
+            "color-mix(in srgb, {} {}%, {})",
+            c.css_var("text-dim"),
+            (FIELD_BORDER_MIX * 100.0).round() as u32,
+            c.css_var("bg")
+        );
+        assert!(page.contains(&format!(
+            "#rl-toolbar button.rl-quiet {{ opacity: {QUIET_BUTTON_OPACITY};"
+        )));
+        assert!(
+            page.contains(&format!("solid {field};\n    border-radius: 4px;")),
+            "widget number input"
+        );
+        assert!(
+            page.contains(&format!(
+                "solid {field}; border-radius: var(--rl-radius, 6px);\n    padding: 4px 6px;"
+            )),
+            "ref field"
+        );
+        let cells = crate::server::cell::inject_cell_client(&page, c, true);
+        assert!(cells.contains(&format!(
+            "rl-cell-stale {{ opacity: {STALE_CELL_OPACITY}; }}"
+        )));
+        assert!(cells.contains(&format!(
+            ".rl-cell-editor {{ border: var(--rl-border-width, 1px) solid {field};"
+        )));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

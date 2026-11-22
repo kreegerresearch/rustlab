@@ -181,6 +181,13 @@ pub struct ThemeColors {
     // line tints.
     pub dx_add_word: Cow<'static, str>,
     pub dx_del_word: Cow<'static, str>,
+    // `notebook watch` chrome only. These are not in the 33 page tokens,
+    // so a static render's `:root` is unchanged. Shadows mix `shadow` at
+    // each rule's own alpha; the drawer scrim mixes `scrim` at 28%.
+    pub shadow: Cow<'static, str>,
+    pub scrim: Cow<'static, str>,
+    pub banner_bg: Cow<'static, str>,
+    pub banner_text: Cow<'static, str>,
 }
 
 impl ThemeColors {
@@ -243,6 +250,40 @@ impl ThemeColors {
             ("--rl-dx-add-word", self.dx_add_word.as_ref()),
             ("--rl-dx-del-word", self.dx_del_word.as_ref()),
         ]
+    }
+
+    /// Form-field boundary: `text_dim` mixed into the page at
+    /// [`crate::contrast::FIELD_BORDER_MIX`], 3:1 against page, menu, and
+    /// code panel. The `border` role is 1.3:1, too faint for a field.
+    pub fn field_border_css(&self) -> String {
+        format!(
+            "color-mix(in srgb, {} {}%, {})",
+            self.css_var("text-dim"),
+            (crate::contrast::FIELD_BORDER_MIX * 100.0).round() as u32,
+            self.css_var("bg")
+        )
+    }
+
+    /// Tokens only `notebook watch` chrome reads. Kept out of
+    /// [`Self::css_tokens`] so a static page's `:root` does not change.
+    pub fn chrome_tokens(&self) -> [(&'static str, &str); 4] {
+        [
+            ("--rl-shadow-color", self.shadow.as_ref()),
+            ("--rl-scrim", self.scrim.as_ref()),
+            ("--rl-banner-bg", self.banner_bg.as_ref()),
+            ("--rl-banner-text", self.banner_text.as_ref()),
+        ]
+    }
+
+    /// `var(--rl-<chrome token>, <literal>)` for [`Self::chrome_tokens`].
+    pub fn chrome_var(&self, name: &str) -> String {
+        match self.chrome_tokens().into_iter().find(|(n, _)| *n == name) {
+            Some((n, value)) => format!("var({n}, {value})"),
+            None => {
+                debug_assert!(false, "unknown chrome token `{name}`");
+                format!("var({name})")
+            }
+        }
     }
 
     /// Indented `--rl-*` declarations for a `:root` block (no wrapping braces).
@@ -379,6 +420,10 @@ static MOCHA: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#161015"),
     dx_add_word: Cow::Borrowed("#3c4947"),
     dx_del_word: Cow::Borrowed("#4d3649"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Macchiato (dark).
@@ -420,6 +465,10 @@ static MACCHIATO: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#1e181e"),
     dx_add_word: Cow::Borrowed("#414e4e"),
     dx_del_word: Cow::Borrowed("#514153"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Frappé (dark).
@@ -464,6 +513,10 @@ static FRAPPE: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#2b242c"),
     dx_add_word: Cow::Borrowed("#4a5755"),
     dx_del_word: Cow::Borrowed("#594b59"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -515,6 +568,10 @@ static LATTE: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#ebdce3"),
     dx_add_word: Cow::Borrowed("#c9dfc9"),
     dx_del_word: Cow::Borrowed("#eac8d3"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Light or dark chrome, from background luminance. Not a theme name.

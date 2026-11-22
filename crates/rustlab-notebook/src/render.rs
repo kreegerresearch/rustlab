@@ -1604,7 +1604,7 @@ document.addEventListener('click', (e) => {{
     flex: 0 0 auto;
     width: 7rem;
     padding: 0.2rem 0.4rem;
-    border: {border_width} solid {border};
+    border: {border_width} solid {field_border};
     border-radius: 4px;
     background: {bg};
     color: {text};
@@ -1816,6 +1816,7 @@ document.addEventListener('click', (e) => {{
         bg_secondary = c.css_var("bg-secondary"),
         text = c.css_var("text"),
         text_dim = c.css_var("text-dim"),
+        field_border = c.field_border_css(),
         border = c.css_var("border"),
         border_subtle = c.css_var("border-subtle"),
         accent_primary = c.css_var("accent-primary"),

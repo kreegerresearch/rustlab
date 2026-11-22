@@ -20,12 +20,18 @@ fn stderr_of(flags: &[&str], body: &str) -> String {
         .current_dir(dir.path())
         .output()
         .expect("launch rustlab");
-    assert!(out.status.success(), "rustlab failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "rustlab failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 fn has_row(stderr: &str, name: &str) -> bool {
-    stderr.lines().any(|l| l.split_whitespace().next() == Some(name))
+    stderr
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some(name))
 }
 
 #[test]
@@ -48,7 +54,10 @@ fn bare_profile_flag_still_takes_the_script_path() {
 fn profile_ops_adds_operator_rows() {
     // `x * x'` multiplies by a transposed view, so the transpose row comes
     // from the standalone `A'`.
-    let err = stderr_of(&["--profile=ops"], "A = randn(16, 16);\nz = outer(A);\nT = A';\n");
+    let err = stderr_of(
+        &["--profile=ops"],
+        "A = randn(16, 16);\nz = outer(A);\nT = A';\n",
+    );
     for row in ["[+]", "[transpose]", "[matmul]", "inner"] {
         assert!(has_row(&err, row), "missing {row}:\n{err}");
     }
@@ -57,7 +66,10 @@ fn profile_ops_adds_operator_rows() {
 #[test]
 fn matmul_row_prints_throughput() {
     // 32×32 real matrices: two inputs are 16.00 KB, the product is 8.00 KB.
-    let err = stderr_of(&[], "profile()\nA = rand(32, 32);\nB = rand(32, 32);\nC = A * B;\n");
+    let err = stderr_of(
+        &[],
+        "profile()\nA = rand(32, 32);\nB = rand(32, 32);\nC = A * B;\n",
+    );
     let line = err
         .lines()
         .find(|l| l.split_whitespace().next() == Some("[matmul]"))

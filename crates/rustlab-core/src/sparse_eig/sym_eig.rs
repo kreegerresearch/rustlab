@@ -182,11 +182,7 @@ mod tests {
         //   [1 4 1]
         //   [0 1 4]
         // Eigenvalues: 4 - sqrt(2), 4, 4 + sqrt(2).
-        let a = ndarray::arr2(&[
-            [4.0, 1.0, 0.0],
-            [1.0, 4.0, 1.0],
-            [0.0, 1.0, 4.0],
-        ]);
+        let a = ndarray::arr2(&[[4.0, 1.0, 0.0], [1.0, 4.0, 1.0], [0.0, 1.0, 4.0]]);
         let (vals, vecs) = sym_eig_jacobi(&a);
         let (sorted, sorted_vecs) = sort_by_eigenvalue(vals, vecs);
         let s2 = 2f64.sqrt();
@@ -229,11 +225,7 @@ mod tests {
     fn nearly_defective_does_not_crash() {
         // Two equal eigenvalues — common Jacobi corner case.
         // diag(2, 2, 5) is symmetric with a doubled eigenvalue at 2.
-        let a = ndarray::arr2(&[
-            [2.0, 0.0, 0.0],
-            [0.0, 2.0, 0.0],
-            [0.0, 0.0, 5.0],
-        ]);
+        let a = ndarray::arr2(&[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 5.0]]);
         let (vals, vecs) = sym_eig_jacobi(&a);
         let (sorted, _) = sort_by_eigenvalue(vals, vecs);
         assert!(close(sorted[0], 2.0, 1e-12));
@@ -249,16 +241,8 @@ mod tests {
         // in the (0, 1) plane.
         let theta = std::f64::consts::FRAC_PI_4;
         let (c, s) = (theta.cos(), theta.sin());
-        let q = ndarray::arr2(&[
-            [c, -s, 0.0],
-            [s, c, 0.0],
-            [0.0, 0.0, 1.0],
-        ]);
-        let d = ndarray::arr2(&[
-            [1.0, 0.0, 0.0],
-            [0.0, 4.0, 0.0],
-            [0.0, 0.0, 9.0],
-        ]);
+        let q = ndarray::arr2(&[[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]);
+        let d = ndarray::arr2(&[[1.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 9.0]]);
         // A = Q D Q^T
         let mut qd = Array2::<f64>::zeros((3, 3));
         for i in 0..3 {

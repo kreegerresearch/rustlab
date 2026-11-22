@@ -131,7 +131,10 @@ fn unary_math_keeps_shape() {
     ));
     let map = |f: fn(f64) -> f64| VALS.map(f).to_vec();
     assert_eq!(tensor(&ev, "a"), ([2, 2, 2], map(f64::abs)));
-    assert_eq!(tensor(&ev, "b").1, map(|x| if x == 0.0 { 0.0 } else { x.signum() }));
+    assert_eq!(
+        tensor(&ev, "b").1,
+        map(|x| if x == 0.0 { 0.0 } else { x.signum() })
+    );
     assert_eq!(tensor(&ev, "c").1, map(f64::floor));
     assert_eq!(tensor(&ev, "d").1, map(f64::ceil));
     assert_eq!(tensor(&ev, "e").1, map(f64::round));
@@ -141,7 +144,9 @@ fn unary_math_keeps_shape() {
 
 #[test]
 fn sqrt_and_log_of_negative_entries_go_complex() {
-    let ev = eval(&format!("{T} s = sqrt(T); im1 = imag(s(1, 1, 1)); re4 = real(s(2, 2, 1));"));
+    let ev = eval(&format!(
+        "{T} s = sqrt(T); im1 = imag(s(1, 1, 1)); re4 = real(s(2, 2, 1));"
+    ));
     assert!((reals(&ev, "im1")[0] - 1.5f64.sqrt()).abs() < 1e-15);
     assert!((reals(&ev, "re4")[0] - 3.5f64.sqrt()).abs() < 1e-15);
     let ev = eval("L = log(reshape([1, 2, 3, 4, 5, 6, 7, 8], 2, 2, 2)); x = L(2, 1, 2);");
@@ -158,8 +163,14 @@ fn real_imag_conj_angle_on_complex_tensor() {
         tensor(&ev, "a"),
         ([2, 2, 2], vec![1.0, 3.0, 0.0, 4.0, 0.0, -1.0, 2.0, 0.0])
     );
-    assert_eq!(tensor(&ev, "b").1, vec![2.0, -1.0, -2.0, 0.0, 1.0, 0.0, 2.0, 0.0]);
-    assert_eq!(tensor(&ev, "d").1, vec![-2.0, 1.0, 2.0, 0.0, -1.0, 0.0, -2.0, 0.0]);
+    assert_eq!(
+        tensor(&ev, "b").1,
+        vec![2.0, -1.0, -2.0, 0.0, 1.0, 0.0, 2.0, 0.0]
+    );
+    assert_eq!(
+        tensor(&ev, "d").1,
+        vec![-2.0, 1.0, 2.0, 0.0, -1.0, 0.0, -2.0, 0.0]
+    );
     let e = tensor(&ev, "e").1;
     assert!((e[0] - 2f64.atan2(1.0)).abs() < 1e-15);
     assert!((e[5] - std::f64::consts::PI).abs() < 1e-15);
@@ -170,7 +181,10 @@ fn two_argument_min_max_with_scalar_and_tensor() {
     let ev = eval(&format!(
         "{T} a = min(T, 1); b = max(T, 0); c = max(0, T); d = min(T, -T);"
     ));
-    assert_eq!(tensor(&ev, "a"), ([2, 2, 2], VALS.map(|x| x.min(1.0)).to_vec()));
+    assert_eq!(
+        tensor(&ev, "a"),
+        ([2, 2, 2], VALS.map(|x| x.min(1.0)).to_vec())
+    );
     assert_eq!(tensor(&ev, "b").1, VALS.map(|x| x.max(0.0)).to_vec());
     assert_eq!(tensor(&ev, "c").1, VALS.map(|x| x.max(0.0)).to_vec());
     assert_eq!(tensor(&ev, "d").1, VALS.map(|x| x.min(-x)).to_vec());
@@ -200,9 +214,7 @@ fn find_returns_column_major_linear_indices() {
 
 #[test]
 fn find_agrees_with_flattened_find() {
-    let ev = eval(
-        "seed(3); T = randn3(3, 4, 5); a = find(T > 0.3); b = find(T(:) > 0.3);",
-    );
+    let ev = eval("seed(3); T = randn3(3, 4, 5); a = find(T > 0.3); b = find(T(:) > 0.3);");
     assert_eq!(reals(&ev, "a"), reals(&ev, "b"));
 }
 
@@ -236,7 +248,10 @@ fn mod_and_trig_keep_shape() {
     let ev = eval(&format!("{T} a = mod(T, 3); b = cos(T);"));
     assert_eq!(
         tensor(&ev, "a"),
-        ([2, 2, 2], VALS.map(|x| x - 3.0 * (x / 3.0).floor()).to_vec())
+        (
+            [2, 2, 2],
+            VALS.map(|x| x - 3.0 * (x / 3.0).floor()).to_vec()
+        )
     );
     assert_eq!(tensor(&ev, "b").1, VALS.map(f64::cos).to_vec());
 }

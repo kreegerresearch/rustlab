@@ -340,10 +340,7 @@ impl CacheRegistry {
         ));
         out.push_str(&format!(
             "    skipped: {} impure, {} free-var, {} non-cacheable arg, {} stale-blob\n",
-            c.impurity_skips,
-            c.free_var_skips,
-            c.uncacheable_arg_skips,
-            c.serialization_skips,
+            c.impurity_skips, c.free_var_skips, c.uncacheable_arg_skips, c.serialization_skips,
         ));
         if !c.per_fn.is_empty() {
             out.push_str("  per function:\n");

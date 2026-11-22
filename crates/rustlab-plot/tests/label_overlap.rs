@@ -315,7 +315,8 @@ fn chrome_bin() -> Option<String> {
         };
         // A snap stub or a missing library can be spawned and still not be a
         // browser. Require a successful version line before trusting it.
-        if out.status.success() && String::from_utf8_lossy(&out.stdout).contains(|c: char| c.is_ascii_digit())
+        if out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains(|c: char| c.is_ascii_digit())
         {
             return Some(name.to_string());
         }

@@ -1211,8 +1211,21 @@ fn break_after_escape(escaped: &str, every: usize) -> String {
         run += 1;
         let at_punct = matches!(
             broke_on,
-            '_' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '/' | '+' | '-'
-                | '=' | '*'
+            '_' | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | ','
+                | '.'
+                | ':'
+                | ';'
+                | '/'
+                | '+'
+                | '-'
+                | '='
+                | '*'
         );
         if at_punct || run >= every {
             out.push_str("\\hspace{0pt}");
@@ -1734,9 +1747,8 @@ mod tests {
                 theme,
                 &crate::render::LinkMode::single_file(),
             );
-            let fg = defined_html_color(&tex, "rltext").unwrap_or_else(|| {
-                panic!("{label}: preamble has no rltext foreground:\n{tex}")
-            });
+            let fg = defined_html_color(&tex, "rltext")
+                .unwrap_or_else(|| panic!("{label}: preamble has no rltext foreground:\n{tex}"));
             // White article paper. There is no `\pagecolor`.
             let stripe = blend_hex(&fg, "ffffff", 0.06);
             let header = blend_hex(&fg, "ffffff", 0.11);
@@ -1775,9 +1787,9 @@ mod tests {
             let body = &tex[endhead..];
             let mut pos = 0;
             for (i, name) in rows.iter().enumerate() {
-                let rel = body[pos..].find(name).unwrap_or_else(|| {
-                    panic!("{label}: missing {name} in table body:\n{body}")
-                });
+                let rel = body[pos..]
+                    .find(name)
+                    .unwrap_or_else(|| panic!("{label}: missing {name} in table body:\n{body}"));
                 let at = pos + rel;
                 let between = &body[pos..at];
                 if i % 2 == 1 {
@@ -2756,7 +2768,7 @@ mod tests {
                 details: Some("costs $5 & more".to_string()),
                 grid_cols: None,
                 source_open: Some(false),
-            widget_reads: Vec::new(),
+                widget_reads: Vec::new(),
             },
             Rendered::ExerciseStart { number: 2 },
             Rendered::Markdown("What is `1 + 2`?".to_string()),
@@ -2935,7 +2947,7 @@ mod tests {
                 details: Some("Filter coefficients".to_string()),
                 grid_cols: None,
                 source_open: Some(false),
-            widget_reads: Vec::new(),
+                widget_reads: Vec::new(),
             },
             Rendered::ExerciseStart { number: 1 },
             Rendered::Markdown("What is `1 + 2`?".to_string()),
@@ -2950,7 +2962,7 @@ mod tests {
                 details: None,
                 grid_cols: None,
                 source_open: None,
-            widget_reads: Vec::new(),
+                widget_reads: Vec::new(),
             },
         ];
         let tex = render_latex(

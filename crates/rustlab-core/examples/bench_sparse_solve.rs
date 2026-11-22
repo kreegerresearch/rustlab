@@ -139,29 +139,18 @@ fn main() {
         // Sparse LU (use AMD as default, like the dispatch does)
         let (t_lu, nz_lu) = time_lu(&a, &b, &AmdOrdering);
 
-        println!(
-            "{n:>5} {nrows:>8}    chol/id    {t_id:>10.3} {nz_id:>12}",
-        );
-        println!(
-            "{:>5} {:>8}    chol/cc    {t_cc:>10.3} {nz_cc:>12}",
-            "", ""
-        );
+        println!("{n:>5} {nrows:>8}    chol/id    {t_id:>10.3} {nz_id:>12}",);
+        println!("{:>5} {:>8}    chol/cc    {t_cc:>10.3} {nz_cc:>12}", "", "");
         println!(
             "{:>5} {:>8}    chol/amd   {t_amd:>10.3} {nz_amd:>12}",
             "", ""
         );
-        println!(
-            "{:>5} {:>8}    lu/amd     {t_lu:>10.3} {nz_lu:>12}",
-            "", ""
-        );
+        println!("{:>5} {:>8}    lu/amd     {t_lu:>10.3} {nz_lu:>12}", "", "");
 
         // Dense fallback only for n <= 75 (n^2 = 5625, dense is ~10s)
         if n <= 75 {
             let t_d = time_dense(&a, &b);
-            println!(
-                "{:>5} {:>8}    dense LU   {t_d:>10.3} {:>12}",
-                "", "", "—"
-            );
+            println!("{:>5} {:>8}    dense LU   {t_d:>10.3} {:>12}", "", "", "—");
         } else {
             println!(
                 "{:>5} {:>8}    dense LU   {:>10} {:>12}",

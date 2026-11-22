@@ -1,5 +1,4 @@
 pub mod convolution;
-pub mod xcorr;
 pub mod error;
 pub mod fdtd;
 pub mod fft;
@@ -16,11 +15,12 @@ pub mod wavelet;
 pub mod welch;
 pub mod welch_stream;
 pub mod window;
+pub mod xcorr;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod math_audit;
+#[cfg(test)]
+mod tests;
 
 pub use fft::{fft, fft_n, fftfreq, fftshift, ifft, ifft_n, FftTransform};
 pub use fir::design::{fir_bandpass, fir_highpass, fir_lowpass, FirFilter};
@@ -40,8 +40,7 @@ pub use stft::stft;
 pub use upfirdn::upfirdn;
 pub use vector_calc::{
     curl_2d, curl_3d, divergence_2d, divergence_3d, gradient_1d, gradient_1d_coords,
-    gradient_1d_coords_order, gradient_1d_order, gradient_2d,
-    gradient_3d,
+    gradient_1d_coords_order, gradient_1d_order, gradient_2d, gradient_3d,
 };
 pub use waterfall::waterfall;
 pub use wavelet::{

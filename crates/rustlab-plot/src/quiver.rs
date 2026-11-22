@@ -20,8 +20,16 @@ pub struct Arrow {
 /// Nearest-neighbour cell distance. Used as the auto-scale reference length:
 /// after scaling, no arrow is longer than this value.
 pub fn cell_distance(x: &[f64], y: &[f64]) -> f64 {
-    let dx = if x.len() >= 2 { (x[x.len() - 1] - x[0]).abs() / (x.len() - 1) as f64 } else { 1.0 };
-    let dy = if y.len() >= 2 { (y[y.len() - 1] - y[0]).abs() / (y.len() - 1) as f64 } else { 1.0 };
+    let dx = if x.len() >= 2 {
+        (x[x.len() - 1] - x[0]).abs() / (x.len() - 1) as f64
+    } else {
+        1.0
+    };
+    let dy = if y.len() >= 2 {
+        (y[y.len() - 1] - y[0]).abs() / (y.len() - 1) as f64
+    } else {
+        1.0
+    };
     dx.min(dy)
 }
 
@@ -43,9 +51,13 @@ pub fn auto_scale(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64]) -> f64 {
         for c in 0..row_u.len().min(row_v.len()) {
             let a = row_u[c];
             let b = row_v[c];
-            if !a.is_finite() || !b.is_finite() { continue; }
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
             let m = (a * a + b * b).sqrt();
-            if m > 0.0 { mags.push(m); }
+            if m > 0.0 {
+                mags.push(m);
+            }
         }
     }
     let ref_len = cell_distance(x, y);
@@ -60,9 +72,13 @@ pub fn auto_scale(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64]) -> f64 {
 /// Build the arrow glyph at base `(bx, by)` with world-space displacement
 /// `(dx, dy)`. Returns `None` if the displacement is zero or non-finite.
 pub fn arrow_at(bx: f64, by: f64, dx: f64, dy: f64) -> Option<Arrow> {
-    if !dx.is_finite() || !dy.is_finite() { return None; }
+    if !dx.is_finite() || !dy.is_finite() {
+        return None;
+    }
     let len = (dx * dx + dy * dy).sqrt();
-    if len <= 0.0 { return None; }
+    if len <= 0.0 {
+        return None;
+    }
 
     let tx = bx + dx;
     let ty = by + dy;
@@ -95,17 +111,33 @@ pub fn arrow_at(bx: f64, by: f64, dx: f64, dy: f64) -> Option<Arrow> {
 /// above the auto-scale's 95th-percentile reference render at exactly one
 /// cell instead of overshooting the grid. NaN entries and zero-magnitude
 /// cells are skipped.
-pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale: f64)
-    -> Vec<Arrow>
-{
+pub fn build_arrows(
+    u: &[Vec<f64>],
+    v: &[Vec<f64>],
+    x: &[f64],
+    y: &[f64],
+    scale: f64,
+) -> Vec<Arrow> {
     let nrows = u.len().min(v.len()).min(y.len());
-    if nrows == 0 { return Vec::new(); }
-    let ncols = u.iter().chain(v.iter()).map(|row| row.len()).min().unwrap_or(0).min(x.len());
-    if ncols == 0 { return Vec::new(); }
+    if nrows == 0 {
+        return Vec::new();
+    }
+    let ncols = u
+        .iter()
+        .chain(v.iter())
+        .map(|row| row.len())
+        .min()
+        .unwrap_or(0)
+        .min(x.len());
+    if ncols == 0 {
+        return Vec::new();
+    }
 
     let base = auto_scale(u, v, x, y);
     let k = base * scale;
-    if k == 0.0 { return Vec::new(); }
+    if k == 0.0 {
+        return Vec::new();
+    }
     let max_len = cell_distance(x, y) * scale.abs();
 
     let mut arrows = Vec::with_capacity(nrows * ncols);
@@ -113,7 +145,9 @@ pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale:
         for c in 0..ncols {
             let a = u[r][c];
             let b = v[r][c];
-            if !a.is_finite() || !b.is_finite() { continue; }
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
             let mut dx = k * a;
             let mut dy = k * b;
             let len = (dx * dx + dy * dy).sqrt();
@@ -135,14 +169,18 @@ pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale:
 /// when the local tangent is degenerate. `length` is the arrow shaft length
 /// in world units — streamline callers typically pass `cell_distance` × 0.5.
 pub fn midpoint_arrow(path: &[(f64, f64)], length: f64) -> Option<Arrow> {
-    if path.len() < 3 || length <= 0.0 { return None; }
+    if path.len() < 3 || length <= 0.0 {
+        return None;
+    }
     let mid = path.len() / 2;
     let lo = mid.saturating_sub(1);
     let hi = (mid + 1).min(path.len() - 1);
     let dx = path[hi].0 - path[lo].0;
     let dy = path[hi].1 - path[lo].1;
     let m = (dx * dx + dy * dy).sqrt();
-    if m <= 0.0 { return None; }
+    if m <= 0.0 {
+        return None;
+    }
     let ux = dx / m;
     let uy = dy / m;
     let (tx, ty) = path[mid];
@@ -265,8 +303,8 @@ mod tests {
     fn arrow_head_is_behind_tip_along_shaft() {
         let arr = arrow_at(0.0, 0.0, 1.0, 0.0).unwrap();
         // Tip is at (1, 0). Left and right barbs should be at x < 1.
-        assert!(arr.head[0].0 < arr.shaft.1.0);
-        assert!(arr.head[2].0 < arr.shaft.1.0);
+        assert!(arr.head[0].0 < arr.shaft.1 .0);
+        assert!(arr.head[2].0 < arr.shaft.1 .0);
         // Head is vertically symmetric about y = 0.
         assert!((arr.head[0].1 + arr.head[2].1).abs() < 1e-12);
     }
@@ -313,7 +351,10 @@ mod tests {
         assert_eq!(arrows.len(), 16);
         let max = arrows.iter().map(shaft_len).fold(0.0, f64::max);
         let min = arrows.iter().map(shaft_len).fold(f64::INFINITY, f64::min);
-        assert!(max <= 1.0 + 1e-9, "outlier must clamp to one cell, got {max}");
+        assert!(
+            max <= 1.0 + 1e-9,
+            "outlier must clamp to one cell, got {max}"
+        );
         assert!(
             min > 0.9,
             "typical arrows must stay visible (≈ one cell), got {min}"

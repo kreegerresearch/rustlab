@@ -1098,7 +1098,10 @@ impl Evaluator {
                     )));
                 };
                 let rows = need.0.max(1);
-                (positions.iter().map(|&p| (p % rows, p / rows)).collect(), need)
+                (
+                    positions.iter().map(|&p| (p % rows, p / rows)).collect(),
+                    need,
+                )
             }
             _ => {
                 return Err(ScriptError::runtime(
@@ -1107,8 +1110,8 @@ impl Evaluator {
             }
         };
         if !matches!(self.env.get(name), Some(Value::Logical(_))) {
-            let empty =
-                LogicalArray::filled(0, 0, false).map_err(|e| ScriptError::runtime(e.to_string()))?;
+            let empty = LogicalArray::filled(0, 0, false)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
             self.set_env(name, Value::Logical(empty));
         }
         let echo = !suppress && self.echo_enabled();
@@ -4866,12 +4869,16 @@ impl LogicalRhs {
             Value::Scalar(x) => LogicalRhs::Fill(Self::flag(*x, 0.0)?),
             Value::Complex(c) => LogicalRhs::Fill(Self::flag(c.re, c.im)?),
             Value::Logical(a) => data(
-                (0..a.len()).map(|k| a.get_column_major(k).unwrap_or(false)).collect(),
+                (0..a.len())
+                    .map(|k| a.get_column_major(k).unwrap_or(false))
+                    .collect(),
                 a.rows(),
                 a.cols(),
             ),
             Value::Vector(v) => data(
-                v.iter().map(|c| Self::flag(c.re, c.im)).collect::<Result<_, _>>()?,
+                v.iter()
+                    .map(|c| Self::flag(c.re, c.im))
+                    .collect::<Result<_, _>>()?,
                 1,
                 v.len(),
             ),
@@ -4907,11 +4914,13 @@ impl LogicalRhs {
 
     fn check_count(&self, n: usize) -> Result<(), ScriptError> {
         match self {
-            LogicalRhs::Data { flags, .. } if flags.len() != n => Err(ScriptError::runtime(format!(
-                "index assignment: dimension mismatch, {} values for {} positions",
-                flags.len(),
-                n
-            ))),
+            LogicalRhs::Data { flags, .. } if flags.len() != n => {
+                Err(ScriptError::runtime(format!(
+                    "index assignment: dimension mismatch, {} values for {} positions",
+                    flags.len(),
+                    n
+                )))
+            }
             _ => Ok(()),
         }
     }

@@ -156,7 +156,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button:hover {{ border-color: {accent}; }}
   #rl-toolbar button.active {{ background: {accent}; color: {bg}; border-color: {accent}; }}
   #rl-toolbar button[hidden] {{ display: none; }}
-  #rl-toolbar button.rl-quiet {{ opacity: 0.72; padding: 4px 8px; }}
+  #rl-toolbar button.rl-quiet {{ opacity: {quiet}; padding: 4px 8px; }}
   .rl-more {{ position: relative; display: inline-flex; align-items: center; }}
   #rl-more-btn {{ min-width: 2rem; letter-spacing: 0.08em; }}
   .rl-diff-dot {{
@@ -247,7 +247,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-diff input {{
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg}; color: {text};
-    border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius, 6px);
+    border: var(--rl-border-width, 1px) solid {field_border}; border-radius: var(--rl-radius, 6px);
     padding: 4px 6px; width: 100%; box-sizing: border-box;
   }}
   #rl-diff input:focus {{ border-color: {accent}; outline: none; }}
@@ -448,6 +448,8 @@ fn chrome_style(c: &ThemeColors) -> String {
         border = c.css_var("border"),
         accent = c.css_var("accent-primary"),
         code_bg = c.css_var("code-bg"),
+        field_border = c.field_border_css(),
+        quiet = rustlab_plot::contrast::QUIET_BUTTON_OPACITY,
     )
 }
 

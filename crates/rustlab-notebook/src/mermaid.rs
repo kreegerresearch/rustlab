@@ -59,10 +59,7 @@ pub fn render_to_svg_file(
 
 /// Render a Mermaid diagram to SVG and return the SVG content as a String.
 /// Suitable for inline embedding in HTML. Caches by BLAKE3 hash of source.
-pub fn render_to_svg_string(
-    source: &str,
-    plot_dir: &Path,
-) -> Result<String, MermaidRenderError> {
+pub fn render_to_svg_string(source: &str, plot_dir: &Path) -> Result<String, MermaidRenderError> {
     let cache_path = ensure_rendered(source, plot_dir)?;
     Ok(fs::read_to_string(&cache_path)?)
 }
@@ -102,9 +99,7 @@ fn render_one(source: &str) -> Result<String, MermaidRenderError> {
     match result {
         Ok(Ok(svg)) => Ok(svg),
         Ok(Err(e)) => Err(MermaidRenderError::Render(format!("{e}"))),
-        Err(_) => Err(MermaidRenderError::Render(
-            "renderer panicked".to_string(),
-        )),
+        Err(_) => Err(MermaidRenderError::Render("renderer panicked".to_string())),
     }
 }
 
@@ -128,7 +123,11 @@ mod tests {
     fn renders_simple_flowchart() {
         let dir = tmp_dir("simple");
         let svg = render_to_svg_string("flowchart LR\n  A --> B\n", &dir).unwrap();
-        assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"), "expected SVG, got {:?}", &svg[..svg.len().min(80)]);
+        assert!(
+            svg.starts_with("<?xml") || svg.starts_with("<svg"),
+            "expected SVG, got {:?}",
+            &svg[..svg.len().min(80)]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

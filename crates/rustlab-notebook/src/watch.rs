@@ -129,15 +129,9 @@ pub fn cmd_watch(
         .flatten();
     let initial = list_notebooks(&dir, out_exclude.as_deref());
     for src in &initial {
-        if let Some(out_path) = render_one_with_tracking(
-            src,
-            &dir,
-            &out_dir,
-            &format,
-            theme,
-            &mut graph,
-            &mut caches,
-        ) {
+        if let Some(out_path) =
+            render_one_with_tracking(src, &dir, &out_dir, &format, theme, &mut graph, &mut caches)
+        {
             if let (Ok(bytes), Some(canon)) =
                 (std::fs::read(&out_path), canonicalize_lossy(&out_path))
             {
@@ -145,7 +139,10 @@ pub fn cmd_watch(
             }
         }
     }
-    println!("[watch] initial render complete ({} notebooks)", initial.len());
+    println!(
+        "[watch] initial render complete ({} notebooks)",
+        initial.len()
+    );
 
     // Set up the fs watcher.
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
@@ -414,8 +411,10 @@ fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<P
     let mut found: HashSet<PathBuf> = HashSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // Each entry is (source text, host directory for ref resolution).
-    let mut stack: Vec<(String, PathBuf)> =
-        vec![(source.to_string(), src.parent().unwrap_or(root_dir).to_path_buf())];
+    let mut stack: Vec<(String, PathBuf)> = vec![(
+        source.to_string(),
+        src.parent().unwrap_or(root_dir).to_path_buf(),
+    )];
 
     while let Some((text, host_dir)) = stack.pop() {
         for line in text.lines() {
@@ -423,8 +422,7 @@ fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<P
                 if !crate::embed::is_markdown_target(&eref.target) {
                     continue;
                 }
-                let Ok(p) = crate::embed::resolve_target(&eref.target, &host_dir, root_dir)
-                else {
+                let Ok(p) = crate::embed::resolve_target(&eref.target, &host_dir, root_dir) else {
                     continue;
                 };
                 let Some(canon) = canonicalize_lossy(&p) else {
@@ -479,7 +477,9 @@ fn list_notebooks(dir: &Path, out_exclude: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn canonicalize_lossy(p: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(p).ok().or_else(|| Some(p.to_path_buf()))
+    std::fs::canonicalize(p)
+        .ok()
+        .or_else(|| Some(p.to_path_buf()))
 }
 
 /// Return true when the file at `path` matches the bytes we last wrote
@@ -650,8 +650,7 @@ pub(crate) fn compute_render_set(
 ) -> Vec<PathBuf> {
     let mut to_render: HashSet<PathBuf> = HashSet::new();
     for c in changed {
-        let is_md_in_root = c.starts_with(root_dir)
-            && c.extension().map_or(false, |e| e == "md");
+        let is_md_in_root = c.starts_with(root_dir) && c.extension().map_or(false, |e| e == "md");
         let is_tracked_embed = graph.deps.values().any(|d| d.contains(c));
         if !is_md_in_root && !is_tracked_embed {
             continue;
@@ -720,11 +719,7 @@ mod tests {
         fs::write(&setup, "Fs = 48000\n").unwrap();
         let host = dir.path().join("host.md");
         fs::write(&host, "intro\n\n![[setup]]\n\nafter\n").unwrap();
-        let found = collect_embed_targets(
-            &fs::read_to_string(&host).unwrap(),
-            &host,
-            dir.path(),
-        );
+        let found = collect_embed_targets(&fs::read_to_string(&host).unwrap(), &host, dir.path());
         let canon_setup = fs::canonicalize(&setup).unwrap();
         assert!(found.contains(&canon_setup), "missing setup in {:?}", found);
     }
@@ -740,11 +735,7 @@ mod tests {
         fs::write(&mid, "before\n\n![[leaf]]\n\nafter\n").unwrap();
         let host = dir.path().join("host.md");
         fs::write(&host, "intro\n\n![[mid]]\n").unwrap();
-        let found = collect_embed_targets(
-            &fs::read_to_string(&host).unwrap(),
-            &host,
-            dir.path(),
-        );
+        let found = collect_embed_targets(&fs::read_to_string(&host).unwrap(), &host, dir.path());
         let canon_mid = fs::canonicalize(&mid).unwrap();
         let canon_leaf = fs::canonicalize(&leaf).unwrap();
         assert!(found.contains(&canon_mid), "missing mid in {:?}", found);
@@ -760,11 +751,7 @@ mod tests {
         let b = dir.path().join("b.md");
         fs::write(&a, "a body\n\n![[b]]\n").unwrap();
         fs::write(&b, "b body\n\n![[a]]\n").unwrap();
-        let found = collect_embed_targets(
-            &fs::read_to_string(&a).unwrap(),
-            &a,
-            dir.path(),
-        );
+        let found = collect_embed_targets(&fs::read_to_string(&a).unwrap(), &a, dir.path());
         let canon_b = fs::canonicalize(&b).unwrap();
         assert!(found.contains(&canon_b), "missing b in {:?}", found);
         // a re-references itself; either including or excluding the host
@@ -780,11 +767,7 @@ mod tests {
         fs::write(&target, "# Foo\n\nx\n\n# Bar\n\ny\n").unwrap();
         let host = dir.path().join("host.md");
         fs::write(&host, "see ![[doc#Bar]]\n").unwrap();
-        let found = collect_embed_targets(
-            &fs::read_to_string(&host).unwrap(),
-            &host,
-            dir.path(),
-        );
+        let found = collect_embed_targets(&fs::read_to_string(&host).unwrap(), &host, dir.path());
         let canon_target = fs::canonicalize(&target).unwrap();
         assert!(
             found.contains(&canon_target),
@@ -802,11 +785,7 @@ mod tests {
         fs::write(&img, "<svg/>").unwrap();
         let host = dir.path().join("host.md");
         fs::write(&host, "see ![[diagram.svg]]\n").unwrap();
-        let found = collect_embed_targets(
-            &fs::read_to_string(&host).unwrap(),
-            &host,
-            dir.path(),
-        );
+        let found = collect_embed_targets(&fs::read_to_string(&host).unwrap(), &host, dir.path());
         assert!(
             found.is_empty(),
             "image embeds must not appear in the dep graph: {:?}",
@@ -865,10 +844,7 @@ mod tests {
         let format = crate::Format::Markdown {
             obsidian: Some(crate::ObsidianOpts::default()),
         };
-        let dir = crate::plot_dir_for_format(
-            &PathBuf::from("/out/lesson.md"),
-            &format,
-        );
+        let dir = crate::plot_dir_for_format(&PathBuf::from("/out/lesson.md"), &format);
         let dir = dir.expect("markdown obsidian should yield a plot dir");
         assert!(dir.ends_with("_attachments/lesson"), "got {:?}", dir);
     }
@@ -929,12 +905,12 @@ mod tests {
     #[test]
     fn is_editor_tempfile_catches_common_patterns() {
         assert!(is_editor_tempfile(Path::new("/n/.!1234!note.md"))); // sed -i
-        assert!(is_editor_tempfile(Path::new("/n/.note.md.swp")));   // vim
+        assert!(is_editor_tempfile(Path::new("/n/.note.md.swp"))); // vim
         assert!(is_editor_tempfile(Path::new("/n/.note.md.swo")));
-        assert!(is_editor_tempfile(Path::new("/n/.#note.md")));      // emacs
-        assert!(is_editor_tempfile(Path::new("/n/note.md~")));       // generic backup
-        assert!(!is_editor_tempfile(Path::new("/n/note.md")));       // real notebook
-        assert!(!is_editor_tempfile(Path::new("/n/sub/note.md")));   // nested
+        assert!(is_editor_tempfile(Path::new("/n/.#note.md"))); // emacs
+        assert!(is_editor_tempfile(Path::new("/n/note.md~"))); // generic backup
+        assert!(!is_editor_tempfile(Path::new("/n/note.md"))); // real notebook
+        assert!(!is_editor_tempfile(Path::new("/n/sub/note.md"))); // nested
     }
 
     #[test]

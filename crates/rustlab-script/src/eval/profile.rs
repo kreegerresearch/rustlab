@@ -87,7 +87,10 @@ impl Profiler {
         self.enabled = true;
         self.whitelist = names.map(|v| v.into_iter().collect());
         if self.root.is_none() {
-            self.root = Some(Frame { start: Instant::now(), child_ns: 0 });
+            self.root = Some(Frame {
+                start: Instant::now(),
+                child_ns: 0,
+            });
         }
     }
 
@@ -129,7 +132,10 @@ impl Profiler {
             set_timing(true);
             self.conv_base = Some(conversion_counts());
         }
-        self.stack.push(Frame { start: Instant::now(), child_ns: 0 });
+        self.stack.push(Frame {
+            start: Instant::now(),
+            child_ns: 0,
+        });
         match self.active.get_mut(name) {
             Some(n) => *n += 1,
             None => {
@@ -141,7 +147,9 @@ impl Profiler {
 
     /// Finish the call started by the matching [`enter`](Self::enter).
     pub fn exit(&mut self, name: &str, in_bytes: u64, out_bytes: u64) {
-        let Some(frame) = self.stack.pop() else { return };
+        let Some(frame) = self.stack.pop() else {
+            return;
+        };
         let elapsed = frame.start.elapsed().as_nanos() as u64;
         let self_ns = elapsed.saturating_sub(frame.child_ns);
         match self.stack.last_mut() {
@@ -256,7 +264,10 @@ impl Profiler {
                 // Restart the root. If a call is open, start the root where
                 // that call started: when it exits it adds its whole time to
                 // `child_ns`, which then cancels exactly.
-                *root = Frame { start: open_start.unwrap_or_else(Instant::now), child_ns: 0 };
+                *root = Frame {
+                    start: open_start.unwrap_or_else(Instant::now),
+                    child_ns: 0,
+                };
                 let s = self.row(TOP_LEVEL);
                 s.call_count = 1;
                 s.total_ns += elapsed;
@@ -272,12 +283,20 @@ impl Profiler {
 /// Print a profiling report to stderr.
 /// Called automatically at script end if any data was collected.
 pub fn print_report(rows: &[(String, FnStats)]) {
-    let shown: Vec<_> = rows.iter().filter(|(_, s)| s.total_ns > 0 || s.self_ns > 0).collect();
+    let shown: Vec<_> = rows
+        .iter()
+        .filter(|(_, s)| s.total_ns > 0 || s.self_ns > 0)
+        .collect();
     if shown.is_empty() {
         return;
     }
 
-    let fn_col = shown.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(8).max(8);
+    let fn_col = shown
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(8)
+        .max(8);
 
     eprintln!();
     eprintln!(
@@ -349,7 +368,9 @@ pub fn print_report(rows: &[(String, FnStats)]) {
         fn_col = fn_col
     );
     if any_parallel {
-        eprintln!("  parmap:* rows are CPU time summed across worker threads; TOTAL excludes them.");
+        eprintln!(
+            "  parmap:* rows are CPU time summed across worker threads; TOTAL excludes them."
+        );
     }
     eprintln!();
 }

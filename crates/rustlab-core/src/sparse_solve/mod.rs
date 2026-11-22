@@ -18,18 +18,16 @@
 
 use thiserror::Error;
 
-pub mod csc;
-pub mod ordering;
-pub mod elimination_tree;
 pub mod cholesky;
+pub mod csc;
+pub mod elimination_tree;
 pub mod lu;
+pub mod ordering;
 
-pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use cholesky::{symbolic_col_counts, SparseChol};
+pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use lu::SparseLU;
-pub use ordering::{
-    AmdOrdering, ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation,
-};
+pub use ordering::{AmdOrdering, ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation};
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +51,9 @@ pub enum SparseSolveError {
     NotSquare { rows: usize, cols: usize },
 
     /// Pivot dropped below the singularity threshold during factorization.
-    #[error("matrix is singular at column {col} (pivot {pivot:.3e} below threshold {threshold:.3e})")]
+    #[error(
+        "matrix is singular at column {col} (pivot {pivot:.3e} below threshold {threshold:.3e})"
+    )]
     Singular {
         col: usize,
         pivot: f64,
