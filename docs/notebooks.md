@@ -1617,8 +1617,9 @@ flavors; CLI aliases keep the old flags working:
 Mode (CSS `color-scheme`) is derived from the background's sRGB relative
 luminance (&lt; 0.5 → dark), not from pointer identity against the Mocha
 static. LaTeX and PDF ignore the theme and are always Latte on white
-paper. Without `-t`, `~/.rustlabrc` `[notebook] theme` (then `[plot]
-theme`) supplies the default using the same names.
+paper. `-t` also takes the name of a theme file, and `--theme-file PATH`
+takes one by path; see [Theme files](#theme-files) and
+[Choosing a theme](#choosing-a-theme) for where the default comes from.
 
 ### Catppuccin → `ThemeColors` mapping
 
@@ -1675,6 +1676,137 @@ SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`,
 `--rl-plot-grid`, and `--rl-plot-1` … `--rl-plot-8` are declared for a
 later pass and do not restyle traces. PDF and LaTeX stay Latte on white.
 
+`notebook watch` adds four tokens of its own in the toolbar stylesheet
+(not in a static page's `:root`): `--rl-shadow-color` (menus, source
+pane, drawer, comment popup, each at its own opacity), `--rl-scrim` (the
+contents drawer backdrop, at 28%), and `--rl-banner-bg` /
+`--rl-banner-text` (the "disconnected" banner). Every colour the watch
+chrome paints comes from a token, so a theme file reaches all of it.
+
+### Theme files
+
+A theme file is TOML named `NAME.toml`. It names a parent with `inherits`
+(a builtin or another theme file; default `mocha`) and overrides any of
+the roles and design tokens. Everything not set comes from the parent.
+
+```toml
+# themes/course.toml
+inherits = "latte"
+
+[palette]                  # private swatches, used by name below
+brand = "#5b21b6"
+ink   = "#1b1b1f"
+
+[colors]                   # roles: #RGB, #RRGGBB, or a palette name
+accent_primary = "brand"
+text           = "ink"
+plot_grid      = "#0000002e"   # only plot_grid may carry alpha
+
+[typography]
+body    = ["Charter", "Bitstream Charter", "Georgia", "serif"]
+heading = ["system-ui", "Segoe UI", "Helvetica Neue", "Arial", "sans-serif"]
+mono    = ["JetBrains Mono", "ui-monospace", "monospace"]
+measure = "72ch"           # content width
+line_height = "1.6"
+size    = "17px"           # or medium
+
+[shape]
+radius = "4px"             # also radius_sm, radius_lg, border_width
+
+[space]
+3 = "1.25rem"              # steps 1 to 6 of the spacing scale
+```
+
+- **Top-level keys:** `name` (optional; defaults to the file stem, and a
+  discovered file's `name` must equal its stem), `inherits`, `[palette]`,
+  `[colors]`, `[typography]`, `[shape]`, `[space]`. Anything else is an
+  error naming the file and key. `[dark]`, `[print]`, `[plot]`, and
+  `[table]` are later phases of the theme plan and are refused for now.
+- **Roles** (`[colors]`) are the `ThemeColors` field names: `bg`,
+  `bg_secondary`, `text`, `text_dim`, `border`, `border_subtle`,
+  `accent_primary`, `accent_secondary`, `accent_tertiary`, `code_bg`,
+  `output_bg`, `inline_code_bg`, `error_bg`, `error_text`, `plot_bg`,
+  `plot_grid`, `syn_keyword`, `syn_function`, `syn_number`, `syn_string`,
+  `syn_comment`, `syn_operator`, `footer_text`, `cm_mark_bg`,
+  `cm_note_bg`, `cm_note_border`, `dx_add_bar`, `dx_mod_bar`,
+  `dx_del_bar`, `dx_add_line`, `dx_del_line`, `dx_add_word`,
+  `dx_del_word`, and the watch-only `shadow`, `scrim`, `banner_bg`,
+  `banner_text`.
+- **Values** follow a closed grammar (see `docs/security.md` § H7):
+  colours are hex or a palette name, fonts are lists of family names that
+  end in a generic family (system fonts only; no font files, `url()`, or
+  `@font-face`), and lengths are a number with `px`, `rem`, `em`, `ch`,
+  or `%`. Anything else is a load error.
+- **Names** are lowercase letters, digits, `-`, and `_`. A file cannot use
+  a builtin name (`mocha`, `macchiato`, `frappe`, `latte`, `dark`, `light`)
+  or a name reserved for the next builtins (`catppuccin`, `clean`,
+  `paper`, `docs`, `contrast`).
+- **Inheritance** is resolved depth first; a cycle is an error that prints
+  the chain (`a -> b -> a`). A palette is inherited too.
+- **Mode** (`color-scheme`) follows the resolved `bg`, as for builtins.
+- LaTeX and PDF still print Latte on white paper. Plots in HTML and
+  Markdown use the theme's `plot_bg`, `plot_grid`, and `text`.
+
+**Where named themes are found**, after the builtins:
+
+1. the project's `themes/` directory, next to the nearest `rustlab.toml`
+   (or the directory `[notebook] theme_dir` names, relative to
+   `rustlab.toml`; refused if it leaves the project root);
+2. `$XDG_CONFIG_HOME/rustlab/themes/` (default `~/.config/rustlab/themes/`).
+
+A discovered file whose real path is outside its directory (a symlink
+out) is refused.
+
+### Choosing a theme
+
+First match wins:
+
+1. `--theme NAME` / `--theme-file PATH` on `render` or `watch`;
+2. notebook frontmatter `theme: NAME` (a name, never a path; per notebook,
+   so a directory can mix themes);
+3. `rustlab.toml` `[notebook] theme`;
+4. `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml`
+   `[notebook] theme`, then `[plot] theme`;
+5. `mocha`.
+
+`rustlab.toml` is found by walking up from the notebook's directory (the
+input directory for a directory render, the served path for `watch`) to
+the first directory that has one, stopping at `$HOME`. It accepts only:
+
+```toml
+# rustlab.toml at the project root
+[notebook]
+theme = "course"          # any theme name
+theme_dir = "styles/themes"   # optional; default themes/
+```
+
+Other keys warn and are ignored. A name that cannot be resolved is an
+error that names the file that set it. In `notebook watch` a bad
+frontmatter name logs a warning and the page keeps the server's theme.
+
+### Checking contrast
+
+Every theme is checked against the same WCAG 2.x pair list the builtins
+are tested with (`rustlab_plot::contrast`): 4.5:1 for text and 3:1 for
+large text, field boundaries, state indicators, and focus rings, on every
+surface the HTML page and the watch chrome paint each role on, including
+computed ones (table head and stripe, a button at partial opacity).
+
+- `render` and `watch` print one warning per failing pair and carry on.
+- `render --theme-contrast=error` exits 1 before writing anything when the
+  theme fails a pair. This is separate from `--strict`, which is about
+  cell errors.
+- `rustlab-notebook theme check NAME|FILE` prints the full table and exits
+  1 on a failing pair or an invalid file.
+
+```sh
+rustlab-notebook theme list                 # builtins and discovered files
+rustlab-notebook theme show course          # resolved tokens as CSS
+rustlab-notebook theme check course         # validation + contrast table
+rustlab-notebook theme check themes/x.toml  # a file by path
+rustlab-notebook theme list --dir notes/    # start the rustlab.toml search elsewhere
+```
+
 ## Output Formats
 
 ### HTML (default)
@@ -1689,10 +1821,11 @@ nested pages reference it with `../`. Open the HTML from that folder;
 
 The page also has:
 - Catppuccin themes via `-t` / `--theme`: `mocha` (default; alias `dark`),
-  `macchiato`, `frappe`, `latte` (alias `light`). The default is
-  overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
-  if the notebook key is omitted; same names); `-t` / `--theme` always
-  wins. The initial source-disclosure state is `[notebook] code` (`"open"` or
+  `macchiato`, `frappe`, `latte` (alias `light`), or a theme file
+  (`-t NAME`, `--theme-file PATH`). The default comes from frontmatter
+  `theme:`, then `rustlab.toml`, then `~/.rustlabrc` `[notebook] theme`
+  (or `[plot] theme`); a flag always wins (see
+  [Choosing a theme](#choosing-a-theme)). The initial source-disclosure state is `[notebook] code` (`"open"` or
   `"collapsed"`, default open), overridable per notebook and per cell
   (see `<!-- code: -->` above). An invalid `code` value warns once and
   falls back to open.

@@ -4,9 +4,11 @@
 Catppuccin builtins), F2 (luminance dark/light), F5 (`--rl-*` CSS custom
 properties), the user half of F8 (`~/.rustlabrc` `[notebook] theme`), and
 the font-role contrast pass (PR #57). Phase 1 of this revision (design
-tokens) shipped in #147 (0.3.66). Phases 2–9 are not implemented.
-**Current phase:** Phase 2 (theme files, not started; ready to
-implement). Michael settled six of the twelve open questions on
+tokens) shipped in #147 (0.3.66). Phase 2 (theme files) is implemented
+for 0.3.83 on `cursor/notebook-theme-files-43bf`, in review. Phases 3–9
+are not implemented.
+**Current phase:** Phase 2 (theme files, implemented, in review; see
+[Phase 2 as built](#phase-2-as-built)). Michael settled six of the twelve open questions on
 2026-11-16 (see [Decisions](#decisions-2026-11-16)); the six left open
 do not block Phase 2.
 **Created:** 2026-09-13. **Revised:** 2026-11-13 against `main` at 0.3.65;
@@ -969,7 +971,7 @@ Check a box when that phase's PR is merged. Keep the **Current phase**
 line at the top in sync.
 
 - [x] Phase 1: token model refactor (status: complete, #147, 0.3.66)
-- [ ] Phase 2: theme files (status: not started; current phase)
+- [ ] Phase 2: theme files (status: implemented for 0.3.83, PR in review; check when merged)
 - [ ] Phase 3: pairs and new builtins (status: not started)
 - [ ] Phase 4: plot theming (status: not started)
 - [ ] Phase 5: scoped CSS and class prefix (status: not started)
@@ -977,6 +979,46 @@ line at the top in sync.
 - [ ] Phase 7: inherit mode (status: not started)
 - [ ] Phase 8: PDF parity (status: not started)
 - [ ] Phase 9: watch theme picker (status: not started)
+
+### Phase 2 as built
+
+Implemented against `main` at 0.3.80, merged up to 0.3.82; version 0.3.83.
+
+- **Legibility audit first.** `rustlab_plot::contrast` lists every text
+  (4.5:1) and UI (3:1) pair the HTML page, the watch chrome, and the PDF
+  paint, including computed surfaces (table head and stripe, a button at
+  partial opacity, field borders). A test holds the four builtins to it,
+  and `theme check` uses the same list. Three defaults failed and were
+  fixed with the smallest change that passes: the ⋯ menu button opacity
+  (0.72 → 0.85; Latte was 3.48:1), the stale-cell opacity (0.65 → 0.85;
+  Frappé 4.38:1, Latte 3.10:1), and form-field boundaries (`border`,
+  1.17–1.59:1 → `text_dim` mixed 75% into the page, ≥ 3.04:1). No palette
+  hex changed.
+- **Schema:** `name`, `inherits` (default `mocha`), `[palette]`,
+  `[colors]` (33 page roles plus `shadow`, `scrim`, `banner_bg`,
+  `banner_text`), `[typography]`, `[shape]`, `[space]`. `[dark]`,
+  `[print]`, `[plot]`, and `[table]` are refused with a "not supported
+  yet" error; they belong to Phases 3, 8, 4, and 3. Alpha (`#RRGGBBAA`) is
+  accepted only for `plot_grid`, so every other role can be
+  contrast-checked.
+- **Reserved names:** the builtins and aliases plus `catppuccin`,
+  `clean`, `paper`, `docs`, `contrast`, so Phase 3 cannot collide with a
+  user file.
+- **Watch chrome:** the six literals in §8 now read `--rl-shadow-color`,
+  `--rl-scrim`, `--rl-banner-bg`, and `--rl-banner-text`, declared only by
+  watch pages so a static `:root` is unchanged. Shadows use
+  `color-mix(…, transparent)` at their old alpha, which paints the same
+  pixels. `--rl-shadow` (the undo toast) keeps its literal value.
+- **Lifetime:** a file theme is interned once per distinct content
+  (`rustlab_plot::intern_theme`), so renderers keep taking `&'static
+  ThemeColors`. The CLI / project / rc theme is resolved at startup; a
+  frontmatter theme is re-read on every render, so editing that file is
+  picked up on the next `watch` re-render. Editing the `--theme-file` of
+  a running `watch` needs a restart.
+- **Not in Phase 2:** `savefig` to a file from inside a cell keeps the
+  process plot theme (the theme file's builtin ancestor). The static
+  directory file browser's shadow is page CSS shared with `render` and
+  was left unchanged.
 
 ---
 

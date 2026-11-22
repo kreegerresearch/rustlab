@@ -629,7 +629,7 @@ document.addEventListener('click', (e) => {
     flex: 0 0 auto;
     width: 7rem;
     padding: 0.2rem 0.4rem;
-    border: 1px solid var(--rl-border, #363a4f);
+    border: 1px solid color-mix(in srgb, var(--rl-text-dim, #a5adcb) 75%, var(--rl-bg, #24273a));
     border-radius: 4px;
     background: var(--rl-bg, #24273a);
     color: var(--rl-text, #cad3f5);
@@ -962,7 +962,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 #rl-cm-pop {
   width: min(20rem, calc(100vw - 16px));
   padding: 0.65rem 0.7rem 0.6rem;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--rl-shadow-color, #000000) 35%, transparent);
 }
 #rl-cm-pop-ctx { margin: 0 0 0.45rem; font-size: 0.8rem; }
 #rl-cm-pop-ctx:empty { display: none; }
@@ -1129,6 +1129,12 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 
 </style>
 <style>
+  :root {
+    --rl-shadow-color: #000000;
+    --rl-scrim: #11111b;
+    --rl-banner-bg: #aa2233;
+    --rl-banner-text: #ffffff;
+  }
   #rl-toolbar {
     position: fixed; top: 10px; right: 14px; z-index: 100000;
     display: flex; gap: 6px; align-items: center;
@@ -1148,7 +1154,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-toolbar button:hover { border-color: var(--rl-accent-primary, #c6a0f6); }
   #rl-toolbar button.active { background: var(--rl-accent-primary, #c6a0f6); color: var(--rl-bg, #24273a); border-color: var(--rl-accent-primary, #c6a0f6); }
   #rl-toolbar button[hidden] { display: none; }
-  #rl-toolbar button.rl-quiet { opacity: 0.72; padding: 4px 8px; }
+  #rl-toolbar button.rl-quiet { opacity: 0.85; padding: 4px 8px; }
   .rl-more { position: relative; display: inline-flex; align-items: center; }
   #rl-more-btn { min-width: 2rem; letter-spacing: 0.08em; }
   .rl-diff-dot {
@@ -1161,7 +1167,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
     min-width: 16rem; padding: 8px;
     background: var(--rl-bg-secondary, #1e2030); color: var(--rl-text, #cad3f5);
     border: 1px solid var(--rl-border, #363a4f); border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.28);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--rl-shadow-color, #000000) 28%, transparent);
   }
   #rl-toolbar #rl-diff-toggle {
     display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -1239,7 +1245,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-diff input {
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: var(--rl-bg, #24273a); color: var(--rl-text, #cad3f5);
-    border: 1px solid var(--rl-border, #363a4f); border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--rl-text-dim, #a5adcb) 75%, var(--rl-bg, #24273a)); border-radius: 6px;
     padding: 4px 6px; width: 100%; box-sizing: border-box;
   }
   #rl-diff input:focus { border-color: var(--rl-accent-primary, #c6a0f6); outline: none; }
@@ -1405,7 +1411,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
     background: var(--rl-code-bg, #181926); border-left: 1px solid var(--rl-border, #363a4f);
     z-index: 99998; display: flex; flex-direction: column;
     transform: translateX(101%); transition: transform .18s ease;
-    box-shadow: -8px 0 24px rgba(0,0,0,.25);
+    box-shadow: -8px 0 24px color-mix(in srgb, var(--rl-shadow-color, #000000) 25%, transparent);
   }
   body.rl-source-open #rl-source-pane { transform: translateX(0); }
   /* With the pane open, main's viewport-centring margin (50% of the FULL
@@ -1486,7 +1492,7 @@ body.rl-watch:has(.rl-drawer-bar) main {
   top: var(--topbar-h);
   left: 0; right: 0; bottom: 0;
   z-index: 230;
-  background: rgba(17, 17, 27, 0.28);
+  background: color-mix(in srgb, var(--rl-scrim, #11111b) 28%, transparent);
   opacity: 0;
   pointer-events: none;
 }
@@ -1504,7 +1510,7 @@ body.rl-drawer-open #rl-drawer-scrim { opacity: 1; pointer-events: auto; }
   background: var(--rl-bg-secondary, #181825);
   color: var(--rl-text, #cdd6f4);
   border-right: 1px solid var(--rl-border, #313244);
-  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.45);
+  box-shadow: 8px 0 28px color-mix(in srgb, var(--rl-shadow-color, #000000) 45%, transparent);
   transform: translateX(-105%);
   visibility: hidden;
   pointer-events: none;

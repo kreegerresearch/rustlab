@@ -19,8 +19,10 @@ pub mod render_latex;
 pub mod render_markdown;
 pub mod server;
 mod srcdiff;
+pub mod theme_file;
 #[cfg(test)]
 mod theme_golden;
+pub mod theme_select;
 pub mod validate;
 pub mod watch;
 pub mod widget;
@@ -949,6 +951,13 @@ pub fn cmd_render_json(
         comments::FormatKind::Json,
         comments::requested(),
     ));
+    let theme = match theme_select::for_source(theme, &source) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}: {e}", title_path.display());
+            std::process::exit(1);
+        }
+    };
     let doc = render_json::render_json(&title, &rendered, theme);
     let json = if pretty {
         serde_json::to_string_pretty(&doc)
@@ -1580,6 +1589,11 @@ fn render_output(
     source_md: Option<&str>,
     input: Option<&Path>,
 ) -> Result<(), String> {
+    // Frontmatter `theme:` (unless a CLI flag forced the theme).
+    let theme = match source_md {
+        Some(src) => theme_select::for_source(theme, src)?,
+        None => theme,
+    };
     let kind = match format {
         Format::Html => comments::FormatKind::Html,
         Format::Latex | Format::Pdf => comments::FormatKind::Latex,

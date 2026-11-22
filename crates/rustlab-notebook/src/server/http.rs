@@ -355,6 +355,7 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
     // Same overlay as a notebook page: the index has a file tree and no
     // section outline. The WS client is the only other script; it gets
     // the nonce here. The index body itself was sanitised at render time.
+    let html = super::page::inject_chrome_tokens(&html, state.theme);
     let html = super::drawer::install_nav_drawer(&html, Some(&state.csp_nonce));
     let html = ws::inject_ws_client_nonced(&html, Some(&state.csp_nonce));
     html_response(&state, html)

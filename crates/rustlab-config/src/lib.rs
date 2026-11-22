@@ -10,7 +10,10 @@
 //! Unknown keys warn (returned on [`LoadedConfig::unknown_keys`]); invalid
 //! values error with the file path and key, except `[notebook] code`, which
 //! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
-//! Project-local config and `startup.rlab` are out of scope for v1.
+//!
+//! A project may also carry `rustlab.toml` (see [`find_project_config`] and
+//! [`load_project`]). It accepts only `[notebook] theme` and
+//! `[notebook] theme_dir`; other keys warn. `startup.rlab` is out of scope.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -170,7 +173,9 @@ impl CodeFold {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NotebookSettings {
-    pub theme: Option<ColorTheme>,
+    /// `[notebook] theme`: a builtin (stored by its canonical name) or a
+    /// theme-file name. Resolved by the notebook renderer.
+    pub theme: Option<String>,
     /// `[notebook] code`. Missing key → built-in default open.
     pub code: Option<CodeFold>,
     /// `[notebook] comments` = `"on"` | `"off"`. `None` leaves the format default.
@@ -232,13 +237,14 @@ impl UserSettings {
         self.notebook.git_diff.unwrap_or(false)
     }
 
-    /// Notebook page/plot theme: `[notebook] theme`, else `[plot] theme`,
-    /// else dark.
-    pub fn notebook_theme(&self) -> ColorTheme {
-        self.notebook
-            .theme
-            .or(self.plot.theme)
-            .unwrap_or(ColorTheme::Mocha)
+    /// Notebook page/plot theme name: `[notebook] theme`, else
+    /// `[plot] theme`, else `mocha`. Any theme-file name is allowed here.
+    pub fn notebook_theme(&self) -> String {
+        match (&self.notebook.theme, self.plot.theme) {
+            (Some(name), _) => name.clone(),
+            (None, Some(t)) => t.as_str().to_string(),
+            (None, None) => ColorTheme::Mocha.as_str().to_string(),
+        }
     }
 
     /// Effective REPL history cap.
@@ -324,6 +330,150 @@ impl ConfigError {
             message: message.into(),
         }
     }
+}
+
+/// File name of the project config.
+pub const PROJECT_CONFIG: &str = "rustlab.toml";
+
+/// Nearest `rustlab.toml`, walking up from `start` (a file's directory or
+/// a directory). Stops at the first match or the filesystem root, and
+/// does not go above `home`: `home` itself is checked, its parents are not.
+pub fn find_project_config(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
+    let mut dir: Option<&Path> = Some(start.as_path());
+    while let Some(d) = dir {
+        let candidate = d.join(PROJECT_CONFIG);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if home.as_deref() == Some(d) {
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// `rustlab.toml`, parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectConfig {
+    /// The `rustlab.toml` that was read.
+    pub path: PathBuf,
+    /// Its directory: the project root.
+    pub root: PathBuf,
+    /// `[notebook] theme`, validated like the rc key.
+    pub notebook_theme: Option<String>,
+    /// `[notebook] theme_dir`, resolved against `root`. Must stay inside it.
+    pub theme_dir: Option<PathBuf>,
+    /// Dotted keys this schema does not know. Callers warn once each.
+    pub unknown_keys: Vec<String>,
+}
+
+/// Find and parse the project config for `start`. `Ok(None)` when there
+/// is no `rustlab.toml` between `start` and `home` (or the root).
+pub fn load_project(
+    start: &Path,
+    home: Option<&Path>,
+) -> Result<Option<ProjectConfig>, ConfigError> {
+    let Some(path) = find_project_config(start, home) else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    parse_project_toml(&text, &path).map(Some)
+}
+
+/// Parse a `rustlab.toml` body that lives at `path`.
+pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, ConfigError> {
+    let value: TomlValue = text
+        .parse()
+        .map_err(|e: toml::de::Error| ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+    let TomlValue::Table(table) = value else {
+        return Err(ConfigError::Parse {
+            path: path.to_path_buf(),
+            message: "expected a TOML table at the top level".to_string(),
+        });
+    };
+    let root = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut out = ProjectConfig {
+        path: path.to_path_buf(),
+        root: root.clone(),
+        notebook_theme: None,
+        theme_dir: None,
+        unknown_keys: Vec::new(),
+    };
+    for (key, val) in table {
+        if key != "notebook" {
+            out.unknown_keys.push(key);
+            continue;
+        }
+        for (k, v) in expect_table(&val, path, "notebook")? {
+            match k.as_str() {
+                "theme" => {
+                    let s = expect_string(v, path, "notebook.theme")?;
+                    out.notebook_theme = Some(parse_theme_name(s, path, "notebook.theme")?);
+                }
+                "theme_dir" => {
+                    let s = expect_string(v, path, "notebook.theme_dir")?;
+                    out.theme_dir = Some(project_relative_dir(&root, s).ok_or_else(|| {
+                        ConfigError::invalid(
+                            path,
+                            "notebook.theme_dir",
+                            format!("\"{s}\" leaves the project root {}", root.display()),
+                        )
+                    })?);
+                }
+                other => out.unknown_keys.push(format!("notebook.{other}")),
+            }
+        }
+    }
+    out.unknown_keys.sort();
+    out.unknown_keys.dedup();
+    Ok(out)
+}
+
+/// `rel` joined to `root`, or `None` when it is absolute or climbs out.
+/// An existing directory is also canonicalised, so a symlink out is refused.
+fn project_relative_dir(root: &Path, rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel_path = Path::new(rel);
+    let mut depth: i64 = 0;
+    let mut joined = root.to_path_buf();
+    for c in rel_path.components() {
+        match c {
+            Component::Normal(part) => {
+                depth += 1;
+                joined.push(part);
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+                joined.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if let (Ok(canon), Ok(canon_root)) =
+        (std::fs::canonicalize(&joined), std::fs::canonicalize(root))
+    {
+        if !canon.starts_with(&canon_root) {
+            return None;
+        }
+        return Some(canon);
+    }
+    Some(joined)
 }
 
 /// Locations consulted by [`load`].
@@ -561,6 +711,39 @@ fn parse_viewer_section(
     Ok(())
 }
 
+/// `true` for a name a theme file may have: lowercase ASCII letters,
+/// digits, `-`, `_`, starting with a letter or digit, at most 64 bytes.
+/// Names are looked up as `<dir>/<name>.toml`, so this also keeps a name
+/// from being a path.
+pub fn is_theme_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+}
+
+/// A builtin (any case or alias, stored canonical) or a theme-file name.
+fn parse_theme_name(s: &str, path: &Path, key: &str) -> Result<String, ConfigError> {
+    if let Some(t) = ColorTheme::parse(s) {
+        return Ok(t.as_str().to_string());
+    }
+    let name = s.trim().to_ascii_lowercase();
+    if is_theme_name(&name) {
+        Ok(name)
+    } else {
+        Err(ConfigError::invalid(
+            path,
+            key,
+            format!(
+                "expected a theme name (a builtin: {}, or a theme file name of lowercase letters, digits, - and _); got \"{s}\"",
+                ColorTheme::NAMES
+            ),
+        ))
+    }
+}
+
 fn parse_notebook_section(
     val: &TomlValue,
     path: &Path,
@@ -573,13 +756,7 @@ fn parse_notebook_section(
         match key.as_str() {
             "theme" => {
                 let s = expect_string(v, path, "notebook.theme")?;
-                settings.notebook.theme = Some(ColorTheme::parse(s).ok_or_else(|| {
-                    ConfigError::invalid(
-                        path,
-                        "notebook.theme",
-                        format!("expected one of {}; got \"{s}\"", ColorTheme::NAMES),
-                    )
-                })?);
+                settings.notebook.theme = Some(parse_theme_name(s, path, "notebook.theme")?);
             }
             // Soft-fail: a bad fold value must not abort startup. The
             // built-in default (open) applies when `code` stays unset.
@@ -747,7 +924,7 @@ mod tests {
         assert_eq!(loaded.settings.display_format(), DisplayFormat::Short);
         assert_eq!(loaded.settings.plot_theme(), ColorTheme::Mocha);
         assert_eq!(loaded.settings.default_axis(), DefaultAxis::Ij);
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Mocha);
+        assert_eq!(loaded.settings.notebook_theme(), "mocha");
         assert_eq!(loaded.settings.history_limit(), DEFAULT_HISTORY_LIMIT);
         assert!(!loaded.settings.viewer_auto_connect());
     }
@@ -950,10 +1127,10 @@ mod tests {
         assert_eq!(loaded.settings.plot.default_axis, Some(DefaultAxis::Xy));
         assert_eq!(loaded.settings.viewer.auto_connect, Some(true));
         assert_eq!(loaded.settings.viewer.name.as_deref(), Some("work"));
-        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Mocha));
+        assert_eq!(loaded.settings.notebook.theme.as_deref(), Some("mocha"));
         assert_eq!(loaded.settings.repl.history_limit, Some(250));
         // notebook.theme wins over plot.theme
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Mocha);
+        assert_eq!(loaded.settings.notebook_theme(), "mocha");
         assert_eq!(loaded.settings.history_limit(), 250);
         assert!(loaded.settings.notebook_code_open());
         assert!(loaded.warnings.is_empty());
@@ -1056,7 +1233,7 @@ mod tests {
         .unwrap();
         assert!(loaded.settings.notebook.code.is_none());
         assert!(loaded.settings.notebook_code_open());
-        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Mocha));
+        assert_eq!(loaded.settings.notebook.theme.as_deref(), Some("mocha"));
         assert!(loaded.unknown_keys.is_empty());
         assert_eq!(loaded.warnings.len(), 1);
         assert!(loaded.warnings[0].contains("folded"));
@@ -1090,13 +1267,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(loaded.settings.plot_theme(), want, "{src}");
-            assert_eq!(loaded.settings.notebook_theme(), want, "{src}");
+            assert_eq!(loaded.settings.notebook_theme(), want.as_str(), "{src}");
         }
         // as_str is canonical, never the alias
         assert_eq!(ColorTheme::parse("dark").unwrap().as_str(), "mocha");
         assert_eq!(ColorTheme::parse("light").unwrap().as_str(), "latte");
+        // [plot] theme stays the four builtins.
         let err = parse_toml(
-            "[notebook]\ntheme = \"solarized\"\n",
+            "[plot]\ntheme = \"solarized\"\n",
             Path::new("rc"),
             ConfigSource::Defaults,
         )
@@ -1113,7 +1291,7 @@ mod tests {
             ConfigSource::Defaults,
         )
         .unwrap();
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Latte);
+        assert_eq!(loaded.settings.notebook_theme(), "latte");
         assert_eq!(loaded.settings.plot_theme(), ColorTheme::Latte);
     }
 
@@ -1167,5 +1345,119 @@ mod tests {
             no_xdg.xdg_config_file,
             PathBuf::from("/home/me/.config/rustlab/config.toml")
         );
+    }
+
+    #[test]
+    fn notebook_theme_accepts_any_theme_file_name() {
+        let loaded = parse_toml(
+            "[notebook]\ntheme = \"Course-Dark_2\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(loaded.settings.notebook_theme(), "course-dark_2");
+        for bad in ["../evil", "a/b", "x.toml", "", "-lead", "red;}"] {
+            let err = parse_toml(
+                &format!("[notebook]\ntheme = \"{bad}\"\n"),
+                Path::new("rc"),
+                ConfigSource::Defaults,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("notebook.theme"), "{bad}: {err}");
+        }
+        assert!(is_theme_name("course"));
+        assert!(!is_theme_name("Course"));
+        assert!(!is_theme_name(&"a".repeat(65)));
+    }
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "rl-config-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::canonicalize(&d).unwrap()
+    }
+
+    #[test]
+    fn project_config_is_the_nearest_ancestor() {
+        let root = tempdir("ancestor");
+        let outer = root.join("course");
+        let inner = outer.join("unit1/notebooks");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(
+            outer.join(PROJECT_CONFIG),
+            "[notebook]\ntheme = \"outer\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(outer.join(PROJECT_CONFIG))
+        );
+        // A nearer file wins.
+        std::fs::write(
+            outer.join("unit1").join(PROJECT_CONFIG),
+            "[notebook]\ntheme = \"inner\"\n",
+        )
+        .unwrap();
+        let p = load_project(&inner, None).unwrap().unwrap();
+        assert_eq!(p.notebook_theme.as_deref(), Some("inner"));
+        assert_eq!(p.root, outer.join("unit1"));
+        // None found below the home stop.
+        let lonely = root.join("elsewhere/deep");
+        std::fs::create_dir_all(&lonely).unwrap();
+        assert_eq!(
+            find_project_config(&lonely, Some(&root.join("elsewhere"))),
+            None
+        );
+        // The walk does not climb above home even when an ancestor has one.
+        std::fs::write(root.join(PROJECT_CONFIG), "").unwrap();
+        assert_eq!(
+            find_project_config(&lonely, Some(&root.join("elsewhere"))),
+            None
+        );
+        assert_eq!(
+            find_project_config(&lonely, None),
+            Some(root.join(PROJECT_CONFIG))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_config_keys_and_theme_dir() {
+        let root = tempdir("keys");
+        std::fs::create_dir_all(root.join("styles/themes")).unwrap();
+        let path = root.join(PROJECT_CONFIG);
+        let p = parse_project_toml(
+            "[notebook]\ntheme = \"Latte\"\ntheme_dir = \"styles/themes\"\ncode = \"open\"\n[plot]\ntheme = \"dark\"\n",
+            &path,
+        )
+        .unwrap();
+        assert_eq!(p.notebook_theme.as_deref(), Some("latte"));
+        assert_eq!(p.theme_dir, Some(root.join("styles/themes")));
+        assert_eq!(
+            p.unknown_keys,
+            vec!["notebook.code".to_string(), "plot".to_string()]
+        );
+        for escape in ["..", "../x", "a/../../x", "/etc"] {
+            let err = parse_project_toml(&format!("[notebook]\ntheme_dir = \"{escape}\"\n"), &path)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("leaves the project root"), "{escape}: {err}");
+        }
+        #[cfg(unix)]
+        {
+            let outside = tempdir("outside");
+            std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+            let err = parse_project_toml("[notebook]\ntheme_dir = \"link\"\n", &path)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("leaves the project root"), "{err}");
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod ascii;
 pub mod contour;
+pub mod contrast;
 #[cfg(any(feature = "viewer", test))]
 pub(crate) mod decimate;
 pub mod error;
@@ -64,8 +65,9 @@ pub use plot_abort::{
 #[cfg(feature = "viewer")]
 pub use rustlab_proto::{default_socket_path, socket_path_for_name};
 pub use theme::{
-    builtin_theme_names, contrast_ratio, default_theme, parse_theme, relative_luminance,
-    set_default_theme, theme_colors, ResolvedTheme, Theme, ThemeColors, ThemeMode,
+    builtin_theme_names, contrast_ratio, default_theme, intern_theme, interned_theme_named,
+    parse_theme, relative_luminance, set_default_theme, theme_colors, ResolvedTheme, Theme,
+    ThemeColors, ThemeMode,
 };
 pub use vendor::{html_loads_remote_script_or_style, PLOTLY_JS};
 #[cfg(feature = "viewer")]

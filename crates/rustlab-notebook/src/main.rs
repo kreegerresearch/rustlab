@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use rustlab_config::{ColorTheme, DefaultAxis, DisplayFormat, UserSettings};
+use rustlab_config::{DefaultAxis, DisplayFormat, UserSettings};
+use rustlab_notebook::theme_select::{self, ContrastMode, ThemePolicy, ThemeRequest};
 use rustlab_plot::{
-    builtin_theme_names, parse_theme, set_default_axis_y_direction, set_default_theme,
-    AxisYDirection, Theme,
+    parse_theme, set_default_axis_y_direction, set_default_theme, AxisYDirection, ThemeColors,
 };
 use rustlab_script::{set_default_number_format, NumberFormat};
 use std::path::PathBuf;
@@ -28,10 +28,12 @@ use std::path::PathBuf;
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
         -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
-        -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                             \
-                               (aliases: dark, light). Default dark, or ~/.rustlabrc\n                             \
-                               [notebook] theme. LaTeX and PDF are always Catppuccin\n                             \
-                               Latte on white paper.\n      \
+        -t, --theme  <THEME>   HTML/watch theme: a builtin (mocha|macchiato|frappe|latte,\n                             \
+                               aliases dark, light) or a theme file name. Default:\n                             \
+                               frontmatter theme:, then rustlab.toml, then ~/.rustlabrc\n                             \
+                               [notebook] theme, then mocha. LaTeX and PDF are always\n                             \
+                               Catppuccin Latte on white paper.\n      \
+            --theme-file <PATH> Use a TOML theme file (see `rustlab-notebook theme`).\n      \
             --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
                                sibling .html so Obsidian renders the interactive\n                                   \
                                Plotly view inline. GitHub strips iframes, so the\n                                   \
@@ -49,11 +51,28 @@ use std::path::PathBuf;
         mocha / dark (default)  Catppuccin Mocha\n  \
         macchiato               Catppuccin Macchiato\n  \
         frappe                  Catppuccin Frappé\n  \
-        latte / light           Catppuccin Latte"
+        latte / light           Catppuccin Latte\n  \
+        Theme files: <project>/themes/NAME.toml (next to rustlab.toml) or\n  \
+        ~/.config/rustlab/themes/NAME.toml. `rustlab-notebook theme list|show|check`."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliContrast {
+    Warn,
+    Error,
+}
+
+impl CliContrast {
+    fn mode(self) -> ContrastMode {
+        match self {
+            CliContrast::Warn => ContrastMode::Warn,
+            CliContrast::Error => ContrastMode::Error,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, ValueEnum)]
@@ -111,12 +130,16 @@ enum Command {
         /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// HTML and watch theme: mocha|macchiato|frappe|latte (aliases:
-        /// dark, light). Default dark, overridable via ~/.rustlabrc
-        /// [notebook] theme. LaTeX and PDF ignore this and always use
-        /// Catppuccin Latte on white paper.
-        #[arg(short = 't', long, value_name = "THEME")]
+        /// HTML and watch theme: a builtin (mocha|macchiato|frappe|latte;
+        /// aliases dark, light) or a theme file name from <project>/themes
+        /// or ~/.config/rustlab/themes. Overrides frontmatter `theme:`,
+        /// rustlab.toml, and ~/.rustlabrc [notebook] theme (default mocha).
+        /// LaTeX and PDF ignore this and always use Catppuccin Latte.
+        #[arg(short = 't', long, value_name = "THEME", conflicts_with = "theme_file")]
         theme: Option<String>,
+        /// Use this TOML theme file. Same precedence as --theme.
+        #[arg(long, value_name = "PATH", conflicts_with = "theme")]
+        theme_file: Option<PathBuf>,
         /// Obsidian-friendly markdown output (see `render --obsidian` for details)
         #[arg(long)]
         obsidian: bool,
@@ -276,13 +299,18 @@ enum Command {
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
             rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n  \
             rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n  \
-            rustlab-notebook render analysis.md --strict            # exit 1 if a cell errors\n\n\
+            rustlab-notebook render analysis.md --strict            # exit 1 if a cell errors\n  \
+            rustlab-notebook render analysis.md --theme-file course.toml --theme-contrast=error\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
-            -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                                 \
-                                   (aliases: dark, light); default dark or ~/.rustlabrc.\n                                 \
-                                   LaTeX and PDF are always Latte on white paper.\n\n\
+            -t, --theme  <THEME>   HTML/watch theme: a builtin (mocha|macchiato|frappe|latte;\n                                 \
+                                   aliases dark, light) or a theme file name. Default:\n                                 \
+                                   frontmatter theme:, rustlab.toml, ~/.rustlabrc, mocha.\n                                 \
+                                   LaTeX and PDF are always Latte on white paper.\n      \
+                --theme-file <PATH>    TOML theme file instead of a name.\n      \
+                --theme-contrast <warn|error>  error: exit 1 before rendering when the\n                                 \
+                                   theme fails a WCAG contrast check (default warn).\n\n\
             Formats:\n  \
             html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             markdown  GitHub-friendly .md with inline SVG plots\n  \
@@ -306,12 +334,16 @@ enum Command {
         /// Output format: html (default), latex, pdf, markdown, json
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
-        /// HTML and watch theme: mocha|macchiato|frappe|latte (aliases:
-        /// dark, light). Default dark, overridable via ~/.rustlabrc
-        /// [notebook] theme. LaTeX and PDF ignore this and always use
-        /// Catppuccin Latte on white paper.
-        #[arg(short = 't', long, value_name = "THEME")]
+        /// HTML and watch theme: a builtin (mocha|macchiato|frappe|latte;
+        /// aliases dark, light) or a theme file name from <project>/themes
+        /// or ~/.config/rustlab/themes. Overrides frontmatter `theme:`,
+        /// rustlab.toml, and ~/.rustlabrc [notebook] theme (default mocha).
+        /// LaTeX and PDF ignore this and always use Catppuccin Latte.
+        #[arg(short = 't', long, value_name = "THEME", conflicts_with = "theme_file")]
         theme: Option<String>,
+        /// Use this TOML theme file. Same precedence as --theme.
+        #[arg(long, value_name = "PATH", conflicts_with = "theme")]
+        theme_file: Option<PathBuf>,
         /// Index page title (directory mode only). Precedence:
         /// --title > index.md H1 > parent directory name.
         #[arg(long)]
@@ -379,6 +411,11 @@ enum Command {
         /// Off by default, so a render whose cells fail keeps exit status 0.
         #[arg(long)]
         strict: bool,
+        /// `warn` (default) prints each failing contrast pair and renders.
+        /// `error` exits 1 when the theme fails any pair. Unrelated to
+        /// --strict, which is about cell errors.
+        #[arg(long, value_enum, value_name = "warn|error", default_value = "warn")]
+        theme_contrast: CliContrast,
         /// Omit the heading sidebar. Single HTML notebook only.
         #[arg(long)]
         no_toc: bool,
@@ -454,6 +491,50 @@ enum Command {
     /// manage the cache without leaving the notebook binary.
     #[command(subcommand)]
     Cache(CacheCommands),
+    /// List, inspect, and check notebook themes (builtins and TOML files).
+    #[command(
+        subcommand,
+        long_about = "List, inspect, and check notebook themes.\n\n\
+            A theme is a builtin (mocha, macchiato, frappe, latte; aliases dark, light) or a\n\
+            TOML file NAME.toml in <project>/themes (the directory holding the nearest\n\
+            rustlab.toml, or its [notebook] theme_dir) or ~/.config/rustlab/themes\n\
+            ($XDG_CONFIG_HOME/rustlab/themes). A file sets `inherits` and overrides\n\
+            [palette], [colors], [typography], [shape], and [space]. See docs/notebooks.md.\n\n\
+            Examples:\n  \
+            rustlab-notebook theme list\n  \
+            rustlab-notebook theme show course\n  \
+            rustlab-notebook theme check course          # exit 1 on a failing pair\n  \
+            rustlab-notebook theme check themes/course.toml"
+    )]
+    Theme(ThemeCommands),
+}
+
+#[derive(Subcommand)]
+enum ThemeCommands {
+    /// Builtins and discovered theme files, with where each came from.
+    List(ThemeDirArgs),
+    /// The resolved tokens of a theme, as CSS declarations.
+    Show {
+        /// Theme name, or a path to a .toml file.
+        theme: String,
+        #[command(flatten)]
+        dir: ThemeDirArgs,
+    },
+    /// Validate a theme and print its WCAG contrast table. Exit 1 on a
+    /// validation error or any failing pair.
+    Check {
+        /// Theme name, or a path to a .toml file.
+        theme: String,
+        #[command(flatten)]
+        dir: ThemeDirArgs,
+    },
+}
+
+#[derive(clap::Args, Clone)]
+struct ThemeDirArgs {
+    /// Where the rustlab.toml search starts (default: current directory).
+    #[arg(long, value_name = "DIR")]
+    dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -563,7 +644,7 @@ fn main() {
     // Parse first so `--help` / `--version` still work when the rc file
     // is missing or invalid. Settings load after clap returns.
     let cli = Cli::parse();
-    let settings = match load_and_apply_user_config() {
+    let (settings, rc_path) = match load_and_apply_user_config() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("rustlab-notebook: {e:#}");
@@ -578,6 +659,7 @@ fn main() {
             input,
             output,
             theme,
+            theme_file,
             obsidian,
             attachments_dir,
             no_iframe,
@@ -595,9 +677,14 @@ fn main() {
             no_cache,
         } => {
             apply_cache_policy(cache, no_cache, &settings);
-            let theme = resolve_theme(theme.as_deref(), &settings);
-            set_default_theme(theme);
-            let colors = theme.colors();
+            let colors = resolve_theme_or_exit(
+                &input,
+                theme,
+                theme_file,
+                &settings,
+                rc_path.as_deref(),
+                ContrastMode::Warn,
+            );
             // Explicit --jail-root: install on this thread for the re-render
             // loop; the interactive server threads it through ServerOpts.
             let _jail = cli_jail_guard(jail_root.as_ref(), &input);
@@ -671,6 +758,7 @@ fn main() {
             output,
             format,
             theme,
+            theme_file,
             title,
             obsidian,
             attachments_dir,
@@ -685,14 +773,25 @@ fn main() {
             index,
             no_toc,
             strict,
+            theme_contrast,
             cache,
             no_cache,
         } => {
             apply_cache_policy(cache, no_cache, &settings);
             rustlab_notebook::set_render_strict(strict);
-            let theme = resolve_theme(theme.as_deref(), &settings);
-            set_default_theme(theme);
-            let colors = theme.colors();
+            let project_from = match (&cwd, stdin) {
+                (Some(d), _) => d.clone(),
+                (None, true) => PathBuf::from("."),
+                (None, false) => input.clone(),
+            };
+            let colors = resolve_theme_or_exit(
+                &project_from,
+                theme,
+                theme_file,
+                &settings,
+                rc_path.as_deref(),
+                theme_contrast.mode(),
+            );
             let (index_href, index_label) = match index {
                 Some(values) => (values.first().cloned(), values.get(1).cloned()),
                 None => (None, None),
@@ -847,6 +946,12 @@ fn main() {
                 std::process::exit(code);
             }
         }
+        Command::Theme(cmd) => {
+            let code = run_theme_command(cmd);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Command::Cache(cmd) => {
             if let Err(e) = run_cache_command(cmd) {
                 eprintln!("rustlab-notebook cache: {e:#}");
@@ -967,7 +1072,7 @@ fn run_cache_command(cmd: CacheCommands) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_and_apply_user_config() -> anyhow::Result<UserSettings> {
+fn load_and_apply_user_config() -> anyhow::Result<(UserSettings, Option<PathBuf>)> {
     let loaded = rustlab_config::load()?;
     let where_ = loaded
         .source
@@ -981,7 +1086,8 @@ fn load_and_apply_user_config() -> anyhow::Result<UserSettings> {
         eprintln!("warning: {where_}: {warning}");
     }
     apply_process_defaults(&loaded.settings);
-    Ok(loaded.settings)
+    let path = loaded.source.path().map(PathBuf::from);
+    Ok((loaded.settings, path))
 }
 
 fn apply_process_defaults(settings: &UserSettings) {
@@ -997,7 +1103,9 @@ fn apply_process_defaults(settings: &UserSettings) {
     });
     // Notebook binary: page theme and un-themed savefig share notebook_theme
     // (`[notebook] theme`, else `[plot] theme`, else dark).
-    set_default_theme(rc_theme(settings.notebook_theme()));
+    // A theme-file name is resolved per command; until then use its
+    // builtin ancestor, or mocha.
+    set_default_theme(parse_theme(&settings.notebook_theme()).unwrap_or_default());
     // `[notebook] code` — initial source disclosure. Missing key is open.
     rustlab_notebook::render::set_rc_source_open(settings.notebook_code_open());
 }
@@ -1086,56 +1194,99 @@ fn resolve_comments_style(
     rustlab_notebook::set_markdown_comment_style(Some(name))
 }
 
-fn resolve_theme(cli: Option<&str>, settings: &UserSettings) -> Theme {
-    match cli {
-        Some(name) => parse_theme(name).unwrap_or_else(|| {
+/// Theme for this command, by the precedence in `theme_select`: flag, then
+/// (per notebook) frontmatter, then `rustlab.toml`, then the rc file, then
+/// mocha. Installs the policy renders use for frontmatter, and the plot
+/// default for un-themed `savefig` (the theme's builtin ancestor).
+fn resolve_theme_or_exit(
+    input: &std::path::Path,
+    cli_theme: Option<String>,
+    cli_file: Option<PathBuf>,
+    settings: &UserSettings,
+    rc_path: Option<&std::path::Path>,
+    contrast: ContrastMode,
+) -> &'static ThemeColors {
+    match resolve_theme(input, cli_theme, cli_file, settings, rc_path, contrast) {
+        Ok(c) => c,
+        Err((code, e)) => {
+            eprintln!("error: {e}");
+            std::process::exit(code);
+        }
+    }
+}
+
+fn resolve_theme(
+    input: &std::path::Path,
+    cli_theme: Option<String>,
+    cli_file: Option<PathBuf>,
+    settings: &UserSettings,
+    rc_path: Option<&std::path::Path>,
+    contrast: ContrastMode,
+) -> Result<&'static ThemeColors, (i32, String)> {
+    let project = load_project_config(&theme_select::project_start(input)).map_err(|e| (2, e))?;
+    let search = theme_select::search_for(project.as_ref());
+    let rc_set = settings.notebook.theme.is_some() || settings.plot.theme.is_some();
+    let req = ThemeRequest {
+        cli_theme,
+        cli_file,
+        project_theme: project
+            .as_ref()
+            .and_then(|p| p.notebook_theme.clone().map(|t| (t, p.path.clone()))),
+        rc_theme: rc_set.then(|| (settings.notebook_theme(), rc_path.map(PathBuf::from))),
+    };
+    let loaded = theme_select::select_default(&req, &search).map_err(|e| (2, e))?;
+    if let Some(root) = loaded.chain.last().and_then(|n| parse_theme(n)) {
+        set_default_theme(root);
+    }
+    // A contrast refusal is a failed check (1), not a usage error (2).
+    let colors = theme_select::activate(loaded, contrast).map_err(|e| (1, e))?;
+    theme_select::install_policy(ThemePolicy {
+        forced: req.forced(),
+        search,
+        contrast,
+    });
+    Ok(colors)
+}
+
+fn load_project_config(
+    start: &std::path::Path,
+) -> Result<Option<rustlab_config::ProjectConfig>, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let project =
+        rustlab_config::load_project(start, home.as_deref()).map_err(|e| e.to_string())?;
+    if let Some(p) = &project {
+        for key in &p.unknown_keys {
             eprintln!(
-                "error: unknown theme `{name}` (expected one of: {})",
-                builtin_theme_names().join(", ")
+                "warning: {}: unknown setting '{key}' (ignored)",
+                p.path.display()
             );
-            std::process::exit(2);
-        }),
-        None => rc_theme(settings.notebook_theme()),
+        }
     }
+    Ok(project)
 }
 
-/// Map an rc `ColorTheme` onto the plot crate's `Theme` by name.
-fn rc_theme(theme: ColorTheme) -> Theme {
-    parse_theme(theme.as_str()).unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn settings_with_notebook_theme(theme: ColorTheme) -> UserSettings {
-        let mut s = UserSettings::default();
-        s.notebook.theme = Some(theme);
-        s
-    }
-
-    #[test]
-    fn cli_theme_overrides_rc() {
-        let dark_rc = settings_with_notebook_theme(ColorTheme::Mocha);
-        assert_eq!(resolve_theme(Some("light"), &dark_rc), Theme::Light);
-        assert_eq!(resolve_theme(Some("dark"), &dark_rc), Theme::Dark);
-        assert_eq!(resolve_theme(Some("frappe"), &dark_rc), Theme::Frappe);
-    }
-
-    #[test]
-    fn omitted_cli_uses_notebook_theme() {
-        let light_rc = settings_with_notebook_theme(ColorTheme::Latte);
-        assert_eq!(resolve_theme(None, &light_rc), Theme::Latte);
-        let dark_rc = settings_with_notebook_theme(ColorTheme::Mocha);
-        assert_eq!(resolve_theme(None, &dark_rc), Theme::Mocha);
-        let macchiato_rc = settings_with_notebook_theme(ColorTheme::Macchiato);
-        assert_eq!(resolve_theme(None, &macchiato_rc), Theme::Macchiato);
-    }
-
-    #[test]
-    fn omitted_cli_falls_back_to_plot_theme() {
-        let mut s = UserSettings::default();
-        s.plot.theme = Some(ColorTheme::Latte);
-        assert_eq!(resolve_theme(None, &s), Theme::Latte);
+fn run_theme_command(cmd: ThemeCommands) -> i32 {
+    let dir_of = |d: &ThemeDirArgs| d.dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    let start = match &cmd {
+        ThemeCommands::List(d) => dir_of(d),
+        ThemeCommands::Show { dir, .. } | ThemeCommands::Check { dir, .. } => dir_of(dir),
+    };
+    let project = match load_project_config(&start) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let search = theme_select::search_for(project.as_ref());
+    let mut out = std::io::stdout();
+    match cmd {
+        ThemeCommands::List(_) => theme_select::cmd_theme_list(&search, &mut out),
+        ThemeCommands::Show { theme, .. } => {
+            theme_select::cmd_theme_show(&theme, &search, &mut out)
+        }
+        ThemeCommands::Check { theme, .. } => {
+            theme_select::cmd_theme_check(&theme, &search, &mut out)
+        }
     }
 }

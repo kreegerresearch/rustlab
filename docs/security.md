@@ -359,6 +359,37 @@ Notebook render, `notebook watch`, and `parmap` refuse `input`, `fgetl`, and `ke
 
 `~/.rustlab_history` is mode 0600, tightened on load and on save. `[repl] history = false` or `RUSTLAB_NO_HISTORY=1` skips both. The environment variable forces history off when the rc key is true. `input` and `fgetl` lines are not recorded. No line-input builtin prints environment variables. A script that needs a secret reads it itself and does not echo it.
 
+## H7 — Theme files
+
+A theme file's values are written into a `<style>` block (HTML and
+`notebook watch`), so a value like `red; } body { display: none }` or
+`</style><script>` would break out of the stylesheet. Theme files
+(`theme_file.rs`) use a closed grammar instead of escaping. Each value is
+parsed and written again from its parts:
+
+- colours: `#RGB`, `#RRGGBB`, or a `[palette]` name whose value is hex.
+  `#RRGGBBAA` is accepted only for `plot_grid`, written as `rgba(…)` from
+  the parsed bytes;
+- fonts: a list of family names using letters, digits, spaces, `-`, and
+  `_`, written quoted, ending in a generic family (`serif`, `sans-serif`,
+  `monospace`, `system-ui`, …);
+- lengths: a number with `px`, `rem`, `em`, `ch`, or `%` (`line_height`
+  also takes a bare number; `size` also takes `medium`).
+
+There is no `url()`, `@import`, `@font-face`, `var()`, `expression(`, or
+free text, so a theme cannot fetch a resource, leak a page view, or close
+the style element. Unknown keys and roles are load errors that name the
+file and key. Tests feed injection attempts through every value type.
+
+A notebook can only name a theme (`theme: course`). A name is lowercase
+letters, digits, `-`, and `_` and is looked up as `NAME.toml` in the
+project's `themes/` directory (or `rustlab.toml` `[notebook] theme_dir`,
+refused when it leaves the project root) and then
+`$XDG_CONFIG_HOME/rustlab/themes/`. A discovered file whose real path is
+outside its directory (a symlink out) is refused. Builtin names win and a
+file cannot take one. Only `--theme-file` reads a path, and that path
+comes from the person running the command.
+
 ## Reporting
 
 Please open a private security report or GitHub security advisory against

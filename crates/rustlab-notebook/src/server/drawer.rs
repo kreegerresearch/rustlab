@@ -181,7 +181,7 @@ body.rl-watch:has(.rl-drawer-bar) main {
   top: var(--topbar-h);
   left: 0; right: 0; bottom: 0;
   z-index: 230;
-  background: rgba(17, 17, 27, 0.28);
+  background: color-mix(in srgb, var(--rl-scrim, #11111b) 28%, transparent);
   opacity: 0;
   pointer-events: none;
 }
@@ -199,7 +199,7 @@ body.rl-drawer-open #rl-drawer-scrim { opacity: 1; pointer-events: auto; }
   background: var(--rl-bg-secondary, #181825);
   color: var(--rl-text, #cdd6f4);
   border-right: var(--rl-border-width, 1px) solid var(--rl-border, #313244);
-  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.45);
+  box-shadow: 8px 0 28px color-mix(in srgb, var(--rl-shadow-color, #000000) 45%, transparent);
   transform: translateX(-105%);
   visibility: hidden;
   pointer-events: none;

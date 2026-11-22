@@ -181,6 +181,13 @@ pub struct ThemeColors {
     // line tints.
     pub dx_add_word: Cow<'static, str>,
     pub dx_del_word: Cow<'static, str>,
+    // `notebook watch` chrome only. These are not in the 33 page tokens,
+    // so a static render's `:root` is unchanged. Shadows mix `shadow` at
+    // each rule's own alpha; the drawer scrim mixes `scrim` at 28%.
+    pub shadow: Cow<'static, str>,
+    pub scrim: Cow<'static, str>,
+    pub banner_bg: Cow<'static, str>,
+    pub banner_text: Cow<'static, str>,
 }
 
 impl ThemeColors {
@@ -243,6 +250,59 @@ impl ThemeColors {
             ("--rl-dx-add-word", self.dx_add_word.as_ref()),
             ("--rl-dx-del-word", self.dx_del_word.as_ref()),
         ]
+    }
+
+    /// Form-field boundary: `text_dim` mixed into the page at
+    /// [`crate::contrast::FIELD_BORDER_MIX`], 3:1 against page, menu, and
+    /// code panel. The `border` role is 1.3:1, too faint for a field.
+    pub fn field_border_css(&self) -> String {
+        format!(
+            "color-mix(in srgb, {} {}%, {})",
+            self.css_var("text-dim"),
+            (crate::contrast::FIELD_BORDER_MIX * 100.0).round() as u32,
+            self.css_var("bg")
+        )
+    }
+
+    /// Tokens only `notebook watch` chrome reads. Kept out of
+    /// [`Self::css_tokens`] so a static page's `:root` does not change.
+    pub fn chrome_tokens(&self) -> [(&'static str, &str); 4] {
+        [
+            ("--rl-shadow-color", self.shadow.as_ref()),
+            ("--rl-scrim", self.scrim.as_ref()),
+            ("--rl-banner-bg", self.banner_bg.as_ref()),
+            ("--rl-banner-text", self.banner_text.as_ref()),
+        ]
+    }
+
+    /// `var(--rl-<chrome token>, <literal>)` for [`Self::chrome_tokens`].
+    pub fn chrome_var(&self, name: &str) -> String {
+        match self.chrome_tokens().into_iter().find(|(n, _)| *n == name) {
+            Some((n, value)) => format!("var({n}, {value})"),
+            None => {
+                debug_assert!(false, "unknown chrome token `{name}`");
+                format!("var({name})")
+            }
+        }
+    }
+
+    /// `shadow` at `pct`% alpha: `color-mix(…, transparent)` paints the
+    /// same pixels as `rgba(r, g, b, pct/100)`.
+    pub fn shadow_mix(&self, pct: u32) -> String {
+        format!(
+            "color-mix(in srgb, {} {pct}%, transparent)",
+            self.chrome_var("--rl-shadow-color")
+        )
+    }
+
+    /// `:root { … }` with [`Self::chrome_tokens`], for watch pages.
+    pub fn chrome_root_block(&self) -> String {
+        let lines: Vec<String> = self
+            .chrome_tokens()
+            .iter()
+            .map(|(n, v)| format!("    {n}: {v};"))
+            .collect();
+        format!("  :root {{\n{}\n  }}\n", lines.join("\n"))
     }
 
     /// Indented `--rl-*` declarations for a `:root` block (no wrapping braces).
@@ -379,6 +439,10 @@ static MOCHA: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#161015"),
     dx_add_word: Cow::Borrowed("#3c4947"),
     dx_del_word: Cow::Borrowed("#4d3649"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Macchiato (dark).
@@ -420,6 +484,10 @@ static MACCHIATO: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#1e181e"),
     dx_add_word: Cow::Borrowed("#414e4e"),
     dx_del_word: Cow::Borrowed("#514153"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Frappé (dark).
@@ -464,6 +532,10 @@ static FRAPPE: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#2b242c"),
     dx_add_word: Cow::Borrowed("#4a5755"),
     dx_del_word: Cow::Borrowed("#594b59"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -515,6 +587,10 @@ static LATTE: ThemeColors = ThemeColors {
     dx_del_line: Cow::Borrowed("#ebdce3"),
     dx_add_word: Cow::Borrowed("#c9dfc9"),
     dx_del_word: Cow::Borrowed("#eac8d3"),
+    shadow: Cow::Borrowed("#000000"),
+    scrim: Cow::Borrowed("#11111b"),
+    banner_bg: Cow::Borrowed("#aa2233"),
+    banner_text: Cow::Borrowed("#ffffff"),
 };
 
 /// Light or dark chrome, from background luminance. Not a theme name.
@@ -622,12 +698,49 @@ const FONT_BODY: &str =
     r#"-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif"#;
 const FONT_MONO: &str = r#""SF Mono", "Fira Code", "JetBrains Mono", monospace"#;
 
+/// Themes built at run time (theme files). Each distinct theme is leaked
+/// once and lives for the process, so a render can pass `&'static
+/// ThemeColors` like a builtin. Re-interning an equal theme returns the
+/// existing entry, so a long `watch` does not grow this per render.
+static INTERNED: std::sync::Mutex<Vec<&'static ResolvedTheme>> = std::sync::Mutex::new(Vec::new());
+
+/// Intern `theme` and return the process-lifetime copy.
+pub fn intern_theme(theme: ResolvedTheme) -> &'static ResolvedTheme {
+    let mut all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = all.iter().find(|t| ***t == theme) {
+        return existing;
+    }
+    let leaked: &'static ResolvedTheme = Box::leak(Box::new(theme));
+    all.push(leaked);
+    leaked
+}
+
+/// The most recently interned theme called `name`.
+pub fn interned_theme_named(name: &str) -> Option<&'static ResolvedTheme> {
+    let all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter().rev().find(|t| t.name == name).copied()
+}
+
+fn interned_for_colors(colors: &ThemeColors) -> Option<&'static ResolvedTheme> {
+    let all = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter()
+        .find(|t| std::ptr::eq(&t.colors, colors))
+        .copied()
+}
+
 impl ResolvedTheme {
     /// Tokens for a builtin or any other [`ThemeColors`]. The name is
     /// `mocha` / `macchiato` / `frappe` / `latte` when `colors` is one of
     /// those statics, and `custom` otherwise. Design-token values do not
     /// depend on the palette: they point at the color tokens.
+    ///
+    /// The palette of an [`intern_theme`]d theme returns that theme, so its
+    /// typography, shape, and spacing reach the stylesheet through the
+    /// same `&ThemeColors` every renderer already takes.
     pub fn from_colors(colors: &ThemeColors) -> Self {
+        if let Some(t) = interned_for_colors(colors) {
+            return t.clone();
+        }
         let name = if std::ptr::eq(colors, &MOCHA) {
             "mocha"
         } else if std::ptr::eq(colors, &MACCHIATO) {
@@ -1273,6 +1386,29 @@ mod tests {
             assert_ne!(c.dx_add_bar.as_ref(), c.dx_mod_bar.as_ref(), "{name}");
             assert_ne!(c.dx_mod_bar.as_ref(), c.dx_del_bar.as_ref(), "{name}");
         }
+    }
+
+    #[test]
+    fn interned_theme_keeps_its_design_tokens() {
+        let mut t = ResolvedTheme::from_colors(&MOCHA);
+        t.name = "course".to_string();
+        t.colors.bg = Cow::Owned("#101010".to_string());
+        t.typography.measure = "72ch".to_string();
+        let a = intern_theme(t.clone());
+        let b = intern_theme(t.clone());
+        assert!(std::ptr::eq(a, b), "an equal theme is interned once");
+        let back = ResolvedTheme::from_colors(&a.colors);
+        assert_eq!(back.name, "course");
+        assert_eq!(back.typography.measure, "72ch");
+        assert!(back.css_custom_properties().contains("--rl-measure: 72ch;"));
+        // An equal palette that is not the interned one is still `custom`.
+        let copy = a.colors.clone();
+        assert_eq!(ResolvedTheme::from_colors(&copy).name, "custom");
+        assert_eq!(ResolvedTheme::from_colors(&MOCHA).name, "mocha");
+        assert_eq!(
+            interned_theme_named("course").map(|t| t.colors.bg.as_ref()),
+            Some("#101010")
+        );
     }
 
     #[test]

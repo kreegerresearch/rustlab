@@ -94,13 +94,13 @@ fn cell_style(c: &ThemeColors) -> String {
     0%, 100% {{ outline-color: transparent; }}
     50% {{ outline-color: {accent}; }}
   }}
-  main section.rl-block.rl-cell-stale {{ opacity: .65; }}
+  main section.rl-block.rl-cell-stale {{ opacity: {stale}; }}
   main section.rl-block.rl-cell-editing {{
     outline: var(--rl-border-width, 1px) solid {border}; outline-offset: 3px; border-radius: 2px;
   }}
   /* Replaces pre.source inside details.rl-src, so it shares the indent. */
   .rl-cell .rl-cell-editor {{ margin-left: 0; margin-right: 0; }}
-  .rl-cell-editor {{ border: var(--rl-border-width, 1px) solid {border}; border-radius: 4px; margin: 4px 0; }}
+  .rl-cell-editor {{ border: var(--rl-border-width, 1px) solid {field_border}; border-radius: 4px; margin: 4px 0; }}
   .rl-cell-editor .CodeMirror {{
     height: auto; background: {code_bg}; color: {text};
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -121,6 +121,8 @@ fn cell_style(c: &ThemeColors) -> String {
         border = c.css_var("border"),
         accent = c.css_var("accent-primary"),
         tokens = super::page::codemirror_token_css(".rl-cell-editor", c),
+        field_border = c.field_border_css(),
+        stale = rustlab_plot::contrast::STALE_CELL_OPACITY,
     )
 }
 

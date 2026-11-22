@@ -735,6 +735,8 @@ rustlab-notebook render notebooks/ -o build/         # render all → *.html + i
 rustlab-notebook watch ~/obsidian-vault --obsidian   # live render in Obsidian (see docs/notebooks.md)
 rustlab-notebook clean note.md                       # strip rendered artifacts back to source (in place)
 rustlab-notebook strip note.md --in-place            # unwrap highlights and delete %% comments
+rustlab-notebook render note.md --theme-file course.toml  # TOML theme file (see docs/notebooks.md § Theme files)
+rustlab-notebook theme list                          # builtin and discovered themes
 ```
 
 **Obsidian users:** see [`docs/notebooks.md` § Quick Start — Obsidian
