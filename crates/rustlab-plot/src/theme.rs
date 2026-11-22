@@ -286,6 +286,25 @@ impl ThemeColors {
         }
     }
 
+    /// `shadow` at `pct`% alpha: `color-mix(…, transparent)` paints the
+    /// same pixels as `rgba(r, g, b, pct/100)`.
+    pub fn shadow_mix(&self, pct: u32) -> String {
+        format!(
+            "color-mix(in srgb, {} {pct}%, transparent)",
+            self.chrome_var("--rl-shadow-color")
+        )
+    }
+
+    /// `:root { … }` with [`Self::chrome_tokens`], for watch pages.
+    pub fn chrome_root_block(&self) -> String {
+        let lines: Vec<String> = self
+            .chrome_tokens()
+            .iter()
+            .map(|(n, v)| format!("    {n}: {v};"))
+            .collect();
+        format!("  :root {{\n{}\n  }}\n", lines.join("\n"))
+    }
+
     /// Indented `--rl-*` declarations for a `:root` block (no wrapping braces).
     pub fn css_custom_properties(&self) -> String {
         self.css_tokens()

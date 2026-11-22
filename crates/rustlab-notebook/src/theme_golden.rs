@@ -668,3 +668,136 @@ fn stylesheet_paints_the_audited_values() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `var(--a, fallback)` → `var(--a)`, recursively, so what is left is the
+/// colour text the chrome paints without a token.
+fn strip_var_fallbacks(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < src.len() {
+        if src[i..].starts_with("var(--") {
+            let open = i + 3;
+            if let Some(close) = matching_paren(src, open) {
+                let inner = &src[open + 1..close];
+                let name = inner.split(',').next().unwrap_or(inner).trim();
+                out.push_str("var(");
+                out.push_str(name);
+                out.push(')');
+                i = close + 1;
+                continue;
+            }
+        }
+        let ch = src[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn bare_colours(src: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let b = src.as_bytes();
+    for (i, w) in src.char_indices() {
+        if w == '#' {
+            let hex: String = src[i + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect();
+            let next = src[i + 1 + hex.len()..].chars().next();
+            let ends = !next.is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            if matches!(hex.len(), 3 | 4 | 6 | 8) && ends {
+                found.push(format!("#{hex}"));
+            }
+        }
+        if src[i..].starts_with("rgb(") || src[i..].starts_with("rgba(") {
+            found.push(src[i..].chars().take(24).collect());
+        }
+        for kw in ["white", "black"] {
+            if src[i..].starts_with(kw)
+                && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                && !src[i + kw.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '-')
+            {
+                found.push(kw.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Every colour the watch chrome paints (toolbar, menus, source pane,
+/// editor, cell bar, drawer, scrim, disconnected banner, comment popup)
+/// goes through a `--rl-*` token, so a theme file reaches all of it.
+#[test]
+fn watch_chrome_colours_are_all_tokens() {
+    use std::borrow::Cow;
+    let mut c = Theme::Mocha.colors().clone();
+    c.shadow = Cow::Borrowed("#102030");
+    c.scrim = Cow::Borrowed("#203040");
+    c.banner_bg = Cow::Borrowed("#304050");
+    c.banner_text = Cow::Borrowed("#f0f0f1");
+    let skeleton = "<!DOCTYPE html><html><head></head><body>\n<header class=\"topbar\"><span class=\"current\">S</span></header>\n<nav class=\"sidebar\">\n  <div class=\"nav-title\">S</div>\n<a href=\"#s\">S</a></nav>\n<main><h1 id=\"s\">S</h1></main></body></html>";
+    let html = inject_chrome(
+        skeleton,
+        &c,
+        PageOpts {
+            editable: true,
+            git_diff: true,
+        },
+    );
+    let html = crate::server::cell::inject_cell_client(&html, &c, true);
+    let html = install_nav_drawer(&html, None);
+    let html = crate::server::ws::inject_ws_client(&html);
+    let popup = {
+        let css = crate::comments::comment_css();
+        let at = css.find("#rl-cm-pop {").unwrap();
+        css[at..at + css[at..].find('}').unwrap()].to_string()
+    };
+    let chrome = format!("{html}\n{popup}");
+    for literal in [
+        "0 10px 28px rgba(0, 0, 0, 0.35)",
+        "rgba(17, 17, 27, 0.28)",
+        "8px 0 28px rgba(0, 0, 0, 0.45)",
+        "0 8px 24px rgba(0,0,0,.28)",
+        "-8px 0 24px rgba(0,0,0,.25)",
+        "background:#a23",
+        "color:white",
+    ] {
+        assert!(
+            !chrome.contains(literal),
+            "watch chrome still has `{literal}`"
+        );
+    }
+    let uses: String = chrome
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--rl-"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bare = bare_colours(&strip_var_fallbacks(&uses));
+    assert!(bare.is_empty(), "colours not on a token: {bare:?}");
+    for decl in [
+        "--rl-shadow-color: #102030;",
+        "--rl-scrim: #203040;",
+        "--rl-banner-bg: #304050;",
+        "--rl-banner-text: #f0f0f1;",
+    ] {
+        assert!(chrome.contains(decl), "missing `{decl}`");
+    }
+    assert!(chrome.contains("background:var(--rl-banner-bg,"));
+    assert!(chrome.contains("var(--rl-scrim, #11111b) 28%"));
+
+    // A static render does not gain the watch-only tokens.
+    let dir = std::env::temp_dir().join(format!("rl-chrome-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let page = render_html(
+        "Sample",
+        &fixture(),
+        &dir,
+        "plots",
+        &c,
+        None,
+        &LinkMode::single_file(),
+    );
+    assert!(!page.contains("--rl-shadow-color:"));
+    assert!(!page.contains("--rl-banner-bg:"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

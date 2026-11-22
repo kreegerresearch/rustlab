@@ -497,7 +497,8 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       banner = document.createElement('div');
       banner.id = '__rustlab_ws_banner';
       banner.style.cssText =
-        'position:fixed;top:0;left:0;right:0;background:#a23;color:white;'
+        'position:fixed;top:0;left:0;right:0;'
+        + 'background:var(--rl-banner-bg,#aa2233);color:var(--rl-banner-text,#ffffff);'
         + 'text-align:center;padding:6px 10px;'
         + 'font-family:system-ui,sans-serif;font-size:13px;z-index:99999;';
       document.body.appendChild(banner);

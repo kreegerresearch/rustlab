@@ -2952,7 +2952,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 #rl-cm-pop {
   width: min(20rem, calc(100vw - 16px));
   padding: 0.65rem 0.7rem 0.6rem;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--rl-shadow-color, #000000) 35%, transparent);
 }
 #rl-cm-pop-ctx { margin: 0 0 0.45rem; font-size: 0.8rem; }
 #rl-cm-pop-ctx:empty { display: none; }

@@ -134,10 +134,20 @@ fn head_extra(c: &ThemeColors, opts: PageOpts) -> String {
     out
 }
 
+/// The chrome-only tokens as their own `<style>`, for watch pages that
+/// carry the drawer and WS banner but not the toolbar (the index).
+pub fn inject_chrome_tokens(html: &str, theme: &ThemeColors) -> String {
+    let style = format!("<style>\n{}</style>\n", theme.chrome_root_block());
+    match html.find("</head>") {
+        Some(at) => format!("{}{style}{}", &html[..at], &html[at..]),
+        None => format!("{style}{html}"),
+    }
+}
+
 fn chrome_style(c: &ThemeColors) -> String {
     format!(
         r##"<style>
-  #rl-toolbar {{
+{chrome_root}  #rl-toolbar {{
     position: fixed; top: 10px; right: 14px; z-index: 100000;
     display: flex; gap: 6px; align-items: center;
   }}
@@ -169,7 +179,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     min-width: 16rem; padding: 8px;
     background: {bg_secondary}; color: {text};
     border: var(--rl-border-width, 1px) solid {border}; border-radius: var(--rl-radius-lg, 8px);
-    box-shadow: 0 8px 24px rgba(0,0,0,.28);
+    box-shadow: 0 8px 24px {shadow_menu};
   }}
   #rl-toolbar #rl-diff-toggle {{
     display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -413,7 +423,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     background: {code_bg}; border-left: var(--rl-border-width, 1px) solid {border};
     z-index: 99998; display: flex; flex-direction: column;
     transform: translateX(101%); transition: transform .18s ease;
-    box-shadow: -8px 0 24px rgba(0,0,0,.25);
+    box-shadow: -8px 0 24px {shadow_pane};
   }}
   body.rl-source-open #rl-source-pane {{ transform: translateX(0); }}
   /* With the pane open, main's viewport-centring margin (50% of the FULL
@@ -450,6 +460,9 @@ fn chrome_style(c: &ThemeColors) -> String {
         code_bg = c.css_var("code-bg"),
         field_border = c.field_border_css(),
         quiet = rustlab_plot::contrast::QUIET_BUTTON_OPACITY,
+        chrome_root = c.chrome_root_block(),
+        shadow_menu = c.shadow_mix(28),
+        shadow_pane = c.shadow_mix(25),
     )
 }
 
