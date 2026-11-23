@@ -6,6 +6,13 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.86
+
+### Breaking / behavior changes
+- **Sparse `A \ b` and `spsolve` return an `n×1` column**, as MATLAB's `\` does (dense `\` already did). They returned a 1-D vector, so `A * x` failed with "cannot multiply matrix by row vector". A 1×1 system still gives a scalar; `solve(F, b)` is unchanged.
+  - *Migration:* drop any `x'`, `x.'`, or `transpose(x)` that turned the result into a column; it now makes a row, and `norm(x' - y)` with a column `y` broadcasts to a matrix instead of erroring. `x(:)` and `reshape(x, ny, nx)` work as before. `rustlab_em` lesson scripts need no change; this repo's `examples/pde/laplacian.rlab`, `examples/sparse/sparse_complex.rlab`, and the `laplacian` / `sparse_complex` notebooks were updated.
+- **Auto sparse LU ordering** (`spsolve`, sparse `\` on a non-symmetric matrix, `lu(S)`) is now nested dissection or the natural order by predicted fill of the `A + A^T` pattern, the rule Cholesky got in 0.3.85, and the matrix's `ordering_hint` is no longer consulted. It replaces basic minimum degree (no hint) and the natural order (`laplacian_*`). Results change in the last digits. `rustlab_em` Lesson 10: the `fdfd_2d_tmz.rlab` solve goes from 6.9 s to 0.23 s (script 7.1 s → 0.35 s), `fdfd_pml_demo` 2.6 s → 0.27 s, `fdfd_resonator` 1.5 s → 0.77 s; results agree with 0.3.84 to 3e-14 relative (see `dev/plans/sparse_spd_solve.md`). `"amd"`, `"identity"`, and `"nd"` still force an ordering.
+
 ## 0.3.85
 
 ### Added

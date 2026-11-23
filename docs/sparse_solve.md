@@ -117,15 +117,18 @@ parts) in this path. `solve(F, b)` on a handle still refuses it.
   natural order if it is no larger. A band (1-D Laplacian) keeps its
   zero-fill natural order; a 3-D grid gets nested dissection. The
   matrix's `ordering_hint` is not consulted.
-- **LU**: `resolve_ordering(sm, choice)` collapses `Auto` against the
-  matrix's `ordering_hint`: `Some(Identity)` → `Identity`, `None` → `Amd`.
+- **LU** (0.3.86): the same `SpdAutoOrdering`, on the pattern of
+  `A + A^T`. With threshold partial pivoting the symmetric count is an
+  estimate of the LU fill, not the exact figure. On the Lesson 10 FDFD
+  operator (161², complex, no hint) this replaced the O(n²) basic minimum
+  degree.
 
-Explicit `Identity` / `Amd` / `Nd` pass through unchanged.
+Explicit `Identity` / `Amd` / `Nd` pass through unchanged. `"auto"` does
+not read `ordering_hint` for either factorization; MATLAB's `\` picks its
+own ordering too.
 
-The hint is set by builders that know their output is structurally
-regular — the `laplacian_*` family in particular. User-built sparse
-matrices (from `sparse(I, J, V, m, n)`) carry `None`, so their LU uses
-AMD by default.
+`spsolve` and sparse `\` return an `n×1` column (a 1×1 system gives a
+scalar); `solve(F, b)` returns a 1-D vector.
 
 ### Realness resolution
 
@@ -425,7 +428,7 @@ crates/rustlab-script/src/eval/
 ├── sparse_auto.rs                  auto / cholesky / lu choice for spsolve and sparse \
 └── builtins.rs                     spsolve / chol / lu / solve entry points
                                     factor_sparse_cholesky / _lu
-                                    OrderingChoice, parse_ordering_arg, resolve_ordering
+                                    OrderingChoice, parse_ordering_arg
                                     sparse_all_real
                                     laplacian_* builtins (set ordering_hint)
 ```

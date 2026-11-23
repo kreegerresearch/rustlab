@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 in progress (0.3.86). Phases 3–5 not started.
-**Current phase:** 2 — nested-dissection LU for non-symmetric systems (FDFD) and the `n×1` result shape.
+**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86). Phases 3–5 not started.
+**Current phase:** 3 — `pcg` and `ichol`; waiting for Michael's go-ahead.
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -133,19 +133,37 @@ Left for later: `examples/notebooks/sparse_scaling.md` and `sparse_solve.md` sti
 
 ### Phase 2 — non-symmetric LU ordering (FDFD)
 
-**Status:** in progress (0.3.86)
+**Status:** complete (0.3.86)
 
 `"auto"` LU ordering becomes the Phase 1 rule applied to the pattern of `A + Aᵀ`: nested dissection or the natural order, whichever predicts the smaller symmetric factor, whatever the hint (decision 1). That replaces the O(n²) basic minimum degree for matrices without a hint (FDFD) and the natural order for `laplacian_*` matrices. Partial pivoting (threshold 0.1) can move rows, so the symmetric count is an estimate, not the LU fill. Target: `fdfd_2d_tmz` solve 6.9 s → under 0.5 s. Last digits of auto sparse LU results change (decision 4).
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Failing tests first: auto LU fill equals the nested-dissection fill on a no-hint non-symmetric grid and the natural fill on a band; FDFD-style complex system (`fdfd_tmz_pml_2d`) solved by `\\` to residual 1e-10 and agreeing with the 0.3.85 AMD LU; `size(A \\ b)` and `size(spsolve(A, b))` are `[n, 1]` on every path | not started |
-| 2 | `SpdAutoOrdering` counts fill on the pattern of `A + Aᵀ` (identical for symmetric input), so the LU path can use it | not started |
-| 3 | `factor_sparse_lu`: `"auto"` → that ordering, hint ignored | not started |
-| 4 | `spsolve_pack` and the one-column `\\` path return `n×1` (real storage when real); a 1×1 result stays a scalar | not started |
-| 5 | Fix callers in tests, examples, notebooks that assumed a 1-D result; check rustlab_em | not started |
-| 6 | Docs, REPL help, AGENTS.md, CHANGELOG, version 0.3.86 | not started |
-| 7 | Measure FDFD scripts before/after, accuracy vs 0.3.84, shape-fix cost | not started |
+| 1 | Failing tests first: auto LU fill equals the nested-dissection fill on a no-hint non-symmetric grid and the natural fill on a band; FDFD-style complex system (`fdfd_tmz_pml_2d`) solved by `\\` to residual 1e-10 and agreeing with the 0.3.85 AMD LU; `size(A \\ b)` and `size(spsolve(A, b))` are `[n, 1]` on every path | done |
+| 2 | `SpdAutoOrdering` counts fill on the pattern of `A + Aᵀ` (identical for symmetric input), so the LU path can use it | done |
+| 3 | `factor_sparse_lu`: `"auto"` → that ordering, hint ignored | done |
+| 4 | `spsolve_pack` and the one-column `\\` path return `n×1` (real storage when real); a 1×1 result stays a scalar | done |
+| 5 | Fix callers in tests, examples, notebooks that assumed a 1-D result; check rustlab_em | done |
+| 6 | Docs, REPL help, AGENTS.md, CHANGELOG, version 0.3.86 | done |
+| 7 | Measure FDFD scripts before/after, accuracy vs 0.3.84, shape-fix cost | done |
+
+#### Phase 2 results (release, same 4-core VM)
+
+| Workload | 0.3.84 | 0.3.85 | 0.3.86 |
+|---|---|---|---|
+| `fdfd_2d_tmz` solve (161², complex, 25,921 unknowns, 128,961 nonzeros) | 6.89 s | — | 0.225 s |
+| `fdfd_2d_tmz.rlab` | 7.13 s | 7.20 s | 0.35 s |
+| `fdfd_pml_demo.rlab` | 2.58 s | 2.79 s | 0.27 s |
+| `fdfd_resonator.rlab` | 1.47 s | 1.38 s | 0.77 s |
+| `fdfd_1d_layers.rlab` | 0.09 s | 0.09 s | 0.09 s |
+| Lesson 15 `cap_matrix_microstrip` / `cap_matrix_three_trace`, Lesson 17 `ind_matrix_microstrip` | 0.75 / 0.18 / 0.18 s | 0.79 / 0.18 / 0.16 s | 0.38 / 0.09 / 0.09 s |
+| Lesson 18, four scripts | ~41 s | 2.18 s | 2.25 s |
+
+Accuracy: `fdfd_2d_tmz` relative residual 1.9e-14 (0.3.84) → 1.1e-13; the solution differs from the 0.3.84 LU by 8.5e-14 relative. Every printed result of the 27 rustlab_em solver scripts agrees with 0.3.84 to roundoff (FDFD lessons 3e-14 or better); all exit 0. All 18 rustlab_em notebooks render under `--strict` with no cell error.
+
+Shape fix: no rustlab_em script or notebook needed a change (they use `reshape` or `x(:)`). In this repo, `examples/pde/laplacian.rlab`, `examples/sparse/sparse_complex.rlab`, `docs/examples.md`, and the `laplacian` / `sparse_complex` notebooks transposed the 1-D result and were changed (gallery regenerated for the two notebooks). Eight unit tests and one integration test used the same idioms; one of them (`V = zeros(1, N)` minus the solve) broadcast silently to N×N rather than erroring, which is the hazard to watch for downstream.
+
+Cost of the `n×1` result (rule in §7): none measurable at size; a 50×50 diagonal `\` in a 50,000-iteration loop is 5.9 → 6.2 µs per call (+0.4 µs, building the real `n×1` value). An early version of the LU ordering built the `A + Aᵀ` pattern even for symmetric input and cost 45 ms on a 10⁶-row diagonal solve; it now reuses `A` when the pattern is already symmetric (1.16 s for five solves, same as 0.3.85).
 
 ### Phase 3 — `pcg` and `ichol`
 

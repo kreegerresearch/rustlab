@@ -2420,10 +2420,12 @@ Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `
 - **`"lu"`** — step 3 only.
 
 **Ordering.** The optional fourth argument selects the fill-reducing permutation:
-- **`"auto"`** (default) — for Cholesky, nested dissection or the natural order, whichever predicts the smaller factor (a band keeps the natural order; a 3-D grid gets nested dissection). For LU, the matrix's `ordering_hint`: the `laplacian_*` builders set `Identity` (natural order), and a matrix without a hint uses `"amd"`.
+- **`"auto"`** (default) — nested dissection or the natural order, whichever predicts the smaller factor of the pattern of `A + A^T` (a band keeps the natural order; a 2-D or 3-D grid gets nested dissection). The same rule for Cholesky and LU, and the `laplacian_*` builders' `ordering_hint` is not consulted (MATLAB's `\` also picks its own ordering). For LU with partial pivoting the prediction is an estimate.
 - **`"identity"`** (alias `"natural"`) — natural order. No fill on a band; heavy fill on 2-D and 3-D grids.
 - **`"amd"`** — basic minimum degree on the symmetric pattern of `A + A^T`. Its pivot search is O(n²), so it is slow past ~10⁴ unknowns.
 - **`"nd"`** — nested dissection on the pattern of `A + A^T` (level-set bisection). On the Lesson 18 41³ sphere the Cholesky factor has 4.6 M entries with `"nd"` and 20.8 M with the natural order.
+
+**Result shape.** The solution is an `n×1` column, as MATLAB's `\` returns, whatever the shape of `b` (`spsolve` also takes a row or 1-D `b`). A 1×1 system gives a scalar. Before 0.3.86 sparse `\` and `spsolve` returned a 1-D vector; code that transposed it (`x'`, `x.'`, `transpose(x)`) to get a column now gets a row — drop the transpose. `x(:)` and `reshape(x, ny, nx)` work either way.
 
 Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
 
@@ -2467,7 +2469,7 @@ A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
-The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; `chol` picks nested dissection or the natural order by predicted fill, `lu` follows the matrix's hint and falls back to AMD), `"identity"` / `"natural"`, `"amd"`, or `"nd"` (nested dissection).
+The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; nested dissection or the natural order by predicted fill), `"identity"` / `"natural"`, `"amd"`, or `"nd"` (nested dissection). `solve(F, b)` still returns a 1-D vector.
 
 `chol(A)` reads only the upper triangle and does not check symmetry (as in MATLAB). It does not remove row singletons; for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`.
 
