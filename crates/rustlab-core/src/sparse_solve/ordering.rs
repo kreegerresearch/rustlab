@@ -10,6 +10,7 @@
 //! ascending — a simple but functional heuristic). Phase 4 adds
 //! `AmdOrdering` and makes it the default.
 
+use crate::sparse_solve::cholesky::natural_fill_capped;
 use crate::sparse_solve::csc::{SparseCsc, SparseScalar};
 
 /// A square permutation of `n` indices. `perm[new_position] = old_index`.
@@ -249,6 +250,238 @@ impl OrderingMethod for AmdOrdering {
         debug_assert_eq!(perm.len(), n);
         Permutation::from_perm(perm)
     }
+}
+
+/// Subgraphs of this many nodes or fewer are not split further; they keep
+/// their natural order.
+const ND_LEAF: usize = 64;
+
+/// Nested dissection on the pattern of `A + Aᵀ` by level-set bisection
+/// (George, 1973; George & Liu, *Computer Solution of Large Sparse
+/// Positive Definite Systems*, ch. 8). For each connected subgraph: run
+/// breadth-first search from a pseudo-peripheral node, take the level
+/// holding the median node as the separator, keep in it only the nodes
+/// that touch the next level, order both halves recursively, and number
+/// the separator last. On a 3-D grid this is a plane per cut, which gives
+/// far less Cholesky fill than the natural order (41³ Lesson 18 sphere:
+/// 4.6 M vs 20.8 M entries in `L`). Deterministic; O(nnz · log n).
+pub struct NestedDissectionOrdering;
+
+impl OrderingMethod for NestedDissectionOrdering {
+    fn order<T: SparseScalar>(&self, a: &SparseCsc<T>) -> Permutation {
+        Permutation::from_perm(nested_dissection(&SymGraph::from_pattern(a)))
+    }
+}
+
+/// For Cholesky: nested dissection or the natural order, whichever gives
+/// the smaller `nnz(L)` (ties keep the natural order). The natural count
+/// stops as soon as it passes the nested-dissection count, so a band
+/// matrix keeps its zero-fill natural order and a 3-D grid pays only for
+/// the cheaper of the two symbolic passes.
+pub struct SpdAutoOrdering;
+
+impl OrderingMethod for SpdAutoOrdering {
+    fn order<T: SparseScalar>(&self, a: &SparseCsc<T>) -> Permutation {
+        let nd = NestedDissectionOrdering.order(a);
+        let nd_fill = natural_fill_capped(&nd.permute_symmetric(a), usize::MAX)
+            .expect("an uncapped count always finishes");
+        match natural_fill_capped(a, nd_fill) {
+            Some(_) => Permutation::identity(a.ncols()),
+            None => nd,
+        }
+    }
+}
+
+/// Symmetric adjacency (no self loops, no duplicates) in compressed rows.
+struct SymGraph {
+    ptr: Vec<usize>,
+    adj: Vec<usize>,
+}
+
+impl SymGraph {
+    fn from_pattern<T: SparseScalar>(a: &SparseCsc<T>) -> Self {
+        let n = a.ncols();
+        let mut count = vec![0usize; n + 1];
+        for j in 0..n {
+            for (i, _) in a.col_iter(j) {
+                if i != j {
+                    count[i + 1] += 1;
+                    count[j + 1] += 1;
+                }
+            }
+        }
+        for v in 0..n {
+            count[v + 1] += count[v];
+        }
+        let mut next = count[..n].to_vec();
+        let mut adj = vec![0usize; count[n]];
+        for j in 0..n {
+            for (i, _) in a.col_iter(j) {
+                if i != j {
+                    adj[next[i]] = j;
+                    next[i] += 1;
+                    adj[next[j]] = i;
+                    next[j] += 1;
+                }
+            }
+        }
+        let mut ptr = Vec::with_capacity(n + 1);
+        ptr.push(0);
+        let mut out = 0;
+        for v in 0..n {
+            let row = &mut adj[count[v]..count[v + 1]];
+            row.sort_unstable();
+            let mut last = usize::MAX;
+            for k in count[v]..count[v + 1] {
+                let w = adj[k];
+                if w != last {
+                    adj[out] = w;
+                    out += 1;
+                    last = w;
+                }
+            }
+            ptr.push(out);
+        }
+        adj.truncate(out);
+        SymGraph { ptr, adj }
+    }
+
+    fn n(&self) -> usize {
+        self.ptr.len() - 1
+    }
+
+    fn neighbors(&self, v: usize) -> &[usize] {
+        &self.adj[self.ptr[v]..self.ptr[v + 1]]
+    }
+}
+
+/// Breadth-first search from `s` restricted to nodes with `region == id`.
+/// Marks visited nodes with `stamp` in `seen`, writes `level`, and
+/// returns the nodes in visit order.
+fn bfs_region(
+    g: &SymGraph,
+    s: usize,
+    id: usize,
+    region: &[usize],
+    seen: &mut [usize],
+    stamp: usize,
+    level: &mut [usize],
+) -> Vec<usize> {
+    let mut queue = vec![s];
+    seen[s] = stamp;
+    level[s] = 0;
+    let mut head = 0;
+    while head < queue.len() {
+        let u = queue[head];
+        head += 1;
+        for &w in g.neighbors(u) {
+            if region[w] == id && seen[w] != stamp {
+                seen[w] = stamp;
+                level[w] = level[u] + 1;
+                queue.push(w);
+            }
+        }
+    }
+    queue
+}
+
+fn nested_dissection(g: &SymGraph) -> Vec<usize> {
+    enum Task {
+        Split(Vec<usize>),
+        Emit(Vec<usize>),
+    }
+    let n = g.n();
+    let mut out = Vec::with_capacity(n);
+    let mut region = vec![0usize; n];
+    let mut seen = vec![0usize; n];
+    let mut level = vec![0usize; n];
+    let mut stamp = 0usize;
+    let mut next_id = 0usize;
+    let mut tasks = vec![Task::Split((0..n).collect())];
+    while let Some(task) = tasks.pop() {
+        let mut nodes = match task {
+            Task::Emit(sep) => {
+                out.extend(sep);
+                continue;
+            }
+            Task::Split(nodes) => nodes,
+        };
+        if nodes.len() <= ND_LEAF {
+            nodes.sort_unstable();
+            out.extend(nodes);
+            continue;
+        }
+        next_id += 1;
+        let id = next_id;
+        for &v in &nodes {
+            region[v] = id;
+        }
+
+        stamp += 1;
+        let mut comps: Vec<Vec<usize>> = Vec::new();
+        for &s in &nodes {
+            if seen[s] != stamp {
+                comps.push(bfs_region(g, s, id, &region, &mut seen, stamp, &mut level));
+            }
+        }
+        if comps.len() > 1 {
+            // Components are independent; their order does not change fill.
+            for c in comps.into_iter().rev() {
+                tasks.push(Task::Split(c));
+            }
+            continue;
+        }
+
+        // Pseudo-peripheral root: restart from the farthest node while the
+        // eccentricity grows (a few sweeps suffice).
+        let mut root = *comps[0].last().expect("non-empty component");
+        let mut best: Vec<usize> = Vec::new();
+        let mut best_levels: Vec<usize> = Vec::new();
+        for _ in 0..4 {
+            stamp += 1;
+            let order = bfs_region(g, root, id, &region, &mut seen, stamp, &mut level);
+            let far = *order.last().expect("non-empty component");
+            if !best.is_empty() && level[far] <= *best_levels.last().unwrap() {
+                break;
+            }
+            best_levels = order.iter().map(|&v| level[v]).collect();
+            best = order;
+            root = far;
+        }
+        for (&v, &l) in best.iter().zip(&best_levels) {
+            level[v] = l;
+        }
+        let depth = *best_levels.last().unwrap();
+        if depth < 2 {
+            best.sort_unstable();
+            out.extend(best);
+            continue;
+        }
+        let cut = best_levels[best.len() / 2].clamp(1, depth - 1);
+        let (mut part_a, mut part_b, mut sep) = (Vec::new(), Vec::new(), Vec::new());
+        for &v in &best {
+            let l = level[v];
+            if l < cut {
+                part_a.push(v);
+            } else if l > cut {
+                part_b.push(v);
+            } else if g
+                .neighbors(v)
+                .iter()
+                .any(|&w| region[w] == id && level[w] == cut + 1)
+            {
+                sep.push(v);
+            } else {
+                // No neighbour past the cut: it can join the near half.
+                part_a.push(v);
+            }
+        }
+        tasks.push(Task::Emit(sep));
+        tasks.push(Task::Split(part_b));
+        tasks.push(Task::Split(part_a));
+    }
+    debug_assert_eq!(out.len(), n);
+    out
 }
 
 #[cfg(test)]

@@ -11,6 +11,8 @@
 //!   post-order traversal (shared by Cholesky and LU).
 //! - `cholesky.rs` — sparse Cholesky factorization for SPD matrices.
 //! - `lu.rs` — sparse LU with partial pivoting (Phase 3).
+//! - `singleton.rs` — row-singleton reduction (`pin_dirichlet` rows) and
+//!   Cholesky of the remaining free block (`dev/plans/sparse_spd_solve.md`).
 //!
 //! Algorithm references throughout are to Davis, *Direct Methods for
 //! Sparse Linear Systems* (SIAM, 2006) — chapter 4 (Cholesky), chapter 6
@@ -23,13 +25,16 @@ pub mod ordering;
 pub mod elimination_tree;
 pub mod cholesky;
 pub mod lu;
+pub mod singleton;
 
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use cholesky::{symbolic_col_counts, SparseChol};
 pub use lu::SparseLU;
 pub use ordering::{
-    AmdOrdering, ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation,
+    AmdOrdering, ColCountOrdering, IdentityOrdering, NestedDissectionOrdering, OrderingMethod,
+    Permutation, SpdAutoOrdering,
 };
+pub use singleton::{ReducedChol, RowSingletonSplit};
 
 #[cfg(test)]
 mod tests;
@@ -64,6 +69,11 @@ pub enum SparseSolveError {
     /// positive definite (a negative or non-real diagonal pivot was encountered).
     #[error("Cholesky path: matrix is not Hermitian positive definite (column {col})")]
     NotSpd { col: usize },
+
+    /// Cholesky was requested but the matrix (or the block left after
+    /// removing row singletons) is not Hermitian.
+    #[error("Cholesky path: matrix is not Hermitian")]
+    NotHermitian,
 
     /// A complex entry could not be promoted into a real-only solver path.
     #[error("entry has imaginary part {imag:.3e} which exceeds the real-only tolerance")]

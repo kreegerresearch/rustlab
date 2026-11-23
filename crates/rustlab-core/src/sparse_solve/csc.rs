@@ -249,6 +249,40 @@ impl<T: SparseScalar> SparseCsc<T> {
         }
     }
 
+    /// `|A(i, j) − conj(A(j, i))| ≤ tol` for every stored entry, with an
+    /// absent mirror read as zero (so a stored zero and a missing entry
+    /// match). The diagonal therefore needs `2·|Im A(i, i)| ≤ tol`.
+    /// `false` for a non-square matrix.
+    pub fn is_hermitian(&self, tol: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        let t = self.transpose();
+        for j in 0..self.cols {
+            let (mut p, pe) = (self.col_ptr[j], self.col_ptr[j + 1]);
+            let (mut q, qe) = (t.col_ptr[j], t.col_ptr[j + 1]);
+            while p < pe || q < qe {
+                let rp = if p < pe { self.row_idx[p] } else { usize::MAX };
+                let rq = if q < qe { t.row_idx[q] } else { usize::MAX };
+                let (a, m) = if rp == rq {
+                    p += 1;
+                    q += 1;
+                    (self.values[p - 1], t.values[q - 1].conj())
+                } else if rp < rq {
+                    p += 1;
+                    (self.values[p - 1], T::zero())
+                } else {
+                    q += 1;
+                    (T::zero(), t.values[q - 1].conj())
+                };
+                if !((a - m).abs() <= tol) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Look up A(i, j); returns `T::zero()` if the entry is structurally absent.
     pub fn get(&self, i: usize, j: usize) -> T {
         let lo = self.col_ptr[j];
