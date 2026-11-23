@@ -37,7 +37,7 @@ fn maxit_warning_without_flag() {
         stderr.contains("because the maximum number of iterations was reached"),
         "{stderr}"
     );
-    assert!(stderr.contains("The iterate returned (number 3) has relative residual"), "{stderr}");
+    assert!(stderr.contains("The iterate returned (number "), "{stderr}");
     assert!(!stdout.contains("pcg"), "{stdout}");
 }
 

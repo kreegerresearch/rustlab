@@ -177,7 +177,11 @@ fn ichol_ict_drops_small_entries_by_column_norm() {
     let full = ichol(&a, &opts(IcholType::Threshold { droptol: 0.0 })).unwrap();
     assert!(l.nnz() < full.nnz());
     for j in 0..a.ncols() {
-        let colnorm: f64 = a.col_iter(j).filter(|&(i, _)| i >= j).map(|(_, v)| v.abs()).sum();
+        let colnorm: f64 = a
+            .col_iter(j)
+            .filter(|&(i, _)| i >= j)
+            .map(|(_, v)| v.abs())
+            .sum();
         for (i, v) in l.col_iter(j) {
             if i != j {
                 assert!(v.abs() >= droptol * colnorm, "({i},{j}) = {v}");
@@ -205,7 +209,11 @@ fn ichol_michol_preserves_row_sums() {
         let p = llt(&l);
         for i in 0..n {
             let s: f64 = p[i].iter().sum();
-            assert!((s - ae[i]).abs() < 1e-12, "{kind:?} row {i}: {s} vs {}", ae[i]);
+            assert!(
+                (s - ae[i]).abs() < 1e-12,
+                "{kind:?} row {i}: {s} vs {}",
+                ae[i]
+            );
         }
     }
 }
@@ -333,7 +341,9 @@ fn triangular_solve_with_a_zero_diagonal_is_not_finite() {
 // ─── pcg ──────────────────────────────────────────────────────────────────
 
 fn rhs(n: usize) -> Vec<f64> {
-    (0..n).map(|i| 1.0 + ((i * 7919) % 13) as f64 / 13.0).collect()
+    (0..n)
+        .map(|i| 1.0 + ((i * 7919) % 13) as f64 / 13.0)
+        .collect()
 }
 
 #[test]
@@ -392,13 +402,25 @@ fn pcg_with_ichol_needs_fewer_iterations_than_jacobi_and_none() {
     }
     // A constant diagonal: Jacobi is a rescaling and changes nothing much.
     assert!(jac.iter <= none.iter);
-    assert!(ic.iter < none.iter, "ichol {} vs none {}", ic.iter, none.iter);
+    assert!(
+        ic.iter < none.iter,
+        "ichol {} vs none {}",
+        ic.iter,
+        none.iter
+    );
 }
 
 #[test]
 fn pcg_zero_rhs_returns_zero_without_iterating() {
     let a = lap2(4);
-    let out = pcg(&mut MatrixPcg::new(a), &[0.0; 16], Some(&[1.0; 16]), 1e-6, 20).unwrap();
+    let out = pcg(
+        &mut MatrixPcg::new(a),
+        &[0.0; 16],
+        Some(&[1.0; 16]),
+        1e-6,
+        20,
+    )
+    .unwrap();
     assert_eq!(out.flag, 0);
     assert_eq!(out.iter, 0);
     assert_eq!(out.relres, 0.0);
@@ -521,11 +543,18 @@ fn pcg_complex_hermitian() {
         }
     }
     let a = csc(n, coo);
-    let b: Vec<C64> = (0..n).map(|i| Complex::new(1.0, i as f64 / n as f64)).collect();
+    let b: Vec<C64> = (0..n)
+        .map(|i| Complex::new(1.0, i as f64 / n as f64))
+        .collect();
     let out = pcg(&mut MatrixPcg::new(a.clone()), &b, None, 1e-12, 200).unwrap();
     assert_eq!(out.flag, 0);
     let ax = a.spmv(&out.x);
-    let r: f64 = ax.iter().zip(&b).map(|(p, q)| (q - p).norm_sqr()).sum::<f64>().sqrt();
+    let r: f64 = ax
+        .iter()
+        .zip(&b)
+        .map(|(p, q)| (q - p).norm_sqr())
+        .sum::<f64>()
+        .sqrt();
     let nb: f64 = b.iter().map(|q| q.norm_sqr()).sum::<f64>().sqrt();
     assert!(r / nb <= 1e-12);
 }
@@ -551,5 +580,8 @@ fn pcg_errors_from_the_operator_propagate() {
             Ok(r.to_vec())
         }
     }
-    assert_eq!(pcg(&mut Failing, &[1.0], None, 1e-6, 5).unwrap_err(), "boom");
+    assert_eq!(
+        pcg(&mut Failing, &[1.0], None, 1e-6, 5).unwrap_err(),
+        "boom"
+    );
 }

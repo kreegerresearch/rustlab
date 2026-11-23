@@ -177,7 +177,7 @@ pub fn ichol<T: SparseScalar>(
         }
         col_ptr.push(row_idx.len());
 
-        if kept.first().is_some() {
+        if !kept.is_empty() {
             pos[j] = start + 1;
             let r = row_idx[start + 1];
             link[j] = head[r];

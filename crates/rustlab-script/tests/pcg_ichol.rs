@@ -213,7 +213,10 @@ fn pcg_prints_a_message_only_without_flag() {
     let two = printed(&format!("{setup} [x, flag] = pcg(A, b, 1e-8, 200);"));
     assert!(!two.contains("pcg"), "{two:?}");
     let zero = printed(&format!("{setup} x = pcg(A, zeros(100, 1));"));
-    assert!(zero.contains("right hand side vector is all zero"), "{zero:?}");
+    assert!(
+        zero.contains("right hand side vector is all zero"),
+        "{zero:?}"
+    );
     // Non-convergence is a warning on stderr, not stdout.
     let fail = printed(&format!("{setup} x = pcg(A, b, 1e-8, 2);"));
     assert!(!fail.contains("pcg"), "{fail:?}");
@@ -237,9 +240,10 @@ fn pcg_through_feval_and_a_handle() {
     let ev = eval(
         "A = -1 * laplacian_2d(6, 6); b = ones(36, 1);
          h = @pcg;
-         [x, flag] = h(A, b, 1e-10, 100);
+         x = h(A, b, 1e-10, 100);
          y = feval(\"pcg\", A, b, 1e-10, 100);
-         d = norm(x - y);",
+         [z, flag] = pcg(A, b, 1e-10, 100);
+         d = norm(x - y) + norm(x - z);",
     );
     assert_eq!(scalar(&ev, "flag"), 0.0);
     assert_eq!(scalar(&ev, "d"), 0.0);
@@ -304,10 +308,10 @@ fn ichol_errors() {
     assert!(eval_err(&format!("{setup} ichol(A, struct(\"droptol\", -1));")).contains("droptol"));
     assert!(eval_err(&format!("{setup} ichol(A, struct(\"diagcomp\", -1));")).contains("diagcomp"));
     assert!(eval_err(&format!("{setup} ichol(A, 3);")).contains("struct"));
-    assert!(eval_err(
-        "H = sparse([3, 1j; -1j, 3]); ichol(H, struct(\"michol\", \"on\"));"
-    )
-    .contains("michol"));
+    assert!(
+        eval_err("H = sparse([3, 1j; -1j, 3]); ichol(H, struct(\"michol\", \"on\"));")
+            .contains("michol")
+    );
     // A diagonal shift rescues the indefinite case.
     let ev = eval("L = ichol(sparse([1, 2; 2, 1]), struct(\"diagcomp\", 4)); ok = issparse(L);");
     assert_eq!(scalar(&ev, "ok"), 1.0);

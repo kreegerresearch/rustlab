@@ -76,7 +76,11 @@ impl<T: SparseScalar> TriangularSolve<T> {
                 for j in (0..u.ncols()).rev() {
                     let (lo, hi) = (u.col_ptr[j], u.col_ptr[j + 1]);
                     let has_diag = lo < hi && u.row_idx[hi - 1] == j;
-                    let d = if has_diag { u.values[hi - 1] } else { T::zero() };
+                    let d = if has_diag {
+                        u.values[hi - 1]
+                    } else {
+                        T::zero()
+                    };
                     let xj = x[j] / d;
                     x[j] = xj;
                     for p in lo..hi - usize::from(has_diag) {
