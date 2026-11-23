@@ -2408,16 +2408,22 @@ S = sprand(100, 100, 0.01)   # ~100 non-zeros in a 100×100 sparse matrix
 
 ### `spsolve(A, b)` / `spsolve(A, b, mode)` / `spsolve(A, b, mode, ordering)`
 
-Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. The optional `ordering` is `"auto"` (default), `"identity"` (alias `"natural"`), or `"amd"`.
+Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. The optional `ordering` is `"auto"` (default), `"identity"` (alias `"natural"`), `"amd"`, or `"nd"`. `A \ b` on a square sparse `A` runs the same `"auto"` path.
 
-- **`"auto"`** — detect Hermitian-positive-definite structure (`SparseMat::is_spd_estimate`). If SPD, factor with the hand-rolled sparse Cholesky. Otherwise factor with the hand-rolled sparse LU with partial pivoting. Either path stays sparse end-to-end.
-- **`"cholesky"`** — force the sparse Cholesky path. Returns an error if `A` is not Hermitian positive definite.
-- **`"lu"`** — force the sparse LU path. Useful when you know `A` is not Hermitian and want to skip the SPD pre-check.
+- **`"auto"`** — the same order of tries as MATLAB's sparse `\`:
+  1. `A` Hermitian with a positive real diagonal → sparse Cholesky.
+  2. `A` not Hermitian, but it has rows whose only nonzero is the diagonal (the rows `pin_dirichlet` writes) and the block left after removing them is Hermitian → each such unknown is `b(k) / A(k, k)`, its column moves to the right-hand side, and the remaining block is solved by sparse Cholesky. MATLAB's LU (UMFPACK) removes these singletons the same way.
+  3. Otherwise, or when a Cholesky pivot is not positive → sparse LU with partial pivoting on the whole matrix.
 
-**Ordering.** The optional fourth argument selects the fill-reducing column permutation:
-- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, and `laplacian_eps_3d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
-- **`"identity"`** (alias `"natural"`) — natural / identity ordering. Roughly 5× faster than AMD on grid-natural Laplacians. Wrong choice for matrices with irregular sparsity — the lack of fill-reducing reordering will blow up the factor's nnz.
-- **`"amd"`** — basic approximate minimum degree on the symmetric pattern of `A + A^T`. Safe default for unknown patterns.
+  Every path is a direct solve and stays sparse end-to-end.
+- **`"cholesky"`** — steps 1 and 2 only. Returns an error if `A` (or the block left after step 2) is not Hermitian positive definite. Before 0.3.85 this mode did not check symmetry and returned a wrong answer for a non-Hermitian `A`.
+- **`"lu"`** — step 3 only.
+
+**Ordering.** The optional fourth argument selects the fill-reducing permutation:
+- **`"auto"`** (default) — for Cholesky, nested dissection or the natural order, whichever predicts the smaller factor (a band keeps the natural order; a 3-D grid gets nested dissection). For LU, the matrix's `ordering_hint`: the `laplacian_*` builders set `Identity` (natural order), and a matrix without a hint uses `"amd"`.
+- **`"identity"`** (alias `"natural"`) — natural order. No fill on a band; heavy fill on 2-D and 3-D grids.
+- **`"amd"`** — basic minimum degree on the symmetric pattern of `A + A^T`. Its pivot search is O(n²), so it is slow past ~10⁴ unknowns.
+- **`"nd"`** — nested dissection on the pattern of `A + A^T` (level-set bisection). On the Lesson 18 41³ sphere the Cholesky factor has 4.6 M entries with `"nd"` and 20.8 M with the natural order.
 
 Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
 
@@ -2446,7 +2452,8 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
 **Implementation notes.**
 - Cholesky: Davis up-looking algorithm (Davis, *Direct Methods for Sparse Linear Systems*, ch. 4).
 - LU: Davis Gilbert-Peierls algorithm with partial pivoting (ch. 6), default tolerance 0.1.
-- Ordering: `AmdOrdering` is a basic minimum-degree heuristic on the symmetric pattern of $A + A^T$. Davis-style external-degree refinement (ch. 7) is deferred.
+- Orderings: `NestedDissectionOrdering` is level-set bisection from a pseudo-peripheral node (George & Liu, ch. 8); `SpdAutoOrdering` compares its symbolic fill with the natural order's. `AmdOrdering` is a basic minimum-degree heuristic on the symmetric pattern of $A + A^T$; Davis-style external-degree refinement (ch. 7) is deferred.
+- Row singletons: `RowSingletonSplit` / `ReducedChol` in `rustlab_core::sparse_solve::singleton`. Pinned unknowns are exactly `b(k) / A(k, k)`.
 
 The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust. For a full design walkthrough — dispatch chain, ordering hints, factor reuse, the underlying Davis algorithms — see `docs/sparse_solve.md`.
 
@@ -2460,7 +2467,9 @@ A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
-The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; consult the matrix's hint, fall back to AMD), `"identity"` / `"natural"` (force natural ordering — best for grid Laplacians, where it's ~5× faster than AMD), `"amd"` (force AMD).
+The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; `chol` picks nested dissection or the natural order by predicted fill, `lu` follows the matrix's hint and falls back to AMD), `"identity"` / `"natural"`, `"amd"`, or `"nd"` (nested dissection).
+
+`chol(A)` reads only the upper triangle and does not check symmetry (as in MATLAB). It does not remove row singletons; for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`.
 
 ```
 % Animation / sweep: factor once, solve per frame

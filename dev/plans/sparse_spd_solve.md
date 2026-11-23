@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 in progress (0.3.85).
-**Current phase:** 1 — singleton reduction + nested-dissection Cholesky behind `\` / `spsolve`.
+**Status:** Phase 1 complete (0.3.85). Phases 2–5 not started.
+**Current phase:** 2 — waiting for Michael's go-ahead and answers to the open questions (§7).
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -98,19 +98,38 @@ The nested-dissection prototype is a ~100-line level-set bisection: BFS from a p
 
 ### Phase 1 — `\` / `spsolve` fast path for sparse SPD (0.3.85)
 
-**Status:** in progress
+**Status:** complete
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Failing tests first: singleton split, ND ordering validity and fill, `\` and `spsolve` on pinned Laplacians (residual and agreement with the 0.3.84 LU), `"cholesky"` error on a non-Hermitian matrix, multi-RHS `\` | not started |
-| 2 | `rustlab-core/src/sparse_solve/singleton.rs`: `RowSingletonSplit<T>` — rows whose only stored nonzero is a nonzero diagonal; free block, coupling block, `reduce_rhs`, `assemble` | not started |
-| 3 | `ordering.rs`: `NestedDissectionOrdering` (level-set bisection on the pattern of `A + Aᵀ`, deterministic, disconnected components handled, leaves ≤ 64 natural) | not started |
-| 4 | `ordering.rs`: `SpdAutoOrdering` — compute the symbolic `nnz(L)` of ND, then of the natural order with a cap at ND's count, pick the smaller (tie → natural). Replaces the hint / basic-AMD choice for **Cholesky** in `"auto"` | not started |
-| 5 | `builtins.rs`: shared `sparse_auto_solve` used by `\` (one and many columns) and `spsolve` auto / `"cholesky"`; `"nd"` ordering string; LU path and LU ordering unchanged | not started |
-| 6 | Docs (`functions.md`, `sparse_solve.md`, `quickref.md` if needed, REPL help for `spsolve` / `chol`), `AGENTS.md`, CHANGELOG, version 0.3.85 | not started |
-| 7 | Measure: Lesson 18 scripts before/after, `make perf`'s sparse benches, the dense `\` path unchanged | not started |
+| 1 | Failing tests first: singleton split, ND ordering validity and fill, `\` and `spsolve` on pinned Laplacians (residual and agreement with the 0.3.84 LU), `"cholesky"` error on a non-Hermitian matrix, multi-RHS `\` | done |
+| 2 | `rustlab-core/src/sparse_solve/singleton.rs`: `RowSingletonSplit<T>` — rows whose only stored nonzero is a nonzero diagonal; free block, coupling block, `reduce_rhs`, `assemble` | done |
+| 3 | `ordering.rs`: `NestedDissectionOrdering` (level-set bisection on the pattern of `A + Aᵀ`, deterministic, disconnected components handled, leaves ≤ 64 natural) | done |
+| 4 | `ordering.rs`: `SpdAutoOrdering` — compute the symbolic `nnz(L)` of ND, then of the natural order with a cap at ND's count, pick the smaller (tie → natural). Replaces the hint / basic-AMD choice for **Cholesky** in `"auto"` | done |
+| 5 | `eval/sparse_auto.rs::factor`, used by `\` (one and many columns) and `spsolve` auto / `"cholesky"`; `"nd"` ordering string; LU path and LU ordering unchanged | done |
+| 6 | Docs (`functions.md`, `sparse_solve.md`, `quickref.md` if needed, REPL help for `spsolve` / `chol`), `AGENTS.md`, CHANGELOG, version 0.3.85 | done |
+| 7 | Measure: Lesson 18 scripts before/after, `make perf`'s sparse benches, the dense `\` path unchanged | done |
 
 Not in Phase 1: LU ordering, a new factor kernel, threads, `pcg`, `ichol`, sparse `chol` outputs.
+
+#### Phase 1 results (release, same 4-core VM, best of 2 runs)
+
+| Workload | 0.3.84 | 0.3.85 |
+|---|---|---|
+| Lesson 18 sphere 41³ solve (script `toc`) | 27.4 s | 1.3 s |
+| Lesson 18 L block (script `toc`) | 6.4 s | 0.1 s |
+| `irregular_capacitor_3d.rlab` | 36.3–37.8 s | 1.78 s |
+| Lesson 18, four scripts | 37.3–38.8 s | 2.05 s |
+| Lesson 15 `parasitic_bondpad` / `lumped_C_parallel_plate` / `MIM_capacitor_3d` | 29.6 / 8.7 / 8.4 s | 0.87 / 0.36 / 0.36 s |
+| Lesson 13 `twin_wire_impedance` | 1.05 s | 0.14 s |
+| `-laplacian_2d(200, 200) \ b` / `-laplacian_3d(30, 30, 30) \ b` | 0.61 / 7.9 s | 0.12 / 0.98 s |
+| `fdfd_2d_tmz` (LU, unchanged path) | 7.5 s | 7.7 s (noise) |
+| dense 500×500 `\` SPD / LU, ×5 | 0.115 / 0.199 s | 0.114 / 0.203 s |
+| `perf/bench_*.rlab` (7 scripts) | 4–126 ms | same within 2 ms |
+
+Every rustlab_em lesson script that calls a solver (27, plus `_shared/em.rlab`) and every repo example with a solve exits 0 on both versions. Printed results agree to roundoff (worst relative difference 7e-12 on a value above 1e-9), except Lesson 05 `parallel_plate.rlab` at 1.6e-10: it pins with hand-written identity rows next to `1/dx²` stencil entries, and 0.3.85 is the more accurate one (relative residual 1.06e-8 → 3.8e-9, pinned-value error 3.7e-9 → 0).
+
+Left for later: `examples/notebooks/sparse_scaling.md` and `sparse_solve.md` still describe AMD as the `spsolve` default and carry 0.3.x benchmark tables (already stale before this phase, since the `laplacian_*` hint); updating them means regenerating their gallery output. Sparse `\` returns a 1-D vector where MATLAB returns an `n×1` column (dense `\` already returns `n×1`), unchanged here.
 
 ### Phase 2 — non-symmetric LU ordering (FDFD)
 

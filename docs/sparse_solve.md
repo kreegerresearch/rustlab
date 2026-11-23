@@ -73,32 +73,58 @@ solve(F, b)
 ```
 
 `mode` is `"auto" | "cholesky" | "lu"`. `ordering` is
-`"auto" | "identity" | "natural" | "amd"`. Both default to `"auto"`.
+`"auto" | "identity" | "natural" | "amd" | "nd"`. Both default to `"auto"`.
 
-### Mode resolution (`spsolve` only)
+### Mode resolution (`spsolve` and sparse `\`)
 
-`"auto"` calls `SparseMat::is_spd_estimate(1e-10)` (`crates/rustlab-core/src/types.rs`).
-That helper checks Hermitian symmetry and that every diagonal entry is
-real-positive. Cheap pre-check; correctness still depends on numerical
-factorization succeeding. If the SPD check passes, route to Cholesky;
-otherwise route to LU.
+`crates/rustlab-script/src/eval/sparse_auto.rs::factor` is shared by
+`spsolve` and square sparse `A \ b` (one factorization for all columns
+of `b`):
 
-Cholesky failure under `"auto"` falls through silently to LU. Failure
-under explicit `"cholesky"` raises an error to the script layer.
+1. `SparseMat::is_spd_estimate(1e-10)` (`crates/rustlab-core/src/types.rs`)
+   — Hermitian symmetry and a real-positive diagonal → Cholesky of `A`.
+2. Otherwise `RowSingletonSplit::find` (`sparse_solve/singleton.rs`)
+   looks for rows whose only nonzero is the diagonal — what
+   `pin_dirichlet` writes. Ordering those unknowns first makes `A`
+   block lower triangular:
+
+   ```text
+   [ D  0 ] [x_p]   [b_p]        x_p = D⁻¹ b_p
+   [ C  F ] [x_f] = [b_f]   ⇒    F x_f = b_f − C x_p
+   ```
+
+   If the free block `F` is Hermitian (`SparseCsc::is_hermitian(1e-10)`),
+   `ReducedChol` factors it by Cholesky. The pinned values are exactly
+   `b(k) / A(k, k)`. UMFPACK, behind MATLAB's sparse `\`, removes
+   singletons the same way.
+3. Otherwise LU of the whole `A`.
+
+A Cholesky failure (non-positive pivot) under `"auto"` falls through to
+LU. Under explicit `"cholesky"`, steps 1–2 are the only options and any
+failure, including "not Hermitian", is an error. `"lu"` is step 3 alone.
+
+A real factor takes a complex `b` as two real solves (real and imaginary
+parts) in this path. `solve(F, b)` on a handle still refuses it.
 
 ### Ordering resolution
 
-`OrderingChoice` (in `builtins.rs`) has three variants: `Auto`, `Identity`,
-`Amd`. `resolve_ordering(sm, choice)` collapses `Auto` against the
-matrix's `ordering_hint`:
+`OrderingChoice` (in `builtins.rs`) has four variants: `Auto`, `Identity`,
+`Amd`, `Nd`. `Auto` resolves differently per factorization:
 
-- `sm.ordering_hint == Some(Identity)` → `Identity`.
-- `sm.ordering_hint == None` → `Amd`.
-- Any explicit `Identity`/`Amd` from the user passes through unchanged.
+- **Cholesky** (including the free block of step 2): `SpdAutoOrdering`
+  computes the symbolic `nnz(L)` of nested dissection, then counts the
+  natural order's `nnz(L)` with a cap at that number, and keeps the
+  natural order if it is no larger. A band (1-D Laplacian) keeps its
+  zero-fill natural order; a 3-D grid gets nested dissection. The
+  matrix's `ordering_hint` is not consulted.
+- **LU**: `resolve_ordering(sm, choice)` collapses `Auto` against the
+  matrix's `ordering_hint`: `Some(Identity)` → `Identity`, `None` → `Amd`.
+
+Explicit `Identity` / `Amd` / `Nd` pass through unchanged.
 
 The hint is set by builders that know their output is structurally
 regular — the `laplacian_*` family in particular. User-built sparse
-matrices (from `sparse(I, J, V, m, n)`) carry `None` and route through
+matrices (from `sparse(I, J, V, m, n)`) carry `None`, so their LU uses
 AMD by default.
 
 ### Realness resolution
@@ -148,6 +174,30 @@ Concrete factor-nnz numbers for the 200×200 Dirichlet Laplacian
 | AMD | 15 664 975 | 2.34 s |
 
 (See `perf/sparse_solve_phase1to4.md` for the full table.)
+
+### `NestedDissectionOrdering` — level-set nested dissection
+
+George (1973); George & Liu, *Computer Solution of Large Sparse Positive
+Definite Systems*, ch. 8. Works on the pattern of `A + A^T`. For each
+connected subgraph larger than 64 nodes: breadth-first search from a
+pseudo-peripheral node (restart from the farthest node while the
+eccentricity grows, at most four sweeps), take the level holding the
+median node as the separator, move separator nodes with no neighbour in
+the next level into the near half, order both halves recursively, and
+number the separator last. Subgraphs of 64 nodes or fewer keep their
+natural order. Disconnected pieces are split before bisection.
+Deterministic; O(nnz · log n).
+
+On a 3-D grid each cut is a plane, which is what makes the difference
+there: the Lesson 18 41³ sphere (27 216 free unknowns) has a Cholesky
+factor of 4.6 M entries with nested dissection against 20.8 M natural,
+and factors in 1.1 s against 7.2 s. See `dev/plans/sparse_spd_solve.md`.
+
+### `SpdAutoOrdering` — nested dissection or natural, by fill
+
+The `"auto"` Cholesky ordering described under *Ordering resolution*.
+The natural count stops at the nested-dissection count, so the
+comparison costs no more than the cheaper symbolic pass.
 
 ### `AmdOrdering` — basic approximate minimum degree
 
@@ -362,17 +412,19 @@ crates/rustlab-core/src/
 └── sparse_solve/
     ├── mod.rs                      public re-exports, SparseSolveError
     ├── csc.rs                      SparseCsc<T>, SparseScalar trait, FromComplex
-    ├── ordering.rs                 OrderingMethod trait, Identity/ColCount/Amd
+    ├── ordering.rs                 OrderingMethod trait, Identity/ColCount/Amd,
+    │                               NestedDissection, SpdAuto
     ├── elimination_tree.rs         column elimination tree + post-order
     ├── cholesky.rs                 SparseChol<T>::factor, ::solve
     ├── lu.rs                       SparseLU<T>::factor, ::solve
+    ├── singleton.rs                RowSingletonSplit<T>, ReducedChol<T>
     └── tests.rs                    integration tests across modules
 
 crates/rustlab-script/src/eval/
 ├── value.rs                        SparseFactor enum, Value::SparseFactor
-└── builtins.rs                     spsolve / chol / lu / solve dispatch
+├── sparse_auto.rs                  auto / cholesky / lu choice for spsolve and sparse \
+└── builtins.rs                     spsolve / chol / lu / solve entry points
                                     factor_sparse_cholesky / _lu
-                                    try_sparse_cholesky / _lu  (spsolve callees)
                                     OrderingChoice, parse_ordering_arg, resolve_ordering
                                     sparse_all_real
                                     laplacian_* builtins (set ordering_hint)

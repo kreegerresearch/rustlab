@@ -6,6 +6,20 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.85
+
+### Added
+- **Fast sparse `\` and `spsolve` on `pin_dirichlet` operators.** When a square sparse `A` is not Hermitian, the auto path now removes the rows whose only nonzero is the diagonal (what `pin_dirichlet` writes): those unknowns are `b(k) / A(k, k)`, their columns move to the right-hand side, and when the remaining block is Hermitian it is solved by sparse Cholesky. MATLAB's sparse `\` (UMFPACK) removes singletons the same way. Every path is still a direct solve. `rustlab_em` Lesson 18 `irregular_capacitor_3d.rlab`: the 41³ sphere solve goes from 27.4 s to 1.3 s and the L block from 6.4 s to 0.1 s; the four Lesson 18 scripts from ~38 s to 2.05 s (see `dev/plans/sparse_spd_solve.md`).
+- **`"nd"` ordering** (nested dissection) for `spsolve`, `chol`, and `lu`.
+- Sparse `A \ b` with a real `A` and a complex `b` solves the real and imaginary parts (it used to error "real factor cannot consume a complex b"). `solve(F, b)` on a handle is unchanged.
+
+### Breaking / behavior changes
+- **Auto Cholesky ordering** (sparse `\`, `spsolve`, `chol(S)`) is now nested dissection or the natural order, whichever predicts the smaller factor. It used to be the natural order for `laplacian_*` matrices and basic minimum degree otherwise. Results change in the last digits (about 1e-15 relative); a band matrix keeps the natural order. `"identity"` / `"natural"` and `"amd"` still force those orderings.
+- **`pin_dirichlet` systems** solved with sparse `\` or `spsolve(A, b)` take Cholesky instead of LU, with the same last-digit changes. `spsolve(A, b, "lu")` is unchanged.
+- **`spsolve(A, b, "cholesky")` errors when `A` is not Hermitian** (and the singleton reduction does not leave a Hermitian block). It used to read only the upper triangle and return a wrong answer. A `pin_dirichlet` operator is accepted.
+
+Sparse LU ordering, dense `\`, and `solve(F, b)` are unchanged.
+
 ## 0.3.84
 
 ### Changed
