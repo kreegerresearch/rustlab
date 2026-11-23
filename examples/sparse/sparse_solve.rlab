@@ -1,6 +1,7 @@
 # Sparse direct solve — auto-dispatched Cholesky vs LU, both sparse.
-# Demonstrates: spsolve(A, b), spsolve(A, b, "cholesky"), spsolve(A, b, "lu"),
-# auto SPD detection, sparse LU on indefinite matrices, scaling.
+# Demonstrates: A \ b and spsolve(A, b) on sparse A, spsolve(A, b, "cholesky"),
+# spsolve(A, b, "lu"), auto SPD detection, sparse LU on indefinite
+# matrices. Solutions are n×1 columns.
 #
 # Files written:
 #   /tmp/rustlab_spsolve_solution.html   imagesc of V for a centred-source
@@ -24,8 +25,8 @@ b   = -1 * rho(:);
 
 # Default dispatch: -L is SPD, so auto picks the sparse Cholesky path.
 print("Solving 2500x2500 Poisson via auto dispatch (sparse Cholesky)...")
-v_auto = spsolve(A, b);
-print(length(v_auto))    % → 2500
+v_auto = spsolve(A, b);  % same as A \ b
+print(size(v_auto))      % → [2500, 1]
 
 # Force Cholesky explicitly — should agree.
 v_chol = spsolve(A, b, "cholesky");
@@ -35,7 +36,7 @@ print(norm(v_auto - v_chol))    % → ~0
 # square non-singular matrices and gives the same answer (different fp
 # accumulation, so a tiny relative-norm difference).
 v_lu = spsolve(A, b, "lu");
-print(norm(v_auto - v_lu))      % → ~1e-9 .. 1e-12
+print(norm(v_auto - v_lu))      % → roundoff
 
 # ── 2. Visualise the SPD solution ───────────────────────────────
 V = reshape(v_auto, ny, nx);
@@ -45,12 +46,12 @@ title("Poisson solution: -∇² V = δ at grid centre");
 savefig("/tmp/rustlab_spsolve_solution.html");
 
 # ── 3. Indefinite assembly: sparse LU does the work ─────────────
-# A non-Hermitian or indefinite matrix can't go through Cholesky.
-# Auto's SPD pre-check catches this and routes the solve through the
-# hand-rolled sparse LU with partial pivoting.
+# An indefinite matrix can't go through Cholesky. Auto tries Cholesky
+# (the matrix is symmetric with a positive diagonal), meets a negative
+# pivot, and falls back to the hand-rolled sparse LU with partial pivoting.
 nx_i = 30; ny_i = 30;
 L_i = laplacian_2d(nx_i, ny_i);
-B = -1 * L_i + 0.5 * speye(nx_i * ny_i);   % shifted Helmholtz-like, indefinite
+B = -1 * L_i - 0.5 * speye(nx_i * ny_i);   % shifted Helmholtz-like, indefinite
 b_i = ones(nx_i * ny_i, 1);
 
 print("Solving 900x900 indefinite system via auto dispatch (sparse LU)...")
@@ -72,9 +73,9 @@ savefig("/tmp/rustlab_spsolve_indefinite.html");
 
 # ── 5. Tiny indefinite, all three modes ─────────────────────────
 S = sparse([1, 2; 2, 1]);          % indefinite (eigenvalues 3, -1)
-x_a = spsolve(S, [1; 1]);          % auto → LU (SPD pre-check rejects)
+x_a = spsolve(S, [1; 1]);          % auto → LU (Cholesky meets a negative pivot)
 x_l = spsolve(S, [1; 1], "lu");    % explicit
-print(x_a)                         % → [1/3, 1/3]
+print(x_a)                         % → [1/3; 1/3]  (2×1)
 print(x_l)                         % → same
 
 print("done — open the .html files to view")

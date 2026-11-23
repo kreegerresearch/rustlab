@@ -9743,6 +9743,18 @@ mod sparse_tests {
         }
     }
 
+    /// An `n×1` result (sparse `\`, `spsolve`, `linsolve`), as a vector.
+    fn get_column(ev: &Evaluator, name: &str) -> ndarray::Array1<num_complex::Complex<f64>> {
+        let m = get_matrix(ev, name);
+        assert_eq!(
+            m.ncols(),
+            1,
+            "'{name}' should be an n×1 column, got {:?}",
+            m.dim()
+        );
+        m.column(0).to_owned()
+    }
+
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Matrix(m) => (**m).clone(),
@@ -10158,7 +10170,7 @@ mod sparse_tests {
     #[test]
     fn spsolve_identity() {
         let ev = eval_str("x = spsolve(speye(3), [1, 2, 3])");
-        let x = get_vec(&ev, "x");
+        let x = get_column(&ev, "x");
         assert_eq!(x.len(), 3);
         assert!((x[0].re - 1.0).abs() < 1e-10);
         assert!((x[1].re - 2.0).abs() < 1e-10);
@@ -10168,7 +10180,7 @@ mod sparse_tests {
     #[test]
     fn spsolve_scaled_identity() {
         let ev = eval_str("A = speye(3) * 2\nx = spsolve(A, [2, 4, 6])");
-        let x = get_vec(&ev, "x");
+        let x = get_column(&ev, "x");
         assert!((x[0].re - 1.0).abs() < 1e-10);
         assert!((x[1].re - 2.0).abs() < 1e-10);
         assert!((x[2].re - 3.0).abs() < 1e-10);
@@ -10261,7 +10273,7 @@ mod sparse_tests {
     fn linsolve_accepts_sparse() {
         // linsolve should also accept sparse A now
         let ev = eval_str("x = linsolve(speye(2), [5, 7])");
-        let x = get_vec(&ev, "x");
+        let x = get_column(&ev, "x");
         assert!((x[0].re - 5.0).abs() < 1e-10);
         assert!((x[1].re - 7.0).abs() < 1e-10);
     }
@@ -10332,13 +10344,12 @@ mod sparse_tests {
     fn spsolve_lu_mode_handles_indefinite_sparse() {
         // [[1, 2], [2, 1]] is symmetric but indefinite. The "lu" mode
         // should solve it via the sparse LU path (not error like
-        // cholesky does). spsolve returns a row vector — transpose
-        // before multiplying back through.
+        // cholesky does). spsolve returns an n×1 column.
         let ev = eval_str(
             "A = [1, 2; 2, 1]\n\
              As = sparse(A)\n\
              x = spsolve(As, [1; 1], \"lu\")\n\
-             r = A * x'\n\
+             r = A * x\n\
              err = norm(r - [1; 1])",
         );
         let err = get_scalar(&ev, "err");
@@ -10364,15 +10375,13 @@ mod sparse_tests {
     #[test]
     fn spsolve_complex_lu_path() {
         // Non-Hermitian complex matrix.
-        // [[1+i, 2], [3, 4-i]] → solve A x = [1; i]. spsolve returns
-        // a row vector; convert to a column vector for the residual
-        // check by `transpose` (NOT `'`, which is the conjugate
-        // transpose and would flip imaginary parts).
+        // [[1+i, 2], [3, 4-i]] → solve A x = [1; i]. spsolve returns an
+        // n×1 column, as MATLAB's `\` does.
         let ev = eval_str(
             "A = [1 + j, 2; 3, 4 - j]\n\
              As = sparse(A)\n\
              x = spsolve(As, [1; j])\n\
-             r = A * transpose(x)\n\
+             r = A * x\n\
              err = norm(r - [1; j])",
         );
         let err = get_scalar(&ev, "err");
@@ -10777,7 +10786,7 @@ mod sparse_tests {
              x = (1:nx*ny)';\n\
              rhs = D * x;\n\
              y = spsolve(L, rhs);\n\
-             err = norm(y' - x)",
+             err = norm(y - x)",
         );
         assert!(get_scalar(&ev, "err") < 1e-9);
     }
@@ -11021,7 +11030,7 @@ mod sparse_tests {
              plates(:, :, nz) = ones(ny, nx);\n\
              [A, b] = pin_dirichlet(L, zeros(N, 1), plates, [ones(1, np), zeros(1, np)]);\n\
              V = spsolve(A, b);\n\
-             r = L * V.';\n\
+             r = L * V;\n\
              vol = dx * dy * dz;\n\
              Q = -sum(r(1:np)) * vol;\n\
              Qb = sum(r(N - np + 1:N)) * vol;\n\
@@ -11051,7 +11060,7 @@ mod sparse_tests {
              A = -1 * laplacian_eps_3d(eps, 0.5, 0.5, 0.25);\n\
              b = ones(64, 1);\n\
              V = spsolve(A, b);\n\
-             res = norm(A * V.' - b) / norm(b);\n\
+             res = norm(A * V - b) / norm(b);\n\
              im_part = max(abs(imag(V)));",
         );
         assert!(get_scalar(&ev, "res") < 1e-10);

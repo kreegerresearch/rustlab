@@ -61,9 +61,8 @@ title("|V| — phasor magnitude");
 savefig("/tmp/rustlab_complex_mag.html");
 
 # ── 5. Verify the residual ───────────────────────────────────────
-% norm(A*v - b) should be small. Cast v as a column vector for the
-% sparse-matrix multiply.
-r = A * transpose(v) - b;
+% norm(A*v - b) should be small. v is an n×1 column, like b.
+r = A * v - b;
 print(norm(r));         % → tiny
 
 print("done — open the .html files to view")

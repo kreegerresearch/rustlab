@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 complete (0.3.85). Phases 2–5 not started.
-**Current phase:** 2 — waiting for Michael's go-ahead and answers to the open questions (§7).
+**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86). Phases 3–5 not started.
+**Current phase:** 3 — `pcg` and `ichol`; waiting for Michael's go-ahead.
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -129,11 +129,43 @@ Not in Phase 1: LU ordering, a new factor kernel, threads, `pcg`, `ichol`, spars
 
 Every rustlab_em lesson script that calls a solver (27, plus `_shared/em.rlab`) and every repo example with a solve exits 0 on both versions. Printed results agree to roundoff (worst relative difference 7e-12 on a value above 1e-9), except Lesson 05 `parallel_plate.rlab` at 1.6e-10: it pins with hand-written identity rows next to `1/dx²` stencil entries, and 0.3.85 is the more accurate one (relative residual 1.06e-8 → 3.8e-9, pinned-value error 3.7e-9 → 0).
 
-Left for later: `examples/notebooks/sparse_scaling.md` and `sparse_solve.md` still describe AMD as the `spsolve` default and carry 0.3.x benchmark tables (already stale before this phase, since the `laplacian_*` hint); updating them means regenerating their gallery output. Sparse `\` returns a 1-D vector where MATLAB returns an `n×1` column (dense `\` already returns `n×1`), unchanged here.
+Left for later (both since resolved in 0.3.86): the `sparse_scaling.md` / `sparse_solve.md` notebooks described AMD as the `spsolve` default with 0.3.x benchmark tables — rewritten, `sparse_scaling` now measures live; sparse `\` returned a 1-D vector — now `n×1`.
 
 ### Phase 2 — non-symmetric LU ordering (FDFD)
 
-Use `NestedDissectionOrdering` (on `A + Aᵀ`) instead of the O(n²) basic minimum degree when there is no hint, and choose between natural and ND by a fill estimate when there is one. Target: `fdfd_2d_tmz` spsolve 6.9 s → under 0.5 s. Changes the last digits of every no-hint sparse LU result (version bump, CHANGELOG).
+**Status:** complete (0.3.86)
+
+`"auto"` LU ordering becomes the Phase 1 rule applied to the pattern of `A + Aᵀ`: nested dissection or the natural order, whichever predicts the smaller symmetric factor, whatever the hint (decision 1). That replaces the O(n²) basic minimum degree for matrices without a hint (FDFD) and the natural order for `laplacian_*` matrices. Partial pivoting (threshold 0.1) can move rows, so the symmetric count is an estimate, not the LU fill. Target: `fdfd_2d_tmz` solve 6.9 s → under 0.5 s. Last digits of auto sparse LU results change (decision 4).
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Failing tests first: auto LU fill equals the nested-dissection fill on a no-hint non-symmetric grid and the natural fill on a band; FDFD-style complex system (`fdfd_tmz_pml_2d`) solved by `\\` to residual 1e-10 and agreeing with the 0.3.85 AMD LU; `size(A \\ b)` and `size(spsolve(A, b))` are `[n, 1]` on every path | done |
+| 2 | `SpdAutoOrdering` counts fill on the pattern of `A + Aᵀ` (identical for symmetric input), so the LU path can use it | done |
+| 3 | `factor_sparse_lu`: `"auto"` → that ordering, hint ignored | done |
+| 4 | `spsolve_pack` and the one-column `\\` path return `n×1` (real storage when real); a 1×1 result stays a scalar | done |
+| 5 | Fix callers in tests, examples, notebooks that assumed a 1-D result; check rustlab_em | done |
+| 6 | Docs, REPL help, AGENTS.md, CHANGELOG, version 0.3.86 | done |
+| 7 | Measure FDFD scripts before/after, accuracy vs 0.3.84, shape-fix cost | done |
+
+#### Phase 2 results (release, same 4-core VM)
+
+| Workload | 0.3.84 | 0.3.85 | 0.3.86 |
+|---|---|---|---|
+| `fdfd_2d_tmz` solve (161², complex, 25,921 unknowns, 128,961 nonzeros) | 6.89 s | — | 0.225 s |
+| `fdfd_2d_tmz.rlab` | 7.13 s | 7.20 s | 0.35 s |
+| `fdfd_pml_demo.rlab` | 2.58 s | 2.79 s | 0.27 s |
+| `fdfd_resonator.rlab` | 1.47 s | 1.38 s | 0.77 s |
+| `fdfd_1d_layers.rlab` | 0.09 s | 0.09 s | 0.09 s |
+| Lesson 15 `cap_matrix_microstrip` / `cap_matrix_three_trace`, Lesson 17 `ind_matrix_microstrip` | 0.75 / 0.18 / 0.18 s | 0.79 / 0.18 / 0.16 s | 0.38 / 0.09 / 0.09 s |
+| Lesson 18, four scripts | ~41 s | 2.18 s | 2.25 s |
+
+Accuracy: `fdfd_2d_tmz` relative residual 1.9e-14 (0.3.84) → 1.1e-13; the solution differs from the 0.3.84 LU by 8.5e-14 relative. Every printed result of the 27 rustlab_em solver scripts agrees with 0.3.84 to roundoff (FDFD lessons 3e-14 or better); all exit 0. All 18 rustlab_em notebooks render under `--strict` with no cell error.
+
+Shape fix: no rustlab_em script or notebook needed a change (they use `reshape` or `x(:)`). In this repo, `examples/pde/laplacian.rlab`, `examples/sparse/sparse_complex.rlab`, `docs/examples.md`, and the `laplacian` / `sparse_complex` notebooks transposed the 1-D result and were changed (gallery regenerated for the two notebooks). Eight unit tests and one integration test used the same idioms; one of them (`V = zeros(1, N)` minus the solve) broadcast silently to N×N rather than erroring, which is the hazard to watch for downstream.
+
+Cost of the `n×1` result (rule in §7): none measurable at size; a 50×50 diagonal `\` in a 50,000-iteration loop is 5.9 → 6.2 µs per call (+0.4 µs, building the real `n×1` value). An early version of the LU ordering built the `A + Aᵀ` pattern even for symmetric input and cost 45 ms on a 10⁶-row diagonal solve; it now reuses `A` when the pattern is already symmetric (1.16 s for five solves, same as 0.3.85).
+
+**Docs audit (0.3.86, same PR):** `docs/functions.md`, `docs/sparse_solve.md`, `docs/quickref.md`, `docs/agent-guide.md`, `README.md`, REPL help, Rust doc comments (`OrderingHint`, `spsolve`, `chol`, `OrderingChoice`), the `sparse_solve` / `sparse_scaling` / `sparse_complex` / `electrostatics` notebooks and their gallery pages, `examples/sparse/sparse_solve.rlab`, and `perf/sparse_solve_phase1to4.md` (marked historical) now describe the 0.3.85–0.3.86 behaviour. `sparse_scaling` renders in about 4 s.
 
 ### Phase 3 — `pcg` and `ichol`
 
@@ -170,11 +202,16 @@ Supernodal left-looking Cholesky (dense panel updates through the existing `matm
 
 ---
 
-## 7. Open questions for Michael
+## 7. Decisions (Michael, 2026-11-23)
 
-1. **Hint vs auto.** In `"auto"`, Phase 1 ignores `OrderingHint::Identity` for Cholesky and picks natural or ND by predicted fill (natural still wins on 1-D and thin bands). `"identity"` / `"natural"` still force natural order. OK?
-2. **`pin_dirichlet` symmetric form.** Should `pin_dirichlet` get an option that also zeroes the pinned columns (moving `A(:, k)·value` into `b`), so `A` is SPD before any solve and `chol(A)` / `pcg(A, …)` apply directly? Phase 1 does not need it (`\` strips the singletons itself). `pcg` on the unpinned-column form is non-symmetric, so Phase 3 would want it or a doc note.
-3. **Sparse `chol` return type.** MATLAB `R = chol(S)` returns the sparse factor; rustlab returns a solve handle. Change `chol(S)` to MATLAB's form (breaking) and move the handle to `F = decomposition(S, "chol")` (MATLAB's name), or keep the handle and add MATLAB's outputs only for `nargout ≥ 2`?
-4. **LU ordering change (Phase 2)** changes the last digits of FDFD results. Fine with a CHANGELOG note?
-5. **`pcg` no-convergence message.** MATLAB prints a message when `flag ≠ 0` and `nargout < 2`. Match it (stderr warning), or error?
-6. **Threads in Phase 5.** Require bit-identical results for any thread count (as FDTD does), at some cost in parallel speedup?
+**Rule: match MATLAB unless doing so costs significant speed or memory.** When a MATLAB-matching choice (explicit `chol` factor, `n×1` shape, `pcg` semantics, ordering, determinism) would cost significant time or memory, do not silently pick a side: measure both, keep the fast path, and report the trade-off with numbers so Michael can decide.
+
+1. **Hint vs auto — yes, ignore the hint.** MATLAB's `\` picks its own fill-reducing ordering. `"auto"` may ignore `OrderingHint::Identity` for Cholesky (Phase 1) and for LU (Phase 2). `"identity"` / `"natural"` still force the natural order.
+2. **`pin_dirichlet` — unchanged.** It keeps its MATLAB-compatible output (pinned rows, columns left in place). No symmetric option; the Phase 1 singleton reduction handles the solve. `pcg` docs (Phase 3) note that a `pin_dirichlet` operator is not symmetric.
+3. **Sparse `chol(S)` returns the upper factor `R` with `R'*R = S`, as in MATLAB**, including `[R, p] = chol(S)` and `[R, p, P] = chol(S)` (`R'*R = P'*S*P`, fill-reducing `P`) and `"vector"` / `"lower"`. Phase 4 scope.
+   - *Migration for the solve handle.* `F = chol(S); x = solve(F, b)` becomes either the MATLAB idiom `[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)))`, or `x = S \ b` (one solve), or MATLAB's reusable form `dS = decomposition(S, "chol"); x = dS \ b`, which Phase 4 adds and which keeps today's factor-once behaviour. `lu(S)` handles and `solve(F, b)` stay until `decomposition` covers them; a sparse `F = chol(S)` passed to `solve` errors with a message naming the replacement. CHANGELOG gets a breaking-change entry with these three lines.
+   - *To measure in Phase 4 (rule above):* returning `R` as a `SparseMat` (COO, `C64` entries) needs roughly twice the memory of the internal real CSC factor (41³ sphere: ~150 MB vs ~74 MB), and `R \ (R' \ b)` must hit a sparse triangular solve, not LU.
+4. **Last-digit changes in FDFD results are acceptable.** MATLAB does not promise bit-identical results across versions.
+5. **`pcg` matches MATLAB.** With fewer than two outputs, a non-converged run warns (stderr) and returns the best iterate; with `flag` requested, it returns `flag`, `relres`, `iter`, `resvec` without a warning.
+6. **Parallel factor (Phase 5).** Results need not be bit-identical across thread counts. They must be deterministic for a fixed thread count and meet the accuracy tolerance.
+7. **Shape fix:** sparse `\` and `spsolve` return an `n×1` column, as MATLAB does (Phase 2, 0.3.86).

@@ -6,16 +6,32 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.86
+
+### Breaking / behavior changes
+- **Sparse `A \ b` and `spsolve` return an `n×1` column**, as MATLAB's `\` does (dense `\` already did). They returned a 1-D vector, so `A * x` failed with "cannot multiply matrix by row vector". A 1×1 system still gives a scalar; `solve(F, b)` is unchanged.
+  - *Migration — what changes for a result `x`:*
+    - `x'`, `x.'`, `transpose(x)` used to make a column; they now make a **row**. `A * x'` errors, and worse, **mixing with a row silently broadcasts**: `norm(x' - y)` with a column `y`, or `zeros(1, N) - x`, gives an `N×N` matrix and a wrong number instead of an error. Drop the transpose (or use `x(:)` on both sides).
+    - `size(x)` is `[n, 1]` (was `[1, n]`); code reading `size(x, 2)` as the length should use `numel(x)` or `length(x)`.
+    - `for v = x` now errors ("cannot iterate over a n×1 column"); loop over `x.'` or `1:numel(x)`.
+    - `x(k)`, `x(:)`, `reshape(x, ny, nx)`, `length(x)`, `numel(x)`, `plot(x)`, and `A * x` work as before (`A * x` used to error). `[x; 1]` now concatenates (it used to error).
+  - `rustlab_em` lesson scripts and notebooks need no change (checked: all 27 solver scripts and 18 notebooks). In this repo, `examples/pde/laplacian.rlab`, `examples/sparse/sparse_complex.rlab`, `docs/examples.md`, and the `laplacian` / `sparse_complex` notebooks were updated.
+- **Auto sparse LU ordering** (`spsolve`, sparse `\` on a non-symmetric matrix, `lu(S)`) is now nested dissection or the natural order by predicted fill of the `A + A^T` pattern, the rule Cholesky got in 0.3.85, and the matrix's `ordering_hint` is no longer consulted. It replaces basic minimum degree (no hint) and the natural order (`laplacian_*`). Results change in the last digits. `rustlab_em` Lesson 10: the `fdfd_2d_tmz.rlab` solve goes from 6.9 s to 0.23 s (script 7.1 s → 0.35 s), `fdfd_pml_demo` 2.6 s → 0.27 s, `fdfd_resonator` 1.5 s → 0.77 s; results agree with 0.3.84 to 3e-14 relative (see `dev/plans/sparse_spd_solve.md`). `"amd"`, `"identity"`, and `"nd"` still force an ordering.
+
+### Documentation
+- `docs/functions.md` (`\`, `spsolve`, `chol` / `lu` / `solve`, `pin_dirichlet`, `linsolve`, `laplacian_eps_3d`), REPL help (`mldivide`, `linsolve`, `spsolve`, `chol`, `lu`, `solve`, `pin_dirichlet`, `laplacian_eps_3d`), `docs/sparse_solve.md`, and `docs/quickref.md` describe the 0.3.85–0.3.86 solver: the dispatch order, orderings, `n×1` results, complex `b` with a real `A`, and the planned MATLAB-style sparse `chol`.
+- The `sparse_solve` and `sparse_scaling` notebooks were rewritten: `sparse_scaling` now measures dense, natural, minimum-degree, and automatic orderings when it renders (2-D to 200×200, 3-D to 25³) instead of quoting 0.3.x timings, and `sparse_solve` covers `\`, pinned operators, orderings, and complex right-hand sides. The `examples/sparse/sparse_solve.rlab` and notebook "indefinite" example was `-L + 0.5 I`, which is positive definite; it is now `-L − 0.5 I`.
+
 ## 0.3.85
 
 ### Added
 - **Fast sparse `\` and `spsolve` on `pin_dirichlet` operators.** When a square sparse `A` is not Hermitian, the auto path now removes the rows whose only nonzero is the diagonal (what `pin_dirichlet` writes): those unknowns are `b(k) / A(k, k)`, their columns move to the right-hand side, and when the remaining block is Hermitian it is solved by sparse Cholesky. MATLAB's sparse `\` (UMFPACK) removes singletons the same way. Every path is still a direct solve. `rustlab_em` Lesson 18 `irregular_capacitor_3d.rlab`: the 41³ sphere solve goes from 27.4 s to 1.3 s and the L block from 6.4 s to 0.1 s; the four Lesson 18 scripts from ~38 s to 2.05 s (see `dev/plans/sparse_spd_solve.md`).
 - **`"nd"` ordering** (nested dissection) for `spsolve`, `chol`, and `lu`.
-- Sparse `A \ b` with a real `A` and a complex `b` solves the real and imaginary parts (it used to error "real factor cannot consume a complex b"). `solve(F, b)` on a handle is unchanged.
+- Sparse `A \ b` and `spsolve(A, b)` with a real `A` and a complex `b` solve the real and imaginary parts (they used to error "real factor cannot consume a complex b"). `solve(F, b)` on a handle is unchanged.
 
 ### Breaking / behavior changes
 - **Auto Cholesky ordering** (sparse `\`, `spsolve`, `chol(S)`) is now nested dissection or the natural order, whichever predicts the smaller factor. It used to be the natural order for `laplacian_*` matrices and basic minimum degree otherwise. Results change in the last digits (about 1e-15 relative); a band matrix keeps the natural order. `"identity"` / `"natural"` and `"amd"` still force those orderings.
-- **`pin_dirichlet` systems** solved with sparse `\` or `spsolve(A, b)` take Cholesky instead of LU, with the same last-digit changes. `spsolve(A, b, "lu")` is unchanged.
+- **`pin_dirichlet` systems** solved with sparse `\` or `spsolve(A, b)` take Cholesky instead of LU, with the same last-digit changes, and the pinned values come back exactly `b(k) / A(k, k)` at any `"scale"` (an unscaled identity row next to `1/h²` stencil entries used to drift by up to ~1e-7 under LU). `spsolve(A, b, "lu")` is unchanged. `chol(A)` on such an operator is still wrong to use (it reads the upper triangle only); use `\` or `spsolve`.
 - **`spsolve(A, b, "cholesky")` errors when `A` is not Hermitian** (and the singleton reduction does not leave a Hermitian block). It used to read only the upper triangle and return a wrong answer. A `pin_dirichlet` operator is accepted.
 
 Sparse LU ordering, dense `\`, and `solve(F, b)` are unchanged.

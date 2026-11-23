@@ -50,6 +50,15 @@ impl AutoFactor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn nnz(&self) -> usize {
+        match self {
+            AutoFactor::Plain(f) => f.nnz(),
+            AutoFactor::ReducedReal(r) => r.nnz(),
+            AutoFactor::ReducedComplex(r) => r.nnz(),
+        }
+    }
+
     /// A real factor takes a complex `b` as two real solves.
     pub(crate) fn solve(&self, b: &CVector) -> Result<CVector, String> {
         let real_factor = match self {
@@ -198,6 +207,47 @@ mod tests {
             "lu"
         );
         assert!(factor(&sm, Mode::Cholesky, OrderingChoice::Auto).is_err());
+    }
+
+    /// Complex, non-symmetric 2-D operator (an FDFD-style row scaling of the
+    /// Laplacian) with no ordering hint.
+    const STRETCHED: &str = "n = 40; N = n * n; L = laplacian_2d(n, n);
+        s = 1 + 0.5j * linspace(0, 1, N);
+        [I, J, V] = find(L);
+        A = sparse(I, J, V(:) .* s(I(:)).', N, N) + 3 * speye(N);";
+
+    fn lu_nnz(sm: &SparseMat, ordering: OrderingChoice) -> usize {
+        factor_sparse_lu(sm, ordering).unwrap().nnz()
+    }
+
+    #[test]
+    fn auto_lu_uses_nested_dissection_on_a_grid() {
+        let sm = matrix(STRETCHED);
+        assert!(sm.ordering_hint.is_none());
+        let f = factor(&sm, Mode::Auto, OrderingChoice::Auto).unwrap();
+        assert_eq!(f.kind(), "lu");
+        let nd = lu_nnz(&sm, OrderingChoice::Nd);
+        assert_eq!(f.nnz(), nd);
+        assert!(nd < lu_nnz(&sm, OrderingChoice::Identity));
+        assert!(nd < lu_nnz(&sm, OrderingChoice::Amd));
+    }
+
+    #[test]
+    fn auto_lu_ignores_the_natural_hint_on_a_grid() {
+        let sm = matrix("A = laplacian_2d(40, 40) + 0.1 * spdiags(ones(1600, 1), 1, 1600, 1600);");
+        assert_eq!(
+            factor(&sm, Mode::Lu, OrderingChoice::Auto).unwrap().nnz(),
+            lu_nnz(&sm, OrderingChoice::Nd)
+        );
+    }
+
+    #[test]
+    fn auto_lu_keeps_the_natural_order_on_a_band() {
+        let sm = matrix("A = laplacian_1d(300) + 0.1 * spdiags(ones(300, 1), 1, 300, 300);");
+        assert_eq!(
+            factor(&sm, Mode::Lu, OrderingChoice::Auto).unwrap().nnz(),
+            lu_nnz(&sm, OrderingChoice::Identity)
+        );
     }
 
     #[test]

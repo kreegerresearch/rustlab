@@ -153,23 +153,19 @@ impl SparseVec {
     }
 }
 
-/// Hint that fixes a fill-reducing ordering for the sparse-solve dispatch.
+/// Structural note attached by builders that produce grid-regular
+/// matrices (the `laplacian_*` family).
 ///
-/// Builders that produce structurally regular matrices (notably the
-/// `laplacian_*` family on a regular grid) attach an `OrderingHint`
-/// describing the cheapest ordering for that pattern. The script-layer
-/// `spsolve` / `chol` / `lu` dispatch consults the hint before defaulting
-/// to AMD; an explicit user-provided ordering still wins.
-///
-/// Identity (natural) ordering on a 2-D Laplacian factors roughly 5×
-/// faster than AMD because the natural ordering already matches the
-/// banded fill pattern of a 5-point stencil. AMD's reordering search is
-/// pure overhead in that case.
+/// Until 0.3.84 the script-layer `"auto"` ordering for `spsolve` /
+/// `chol` / `lu` / sparse `\` used the natural order when this was set.
+/// It no longer reads the hint: `SpdAutoOrdering` compares nested
+/// dissection with the natural order by predicted fill, which keeps the
+/// natural order on bands and beats it on 2-D and 3-D grids (200×200
+/// Laplacian: 1.26 M vs 8.0 M Cholesky entries). The hint is still set
+/// and propagated so external callers that relied on it keep working.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderingHint {
-    /// Use the identity permutation (natural ordering). The right choice
-    /// for grid-natural Laplacians and other matrices whose nonzero
-    /// pattern is already in a fill-friendly order.
+    /// The builder's natural (grid) numbering.
     Identity,
 }
 
@@ -207,8 +203,8 @@ pub struct SparseMat {
     pub rows: usize,
     pub cols: usize,
     pub entries: Vec<(usize, usize, C64)>,
-    /// Optional fill-reducing ordering hint set by structurally-regular
-    /// builders. `None` means "no opinion — solver picks its default".
+    /// Optional ordering hint set by structurally-regular builders. The
+    /// script-layer solvers no longer read it (see `OrderingHint`).
     /// Operations that may scramble the structure (add, sub, from_dense)
     /// drop the hint; structure-preserving operations (scale, transpose,
     /// set) keep it.

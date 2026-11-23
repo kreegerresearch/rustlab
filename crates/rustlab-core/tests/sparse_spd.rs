@@ -294,6 +294,28 @@ fn spd_auto_takes_the_smaller_fill_on_a_cube() {
 }
 
 #[test]
+fn spd_auto_reads_the_symmetrized_pattern() {
+    // Keep only the upper triangle of a 3-D grid: the pattern of A + Aᵀ is
+    // the full grid, so the ordering must match the full grid's.
+    let full = lap3(12, 12, 12);
+    let n = full.ncols();
+    let mut upper = Vec::new();
+    for j in 0..n {
+        for (i, v) in full.col_iter(j) {
+            if i <= j {
+                upper.push((i, j, v));
+            }
+        }
+    }
+    let upper = csc(n, upper);
+    assert_eq!(
+        SpdAutoOrdering.order(&upper).perm(),
+        SpdAutoOrdering.order(&full).perm()
+    );
+    assert!(fill(&full, &SpdAutoOrdering) < fill(&full, &IdentityOrdering));
+}
+
+#[test]
 fn csc_hermitian_check() {
     let a = lap3(3, 3, 3);
     assert!(a.is_hermitian(0.0));

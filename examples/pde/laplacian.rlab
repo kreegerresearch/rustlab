@@ -31,14 +31,14 @@ Ly = (ny + 1) * dy;
 # A column (one value per row ii) times a row (one per column jj).
 V_exact = sin(pi*(1:ny)'*dx/Lx) * sin(pi*(1:nx)*dy/Ly);
 
-# V(:) in rustlab gives a ROW vector in column-major order; transpose to
-# get a column vector suitable for L * v and spsolve.
+# V(:) is an n×1 column in column-major order, the shape L * v and
+# spsolve use.
 v_exact = V_exact(:);
 rhs = full(L) * v_exact;
 v_solved = spsolve(L, rhs);
 
 # Relative residual should be < 1e-10.
-rel_err = norm(v_solved' - v_exact) / norm(v_exact);
+rel_err = norm(v_solved - v_exact) / norm(v_exact);
 print(rel_err)
 
 # Visualise the recovered solution.

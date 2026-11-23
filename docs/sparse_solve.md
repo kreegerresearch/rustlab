@@ -1,15 +1,18 @@
 # Sparse Direct Solve — Design and Algorithm Reference
 
 This document describes the end-to-end sparse linear solve pipeline:
-how `spsolve(A, b)`, `chol(A)`, `lu(A)`, and `solve(F, b)` flow from a
-script call to a numerical answer, what choices are made along the way,
-and why. Companion docs:
+how sparse `A \ b`, `spsolve(A, b)`, `chol(A)`, `lu(A)`, and `solve(F, b)`
+flow from a script call to a numerical answer, what choices are made
+along the way, and why. Companion docs:
 
 - `docs/functions.md` — user-facing API reference for each builtin.
 - `docs/quickref.md` — one-line summaries.
 - `perf/sparse_solve_phase1to4.md` — timing table across orderings.
 - `dev/plans/closed/sparse_solve_handroll.md` — original implementation plan.
 - `dev/plans/em_performance.md` — Phase 1 (factor reuse) and Phase 2 (ordering hint).
+- `dev/plans/sparse_spd_solve.md` — row-singleton Cholesky (0.3.85), nested
+  dissection for Cholesky and LU, `n×1` results (0.3.86), measurements,
+  and the decisions for `pcg`, `ichol`, and sparse `chol` outputs.
 
 All sparse-solver code is **pure Rust**, hand-rolled per `AGENTS.md` Rule 9:
 no FFI, no GPL/LGPL, no large libraries.
@@ -26,37 +29,43 @@ Chapter numbers below refer to this book.
                               │
               ┌───────────────┴───────────────┐
               │                               │
-       spsolve(A, b, …)                chol(A) / lu(A)
+   A \ b,  spsolve(A, b, …)            chol(A) / lu(A)
               │                               │
+   sparse_auto::factor                        │
+   (SPD? row singletons? else LU)             │
               └───────────┬───────────────────┘
                           │
-                  factor_sparse_*()
+        factor_sparse_*() / ReducedChol
                           │
               ┌───────────┼───────────┐
               │           │           │
          realness?   ordering?   factorization?
               │           │           │
               ▼           ▼           ▼
-       SparseCsc<f64>   Identity   SparseChol
-       SparseCsc<C64>   AMD        SparseLU
+       SparseCsc<f64>   SpdAuto    SparseChol
+       SparseCsc<C64>   Identity   ReducedChol
+                        Amd, Nd    SparseLU
                           │
                   triangular solve
                           │
                           ▼
-                          x
+                 x  (n×1 for \ and spsolve)
 ```
 
 Two layers:
 
-1. **Script layer** (`crates/rustlab-script/src/eval/builtins.rs`).
-   Parses `spsolve` / `chol` / `lu` / `solve` arguments, decides the
-   factorization (`auto`/`cholesky`/`lu`), the ordering (`auto`/`identity`/`amd`),
-   and the scalar type (`f64` if `A` and `b` are essentially real, else `C64`).
+1. **Script layer** (`crates/rustlab-script/src/eval/builtins.rs` and
+   `sparse_auto.rs`). Parses `spsolve` / `chol` / `lu` / `solve` arguments
+   (and sparse `\` from `linsys::mldivide`), decides the factorization
+   (`auto`/`cholesky`/`lu`), the ordering (`auto`/`identity`/`amd`/`nd`),
+   and the scalar type (`f64` if `A` is essentially real, else `C64`).
    Calls into the core layer.
 
 2. **Core layer** (`crates/rustlab-core/src/sparse_solve/`). Implements
-   `SparseCsc<T>`, the elimination tree, three orderings, `SparseChol<T>`,
-   and `SparseLU<T>`. All algorithms are generic over `T: SparseScalar`,
+   `SparseCsc<T>`, the elimination tree, five orderings (`Identity`,
+   `ColCount`, `Amd`, `NestedDissection`, `SpdAuto`), the row-singleton
+   split (`RowSingletonSplit`, `ReducedChol`), `SparseChol<T>`, and
+   `SparseLU<T>`. All algorithms are generic over `T: SparseScalar`,
    so the same code factors real and complex matrices.
 
 ## Stage 1 — argument parsing and dispatch
@@ -74,6 +83,8 @@ solve(F, b)
 
 `mode` is `"auto" | "cholesky" | "lu"`. `ordering` is
 `"auto" | "identity" | "natural" | "amd" | "nd"`. Both default to `"auto"`.
+Sparse `A \ b` is `spsolve(A, b)` in `"auto"` mode, factored once for all
+columns of `b`.
 
 ### Mode resolution (`spsolve` and sparse `\`)
 
@@ -117,20 +128,25 @@ parts) in this path. `solve(F, b)` on a handle still refuses it.
   natural order if it is no larger. A band (1-D Laplacian) keeps its
   zero-fill natural order; a 3-D grid gets nested dissection. The
   matrix's `ordering_hint` is not consulted.
-- **LU**: `resolve_ordering(sm, choice)` collapses `Auto` against the
-  matrix's `ordering_hint`: `Some(Identity)` → `Identity`, `None` → `Amd`.
+- **LU** (0.3.86): the same `SpdAutoOrdering`, on the pattern of
+  `A + A^T`. With threshold partial pivoting the symmetric count is an
+  estimate of the LU fill, not the exact figure. On the Lesson 10 FDFD
+  operator (161², complex, no hint) this replaced the O(n²) basic minimum
+  degree.
 
-Explicit `Identity` / `Amd` / `Nd` pass through unchanged.
+Explicit `Identity` / `Amd` / `Nd` pass through unchanged. `"auto"` does
+not read `ordering_hint` for either factorization; MATLAB's `\` picks its
+own ordering too.
 
-The hint is set by builders that know their output is structurally
-regular — the `laplacian_*` family in particular. User-built sparse
-matrices (from `sparse(I, J, V, m, n)`) carry `None`, so their LU uses
-AMD by default.
+`spsolve` and sparse `\` return an `n×1` column (a 1×1 system gives a
+scalar); `solve(F, b)` returns a 1-D vector.
 
 ### Realness resolution
 
-`sparse_all_real(sm, b)` scans `sm.entries` and `b` for `|im(...)| < 1e-12`.
-If both pass, route through `SparseCsc<f64>`; otherwise `SparseCsc<C64>`.
+`sparse_all_real(sm, None)` scans `sm.entries` for `|im(...)| < 1e-12`.
+If it passes, the factor is `SparseCsc<f64>`; otherwise `SparseCsc<C64>`.
+The right-hand side does not decide: in `\` and `spsolve`, a real factor
+takes a complex `b` as two real solves.
 The real path is roughly 4× cheaper than complex because a real multiply
 is one operation while a complex multiply is four real multiplies and
 two real adds.
@@ -149,31 +165,32 @@ in column-major order.
 ## Stage 3 — fill-reducing ordering
 
 A *symmetric permutation* `P` is chosen before factoring so that
-`P A P^T` has fewer fill-ins than `A`. All three orderings live in
+`P A P^T` has fewer fill-ins than `A`. All orderings live in
 `crates/rustlab-core/src/sparse_solve/ordering.rs`.
+
+Cholesky factor size and factor + solve time for the 200×200 Dirichlet
+Laplacian (`chol(-laplacian_2d(200, 200), ordering)`, 40 000 unknowns,
+0.3.86 release build, 4-core VM):
+
+| Ordering | Cholesky factor nnz | Factor + solve time |
+|---|---:|---:|
+| `"nd"` (and `"auto"`) | 1 257 119 | 0.10 s |
+| `"identity"` | 8 000 199 | 0.61 s |
+| `"amd"` | 15 664 975 | 3.94 s |
 
 ### `IdentityOrdering` — natural ordering
 
 `P = I`. No reordering. Costs nothing to compute.
 
-The right choice when `A`'s nonzero pattern is already in fill-friendly
-order. The 5-point 2-D Laplacian numbered column-major is the canonical
-example: identity ordering gives an `O(N^{1.5})`-fill factor, which is
-optimal for this stencil up to constants (Hoffman-Martin-Rose, 1973).
-AMD on the same matrix searches a permutation space and lands on
-something *worse* than identity because the input pattern is already
-near-optimal — the search is pure overhead, plus AMD's heuristic isn't
-guaranteed to recover the natural order on banded matrices.
+The right choice for a band: a 1-D Laplacian has no fill at all in
+natural order, and `"auto"` keeps it. On a 2-D grid numbered
+column-major the natural order is a band of width √N, so the factor
+has `O(N^{1.5})` entries — about 6× the nested-dissection factor at
+200×200 (table above) — and on a 3-D grid it is worse still. Before
+0.3.85 the `laplacian_*` builders' `ordering_hint` made this the default;
+`"auto"` no longer reads the hint.
 
-Concrete factor-nnz numbers for the 200×200 Dirichlet Laplacian
-(40 000 unknowns):
-
-| Ordering | Cholesky factor nnz | Factor + solve time |
-|---|---:|---:|
-| Identity | 8 000 199 | 0.42 s |
-| AMD | 15 664 975 | 2.34 s |
-
-(See `perf/sparse_solve_phase1to4.md` for the full table.)
+(`perf/sparse_solve_phase1to4.md` has the older identity-vs-AMD table.)
 
 ### `NestedDissectionOrdering` — level-set nested dissection
 
@@ -188,16 +205,20 @@ number the separator last. Subgraphs of 64 nodes or fewer keep their
 natural order. Disconnected pieces are split before bisection.
 Deterministic; O(nnz · log n).
 
-On a 3-D grid each cut is a plane, which is what makes the difference
-there: the Lesson 18 41³ sphere (27 216 free unknowns) has a Cholesky
-factor of 4.6 M entries with nested dissection against 20.8 M natural,
-and factors in 1.1 s against 7.2 s. See `dev/plans/sparse_spd_solve.md`.
+Each cut is a line on a 2-D grid and a plane on a 3-D grid: the
+200×200 Laplacian factor has 1.26 M entries against 8.0 M natural (table
+above), and the Lesson 18 41³ sphere (27 216 free unknowns) 4.6 M against
+20.8 M, factoring in 1.1 s against 7.2 s. For LU it also replaced basic
+minimum degree on the Lesson 10 FDFD operator (6.9 s → 0.23 s). See
+`dev/plans/sparse_spd_solve.md`.
 
 ### `SpdAutoOrdering` — nested dissection or natural, by fill
 
-The `"auto"` Cholesky ordering described under *Ordering resolution*.
-The natural count stops at the nested-dissection count, so the
-comparison costs no more than the cheaper symbolic pass.
+The `"auto"` ordering for both Cholesky and LU, described under
+*Ordering resolution*. It counts fill on the pattern of `A + A^T`
+(reusing `A` itself when its pattern is already symmetric). The natural
+count stops at the nested-dissection count, so the comparison costs no
+more than the cheaper symbolic pass.
 
 ### `AmdOrdering` — basic approximate minimum degree
 
@@ -207,9 +228,10 @@ it, updates neighbour degrees, and continues. The hand-rolled
 implementation here is the basic form (~270 LoC); Davis-style external
 degree refinement and supervariable detection (~700+ LoC) are deferred.
 
-Safe default for matrices with unknown structure. On grid Laplacians
-it's strictly worse than Identity (see table above); on irregular FEM
-patterns it beats Identity by a wide margin.
+No longer the default for any path (it was the no-hint default before
+0.3.85 for Cholesky and 0.3.86 for LU). Its pivot search is O(n²), so it
+is slow past ~10⁴ unknowns, and on grid Laplacians it gives the largest
+factor of the three (table above). Available as `"amd"`.
 
 ### `ColCountOrdering` — column-count heuristic
 
@@ -337,19 +359,25 @@ mirror the realness × factorization cross-product so the back-solve
 doesn't re-detect realness on every solve.
 
 `builtin_chol` errors on non-SPD `A` with no auto fallback to LU —
-the user explicitly chose Cholesky. Call `lu(A)` or `spsolve(A, b)`
-for auto dispatch.
+the user explicitly chose Cholesky. It reads only the upper triangle and
+does not check symmetry (as MATLAB's `chol`), and it does not remove row
+singletons: for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`.
+Call `lu(A)` or `spsolve(A, b)` for auto dispatch.
 
-A real factor refuses a complex `b` at solve time with a clear error
-message rather than silently dropping the imaginary part. To solve
-complex `b` against a real `A`, refactor with the complex matrix.
+`solve(F, b)` with a real factor refuses a complex `b` with a clear error
+rather than silently dropping the imaginary part (`\` and `spsolve` split
+it into two real solves instead). `solve(F, b)` returns a 1-D vector.
 
 Implementation lives in `factor_sparse_cholesky` / `factor_sparse_lu` /
-`solve_with_factor` in `builtins.rs`; `try_sparse_cholesky` /
-`try_sparse_lu` (used by `spsolve`) and the `chol`/`lu`/`solve`
-builtins all delegate to those helpers.
+`solve_with_factor` in `builtins.rs`; `sparse_auto::factor` (used by `\`
+and `spsolve`) and the `chol`/`lu`/`solve` builtins all delegate to those
+helpers.
 
-## Phase 2 — `OrderingHint` (auto-pick identity for grids)
+Planned (decision 3 in `dev/plans/sparse_spd_solve.md`): sparse `chol(S)`
+will return MATLAB's upper factor `R` (`[R, p]`, `[R, p, P]`), and
+`decomposition(S, "chol")` will take over the reusable-factor role.
+
+## Phase 2 — `OrderingHint` (historical: no longer read by `"auto"`)
 
 `crates/rustlab-core/src/types.rs` defines:
 
@@ -367,8 +395,12 @@ pub struct SparseMat {
 ```
 
 The hint is metadata that travels with the matrix, declaring "natural
-ordering is best for me". The script-layer ordering arg `"auto"`
-consults the hint; explicit `"identity"` / `"amd"` overrides it.
+ordering is best for me". Until 0.3.84 the ordering arg `"auto"`
+consulted it. Since 0.3.85 (Cholesky) and 0.3.86 (LU), `"auto"` compares
+nested dissection with the natural order by predicted fill instead, which
+keeps the natural order where it is best (bands) and drops it on 2-D and
+3-D grids, where it is not. The builders still set the hint, and the
+operations below still carry it; nothing in the solver reads it now.
 
 **Builders that set the hint:** `laplacian_1d`, `laplacian_2d`,
 `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`. Anywhere we know the result has
@@ -382,9 +414,9 @@ is unchanged or trivially-changed in each case.
 union of two patterns may not be grid-banded; the safe default is to
 drop the claim.
 
-User-built matrices via `sparse(I, J, V, m, n)` carry `None` and route
-to AMD. Users who know their matrix is grid-shaped can opt in
-explicitly via `spsolve(A, b, mode, "identity")` or `chol(A, "identity")`.
+User-built matrices via `sparse(I, J, V, m, n)` carry `None`. Any
+ordering can still be forced with `spsolve(A, b, mode, "identity")`,
+`chol(A, "nd")`, `lu(A, "amd")`, and so on.
 
 ## Realness fast path — design rationale
 
@@ -425,9 +457,9 @@ crates/rustlab-script/src/eval/
 ├── sparse_auto.rs                  auto / cholesky / lu choice for spsolve and sparse \
 └── builtins.rs                     spsolve / chol / lu / solve entry points
                                     factor_sparse_cholesky / _lu
-                                    OrderingChoice, parse_ordering_arg, resolve_ordering
+                                    OrderingChoice, parse_ordering_arg
                                     sparse_all_real
-                                    laplacian_* builtins (set ordering_hint)
+                                    laplacian_* builtins (set ordering_hint, unused by "auto")
 ```
 
 ## Algorithmic complexity summary
@@ -437,9 +469,12 @@ crates/rustlab-script/src/eval/
 | `is_spd_estimate` | `O(nnz)` | scan diagonal + Hermitian pairs |
 | `to_csc` | `O(nnz log nnz)` | sort the COO triples |
 | `IdentityOrdering` | `O(1)` | no work |
+| `NestedDissectionOrdering` | `O(nnz · log n)` | BFS per level of the dissection |
+| `SpdAutoOrdering` | ND + `O(min(nnz(L_nd), nnz(L_nat)))` | symbolic counts, natural count capped |
+| `RowSingletonSplit` | `O(nnz)` | one pass to find pinned rows, one to split |
 | `AmdOrdering` (basic) | `O(n^2)` worst case | `O(n nnz)` typical on grids |
 | `column_elimination_tree` | `O(nnz log n)` | Davis ch. 4.3 |
-| Cholesky factor | `O(nnz(L))` flops, `O(nnz(L))` memory | grid: `O(N^{1.5})` with identity |
+| Cholesky factor | `O(Σ col_count²)` flops, `O(nnz(L))` memory | 2-D grid, ND: `nnz(L) = O(N log N)`; natural: `O(N^{1.5})` |
 | LU factor | `O(nnz(L) + nnz(U))` flops + pivoting search | typically 2× Cholesky on the same SPD matrix |
 | Triangular solve | `O(nnz(L))` per RHS | dominant cost in factor-many-solve scenarios |
 
@@ -455,18 +490,20 @@ factorizations directly via `rustlab_core::sparse_solve` from Rust.
 |---|---:|---|---|
 | Real-vs-complex threshold | `1e-12` | `sparse_all_real` | well below f64 noise floor |
 | SPD diagonal check | `1e-10` | `is_spd_estimate` | gives clear non-SPD signal without false negatives |
-| Cholesky pivot floor | `1e-12` | `checked_sqrt_real_pos` | keeps `sqrt` from amplifying floating-point noise |
+| Free-block Hermitian check | `1e-10` absolute | `ReducedChol::factor` (`HERMITIAN_TOL`) | same as the whole-matrix check |
+| Cholesky pivot floor | `eps · n · max\|A\|` | `SparseChol::factor` | relative, so `1e-16 * I` is still SPD |
 | LU pivot threshold | `0.1` | `SparseLU::factor` | Trefethen-Bau standard partial pivoting |
-| LU singularity threshold | `1e-14` | `SparseLU::factor` | matches dense LU convention |
+| LU singularity threshold | `eps · n · max\|A\|` | `SparseLU::factor` | relative, so a well-conditioned tiny-scaled `A` is not singular |
 
 ## What's deliberately not here
 
-- **Iterative solvers** (CG, GMRES, BiCGSTAB). The curriculum is built
-  around direct solvers; iterative methods are a separate teaching
-  arc and a separate code arc.
-- **Block factorization** (supernodal). The hand-rolled algorithms
-  here are scalar; a supernodal upgrade is plausible future work but
-  not currently planned.
+- **Iterative solvers** (CG, GMRES, BiCGSTAB). `\` and `spsolve` stay
+  direct. MATLAB-compatible `pcg` and `ichol` are planned as separate
+  builtins (Phase 3 of `dev/plans/sparse_spd_solve.md`).
+- **Block factorization** (supernodal) and threads. The hand-rolled
+  algorithms here are scalar; a supernodal, parallel Cholesky is Phase 5
+  of `dev/plans/sparse_spd_solve.md` (deterministic for a fixed thread
+  count).
 - **Pre-factorization scaling** (row/column equilibration). The matrices
   the curriculum builds are well-scaled by construction.
 - **Mixed-precision iterative refinement**. Single-precision factor +

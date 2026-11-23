@@ -48,14 +48,14 @@ b = rho(:);
 ## The solve — `spsolve` auto picks Cholesky
 
 ```rustlab
-v = spsolve(A, b);     % auto detects SPD, runs sparse Cholesky
+v = spsolve(A, b);     % auto detects SPD, runs sparse Cholesky (same as A \ b)
 V = reshape(v, ny, nx);
 print(size(V))         % → [100, 100]
 ```
 
 The dispatch goes `auto → SPD detected (Hermitian, positive diagonals)
-→ sparse Cholesky factorization with AMD ordering → forward + backward
-substitution`. No densification anywhere in the chain. On a quiet
+→ sparse Cholesky factorization with a nested-dissection ordering →
+forward + backward substitution`. No densification anywhere in the chain. On a quiet
 machine the factor + solve together take well under one second.
 
 ## Visualising the potential
@@ -113,18 +113,19 @@ prohibitive on a 200×200 grid where $N = 40\,000$.
 
 The sparse Cholesky path stays in the sparse factor:
 
-| Grid | Unknowns | Sparse Cholesky factor + solve | Dense LU factor + solve |
+| Grid | Unknowns | Sparse Cholesky factor + solve (0.3.86) | Old dense `spsolve` |
 |---:|---:|---:|---:|
-| 50×50 | 2 500 | 0.003 s | 2.9 s |
-| 75×75 | 5 625 | 0.009 s | 35 s |
-| 100×100 | 10 000 | 0.028 s | OOM / minutes |
-| 150×150 | 22 500 | 0.150 s | infeasible |
-| 200×200 | 40 000 | 0.42 s | infeasible |
+| 50×50 | 2 500 | 0.004 s | 2.9 s |
+| 75×75 | 5 625 | 0.010 s | 35 s |
+| 100×100 | 10 000 | 0.020 s | OOM / minutes |
+| 150×150 | 22 500 | 0.048 s | infeasible |
+| 200×200 | 40 000 | 0.10 s | infeasible |
 
-Numbers above are with the natural identity ordering on this Laplacian,
-which is the best ordering on grid-natural numbering. AMD (the
-`spsolve` default) is roughly 5× slower on grids — still subsecond at
-200×200. See `perf/sparse_solve_phase1to4.md` for the full table.
+The sparse column is `A \ b` (or `spsolve(A, b)`) with its automatic
+ordering — nested dissection on this grid — measured in a release build
+on a 4-core machine. The natural grid order takes about 6× longer at
+200×200 (0.60 s) and basic minimum degree about 40× (3.9 s); the
+`sparse_scaling` notebook measures them side by side.
 
 ## Cheat sheet
 
