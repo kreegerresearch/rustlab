@@ -69,8 +69,9 @@ print(size(V))         % → [60, 60]
 <!-- rustlab:output-end -->
 
 The dispatch sequence is `auto → SPD pre-check fails (Hermitian violated
-by imaginary diagonal) → sparse LU with partial pivoting and AMD
-ordering → forward + backward substitution`. The factorization stores
+by imaginary diagonal) → no pinned rows to remove → sparse LU with
+partial pivoting and a nested-dissection ordering → forward + backward
+substitution`. The factorization stores
 both $L$ and $U$ as `SparseCsc<Complex<f64>>` and propagates conjugation
 correctly during the partial-pivoting search.
 

@@ -1,168 +1,201 @@
 # Sparse vs Dense — The Scaling Story
 
-The new sparse direct solvers (Cholesky and LU, both pure-Rust
-hand-rolls) replace a dense Gaussian-elimination fallback that
-densified the coefficient matrix and solved it in cubic time. The
-scaling difference is dramatic — at 75×75 grids the dense path takes
-35 seconds; at 100×100 it OOMs the laptop. The sparse paths handle
-200×200 in seconds.
+Sparse direct solvers (Cholesky and LU, hand-rolled in pure Rust) keep
+a grid-shaped system sparse from assembly to answer. A dense solve
+stores all $N^2$ entries and does $O(N^3)$ work, so it falls off a cliff
+within a few thousand unknowns. How far the sparse solvers go depends on
+the **elimination order**: the same matrix factored in a different
+order can fill in several times more.
 
-This notebook visualizes the scaling story with measurements taken
-from `cargo run --release --example bench_sparse_solve -p rustlab-core`.
+Every number below is measured when this notebook runs (release build,
+`tic` / `toc`), so the timings are those of the machine that rendered
+it. The sizes are kept small enough to render in a few seconds.
 
-## The data
+## Dense vs sparse on a 2-D Poisson problem
 
-Wall-clock seconds for factor + solve of the canonical 5-point Laplacian
-Poisson at $n \times n$ grids. Numbers come from
-`perf/sparse_solve_phase1to4.md`.
+The 5-point Laplacian on an $n \times n$ grid has $N = n^2$ unknowns.
+`A \ b` on the sparse matrix picks sparse Cholesky and a fill-reducing
+ordering by itself. `full(A) \ b` does the same solve densely:
 
 ```rustlab
-clf
-n_grid     = [25, 50, 75, 100, 150, 200];
-unknowns   = n_grid .^ 2;
-
-% Dense LU (legacy fallback). Above 75x75 the run time is so large the
-% benchmark skips it; we tag those as 1000s as a "this is infeasible"
-% sentinel for the log plot.
-t_dense    = [0.054, 2.904, 35.034, 1000, 1000, 1000];
-
-% Sparse Cholesky with the natural identity ordering — best on
-% Laplacian-style banded patterns.
-t_chol_id  = [0.001, 0.003, 0.009, 0.028, 0.150, 0.417];
-
-% Sparse Cholesky with the AMD ordering (the spsolve default).
-t_chol_amd = [0.001, 0.010, 0.047, 0.148, 0.776, 2.345];
-
-% Sparse LU with AMD — the path "auto" picks for non-SPD inputs.
-t_lu_amd   = [0.003, 0.030, 0.146, 0.488, 2.514, 7.974];
+n_dense = [15, 25, 35];
+t_dense = zeros(1, 3);  t_sp_small = zeros(1, 3);
+for k = 1:3
+  n = n_dense(k);
+  A = -1 * laplacian_2d(n, n);  b = ones(n * n, 1);  D = full(A);
+  tic; x = D \ b; t_dense(k) = toc;
+  tic; y = A \ b; t_sp_small(k) = toc;
+end
+print(n_dense .^ 2)          % unknowns
+print(t_dense)               % dense, seconds
+print(t_sp_small)            % sparse, seconds
 ```
 
-## Factor + solve time vs grid size — log-log
+At 35×35 (1225 unknowns) the dense solve already takes a large
+fraction of a second and the sparse one about a millisecond; each step
+up in grid size widens the gap, because dense work grows as $N^3$.
+A 100×100 grid would need a dense matrix of
+$10^4 \times 10^4 \times 16$ bytes = **1.6 GB**.
 
-A log-log plot makes the asymptotic scaling obvious. Dense Gaussian
-elimination scales as $O(N^3)$ on $N = n^2$ unknowns — $O(n^6)$ in the
-grid-side parameter — and the curve climbs accordingly. The sparse
-paths scale as roughly $O(N^{1.5}) = O(n^3)$ on Laplacian patterns.
-`loglog` keeps the times and the unknown-counts in real units and
-draws both axes on a logarithmic scale:
+## Orderings on larger 2-D grids
+
+Past the dense range, the interesting comparison is between orderings
+of the same sparse Cholesky:
+
+- **auto** (`A \ b`): nested dissection or the natural order, whichever
+  predicts the smaller factor. On a grid this is nested dissection,
+  which cuts the grid in half along a line, orders each half
+  recursively, and puts the cut last.
+- **natural** (`"identity"`): the grid's column-major numbering, a band
+  of width $n$.
+- **minimum degree** (`"amd"`): the basic variant; its $O(N^2)$ pivot
+  search makes it slow on large grids, so it stops at 100×100 here.
+- **LU** (`"lu"`): the non-symmetric path, also with the automatic
+  ordering, for comparison.
+
+```rustlab
+n_grid = [25, 50, 100, 150, 200];
+N = n_grid .^ 2;
+t_auto = zeros(1, 5);  t_nat = zeros(1, 5);  t_lu = zeros(1, 5);
+for k = 1:5
+  n = n_grid(k);
+  A = -1 * laplacian_2d(n, n);  b = ones(n * n, 1);
+  tic; x = A \ b; t_auto(k) = toc;
+  tic; x = spsolve(A, b, "cholesky", "identity"); t_nat(k) = toc;
+  tic; x = spsolve(A, b, "lu"); t_lu(k) = toc;
+end
+n_amd = [25, 50, 100];
+t_amd = zeros(1, 3);
+for k = 1:3
+  n = n_amd(k);
+  A = -1 * laplacian_2d(n, n);  b = ones(n * n, 1);
+  tic; x = spsolve(A, b, "cholesky", "amd"); t_amd(k) = toc;
+end
+print(t_auto)
+print(t_nat)
+print(t_lu)
+print(t_amd)
+```
 
 ```rustlab
 clf
 hold on
-loglog(unknowns, t_dense);
-loglog(unknowns, t_chol_id);
-loglog(unknowns, t_chol_amd);
-loglog(unknowns, t_lu_amd);
-title("Sparse vs dense — time vs unknowns")
+loglog(n_dense .^ 2, t_dense, "dense");
+loglog(N, t_nat, "Cholesky, natural");
+loglog(n_amd .^ 2, t_amd, "Cholesky, minimum degree");
+loglog(N, t_lu, "LU, auto ordering");
+loglog(N, t_auto, "Cholesky, auto");
+hold off
+title("2-D Poisson: factor + solve time")
 xlabel("Unknowns N")
-ylabel("Factor + solve time (s)")
+ylabel("Time (s)")
+legend("dense", "Cholesky, natural", "Cholesky, minimum degree", "LU, auto ordering", "Cholesky, auto")
 ```
 
-The dense curve goes vertical at the right; the sparse curves stay
-straight all the way out, with sparse Cholesky / Identity sitting
-several orders of magnitude below the dense fallback at every size.
+The dense curve is the steepest. Among the sparse curves, the
+natural order grows as $N^2$ (a band of width $\sqrt{N}$, $N$ rows,
+$\sqrt{N}$ work per entry), and nested dissection grows close to
+$N^{1.5}$, so the gap widens with the grid.
 
-## What "OOM at 100×100" means in practice
+## Why: the size of the factor
 
-The dense fallback's run time isn't the only issue — it allocates an
-$N \times N$ complex matrix internally. At $N = 10\,000$ that's
-$10^4 \times 10^4 \times 16$ bytes = **1.6 GB** of working set. On a
-laptop with the OS, browser, and editor running, that's enough to
-swap and stall.
-
-Sparse factorization keeps the working set proportional to the factor
-size:
+Time follows the number of entries in the Cholesky factor. Printing a
+factor handle shows it:
 
 ```rustlab
-% From the benchmark: factor non-zeros (Cholesky / AMD path) at each grid size.
-factor_nnz = [26537, 229975, 797787, 1917475, 6562475, 15664975];
-
-% Memory in MB, assuming 16 bytes per Complex<f64> entry plus a
-% 4-byte row index per non-zero.
-mem_mb = factor_nnz .* 20 / (1024 * 1024);
-print(mem_mb)
+A = -1 * laplacian_2d(100, 100);
+print(chol(A, "identity"))   % natural order
+print(chol(A, "amd"))        % minimum degree
+print(chol(A))               % auto: nested dissection here
 ```
 
-For 200×200 (40 000 unknowns), the Cholesky factor takes about 300 MB
-— the dense matrix would be 25 GB. Three orders of magnitude.
+For the 100×100 grid (10 000 unknowns) nested dissection's factor is
+several times smaller than the natural order's, and the basic
+minimum-degree factor is the largest of the three; the ratio grows with
+the grid (at 200×200: 1.26 M entries for nested dissection, 8.0 M
+natural, 15.7 M minimum degree). Memory follows the same ratio: each
+entry costs 8 bytes plus a row index in the real factor. The dense
+200×200 matrix would need 25 GB.
 
-## Speedup at 75×75 (last grid where dense still finishes)
+## 3-D grids make the ordering matter more
+
+On an $n \times n \times n$ grid the natural order is a band of width
+$n^2$, so its factor grows much faster:
 
 ```rustlab
-print(t_dense(3) / t_chol_id(3))     % → ~3900x  (chol/id vs dense)
-print(t_dense(3) / t_chol_amd(3))    % → ~750x   (chol/amd vs dense)
-print(t_dense(3) / t_lu_amd(3))      % → ~240x   (lu/amd vs dense)
+n3 = [10, 15, 20, 25];
+t3_auto = zeros(1, 4);
+for k = 1:4
+  n = n3(k);
+  A = -1 * laplacian_3d(n, n, n);  b = ones(n ^ 3, 1);
+  tic; x = A \ b; t3_auto(k) = toc;
+end
+n3_nat = [10, 15, 20];
+t3_nat = zeros(1, 3);
+for k = 1:3
+  n = n3_nat(k);
+  A = -1 * laplacian_3d(n, n, n);  b = ones(n ^ 3, 1);
+  tic; x = spsolve(A, b, "cholesky", "identity"); t3_nat(k) = toc;
+end
+print(t3_auto)
+print(t3_nat)
+print(t3_nat(3) / t3_auto(3))   % speedup of auto over natural at 20³
 ```
-
-A 75×75 Lesson-05 Poisson on a laptop took 35 seconds before; now it
-finishes in 9 milliseconds.
-
-## Where AMD pays off — and where it doesn't
-
-The benchmark above shows that on a Laplacian-style assembly, *the
-natural identity ordering is the best ordering*. AMD is the `spsolve`
-default because it's safer on irregular patterns, but it pays a 5×
-penalty on grids:
 
 ```rustlab
 clf
-ratio = t_chol_amd ./ t_chol_id;
-plot(unknowns, ratio);
-title("AMD vs identity — slowdown ratio on grid Laplacians");
-xlabel("Unknowns (N)");
-ylabel("AMD time / Identity time")
+hold on
+loglog(n3_nat .^ 3, t3_nat, "natural");
+loglog(n3 .^ 3, t3_auto, "auto (nested dissection)");
+hold off
+title("3-D Poisson: factor + solve time")
+xlabel("Unknowns N")
+ylabel("Time (s)")
+legend("natural", "auto (nested dissection)")
 ```
 
-The ratio settles around 5–6× across grid sizes. The reason: identity
-ordering on a column-major-flattened grid is already nearly optimal
-because the bandwidth is $\sqrt{N}$. AMD's basic minimum-degree
-heuristic doesn't do better than this without the external-degree
-refinement and supervariable detection that the full Davis-AMD adds —
-deferred to a later phase.
-
-For curriculum problems with non-grid structure (FDFD with PML, doped
-inclusions, irregular geometries), AMD wins by a factor of 2–4× over
-column-count and is competitive with identity. The default is the
-right safe-on-anything choice; users who know they have a grid can
-explicitly request a different ordering by building the factorization
-through the `rustlab_core::sparse_solve` API directly.
+This is the regime of `rustlab_em` Lesson 18's 41³ capacitor: 27.4 s
+with the natural-order LU used before 0.3.85, 1.3 s with the automatic
+path (see `dev/plans/sparse_spd_solve.md`).
 
 ## Real vs complex
 
-The sparse paths auto-route "essentially real" inputs (every imag part
-below $10^{-12}$) through a real-only `f64` solver. Complex
-factorization is roughly 4× the work of real:
+The factorization uses a real-only `f64` solver whenever every entry
+of `A` has a zero imaginary part (below $10^{-12}$); complex
+factorization does about 4× the arithmetic. A complex right-hand side
+does not force the complex path — a real `A` solves its real and
+imaginary parts separately:
 
-| Grid | Real Cholesky/AMD | Complex LU/AMD | Ratio |
-|---:|---:|---:|---:|
-| 100×100 | 0.148 s | 0.579 s | 3.9× |
+```rustlab
+A = -1 * laplacian_2d(150, 150);  b = ones(22500, 1);
+Az = A + 1e-3j * speye(22500);           % a small complex shift
+tic; x = A \ (b + 1j * b); t_real = toc;
+tic; z = Az \ (b + 1j * b); t_cplx = toc;
+print(t_cplx / t_real)                   % complex factor vs real factor
+```
 
-The benchmark doesn't include a complex Cholesky bar at this scale —
-the typical complex assembly (FDFD-style) is non-Hermitian, so
-the LU path is what gets exercised. The 4× factor is consistent with
-the operation-count expectation.
+## Reproducing at larger sizes
 
-## Reproducing
+The Rust benchmark covers sizes too slow for a notebook:
 
 ```sh
 cargo run --release --example bench_sparse_solve -p rustlab-core
 ```
 
-The benchmark binary lives at
-`crates/rustlab-core/examples/bench_sparse_solve.rs`. Add a row of
-timings to `perf/sparse_solve_phase1to4.md` if you change the solver
-in a way that should affect performance — that's the project's
-running performance log for this subsystem.
+It lives at `crates/rustlab-core/examples/bench_sparse_solve.rs`;
+`perf/sparse_solve_phase1to4.md` holds the earlier (0.3.x) results.
 
 ## Cheat sheet
 
-| Operation | Old (dense) | New (sparse) | Wall-clock at 200×200 |
-|---|---|---|---|
-| SPD Poisson | $O(N^3)$, OOM | sparse Cholesky | 0.42 s (id) / 2.3 s (AMD) |
-| Indefinite | $O(N^3)$, OOM | sparse LU + partial pivot | 8.0 s |
-| Complex | $O(N^3)$, double cost | sparse LU complex variant | (not benchmarked at 200×200; ~10× real) |
+| Call | What runs |
+|---|---|
+| `A \ b`, `spsolve(A, b)` | Cholesky if Hermitian positive definite (also after removing `pin_dirichlet` rows), else LU; automatic ordering |
+| `spsolve(A, b, mode, "identity")` | natural order — best on a 1-D band, poor on 2-D / 3-D grids |
+| `spsolve(A, b, mode, "nd")` | nested dissection |
+| `spsolve(A, b, mode, "amd")` | basic minimum degree; slow past about $10^4$ unknowns |
+| `full(A) \ b` | dense; $O(N^3)$, only for small systems |
 
-The headline: **the dense fallback was the actual scaling cliff.**
-With the sparse paths in place, every Lesson-05+ assembly that fits
-in workspace memory is now solvable in a curriculum-tolerant amount of
-wall-clock time.
+The headline: **sparse plus a good elimination order** is what makes
+grid problems tractable. Dense solves stop being practical at a few
+thousand unknowns; with nested dissection the sparse solver handles a
+200×200 grid in about a tenth of a second.
