@@ -2007,7 +2007,7 @@ A * B   # ≈ eye(2)
 - `inv(scalar)` returns `1/scalar`. `inv(0)` is an error.
 
 ### `linsolve(A, b)`
-Solve the square system `A·x = b`. This is the same path as `A \ b`: a vector `b` is a column, one solution is `n×1`, and a singular `A` warns and returns the LU result.
+Solve the square system `A·x = b`. This is the same path as `A \ b`: a vector `b` is a column, one solution is `n×1`, and a singular `A` warns and returns the LU result. A sparse `A` takes the sparse `\` path below (also `n×1`).
 ```
 A = [2, 1; 1, 3]
 b = [5, 10]
@@ -2019,9 +2019,12 @@ Left division. A rectangular `A` uses column-pivoted QR least squares. An ill-co
 
 A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector on the right is a column, and one solution is `n×1`. An explicit one-row matrix stays a row and does not match a tall `A`. `b'` of a vector is already a column, so that form still solves. Several columns of `b` are several right-hand sides.
 
-A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver (`spsolve`). A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
+A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver: `spsolve(A, b)` in `"auto"` mode, factored once for all columns of `b`. That tries sparse Cholesky when `A` is Hermitian with a positive real diagonal, then Cholesky of the block left after removing the rows whose only nonzero is the diagonal (what `pin_dirichlet` writes; those unknowns are `b(k) / A(k, k)`), then sparse LU, all with a fill-reducing ordering chosen per matrix (see `spsolve`). The result is `n×1` (a 1×1 system gives a scalar), and a real `A` accepts a complex `b`. Before 0.3.86 the sparse result was a 1-D vector; drop any `x'` / `x.'` / `transpose(x)` used to make it a column. A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
 ```
 x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
+
+A = -1 * laplacian_2d(50, 50);   # sparse, SPD
+x = A \ ones(2500, 1);           # 2500×1, sparse Cholesky
 ```
 
 ### `B / A` / `mrdivide(B, A)`
@@ -2425,13 +2428,13 @@ Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `
 - **`"amd"`** — basic minimum degree on the symmetric pattern of `A + A^T`. Its pivot search is O(n²), so it is slow past ~10⁴ unknowns.
 - **`"nd"`** — nested dissection on the pattern of `A + A^T` (level-set bisection). On the Lesson 18 41³ sphere the Cholesky factor has 4.6 M entries with `"nd"` and 20.8 M with the natural order.
 
-**Result shape.** The solution is an `n×1` column, as MATLAB's `\` returns, whatever the shape of `b` (`spsolve` also takes a row or 1-D `b`). A 1×1 system gives a scalar. Before 0.3.86 sparse `\` and `spsolve` returned a 1-D vector; code that transposed it (`x'`, `x.'`, `transpose(x)`) to get a column now gets a row — drop the transpose. `x(:)` and `reshape(x, ny, nx)` work either way.
+**Result shape.** The solution is an `n×1` column, as MATLAB's `\` returns, whatever the shape of `b` (`spsolve` also takes a row or 1-D `b`). A 1×1 system gives a scalar. Before 0.3.86 sparse `\` and `spsolve` returned a 1-D vector; code that transposed it (`x'`, `x.'`, `transpose(x)`) to get a column now gets a row — drop the transpose. Mixing that row with a column (`norm(x' - y)`, `zeros(1, N) - x`) broadcasts to an `N×N` matrix without an error, so check for it. `size(x)` is now `[n, 1]`, and `for v = x` errors (loop over `x.'`). `x(:)`, `x(k)`, `length(x)`, and `reshape(x, ny, nx)` work either way.
 
 Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
 
-The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesson-05 grid produces a $10^4 \times 10^4$ sparse matrix; the old dense fallback densified it (~800 MB) and ran Gaussian elimination at $O(N^3)$. The Cholesky and LU paths stay sparse, factor in roughly $O(N^{1.5})$ on banded patterns, and scale to grids an order of magnitude larger.
+The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesson-05 grid produces a $10^4 \times 10^4$ sparse matrix; the old dense fallback densified it (~800 MB) and ran Gaussian elimination at $O(N^3)$. The Cholesky and LU paths stay sparse and, with nested dissection, keep the factor near $O(N \log N)$ entries on a 2-D grid ($O(N^{1.5})$ in natural order), so they scale to grids an order of magnitude larger.
 
-**Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
+**Real-vs-complex auto-routing.** When every entry of `A` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path; otherwise the complex path runs. A complex `b` with a real `A` is solved as two real solves (real and imaginary parts), since 0.3.85; it used to be an error.
 
 ⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. `src(:)` is already a column (since 0.3.75): use `b = src(:)`.
 
@@ -2448,7 +2451,7 @@ v = spsolve(-L, rhs);
 
 # Indefinite assembly. Auto routes through sparse LU.
 A = [1, 2; 2, 1];                       # eigenvalues 3, -1
-x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
+x = spsolve(sparse(A), [1; 1]);         # → [1/3; 1/3]  (2×1)
 ```
 
 **Implementation notes.**
@@ -2471,7 +2474,9 @@ This is the canonical fast path for parameter sweeps and animations: factor once
 
 The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; nested dissection or the natural order by predicted fill), `"identity"` / `"natural"`, `"amd"`, or `"nd"` (nested dissection). `solve(F, b)` still returns a 1-D vector.
 
-`chol(A)` reads only the upper triangle and does not check symmetry (as in MATLAB). It does not remove row singletons; for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`.
+`chol(A)` reads only the upper triangle and does not check symmetry (as in MATLAB). It does not remove row singletons; for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`. `solve(F, b)` with a real factor and a complex `b` is an error (unlike `\`); refactor the complex matrix or split the parts.
+
+Planned change (`dev/plans/sparse_spd_solve.md`, Phase 4): a sparse `chol(S)` will return MATLAB's upper factor `R` with `R' * R = S`, plus `[R, p]` and `[R, p, P]`, and the reusable handle moves to `decomposition(S, "chol")` with `dS \ b`. Until then `F = chol(S)` returns the handle described here.
 
 ```
 % Animation / sweep: factor once, solve per frame
@@ -2581,7 +2586,7 @@ The 3-D form of `laplacian_eps_2d`: `∇·(ε∇V)` on a uniform grid with a 7-p
 
 Each axis needs at least 2 nodes; a 2-D map is an error that points to `laplacian_eps_2d`. Entries may be real or complex (lossy media). The `bc` selector is the same as `laplacian_3d`: `"dirichlet"` (default; ghost cell 0, so a boundary face still subtracts the cell's own ε from the diagonal), `"neumann"` (no boundary flux; constants are in the null space), `"periodic"` (wrap; constants in the null space). A uniform `eps_map ≡ c` gives exactly `c * laplacian_3d(nx, ny, nz, dx, dy, dz, bc)`. With real ε the matrix is symmetric and negative semidefinite. A face between two cells whose ε sums to zero is left out.
 
-The result carries the `Identity` ordering hint, like the other Laplacian builders.
+The result carries the `Identity` ordering hint, like the other Laplacian builders. Since 0.3.85 `\` and `spsolve` no longer read it; `"auto"` picks nested dissection or the natural order by predicted fill.
 
 ```
 # Two-layer parallel-plate capacitor: plates on the bottom and top pages
@@ -2597,9 +2602,11 @@ V = reshape(spsolve(A, b), ny, nx, nz);
 ```
 
 ### `pin_dirichlet(A, b, mask_or_indices, values)` / `pin_dirichlet(..., "scale", s)`
-Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` then reproduces the boundary potential while the operator acts everywhere else.
+Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` or `A \ b` then reproduces the boundary potential while the operator acts everywhere else.
 
-**Row scale.** By default (`"scale", "auto"`) `d_k` is the magnitude of the original diagonal `|A(k, k)|`; if that is 0, the largest `|A(k, :)|`; if the row is empty, 1. The solution is the same as with an identity row in exact arithmetic, but the pinned row stays the same size as its neighbours. With a diagonal of 1 next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`), the sparse LU pivots on the large entries in the pinned column and the pinned values drift: a conductor at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4`. With the default scale it comes back exact. `"scale", s` with a positive number uses `d_k = s` for every pinned row; `"scale", 1` is the identity row of 0.3.68 and earlier.
+**Solving a pinned system.** Column `k` is left in the neighbours' rows (as a MATLAB row replacement would), so the pinned `A` is not symmetric even when the operator was. Since 0.3.85, `A \ b` and `spsolve(A, b)` recognise the pinned rows, set those unknowns to `b(k) / d_k` exactly, and solve the remaining symmetric block by sparse Cholesky. On `rustlab_em` Lesson 18's 41³ sphere this is 1.3 s instead of 27 s for the LU the non-symmetric matrix used to get. `chol(A)` does not do this (it reads only the upper triangle), and a future `pcg(A, b)` would see a non-symmetric matrix; use `\` or `spsolve`.
+
+**Row scale.** By default (`"scale", "auto"`) `d_k` is the magnitude of the original diagonal `|A(k, k)|`; if that is 0, the largest `|A(k, :)|`; if the row is empty, 1. The solution is the same as with an identity row in exact arithmetic, but the pinned row stays the same size as its neighbours. With a diagonal of 1 next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`), a sparse LU (`spsolve(A, b, "lu")`, or 0.3.84 and earlier) pivots on the large entries in the pinned column and the pinned values drift: a conductor at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4`. With the default scale it comes back exact. The `\` / `spsolve` auto path since 0.3.85 returns pinned values exactly at any scale. `"scale", s` with a positive number uses `d_k = s` for every pinned row; `"scale", 1` is the identity row of 0.3.68 and earlier.
 
 - `mask_or_indices` — either a mask on the grid (matrix or 3-D tensor whose element count equals the operator size; nonzero = pin; linearized column-major, matching `ij2k`/`ijk2k` and the `laplacian_*` node ordering), or a vector of 1-based linear indices.
 - `values` — a scalar (broadcast to every pin) or a vector aligned with the mask's column-major nonzeros / the index list.
@@ -2615,7 +2622,7 @@ A = laplacian_2d(nx, ny);
 b = zeros(nx*ny, 1);
 [A, b] = pin_dirichlet(A, b, top_plate, 5.0);
 [A, b] = pin_dirichlet(A, b, bot_plate, -5.0);
-V = reshape(spsolve(A, b), ny, nx);
+V = reshape(A \ b, ny, nx);        # or spsolve(A, b)
 ```
 
 ### `ij2k(i, j, ny)`
@@ -4479,7 +4486,7 @@ a .^ 2     # element-wise square
 ### Left and right division: `\` and `/`
 `\` and `/` share precedence with `*` and associate left to right.
 ```
-x = A \ b      # solve A*x = b; a vector on the right is a column
+x = A \ b      # solve A*x = b; a vector on the right is a column; x is n×1 (dense or sparse A)
 X = B / A      # solve X*A = B
 M / 2          # element-wise scale (scalar denominator)
 2 / M          # right division: solve X*M = 2

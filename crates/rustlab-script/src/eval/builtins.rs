@@ -15498,20 +15498,20 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// `spsolve(A, b)` — solve A*x = b where A is sparse.
-/// Internally converts to dense and uses Gaussian elimination.
-/// `spsolve(A, b)` or `spsolve(A, b, mode)` — solve `A x = b` where `A` is sparse.
+/// `spsolve(A, b [, mode [, ordering]])` — solve `A x = b` where `A` is
+/// sparse; the result is an `n×1` column (a scalar for 1×1).
 ///
-/// `mode` is one of `"auto"` (default), `"cholesky"`, or `"lu"`.
-/// - `"auto"` detects Hermitian-positive-definite structure and routes
-///   to the hand-rolled sparse Cholesky; otherwise it uses the
-///   hand-rolled sparse LU with partial pivoting. Either path stays
-///   sparse end-to-end and uses the `AmdOrdering` fill-reducing
-///   permutation by default.
-/// - `"cholesky"` forces the SPD path; returns an error if the input is
-///   not Hermitian positive definite.
-/// - `"lu"` forces the sparse LU path. Useful when you know the matrix
-///   isn't Hermitian and want to skip the SPD pre-check.
+/// `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`, dispatched by
+/// `sparse_auto::factor` (shared with sparse `\`):
+/// - `"auto"`: Cholesky if Hermitian with a positive diagonal; else
+///   Cholesky of the block left after removing row singletons
+///   (`pin_dirichlet` rows); else, or on a non-positive pivot, LU.
+/// - `"cholesky"`: the first two only; errors when not Hermitian
+///   positive definite.
+/// - `"lu"`: sparse LU with partial pivoting.
+///
+/// `ordering` is `"auto"` (nested dissection or natural by predicted
+/// fill), `"identity"` / `"natural"`, `"amd"`, or `"nd"`.
 ///
 /// Dense `Value::Matrix` input is dispatched through the legacy dense
 /// Gaussian-elimination path — sparse factorization is reserved for
@@ -15601,10 +15601,10 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(solution_column(x))
 }
 
-/// Concrete ordering decision used by the factor helpers. `Auto` means
-/// "consult the matrix's `ordering_hint`, falling back to AMD when it
-/// has none." `Identity`/`Amd` are explicit user overrides that ignore
-/// the hint.
+/// Ordering requested by the script. `Auto` is `SpdAutoOrdering` (nested
+/// dissection or natural by predicted fill) for both Cholesky and LU; the
+/// matrix's `ordering_hint` is not consulted. `Identity`, `Amd`, and `Nd`
+/// force that ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrderingChoice {
     Auto,
@@ -15758,10 +15758,10 @@ pub(crate) fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CV
 /// `chol(A [, ordering])` — sparse Cholesky factorization. Returns an
 /// opaque factor handle suitable for `solve(F, b)`. Errors when `A` is
 /// not Hermitian positive definite (no auto fallback to LU; users who
-/// want that should call `lu(A)` or `spsolve(A, b)`). Optional
-/// `ordering` argument is `"auto"` (default; consult the matrix's hint),
-/// `"identity"` (natural ordering — best for grid Laplacians), or
-/// `"amd"` (approximate minimum degree).
+/// want that should call `lu(A)` or `spsolve(A, b)`). Reads only the
+/// upper triangle. Optional `ordering` argument is `"auto"` (default;
+/// nested dissection or natural by predicted fill), `"identity"`,
+/// `"amd"`, or `"nd"`.
 fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("chol", &args, 1, 2)?;
     // A scalar and a vector are matrices here, the same as `lu` and `\`.
@@ -15889,9 +15889,8 @@ fn builtin_solve(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(spsolve_pack(x))
 }
 
-/// Dense Gaussian elimination with partial pivoting — the original
-/// `spsolve` implementation, retained as a fallback for non-SPD problems
-/// until Phase 3 ships a sparse LU.
+/// Dense Gaussian elimination with partial pivoting, used by `spsolve`
+/// when `A` is a dense matrix.
 fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
     let n = a.nrows();
     if n != a.ncols() {

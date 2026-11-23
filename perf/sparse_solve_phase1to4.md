@@ -1,5 +1,11 @@
 # Sparse-solve performance — Phases 1–4
 
+> Historical (before nested dissection). Since 0.3.85–0.3.86 the `"auto"`
+> ordering is nested dissection or natural by predicted fill; on the
+> 200×200 Laplacian that is 1.26 M factor entries and about 0.1 s. Current
+> numbers: `examples/notebooks/sparse_scaling.md` and
+> `dev/plans/sparse_spd_solve.md`.
+
 Wall-clock times for factor + solve of the canonical 5-point Laplacian
 Poisson assembly on an `n × n` grid, release build, single thread,
 single solve per factor (cost amortizes across multiple solves in

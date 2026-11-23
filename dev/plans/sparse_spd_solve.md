@@ -129,7 +129,7 @@ Not in Phase 1: LU ordering, a new factor kernel, threads, `pcg`, `ichol`, spars
 
 Every rustlab_em lesson script that calls a solver (27, plus `_shared/em.rlab`) and every repo example with a solve exits 0 on both versions. Printed results agree to roundoff (worst relative difference 7e-12 on a value above 1e-9), except Lesson 05 `parallel_plate.rlab` at 1.6e-10: it pins with hand-written identity rows next to `1/dx²` stencil entries, and 0.3.85 is the more accurate one (relative residual 1.06e-8 → 3.8e-9, pinned-value error 3.7e-9 → 0).
 
-Left for later: `examples/notebooks/sparse_scaling.md` and `sparse_solve.md` still describe AMD as the `spsolve` default and carry 0.3.x benchmark tables (already stale before this phase, since the `laplacian_*` hint); updating them means regenerating their gallery output. Sparse `\` returns a 1-D vector where MATLAB returns an `n×1` column (dense `\` already returns `n×1`), unchanged here.
+Left for later (both since resolved in 0.3.86): the `sparse_scaling.md` / `sparse_solve.md` notebooks described AMD as the `spsolve` default with 0.3.x benchmark tables — rewritten, `sparse_scaling` now measures live; sparse `\` returned a 1-D vector — now `n×1`.
 
 ### Phase 2 — non-symmetric LU ordering (FDFD)
 
@@ -164,6 +164,8 @@ Accuracy: `fdfd_2d_tmz` relative residual 1.9e-14 (0.3.84) → 1.1e-13; the solu
 Shape fix: no rustlab_em script or notebook needed a change (they use `reshape` or `x(:)`). In this repo, `examples/pde/laplacian.rlab`, `examples/sparse/sparse_complex.rlab`, `docs/examples.md`, and the `laplacian` / `sparse_complex` notebooks transposed the 1-D result and were changed (gallery regenerated for the two notebooks). Eight unit tests and one integration test used the same idioms; one of them (`V = zeros(1, N)` minus the solve) broadcast silently to N×N rather than erroring, which is the hazard to watch for downstream.
 
 Cost of the `n×1` result (rule in §7): none measurable at size; a 50×50 diagonal `\` in a 50,000-iteration loop is 5.9 → 6.2 µs per call (+0.4 µs, building the real `n×1` value). An early version of the LU ordering built the `A + Aᵀ` pattern even for symmetric input and cost 45 ms on a 10⁶-row diagonal solve; it now reuses `A` when the pattern is already symmetric (1.16 s for five solves, same as 0.3.85).
+
+**Docs audit (0.3.86, same PR):** `docs/functions.md`, `docs/sparse_solve.md`, `docs/quickref.md`, `docs/agent-guide.md`, `README.md`, REPL help, Rust doc comments (`OrderingHint`, `spsolve`, `chol`, `OrderingChoice`), the `sparse_solve` / `sparse_scaling` / `sparse_complex` / `electrostatics` notebooks and their gallery pages, `examples/sparse/sparse_solve.rlab`, and `perf/sparse_solve_phase1to4.md` (marked historical) now describe the 0.3.85–0.3.86 behaviour. `sparse_scaling` renders in about 4 s.
 
 ### Phase 3 — `pcg` and `ichol`
 
