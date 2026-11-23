@@ -72,14 +72,21 @@ fn pin_rows(a: &SparseCsc<f64>, pins: &[usize], d: f64) -> SparseCsc<f64> {
 
 fn rel_resid(a: &SparseCsc<f64>, x: &[f64], b: &[f64]) -> f64 {
     let r = a.spmv(x);
-    let num = r.iter().zip(b).map(|(p, q)| (p - q).powi(2)).sum::<f64>().sqrt();
+    let num = r
+        .iter()
+        .zip(b)
+        .map(|(p, q)| (p - q).powi(2))
+        .sum::<f64>()
+        .sqrt();
     let den = b.iter().map(|q| q * q).sum::<f64>().sqrt();
     num / den
 }
 
 fn is_permutation(p: &[usize], n: usize) -> bool {
     let mut seen = vec![false; n];
-    p.len() == n && p.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true))
+    p.len() == n
+        && p.iter()
+            .all(|&i| i < n && !std::mem::replace(&mut seen[i], true))
 }
 
 fn fill<O: OrderingMethod>(a: &SparseCsc<f64>, ord: &O) -> usize {
@@ -109,7 +116,10 @@ fn split_finds_pinned_rows_and_free_block_is_symmetric() {
     let a = lap3(nx, ny, nz);
     let pins = box_pins(nx, ny, nz);
     let p = pin_rows(&a, &pins, 6.0);
-    assert!(!p.is_hermitian(0.0), "pinned operator should not be symmetric");
+    assert!(
+        !p.is_hermitian(0.0),
+        "pinned operator should not be symmetric"
+    );
     let split = RowSingletonSplit::find(&p).expect("pinned rows are singletons");
     assert_eq!(split.n_pinned(), pins.len());
     assert_eq!(split.n_free(), nx * ny * nz - pins.len());
@@ -148,9 +158,18 @@ fn reduced_cholesky_matches_lu_and_pins_exactly() {
     assert!(rel_resid(&p, &x, &b) < 1e-13);
     let lu = SparseLU::factor(&p, &IdentityOrdering, 0.1).unwrap();
     let x_lu = lu.solve(&b).unwrap();
-    let diff = x.iter().zip(&x_lu).map(|(u, v)| (u - v).powi(2)).sum::<f64>().sqrt();
+    let diff = x
+        .iter()
+        .zip(&x_lu)
+        .map(|(u, v)| (u - v).powi(2))
+        .sum::<f64>()
+        .sqrt();
     let norm = x_lu.iter().map(|v| v * v).sum::<f64>().sqrt();
-    assert!(diff / norm < 1e-12, "reduced Cholesky vs natural LU: {}", diff / norm);
+    assert!(
+        diff / norm < 1e-12,
+        "reduced Cholesky vs natural LU: {}",
+        diff / norm
+    );
 }
 
 #[test]
@@ -158,7 +177,14 @@ fn reduced_cholesky_rejects_an_indefinite_free_block() {
     // Row 2 is pinned; the free block [[1, 2], [2, 1]] is symmetric but indefinite.
     let a = csc(
         3,
-        vec![(0, 0, 1.0), (0, 1, 2.0), (0, 2, 1.0), (1, 0, 2.0), (1, 1, 1.0), (2, 2, 3.0)],
+        vec![
+            (0, 0, 1.0),
+            (0, 1, 2.0),
+            (0, 2, 1.0),
+            (1, 0, 2.0),
+            (1, 1, 1.0),
+            (2, 2, 3.0),
+        ],
     );
     let split = RowSingletonSplit::find(&a).unwrap();
     assert!(ReducedChol::factor(split, &SpdAutoOrdering).is_err());
@@ -181,7 +207,10 @@ fn reduced_cholesky_complex_hermitian() {
     let b = vec![c(1.0, 2.0), c(-1.0, 0.5), c(4.0, -2.0)];
     let split = RowSingletonSplit::find(&a).unwrap();
     assert!(split.free_block().is_hermitian(0.0));
-    let x = ReducedChol::factor(split, &SpdAutoOrdering).unwrap().solve(&b).unwrap();
+    let x = ReducedChol::factor(split, &SpdAutoOrdering)
+        .unwrap()
+        .solve(&b)
+        .unwrap();
     let r = a.spmv(&x);
     for k in 0..3 {
         assert!((r[k] - b[k]).norm() < 1e-13, "row {k}: {:?}", r[k] - b[k]);
@@ -190,7 +219,12 @@ fn reduced_cholesky_complex_hermitian() {
 
 #[test]
 fn nested_dissection_is_a_permutation() {
-    for a in [lap3(1, 1, 1), lap3(5, 1, 1), lap3(6, 5, 4), lap3(12, 11, 10)] {
+    for a in [
+        lap3(1, 1, 1),
+        lap3(5, 1, 1),
+        lap3(6, 5, 4),
+        lap3(12, 11, 10),
+    ] {
         let p = NestedDissectionOrdering.order(&a);
         assert!(is_permutation(p.perm(), a.ncols()));
     }
@@ -243,7 +277,12 @@ fn spd_auto_keeps_natural_order_on_a_band() {
     // Tridiagonal: natural order has no fill; auto must not do worse.
     let a = lap3(200, 1, 1);
     assert_eq!(fill(&a, &SpdAutoOrdering), fill(&a, &IdentityOrdering));
-    assert!(SpdAutoOrdering.order(&a).perm().iter().enumerate().all(|(k, &v)| k == v));
+    assert!(SpdAutoOrdering
+        .order(&a)
+        .perm()
+        .iter()
+        .enumerate()
+        .all(|(k, &v)| k == v));
 }
 
 #[test]
@@ -258,9 +297,15 @@ fn spd_auto_takes_the_smaller_fill_on_a_cube() {
 fn csc_hermitian_check() {
     let a = lap3(3, 3, 3);
     assert!(a.is_hermitian(0.0));
-    let b = csc(2, vec![(0, 0, 1.0), (0, 1, 2.0), (1, 0, 2.0 + 1e-9), (1, 1, 1.0)]);
+    let b = csc(
+        2,
+        vec![(0, 0, 1.0), (0, 1, 2.0), (1, 0, 2.0 + 1e-9), (1, 1, 1.0)],
+    );
     assert!(!b.is_hermitian(0.0));
     assert!(b.is_hermitian(1e-8));
     let c = csc(2, vec![(0, 0, 1.0), (0, 1, 2.0), (1, 1, 1.0)]);
-    assert!(!c.is_hermitian(1e-8), "a missing mirror entry is not Hermitian");
+    assert!(
+        !c.is_hermitian(1e-8),
+        "a missing mirror entry is not Hermitian"
+    );
 }

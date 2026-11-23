@@ -56,7 +56,9 @@ impl<T: SparseScalar> RowSingletonSplit<T> {
                 }
             }
         }
-        let is_pinned: Vec<bool> = (0..n).map(|i| !off_diag[i] && diag[i].abs() != 0.0).collect();
+        let is_pinned: Vec<bool> = (0..n)
+            .map(|i| !off_diag[i] && diag[i].abs() != 0.0)
+            .collect();
         if !is_pinned.iter().any(|&p| p) {
             return None;
         }

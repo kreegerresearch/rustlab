@@ -63,9 +63,17 @@ fn backslash_on_a_pinned_operator_matches_lu() {
          pin = max(abs(x .* inner(:) - inner(:)));",
         sphere(13)
     ));
-    assert!(scalar(&ev, "res") < 1e-12, "residual {}", scalar(&ev, "res"));
+    assert!(
+        scalar(&ev, "res") < 1e-12,
+        "residual {}",
+        scalar(&ev, "res")
+    );
     assert!(scalar(&ev, "dif") < 1e-12, "vs LU {}", scalar(&ev, "dif"));
-    assert_eq!(scalar(&ev, "pin"), 0.0, "pinned nodes must come back exactly");
+    assert_eq!(
+        scalar(&ev, "pin"),
+        0.0,
+        "pinned nodes must come back exactly"
+    );
 }
 
 #[test]

@@ -75,11 +75,19 @@ fn interior_solution_does_not_depend_on_spacing() {
 
 #[test]
 fn identity_rows_still_available_and_lose_accuracy() {
-    // `"scale", 1` keeps the 0.3.68 identity rows; the request's repro then
-    // shows the pivot-loss error. This pins the reason for the default.
-    let ev = eval(&capacitor("1e-4", ", \"scale\", 1"));
-    let pin = scalar(&ev, "pin_err");
-    assert!(pin > 1e-10, "identity rows unexpectedly exact: {pin:e}");
+    // `"scale", 1` keeps the 0.3.68 identity rows; under LU the request's
+    // repro then shows the pivot-loss error. This pins the reason for the
+    // default.
+    let src = capacitor("1e-4", ", \"scale\", 1").replace("spsolve(A, b)", "spsolve(A, b, \"lu\")");
+    let pin = scalar(&eval(&src), "pin_err");
+    assert!(
+        pin > 1e-10,
+        "identity rows unexpectedly exact under LU: {pin:e}"
+    );
+    // The auto path solves pinned rows as b(k) / A(k, k) (0.3.85), so even
+    // identity rows come back exact there.
+    let pin = scalar(&eval(&capacitor("1e-4", ", \"scale\", 1")), "pin_err");
+    assert_eq!(pin, 0.0, "auto path: pinned values must be exact");
 }
 
 #[test]
