@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.84
+
+### Changed
+- **`ci` Cargo profile** (`cargo test --profile ci`): the dev profile at `opt-level = 2` with `debug = "line-tables-only"`, debug assertions, and overflow checks. The `cargo-test` workflow runs the workspace tests with it; the FDTD and array-storage tests that took over 12 minutes at `opt-level = 0` take under one. Plain `cargo test` is unchanged.
+- **CI caches** use `Swatinem/rust-cache` and are saved only from `main` (`cargo-test`, `validate-notebooks`, `notebook-budget`). Pull requests restore the `main` cache and no longer save their own.
+- **Notebook git-diff test fixtures** run `git` with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so a developer's global config (commit signing) no longer stalls or fails them.
+
+No change to scripts, notebooks, or rendered output.
+
 ## 0.3.83
 
 ### Added
