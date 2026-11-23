@@ -13,6 +13,12 @@
 //! - `lu.rs` — sparse LU with partial pivoting (Phase 3).
 //! - `singleton.rs` — row-singleton reduction (`pin_dirichlet` rows) and
 //!   Cholesky of the remaining free block (`dev/plans/sparse_spd_solve.md`).
+//! - `ichol.rs` — incomplete Cholesky (IC(0), ICT, modified, diagonal
+//!   shift), MATLAB's `ichol`.
+//! - `pcg.rs` — preconditioned conjugate gradients with MATLAB's `pcg`
+//!   flags, stopping rules, and best-iterate return.
+//! - `triangular.rs` — sparse triangular / diagonal solves for
+//!   preconditioners.
 //!
 //! Algorithm references throughout are to Davis, *Direct Methods for
 //! Sparse Linear Systems* (SIAM, 2006) — chapter 4 (Cholesky), chapter 6
@@ -26,6 +32,9 @@ pub mod elimination_tree;
 pub mod cholesky;
 pub mod lu;
 pub mod singleton;
+pub mod ichol;
+pub mod pcg;
+pub mod triangular;
 
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use cholesky::{symbolic_col_counts, SparseChol};
@@ -35,6 +44,9 @@ pub use ordering::{
     Permutation, SpdAutoOrdering,
 };
 pub use singleton::{ReducedChol, RowSingletonSplit};
+pub use ichol::{ichol, IcholOptions, IcholType};
+pub use pcg::{pcg, MatrixPcg, PcgOperators, PcgOutcome};
+pub use triangular::TriangularSolve;
 
 #[cfg(test)]
 mod tests;
@@ -74,6 +86,11 @@ pub enum SparseSolveError {
     /// removing row singletons) is not Hermitian.
     #[error("Cholesky path: matrix is not Hermitian")]
     NotHermitian,
+
+    /// An incomplete factorization (`ichol`) met a pivot that is not real
+    /// positive. `col` is 0-based; the message is 1-based.
+    #[error("encountered a nonpositive pivot at column {}", col + 1)]
+    NonpositivePivot { col: usize },
 
     /// A complex entry could not be promoted into a real-only solver path.
     #[error("entry has imaginary part {imag:.3e} which exceeds the real-only tolerance")]
