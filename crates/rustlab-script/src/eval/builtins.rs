@@ -10528,7 +10528,7 @@ pub(crate) fn sparse_square_mldivide(
         solved.push(factor.solve(col).map_err(|e| format!("mldivide: {e}"))?);
     }
     if solved.len() == 1 {
-        return Ok(spsolve_pack(solved.pop().unwrap()));
+        return Ok(solution_column(solved.pop().unwrap()));
     }
     Ok(pack_sparse_columns(&solved))
 }
@@ -15588,7 +15588,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         let x = super::sparse_auto::factor(sm, mode, ordering)
             .and_then(|f| f.solve(&b))
             .map_err(|e| ScriptError::type_err(format!("spsolve: {e}")))?;
-        return Ok(spsolve_pack(x));
+        return Ok(solution_column(x));
     }
 
     // Dense input falls through to the legacy dense path.
@@ -15598,7 +15598,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         _ => unreachable!(),
     };
     let x = dense_lu_solve(&a_dense, &b)?;
-    Ok(spsolve_pack(x))
+    Ok(solution_column(x))
 }
 
 /// Concrete ordering decision used by the factor helpers. `Auto` means
@@ -15624,19 +15624,6 @@ fn parse_ordering_arg(fn_name: &str, s: &str) -> Result<OrderingChoice, ScriptEr
         other => Err(ScriptError::type_err(format!(
             "{fn_name}: unknown ordering \"{other}\"; expected \"auto\", \"identity\", \"amd\", or \"nd\""
         ))),
-    }
-}
-
-/// Resolve `OrderingChoice::Auto` for LU against the matrix's hint.
-/// `Auto` + `Some(Identity)` → `Identity`; `Auto` + `None` → `Amd`.
-/// Explicit user overrides pass through unchanged.
-fn resolve_ordering(sm: &SparseMat, choice: OrderingChoice) -> OrderingChoice {
-    match choice {
-        OrderingChoice::Auto => match sm.ordering_hint {
-            Some(rustlab_core::OrderingHint::Identity) => OrderingChoice::Identity,
-            None => OrderingChoice::Amd,
-        },
-        explicit => explicit,
     }
 }
 
@@ -15687,15 +15674,16 @@ pub(crate) fn factor_sparse_cholesky(
 }
 
 /// Build a `SparseFactor::Lu*` from a sparse matrix. Pivoting threshold
-/// is the standard 0.1 (Trefethen). `Auto` follows the matrix's hint
-/// (`Identity` → natural order, none → `AmdOrdering`).
+/// is the standard 0.1 (Trefethen). `Auto` is `SpdAutoOrdering` on the
+/// pattern of `A + Aᵀ` (nested dissection or natural, by predicted fill),
+/// whatever the matrix's hint.
 pub(crate) fn factor_sparse_lu(
     sm: &SparseMat,
     ordering: OrderingChoice,
 ) -> Result<SparseFactor, String> {
     use rustlab_core::sparse_solve::{
         AmdOrdering, IdentityOrdering, NestedDissectionOrdering, SparseCsc, SparseLU, SparseScalar,
-        SparseSolveError,
+        SparseSolveError, SpdAutoOrdering,
     };
     use std::sync::Arc;
 
@@ -15704,20 +15692,20 @@ pub(crate) fn factor_sparse_lu(
         ordering: OrderingChoice,
     ) -> Result<SparseLU<T>, SparseSolveError> {
         match ordering {
+            OrderingChoice::Auto => SparseLU::factor(csc, &SpdAutoOrdering, 0.1),
             OrderingChoice::Identity => SparseLU::factor(csc, &IdentityOrdering, 0.1),
-            OrderingChoice::Amd | OrderingChoice::Auto => SparseLU::factor(csc, &AmdOrdering, 0.1),
+            OrderingChoice::Amd => SparseLU::factor(csc, &AmdOrdering, 0.1),
             OrderingChoice::Nd => SparseLU::factor(csc, &NestedDissectionOrdering, 0.1),
         }
     }
 
-    let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let f = lu(&csc, resolved).map_err(|e| e.to_string())?;
+        let f = lu(&csc, ordering).map_err(|e| e.to_string())?;
         Ok(SparseFactor::LuReal(Arc::new(f)))
     } else {
         let csc: SparseCsc<C64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let f = lu(&csc, resolved).map_err(|e| e.to_string())?;
+        let f = lu(&csc, ordering).map_err(|e| e.to_string())?;
         Ok(SparseFactor::LuComplex(Arc::new(f)))
     }
 }
@@ -15978,6 +15966,15 @@ fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
 /// Wrap an `spsolve` result vector. Length-1 returns are unboxed to
 /// `Scalar` (real) or `Complex` so callers can use them in scalar
 /// context — matches existing rustlab convention.
+/// An `n×1` solution, as MATLAB's `\` returns (real storage when every
+/// imaginary part is zero). A 1×1 system gives a scalar.
+fn solution_column(x: CVector) -> Value {
+    if x.len() == 1 {
+        return spsolve_pack(x);
+    }
+    pack_sparse_columns(std::slice::from_ref(&x))
+}
+
 fn spsolve_pack(x: CVector) -> Value {
     if x.len() == 1 {
         let c = x[0];

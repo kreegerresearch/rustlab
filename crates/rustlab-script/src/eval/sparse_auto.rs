@@ -50,6 +50,15 @@ impl AutoFactor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn nnz(&self) -> usize {
+        match self {
+            AutoFactor::Plain(f) => f.nnz(),
+            AutoFactor::ReducedReal(r) => r.nnz(),
+            AutoFactor::ReducedComplex(r) => r.nnz(),
+        }
+    }
+
     /// A real factor takes a complex `b` as two real solves.
     pub(crate) fn solve(&self, b: &CVector) -> Result<CVector, String> {
         let real_factor = match self {

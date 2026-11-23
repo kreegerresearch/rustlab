@@ -273,23 +273,44 @@ impl OrderingMethod for NestedDissectionOrdering {
     }
 }
 
-/// For Cholesky: nested dissection or the natural order, whichever gives
-/// the smaller `nnz(L)` (ties keep the natural order). The natural count
-/// stops as soon as it passes the nested-dissection count, so a band
-/// matrix keeps its zero-fill natural order and a 3-D grid pays only for
-/// the cheaper of the two symbolic passes.
+/// Nested dissection or the natural order, whichever gives the smaller
+/// Cholesky factor of the pattern of `A + Aᵀ` (ties keep the natural
+/// order). For a Hermitian `A` that is the exact `nnz(L)`; for LU with
+/// threshold pivoting it is an estimate, since pivoting can move rows.
+/// The natural count stops as soon as it passes the nested-dissection
+/// count, so a band matrix keeps its zero-fill natural order and a 3-D
+/// grid pays only for the cheaper of the two symbolic passes.
 pub struct SpdAutoOrdering;
 
 impl OrderingMethod for SpdAutoOrdering {
     fn order<T: SparseScalar>(&self, a: &SparseCsc<T>) -> Permutation {
-        let nd = NestedDissectionOrdering.order(a);
-        let nd_fill = natural_fill_capped(&nd.permute_symmetric(a), usize::MAX)
-            .expect("an uncapped count always finishes");
-        match natural_fill_capped(a, nd_fill) {
-            Some(_) => Permutation::identity(a.ncols()),
-            None => nd,
+        let graph = SymGraph::from_pattern(a);
+        let nd = Permutation::from_perm(nested_dissection(&graph));
+        // Each off-diagonal entry of a structurally symmetric `A` is one
+        // adjacency entry, so the counts match exactly when `A` already is
+        // its own symmetric pattern and the copy can be skipped.
+        let off_diag = (0..a.ncols())
+            .map(|j| a.col_iter(j).filter(|&(i, _)| i != j).count())
+            .sum::<usize>();
+        let natural_wins = if off_diag == graph.adj.len() {
+            natural_fill_no_worse(a, &nd)
+        } else {
+            natural_fill_no_worse(&graph.to_csc(), &nd)
+        };
+        if natural_wins {
+            Permutation::identity(a.ncols())
+        } else {
+            nd
         }
     }
+}
+
+/// `true` when the natural order of the symmetric pattern `m` gives a
+/// Cholesky factor no larger than the ordering `nd` does.
+fn natural_fill_no_worse<T: SparseScalar>(m: &SparseCsc<T>, nd: &Permutation) -> bool {
+    let nd_fill = natural_fill_capped(&nd.permute_symmetric(m), usize::MAX)
+        .expect("an uncapped count always finishes");
+    natural_fill_capped(m, nd_fill).is_some()
 }
 
 /// Symmetric adjacency (no self loops, no duplicates) in compressed rows.
@@ -348,6 +369,30 @@ impl SymGraph {
 
     fn n(&self) -> usize {
         self.ptr.len() - 1
+    }
+
+    /// The pattern with the diagonal added, as a symmetric CSC of ones.
+    fn to_csc(&self) -> SparseCsc<f64> {
+        let n = self.n();
+        let mut col_ptr = Vec::with_capacity(n + 1);
+        let mut row_idx = Vec::with_capacity(self.adj.len() + n);
+        col_ptr.push(0);
+        for v in 0..n {
+            let row = self.neighbors(v);
+            let split = row.partition_point(|&w| w < v);
+            row_idx.extend_from_slice(&row[..split]);
+            row_idx.push(v);
+            row_idx.extend_from_slice(&row[split..]);
+            col_ptr.push(row_idx.len());
+        }
+        let values = vec![1.0; row_idx.len()];
+        SparseCsc {
+            rows: n,
+            cols: n,
+            col_ptr,
+            row_idx,
+            values,
+        }
     }
 
     fn neighbors(&self, v: usize) -> &[usize] {
