@@ -3,7 +3,9 @@
 This document describes the end-to-end sparse linear solve pipeline:
 how sparse `A \ b`, `spsolve(A, b)`, `chol(A)`, `lu(A)`, and `solve(F, b)`
 flow from a script call to a numerical answer, what choices are made
-along the way, and why. Companion docs:
+along the way, and why. The iterative `pcg` and its `ichol`
+preconditioner (0.3.87) are covered in [Iterative solves](#iterative-solves--pcg-and-ichol).
+Companion docs:
 
 - `docs/functions.md` — user-facing API reference for each builtin.
 - `docs/quickref.md` — one-line summaries.
@@ -11,8 +13,10 @@ along the way, and why. Companion docs:
 - `dev/plans/closed/sparse_solve_handroll.md` — original implementation plan.
 - `dev/plans/em_performance.md` — Phase 1 (factor reuse) and Phase 2 (ordering hint).
 - `dev/plans/sparse_spd_solve.md` — row-singleton Cholesky (0.3.85), nested
-  dissection for Cholesky and LU, `n×1` results (0.3.86), measurements,
-  and the decisions for `pcg`, `ichol`, and sparse `chol` outputs.
+  dissection for Cholesky and LU, `n×1` results (0.3.86), `pcg` and
+  `ichol` (0.3.87), measurements, and the decisions for sparse `chol`
+  outputs.
+- `perf/sparse_pcg_phase3.rlab` — `pcg` / `ichol` against `\` on 3-D grids.
 
 All sparse-solver code is **pure Rust**, hand-rolled per `AGENTS.md` Rule 9:
 no FFI, no GPL/LGPL, no large libraries.
@@ -450,17 +454,99 @@ crates/rustlab-core/src/
     ├── cholesky.rs                 SparseChol<T>::factor, ::solve
     ├── lu.rs                       SparseLU<T>::factor, ::solve
     ├── singleton.rs                RowSingletonSplit<T>, ReducedChol<T>
+    ├── ichol.rs                    ichol (IC(0), ICT, michol, diagcomp)
+    ├── pcg.rs                      pcg, PcgOperators, MatrixPcg, PcgOutcome
+    ├── triangular.rs               TriangularSolve (diagonal / lower / upper)
     └── tests.rs                    integration tests across modules
 
 crates/rustlab-script/src/eval/
 ├── value.rs                        SparseFactor enum, Value::SparseFactor
 ├── sparse_auto.rs                  auto / cholesky / lu choice for spsolve and sparse \
+├── iterative.rs                    pcg (on the evaluator: handles) and ichol builtins
 └── builtins.rs                     spsolve / chol / lu / solve entry points
                                     factor_sparse_cholesky / _lu
                                     OrderingChoice, parse_ordering_arg
                                     sparse_all_real
                                     laplacian_* builtins (set ordering_hint, unused by "auto")
 ```
+
+## Iterative solves — `pcg` and `ichol`
+
+`pcg` is MATLAB's preconditioned conjugate gradients
+(`rustlab_core::sparse_solve::pcg`), for a Hermitian positive definite
+`A`. Unlike `\` it stops at a relative residual `tol`, so it is the right
+tool when `tol`-accuracy is enough and the direct factor is large.
+
+**Dispatch.** `pcg` is not a registry builtin: `A`, `M1`, and `M2` may be
+function handles, so the evaluator intercepts the name in
+`call_builtin_tracked_nargout` (which `@pcg`, `feval`, and multi-assign
+all reach) and runs `Evaluator::eval_pcg` (`eval/iterative.rs`). That
+parses MATLAB's argument list (`[]` placeholders, `tol` clamping with
+warnings, `maxit = min(n, 20)`), builds the operators, runs the core
+loop through the `PcgOperators` trait, and prints MATLAB's message when
+fewer than two outputs are requested.
+
+**Operators.**
+
+| Argument | Built as | Per iteration |
+|---|---|---|
+| sparse or dense `A` | `SparseCsc<T>` (dense → sparse once) | one SpMV, `O(nnz)` |
+| handle `afun` | the callable | one interpreter call |
+| triangular or diagonal `M` (`ichol`'s `L`, `L'`, `spdiags`) | `TriangularSolve` | substitution, `O(nnz(M))` |
+| any other matrix `M` | `sparse_auto::factor` once (Cholesky / reduced Cholesky / LU) | one factor solve |
+| singular `M` | — | `NaN`, so flag 2 |
+| handle `mfun` | the callable | one interpreter call |
+
+Real `A`, `b`, `x0`, and matrix preconditioners run with `T = f64`. A
+complex value or any handle runs with `T = C64`; inner products conjugate
+the left vector, so complex Hermitian `A` works. A result whose imaginary
+parts are all zero is returned with real storage.
+
+**Iteration.** The loop follows MATLAB's `pcg.m` step for step: `z = M2 \ (M1 \ r)`,
+flag 2 on a non-finite `z`, flag 4 when `ρ`, `β`, `α` are zero or
+infinite or `p'·A·p ≤ 0`, a stagnation counter on
+`‖p‖·|α| < eps·‖x‖`, the true residual recomputed whenever the recursive
+one passes `tol` (or during stagnation "more steps", at most
+`min(n/50, 5, n − maxit)`), and on failure the iterate with the smallest
+residual is returned. `resvec` holds the recursive norms, with the true
+norm substituted on the iterations where it was recomputed.
+
+**`ichol`** (`rustlab_core::sparse_solve::ichol`) is left-looking in the
+natural order. Column `j` scatters `A(j:n, j)` into a dense work vector,
+then subtracts `L(j:n, k)·conj(L(j, k))` for each earlier column `k` with
+`L(j, k) ≠ 0`. Those columns are found through linked lists keyed by
+each column's next unprocessed row, so the cost is the flops of the
+factor. IC(0) discards any update outside the pattern of `tril(A)`; ICT
+keeps everything and drops `|L(i, j)| < droptol·‖A(j:n, j)‖₁` after the
+column is complete. `michol` adds every dropped value to the diagonals
+of its row and column (`L·L'·e = A·e`). `diagcomp` scales the diagonal
+by `1 + α` as it is scattered. The factor is returned as a COO
+`SparseMat`; `pcg` turns `L` and `L'` back into CSC triangular solves.
+
+**Measurements** (release build, 4-core VM, `perf/sparse_pcg_phase3.rlab`;
+`b = rand`, `tol = 1e-8`; setup is the `ichol` time, solve includes the
+CSC conversion of `A`).
+
+| Grid (N, nnz) | Method | Setup | Solve | Iterations | True relres |
+|---|---|---|---|---|---|
+| 21³ (9,261, 62,181) | sparse `A \ b` | — | 0.125 s | — | 4.3e-14 |
+| | `pcg`, none | — | 0.007 s | 79 | 8.8e-9 |
+| | `pcg`, `ichol` | 0.006 s | 0.008 s | 29 | 5.2e-9 |
+| 31³ (29,791, 202,771) | sparse `A \ b` | — | 1.14 s | — | 1.1e-13 |
+| | `pcg`, none | — | 0.034 s | 113 | 8.6e-9 |
+| | `pcg`, `ichol` | 0.022 s | 0.036 s | 40 | 9.0e-9 |
+| 41³ (68,921, 472,361) | sparse `A \ b` | — | 5.43 s | — | 2.3e-13 |
+| | `pcg`, none | — | 0.107 s | 147 | 9.3e-9 |
+| | `pcg`, Jacobi (`spdiags`) | 0.008 s | 0.117 s | 147 | 9.3e-9 |
+| | `pcg`, `ichol` nofill | 0.051 s | 0.109 s | 48 | 8.4e-9 |
+| | `pcg`, `ichol` michol | 0.056 s | 0.083 s | 39 | 8.1e-9 |
+| | `pcg`, `ichol` ict 1e-2 (nnz(L) 270,800) | 0.048 s | 0.100 s | 48 | 8.4e-9 |
+| | `pcg`, `ichol` ict 1e-3 (nnz(L) 911,849) | 0.193 s | 0.138 s | 27 | 6.7e-9 |
+
+Jacobi changes nothing on a Laplacian (its diagonal is constant). One
+`ichol` iteration costs about three unpreconditioned ones (SpMV plus two
+triangular solves), so a 3× cut in iterations is roughly break-even in
+time; `michol` and ICT with a small `droptol` cut further.
 
 ## Algorithmic complexity summary
 
@@ -477,6 +563,8 @@ crates/rustlab-script/src/eval/
 | Cholesky factor | `O(Σ col_count²)` flops, `O(nnz(L))` memory | 2-D grid, ND: `nnz(L) = O(N log N)`; natural: `O(N^{1.5})` |
 | LU factor | `O(nnz(L) + nnz(U))` flops + pivoting search | typically 2× Cholesky on the same SPD matrix |
 | Triangular solve | `O(nnz(L))` per RHS | dominant cost in factor-many-solve scenarios |
+| `ichol` nofill | `O(Σ_j Σ_{k: L(j,k)≠0} nnz(L(j:n, k)))` | `nnz(L) = nnz(tril(A))` |
+| `pcg` iteration | one `A` product + the preconditioner solves + 5 vector ops | `O(√κ · log(1/tol))` iterations for CG |
 
 Where `n` is the matrix dimension, `nnz` is the input nonzero count,
 and `nnz(L)` / `nnz(U)` depend on ordering (see perf table).
@@ -497,9 +585,9 @@ factorizations directly via `rustlab_core::sparse_solve` from Rust.
 
 ## What's deliberately not here
 
-- **Iterative solvers** (CG, GMRES, BiCGSTAB). `\` and `spsolve` stay
-  direct. MATLAB-compatible `pcg` and `ichol` are planned as separate
-  builtins (Phase 3 of `dev/plans/sparse_spd_solve.md`).
+- **Iterative solves behind `\`.** `\` and `spsolve` stay direct.
+  `pcg` / `ichol` are separate builtins (see below); GMRES and BiCGSTAB
+  for non-symmetric systems are not implemented.
 - **Block factorization** (supernodal) and threads. The hand-rolled
   algorithms here are scalar; a supernodal, parallel Cholesky is Phase 5
   of `dev/plans/sparse_spd_solve.md` (deterministic for a fixed thread

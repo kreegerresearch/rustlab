@@ -1,0 +1,46 @@
+# pcg / ichol against sparse `\` on 3-D Poisson grids
+# (dev/plans/sparse_spd_solve.md, Phase 3).
+#
+#   cargo build --release -p rustlab-cli
+#   ./target/release/rustlab run --plot none perf/sparse_pcg_phase3.rlab
+#
+# Each row: setup time (ichol, where there is one), solve time, iterations,
+# and the true relative residual norm(b - A*x) / norm(b).
+
+function report(name, t_setup, t_solve, it, A, x, b)
+  fprintf("  %-34s setup %8.3f s  solve %8.3f s  iter %5d  relres %9.2e\n", ...
+          name, t_setup, t_solve, it, norm(b - A * x) / norm(b));
+end
+
+tol = 1e-8;
+for n = [21, 31, 41]
+  N = n ^ 3;
+  A = -1 * laplacian_3d(n, n, n);
+  seed(1);
+  b = rand(N, 1);
+  fprintf("%d^3 Laplace (N = %d, nnz = %d), tol = %g\n", n, N, nnz(A), tol);
+
+  tic; x = A \ b; ts = toc;
+  report("sparse A \ b (Cholesky)", 0, ts, 0, A, x, b);
+
+  tic; [x, fl, rr, it] = pcg(A, b, tol, 2000); ts = toc;
+  report("pcg, none", 0, ts, it, A, x, b);
+
+  tic; M = spdiags(6 * ones(N, 1), 0, N, N); tm = toc;
+  tic; [x, fl, rr, it] = pcg(A, b, tol, 2000, M); ts = toc;
+  report("pcg, Jacobi", tm, ts, it, A, x, b);
+
+  tic; L = ichol(A); Lt = L'; tm = toc;
+  tic; [x, fl, rr, it] = pcg(A, b, tol, 2000, L, Lt); ts = toc;
+  report("pcg, ichol nofill", tm, ts, it, A, x, b);
+
+  tic; L = ichol(A, struct("michol", "on")); Lt = L'; tm = toc;
+  tic; [x, fl, rr, it] = pcg(A, b, tol, 2000, L, Lt); ts = toc;
+  report("pcg, ichol michol", tm, ts, it, A, x, b);
+
+  for dt = [1e-2, 1e-3]
+    tic; L = ichol(A, struct("type", "ict", "droptol", dt)); Lt = L'; tm = toc;
+    tic; [x, fl, rr, it] = pcg(A, b, tol, 2000, L, Lt); ts = toc;
+    report(sprintf("pcg, ichol ict %g (nnz %d)", dt, nnz(L)), tm, ts, it, A, x, b);
+  end
+end

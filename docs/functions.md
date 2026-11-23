@@ -2499,6 +2499,81 @@ x2 = solve(F, [j; 1]);
 
 `chol()` errors when `A` is not SPD — there is no auto fallback to LU, on the assumption that the user explicitly chose Cholesky. If you want auto-dispatch with a single call, use `spsolve(A, b)`. A real factor refuses a complex `b`; refactor with `chol`/`lu` on the complex matrix in that case.
 
+### `pcg(A, b)` / `pcg(A, b, tol, maxit, M1, M2, x0)` / `[x, flag, relres, iter, resvec] = pcg(...)`
+
+Preconditioned conjugate gradients for a Hermitian positive definite `A`, MATLAB's `pcg`. An iterative solve: the answer is accurate to `tol`, not to roundoff, and `A \ b` stays the direct solve.
+
+- `A` — a square matrix (sparse or dense) or a function handle `afun` with `afun(x) = A*x`.
+- `b` — a column of length `n` (a 1-D vector is accepted; a `1×n` row is an error, as in MATLAB).
+- `tol` — relative tolerance, default `1e-6`. Convergence is `norm(b - A*x) <= tol * norm(b)`, checked on the true residual. A `tol` at or below `eps` is raised to `eps`, and one at or above 1 is lowered to `1 - eps`, each with a warning.
+- `maxit` — iteration limit, default `min(n, 20)`.
+- `M1`, `M2` — the preconditioner `M = M1*M2`, applied as `M2 \ (M1 \ r)`. Each is a matrix or a function handle `mfun(r) = M \ r`. A triangular or diagonal matrix (such as `ichol`'s `L` and `L'`, or `spdiags(diag)`) is solved by substitution; any other matrix is factored once by the same Cholesky / LU choice as sparse `\`.
+- `x0` — initial guess, default zeros.
+
+`[]` in any position takes the default. The result `x` is an `n×1` column (real storage when every imaginary part is zero; a 1×1 system gives a scalar).
+
+| `flag` | Meaning |
+|---|---|
+| 0 | Converged: `relres <= tol` |
+| 1 | `maxit` iterations without converging |
+| 2 | A preconditioner solve was not finite (`M` ill conditioned or singular) |
+| 3 | Stagnated: two consecutive iterates were the same, or the true residual could not reach `tol` after the recursive one did |
+| 4 | A scalar (`rho`, `beta`, `p'*A*p`, `alpha`) became zero, infinite, or `p'*A*p <= 0` (`A` indefinite) |
+
+`relres` is `norm(b - A*x) / norm(b)` of the returned `x`; `iter` is the iteration that produced it; `resvec` is an `(iter+1)×1` column of residual norms with `resvec(1) = norm(b - A*x0)` (one entry shorter for flags 2 and 4). When `flag ≠ 0`, `x` is the iterate with the smallest residual seen, so `iter` can be less than the number of iterations run. A zero `b` returns `x = 0`, `flag = 0`, `relres = 0`, `iter = 0`, `resvec = 0`.
+
+**Messages (MATLAB's rule).** With fewer than two outputs, `pcg` prints one line: `pcg converged at iteration N to a solution with relative residual R.` on stdout when it converges, or a `warning: pcg stopped at iteration N without converging to the desired tolerance T because …` on stderr when it does not. Asking for `flag` (`[x, flag] = pcg(...)`) prints nothing, so scripts and notebooks that check `flag` stay quiet.
+
+**Real vs complex.** Real `A`, `b`, `x0`, and matrix preconditioners run in real arithmetic. A complex value, or any function handle, runs in complex arithmetic (conjugated inner products, so complex Hermitian `A` works).
+
+**Symmetry.** `pcg` does not check that `A` is Hermitian (neither does MATLAB). A `pin_dirichlet` operator is not symmetric (pinned rows, columns left in place); `pcg` often still converges on one (31³ sphere: 114 iterations to 1e-10), but nothing guarantees it — use `A \ b`, which removes the pinned rows exactly, or solve the free block.
+
+```
+n = 41; N = n^3;
+A = -1 * laplacian_3d(n, n, n);            % SPD 7-point Poisson
+b = rand(N, 1);
+
+x = pcg(A, b, 1e-8, 500);                  % prints "pcg converged at iteration 147 ..."
+[x, flag, relres, iter] = pcg(A, b, 1e-8, 500);              % silent
+
+L = ichol(A);                              % IC(0) preconditioner
+[x, flag, relres, iter] = pcg(A, b, 1e-8, 500, L, L');       % 48 iterations
+
+M = spdiags(6 * ones(N, 1), 0, N, N);      % Jacobi
+[x, flag] = pcg(A, b, 1e-8, 500, M);
+
+afun = @(v) A * v;                         % matrix-free operator
+[x, flag] = pcg(afun, b, 1e-8, 500, @(r) r / 6);
+```
+
+On the 41³ Poisson grid above (68,921 unknowns, release build), sparse `A \ b` takes 5.4 s; `pcg` to `tol = 1e-8` takes 0.11 s unpreconditioned (147 iterations), 0.16 s with `ichol` (0.05 s factor + 0.11 s, 48 iterations), and 0.14 s with `ichol(A, struct("michol", "on"))` (39 iterations). See `docs/sparse_solve.md` § Iterative solves.
+
+### `L = ichol(A)` / `L = ichol(A, opts)`
+
+Incomplete Cholesky factorization of a sparse Hermitian positive definite `A`, MATLAB's `ichol`: a sparse lower-triangular `L` with a real positive diagonal and `L*L' ≈ A`, for use as a `pcg` preconditioner (`pcg(A, b, tol, maxit, L, L')`). Only the lower triangle of `A` is read. `A` must be sparse (a dense matrix is an error, as in MATLAB). The factorization is in the natural order of `A`.
+
+`opts` is a struct with any of these fields (unknown fields are an error):
+
+| Field | Values | Default | Meaning |
+|---|---|---|---|
+| `type` | `"nofill"`, `"ict"` | `"nofill"` | `"nofill"` is IC(0): `L` keeps the pattern of `tril(A)`, and `L*L'` equals `A` on that pattern. `"ict"` is threshold dropping |
+| `droptol` | ≥ 0 | 0 | `"ict"` only: an off-diagonal `L(i,j)` is dropped when `abs(L(i,j)) < droptol * norm(A(j:end, j), 1)`. `droptol = 0` keeps everything, which is the complete Cholesky factor |
+| `michol` | `"on"`, `"off"` | `"off"` | Modified incomplete Cholesky: every dropped entry is added to the diagonal so that `L*L'*e = A*e` (row sums kept). Real matrices only; a complex `A` with `michol = "on"` is an error |
+| `diagcomp` | ≥ 0 | 0 | Factor `A + diagcomp * diag(diag(A))`. Use it when IC breaks down on a matrix that is not an M-matrix |
+| `shape` | `"lower"`, `"upper"` | `"lower"` | `"upper"` reads the upper triangle and returns `R = L'` with `R'*R ≈ A` |
+
+A pivot that is not real positive (an indefinite matrix, a missing diagonal, or an IC breakdown) is an error: `ichol: encountered a nonpositive pivot at column k`. Try `diagcomp > 0` or `michol = "on"`.
+
+```
+A = -1 * laplacian_2d(100, 100);
+L  = ichol(A);                                              % IC(0)
+L2 = ichol(A, struct("type", "ict", "droptol", 1e-3));      % more fill, fewer pcg iterations
+L3 = ichol(A, struct("michol", "on"));                      % modified IC(0)
+L4 = ichol(A, struct("diagcomp", 0.1));                     % shifted
+R  = ichol(A, struct("shape", "upper"));                    % R = L'
+[x, flag, relres, iter] = pcg(A, ones(10000, 1), 1e-8, 500, L2, L2');
+```
+
 ### `laplacian_2d(nx, ny [, dx, dy] [, bc])`
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
@@ -2604,7 +2679,7 @@ V = reshape(spsolve(A, b), ny, nx, nz);
 ### `pin_dirichlet(A, b, mask_or_indices, values)` / `pin_dirichlet(..., "scale", s)`
 Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` or `A \ b` then reproduces the boundary potential while the operator acts everywhere else.
 
-**Solving a pinned system.** Column `k` is left in the neighbours' rows (as a MATLAB row replacement would), so the pinned `A` is not symmetric even when the operator was. Since 0.3.85, `A \ b` and `spsolve(A, b)` recognise the pinned rows, set those unknowns to `b(k) / d_k` exactly, and solve the remaining symmetric block by sparse Cholesky. On `rustlab_em` Lesson 18's 41³ sphere this is 1.3 s instead of 27 s for the LU the non-symmetric matrix used to get. `chol(A)` does not do this (it reads only the upper triangle), and a future `pcg(A, b)` would see a non-symmetric matrix; use `\` or `spsolve`.
+**Solving a pinned system.** Column `k` is left in the neighbours' rows (as a MATLAB row replacement would), so the pinned `A` is not symmetric even when the operator was. Since 0.3.85, `A \ b` and `spsolve(A, b)` recognise the pinned rows, set those unknowns to `b(k) / d_k` exactly, and solve the remaining symmetric block by sparse Cholesky. On `rustlab_em` Lesson 18's 41³ sphere this is 1.3 s instead of 27 s for the LU the non-symmetric matrix used to get. `chol(A)` does not do this (it reads only the upper triangle), and `pcg(A, b)` sees a non-symmetric matrix that CG theory does not cover; use `\` or `spsolve`.
 
 **Row scale.** By default (`"scale", "auto"`) `d_k` is the magnitude of the original diagonal `|A(k, k)|`; if that is 0, the largest `|A(k, :)|`; if the row is empty, 1. The solution is the same as with an identity row in exact arithmetic, but the pinned row stays the same size as its neighbours. With a diagonal of 1 next to stencil entries of size `ε/h²` (`1e8` at `h = 0.1 mm`), a sparse LU (`spsolve(A, b, "lu")`, or 0.3.84 and earlier) pivots on the large entries in the pinned column and the pinned values drift: a conductor at 1 V came back at `1 ± 1.2e-7` at `h = 1e-4`. With the default scale it comes back exact. The `\` / `spsolve` auto path since 0.3.85 returns pinned values exactly at any scale. `"scale", s` with a positive number uses `d_k = s` for every pinned row; `"scale", 1` is the identity row of 0.3.68 and earlier.
 
