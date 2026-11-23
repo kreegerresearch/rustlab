@@ -306,6 +306,21 @@ pub fn plumbing_tools() -> &'static [&'static str] {
 const OWNERSHIP_MSG: &str = "refusing this repository (ownership check failed)";
 const WALK_CAP: usize = 2000;
 
+/// `git` for test fixtures, which run porcelain (`commit`, `tag`) that
+/// the developer's own config can stall or break (commit signing).
+#[cfg(test)]
+pub(crate) fn fixture_git() -> Command {
+    let mut cmd = Command::new("git");
+    for key in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG"] {
+        cmd.env_remove(key);
+    }
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("GIT_CONFIG_COUNT", "0");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
 #[cfg(test)]
 fn argv_clean(args: &[String]) -> bool {
     const BAD: &[char] = &[';', '|', '&', '$', '`', '\n', '<', '>'];
@@ -3355,6 +3370,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixture_git_ignores_the_user_and_system_config() {
+        if !git_available() {
+            eprintln!("SKIP fixture isolation: git not found");
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".gitconfig"),
+            "[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n",
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            fixture_git()
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path())
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let out = run(&["config", "--get", "commit.gpgsign"]);
+        assert!(
+            out.stdout.is_empty(),
+            "global config leaked: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "Test"],
+            &["commit", "--allow-empty", "-m", "init"],
+            &["tag", "-a", "v1", "-m", "v1"],
+        ] {
+            let out = run(args);
+            assert!(
+                out.status.success(),
+                "git {args:?}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    #[test]
     fn ref_checker_accepts_common_forms() {
         for ok in [
             "HEAD",
@@ -3567,7 +3628,7 @@ mod tests {
     }
 
     fn git_available() -> bool {
-        Command::new("git")
+        fixture_git()
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -3575,7 +3636,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let st = Command::new("git")
+        let st = fixture_git()
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -3720,13 +3781,9 @@ mod tests {
         // Porcelain on purpose: these must run the fixture's programs so
         // the assertion below proves the hooks are real. Output is
         // captured so the marker script's git noise stays out of the log.
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .arg("status")
-            .output();
-        let _ = Command::new("git").arg("-C").arg(dir).arg("diff").output();
-        let _ = Command::new("git")
+        let _ = fixture_git().arg("-C").arg(dir).arg("status").output();
+        let _ = fixture_git().arg("-C").arg(dir).arg("diff").output();
+        let _ = fixture_git()
             .arg("-C")
             .arg(dir)
             .args(["cat-file", "-p", "HEAD"])
@@ -3778,7 +3835,7 @@ mod tests {
     }
 
     fn quiet_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
+        let out = fixture_git()
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -3980,7 +4037,7 @@ mod tests {
         let head = show(&repo, &stray, "HEAD", None);
         assert!(chip(&head).contains("no changes"), "{head}");
         let sha = {
-            let out = Command::new("git")
+            let out = fixture_git()
                 .arg("-C")
                 .arg(&repo)
                 .args(["rev-parse", "HEAD"])
@@ -4437,7 +4494,7 @@ mod tests {
     }
 
     fn rev(dir: &Path, spec: &str) -> String {
-        let out = Command::new("git")
+        let out = fixture_git()
             .arg("-C")
             .arg(dir)
             .args(["rev-parse", spec])

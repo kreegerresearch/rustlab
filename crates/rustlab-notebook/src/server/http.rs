@@ -2580,7 +2580,7 @@ mod tests {
 
     #[tokio::test]
     async fn git_refs_lists_current_branch_first() {
-        if !std::process::Command::new("git")
+        if !crate::gitdiff::fixture_git()
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -2591,7 +2591,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let st = std::process::Command::new("git")
+            let st = crate::gitdiff::fixture_git()
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)
@@ -2661,7 +2661,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_ref_page_does_not_keep_executed_output() {
-        if !std::process::Command::new("git")
+        if !crate::gitdiff::fixture_git()
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -2672,7 +2672,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
-            let st = std::process::Command::new("git")
+            let st = crate::gitdiff::fixture_git()
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)
