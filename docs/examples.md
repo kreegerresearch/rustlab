@@ -1344,7 +1344,7 @@ imagesc(V_solved);
 savefig("/tmp/rustlab_laplacian_solution.html");
 
 # Residual check
-err = norm(v_solved' - v_exact) / norm(v_exact);
+err = norm(v_solved - v_exact) / norm(v_exact);
 print(err)       # → very small (< 1e-10)
 ```
 

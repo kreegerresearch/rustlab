@@ -84,13 +84,13 @@ v_exact = V_exact(:);
 % Apply L to v_exact, then solve — should recover v_exact to 1e-10.
 rhs = full(L) * v_exact;
 v_solved = spsolve(L, rhs);
-rel_err = norm(v_solved' - v_exact) / norm(v_exact);
+rel_err = norm(v_solved - v_exact) / norm(v_exact);
 print(rel_err)
 ```
 
 <!-- rustlab:output-start -->
 ```text
-0.000000000000001453964332238495
+0.0000000000000017822133633297085
 ```
 
 <!-- rustlab:output-end -->

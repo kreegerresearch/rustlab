@@ -201,7 +201,7 @@ fn symmetric_elimination_matches_pin_dirichlet() {
          V = zeros(1, N); V(pr) = Vp; V(fr) = Vf;
          [A, b] = pin_dirichlet(L, zeros(N, 1), P, Vp);
          W = spsolve(A, b);
-         D = V - W; err = max(abs(D(:)));
+         D = V(:) - W; err = max(abs(D(:)));
          sym = nnz(Aff - Aff');",
     );
     assert_eq!(scalar(&ev, "sym"), 0.0, "free-free block is symmetric");

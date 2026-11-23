@@ -100,13 +100,13 @@ out across the phase circle.
 ## Verifying the residual
 
 ```rustlab
-r = A * transpose(v) - b;
+r = A * v - b;
 print(norm(r))      % → ~1e-14
 ```
 
-Convert the row-vector solve result to a column vector (`transpose`,
-not the conjugate-transpose `'`) and check $\|A v - b\|$. The residual
-sits at machine precision for this size and conditioning.
+`v` is an $n \times 1$ column, like `b`, so $\|A v - b\|$ needs no
+reshaping. The residual sits at machine precision for this size and
+conditioning.
 
 ## When the matrix is Hermitian but complex
 
@@ -126,7 +126,7 @@ H = [3,    1+j,  0;
 b = [1; 2-j; 0.5];
 x = spsolve(sparse(H), b, "cholesky");   % force Cholesky to confirm
 print(x);
-print(norm(H * transpose(x) - b, "fro"))         % residual (transpose, not ')
+print(norm(H * x - b, "fro"))                    % residual
 ```
 
 ## Cheat sheet
