@@ -2,7 +2,7 @@ name: cargo-test
 
 # Full workspace test suite. The validate-notebooks workflow checks
 # rendered notebook artefacts; this one runs every Rust unit and
-# integration test (`cargo test --workspace`), which CI previously
+# integration test (`cargo test --workspace --profile ci`), which CI previously
 # never executed — a red test on main went unnoticed for two days
 # because only notebook validation gated merges.
 #
@@ -46,15 +46,16 @@ jobs:
           done
           test "$ok" = 1
 
-      - name: Cache cargo registry and build artefacts
-        uses: actions/cache@v4
+      # Restore on every run, save only from main: per-PR saves pushed the
+      # repo past the 10 GB cache limit and evicted each other.
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-test-${{ runner.os }}-
+          shared-key: cargo-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # `ci` profile (workspace Cargo.toml): opt-level 2 with debug
+      # assertions and overflow checks. At opt-level 0 the FDTD and
+      # storage-mode tests alone took over 12 minutes. Doctests run too.
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --profile ci

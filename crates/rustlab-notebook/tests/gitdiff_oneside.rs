@@ -18,7 +18,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn git(dir: &std::path::Path, args: &[&str]) {
+    // The developer's config (commit signing) must not reach the fixture.
     let out = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(args)
         .current_dir(dir)
         .output()

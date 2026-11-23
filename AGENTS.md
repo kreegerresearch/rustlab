@@ -459,6 +459,10 @@ cargo build --workspace
 # Run tests
 cargo test --workspace
 
+# What the cargo-test CI job runs: [profile.ci] in Cargo.toml (opt-level 2,
+# debug assertions and overflow checks on); much faster for the FDTD tests
+cargo test --workspace --profile ci
+
 # Generate API docs
 cargo doc --workspace --no-deps --open
 

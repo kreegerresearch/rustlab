@@ -28,6 +28,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: notebook-budget
+          # Save only from main; per-PR saves overflow the 10 GB repo cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build rustlab-notebook (release)
         run: cargo build --locked --release -q -p rustlab-notebook --bin rustlab-notebook
