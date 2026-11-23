@@ -10520,35 +10520,17 @@ pub(crate) fn sparse_square_mldivide(
 ) -> Result<Value, String> {
     let n = sm.rows;
     let columns = sparse_rhs_columns(n, b)?;
-    if columns.len() == 1 {
-        return sparse_auto_one(sm, &columns[0]);
-    }
-    let mut solved = Vec::with_capacity(columns.len());
-    if sm.is_spd_estimate(1e-10) {
-        if let Ok(factor) = factor_sparse_cholesky(sm, OrderingChoice::Auto) {
-            for col in &columns {
-                solved.push(solve_with_factor(&factor, col).map_err(|e| format!("mldivide: {e}"))?);
-            }
-            return Ok(pack_sparse_columns(&solved));
-        }
-    }
     let factor =
-        factor_sparse_lu(sm, OrderingChoice::Auto).map_err(|e| format!("mldivide: {e}"))?;
+        super::sparse_auto::factor(sm, super::sparse_auto::Mode::Auto, OrderingChoice::Auto)
+            .map_err(|e| format!("mldivide: {e}"))?;
+    let mut solved = Vec::with_capacity(columns.len());
     for col in &columns {
-        solved.push(solve_with_factor(&factor, col).map_err(|e| format!("mldivide: {e}"))?);
+        solved.push(factor.solve(col).map_err(|e| format!("mldivide: {e}"))?);
+    }
+    if solved.len() == 1 {
+        return Ok(spsolve_pack(solved.pop().unwrap()));
     }
     Ok(pack_sparse_columns(&solved))
-}
-
-fn sparse_auto_one(sm: &rustlab_core::SparseMat, b: &CVector) -> Result<Value, String> {
-    if sm.is_spd_estimate(1e-10) {
-        if let Ok(x) = try_sparse_cholesky(sm, b, OrderingChoice::Auto) {
-            return Ok(spsolve_pack(x));
-        }
-    }
-    try_sparse_lu(sm, b, OrderingChoice::Auto)
-        .map(spsolve_pack)
-        .map_err(|e| format!("mldivide: {e}"))
 }
 
 fn sparse_rhs_columns(n: usize, b: &Value) -> Result<Vec<CVector>, String> {
@@ -15560,7 +15542,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             Value::Str(s) => parse_ordering_arg("spsolve", s.as_str())?,
             other => {
                 return Err(ScriptError::type_err(format!(
-                    "spsolve: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    "spsolve: ordering must be a string (\"auto\"|\"identity\"|\"amd\"|\"nd\"), got {}",
                     other.type_name()
                 )));
             }
@@ -15598,33 +15580,15 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             )));
         }
 
-        // SPD path: explicit "cholesky", or "auto" when SPD detected.
-        let try_cholesky = match mode {
-            "auto" => sm.is_spd_estimate(1e-10),
-            "cholesky" => true,
-            "lu" => false,
-            _ => unreachable!(),
+        let mode = match mode {
+            "cholesky" => super::sparse_auto::Mode::Cholesky,
+            "lu" => super::sparse_auto::Mode::Lu,
+            _ => super::sparse_auto::Mode::Auto,
         };
-
-        if try_cholesky {
-            match try_sparse_cholesky(sm, &b, ordering) {
-                Ok(x) => return Ok(spsolve_pack(x)),
-                Err(e) => {
-                    if mode == "cholesky" {
-                        return Err(ScriptError::type_err(format!("spsolve: {e}")));
-                    }
-                    // "auto" silently falls through to sparse LU.
-                }
-            }
-        }
-
-        // Sparse LU path: explicit "lu", or "auto" fallback when Cholesky is unavailable.
-        match try_sparse_lu(sm, &b, ordering) {
-            Ok(x) => return Ok(spsolve_pack(x)),
-            Err(e) => {
-                return Err(ScriptError::type_err(format!("spsolve: {e}")));
-            }
-        }
+        let x = super::sparse_auto::factor(sm, mode, ordering)
+            .and_then(|f| f.solve(&b))
+            .map_err(|e| ScriptError::type_err(format!("spsolve: {e}")))?;
+        return Ok(spsolve_pack(x));
     }
 
     // Dense input falls through to the legacy dense path.
@@ -15642,10 +15606,11 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// has none." `Identity`/`Amd` are explicit user overrides that ignore
 /// the hint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OrderingChoice {
+pub(crate) enum OrderingChoice {
     Auto,
     Identity,
     Amd,
+    Nd,
 }
 
 /// Parse the script-facing ordering string. Returns a clear error
@@ -15655,15 +15620,16 @@ fn parse_ordering_arg(fn_name: &str, s: &str) -> Result<OrderingChoice, ScriptEr
         "auto" => Ok(OrderingChoice::Auto),
         "identity" | "natural" => Ok(OrderingChoice::Identity),
         "amd" => Ok(OrderingChoice::Amd),
+        "nd" => Ok(OrderingChoice::Nd),
         other => Err(ScriptError::type_err(format!(
-            "{fn_name}: unknown ordering \"{other}\"; expected \"auto\", \"identity\", or \"amd\""
+            "{fn_name}: unknown ordering \"{other}\"; expected \"auto\", \"identity\", \"amd\", or \"nd\""
         ))),
     }
 }
 
-/// Resolve `OrderingChoice::Auto` against the matrix's hint to a
-/// concrete ordering. `Auto` + `Some(Identity)` → `Identity`; `Auto` +
-/// `None` → `Amd`. Explicit user overrides pass through unchanged.
+/// Resolve `OrderingChoice::Auto` for LU against the matrix's hint.
+/// `Auto` + `Some(Identity)` → `Identity`; `Auto` + `None` → `Amd`.
+/// Explicit user overrides pass through unchanged.
 fn resolve_ordering(sm: &SparseMat, choice: OrderingChoice) -> OrderingChoice {
     match choice {
         OrderingChoice::Auto => match sm.ordering_hint {
@@ -15677,91 +15643,89 @@ fn resolve_ordering(sm: &SparseMat, choice: OrderingChoice) -> OrderingChoice {
 /// True when every nonzero of `sm` and every entry of `b` has imaginary
 /// part below `1e-12`. Used to route both spsolve and the standalone
 /// `chol`/`lu` factor builders into the cheaper `f64` path.
-fn sparse_all_real(sm: &SparseMat, b: Option<&CVector>) -> bool {
+pub(crate) fn sparse_all_real(sm: &SparseMat, b: Option<&CVector>) -> bool {
     let mat_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12);
     let b_real = b.map_or(true, |b| b.iter().all(|c| c.im.abs() < 1e-12));
     mat_real && b_real
 }
 
 /// Build a `SparseFactor::Chol*` from a sparse matrix. Routes to the
-/// `f64` path when all entries are essentially real. The `ordering`
-/// argument selects the fill-reducing column permutation: `Auto`
-/// consults `sm.ordering_hint` and falls back to AMD; `Identity` and
-/// `Amd` are explicit overrides.
-fn factor_sparse_cholesky(
+/// `f64` path when all entries are essentially real. `Auto` picks nested
+/// dissection or the natural order by predicted fill (`SpdAutoOrdering`),
+/// whatever the matrix's hint; `Identity`, `Amd`, and `Nd` are explicit.
+pub(crate) fn factor_sparse_cholesky(
     sm: &SparseMat,
     ordering: OrderingChoice,
 ) -> Result<SparseFactor, String> {
     use rustlab_core::sparse_solve::{
-        AmdOrdering, IdentityOrdering, SparseChol, SparseCsc, SparseSolveError,
+        AmdOrdering, IdentityOrdering, NestedDissectionOrdering, SparseChol, SparseCsc,
+        SparseScalar, SparseSolveError, SpdAutoOrdering,
     };
     use std::sync::Arc;
 
-    let resolved = resolve_ordering(sm, ordering);
+    fn chol<T: SparseScalar>(
+        csc: &SparseCsc<T>,
+        ordering: OrderingChoice,
+    ) -> Result<SparseChol<T>, SparseSolveError> {
+        match ordering {
+            OrderingChoice::Auto => SparseChol::factor(csc, &SpdAutoOrdering),
+            OrderingChoice::Identity => SparseChol::factor(csc, &IdentityOrdering),
+            OrderingChoice::Amd => SparseChol::factor(csc, &AmdOrdering),
+            OrderingChoice::Nd => SparseChol::factor(csc, &NestedDissectionOrdering),
+        }
+    }
+
     if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let chol = match resolved {
-            OrderingChoice::Identity => {
-                SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
-            }
-            OrderingChoice::Amd | OrderingChoice::Auto => {
-                SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?
-            }
-        };
-        Ok(SparseFactor::CholReal(Arc::new(chol)))
+        let f = chol(&csc, ordering).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::CholReal(Arc::new(f)))
     } else {
         let csc: SparseCsc<C64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let chol = match resolved {
-            OrderingChoice::Identity => {
-                SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
-            }
-            OrderingChoice::Amd | OrderingChoice::Auto => {
-                SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?
-            }
-        };
-        Ok(SparseFactor::CholComplex(Arc::new(chol)))
+        let f = chol(&csc, ordering).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::CholComplex(Arc::new(f)))
     }
 }
 
 /// Build a `SparseFactor::Lu*` from a sparse matrix. Pivoting threshold
-/// is the standard 0.1 (Trefethen). Same ordering plumbing as
-/// `factor_sparse_cholesky`.
-fn factor_sparse_lu(sm: &SparseMat, ordering: OrderingChoice) -> Result<SparseFactor, String> {
+/// is the standard 0.1 (Trefethen). `Auto` follows the matrix's hint
+/// (`Identity` → natural order, none → `AmdOrdering`).
+pub(crate) fn factor_sparse_lu(
+    sm: &SparseMat,
+    ordering: OrderingChoice,
+) -> Result<SparseFactor, String> {
     use rustlab_core::sparse_solve::{
-        AmdOrdering, IdentityOrdering, SparseCsc, SparseLU, SparseSolveError,
+        AmdOrdering, IdentityOrdering, NestedDissectionOrdering, SparseCsc, SparseLU, SparseScalar,
+        SparseSolveError,
     };
     use std::sync::Arc;
+
+    fn lu<T: SparseScalar>(
+        csc: &SparseCsc<T>,
+        ordering: OrderingChoice,
+    ) -> Result<SparseLU<T>, SparseSolveError> {
+        match ordering {
+            OrderingChoice::Identity => SparseLU::factor(csc, &IdentityOrdering, 0.1),
+            OrderingChoice::Amd | OrderingChoice::Auto => SparseLU::factor(csc, &AmdOrdering, 0.1),
+            OrderingChoice::Nd => SparseLU::factor(csc, &NestedDissectionOrdering, 0.1),
+        }
+    }
 
     let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = match resolved {
-            OrderingChoice::Identity => {
-                SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
-            }
-            OrderingChoice::Amd | OrderingChoice::Auto => {
-                SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?
-            }
-        };
-        Ok(SparseFactor::LuReal(Arc::new(lu)))
+        let f = lu(&csc, resolved).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::LuReal(Arc::new(f)))
     } else {
         let csc: SparseCsc<C64> = sm.to_csc().map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = match resolved {
-            OrderingChoice::Identity => {
-                SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
-            }
-            OrderingChoice::Amd | OrderingChoice::Auto => {
-                SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?
-            }
-        };
-        Ok(SparseFactor::LuComplex(Arc::new(lu)))
+        let f = lu(&csc, resolved).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::LuComplex(Arc::new(f)))
     }
 }
 
 /// Run a back-solve through a cached factor. The factor's scalar variant
 /// (`real` vs `complex`) controls how `b` is consumed: real factors take
 /// `b.re` and complain only when `b` has a non-trivial imaginary part.
-fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, String> {
+pub(crate) fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, String> {
     if factor.dim() != b.len() {
         return Err(format!(
             "factor is {0}×{0} but b has length {1}",
@@ -15801,24 +15765,6 @@ fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, Stri
             Ok(Array1::from_vec(x))
         }
     }
-}
-
-/// Try the sparse Cholesky path. Detects "essentially real" inputs and
-/// routes to the `f64` solver to skip the 4× cost of complex factorization.
-fn try_sparse_cholesky(
-    sm: &SparseMat,
-    b: &CVector,
-    ordering: OrderingChoice,
-) -> Result<CVector, String> {
-    let factor = factor_sparse_cholesky(sm, ordering)?;
-    solve_with_factor(&factor, b)
-}
-
-/// Sparse LU with partial pivoting. Same real-vs-complex auto-routing
-/// as the Cholesky path. Pivoting threshold is the standard 0.1 (Trefethen).
-fn try_sparse_lu(sm: &SparseMat, b: &CVector, ordering: OrderingChoice) -> Result<CVector, String> {
-    let factor = factor_sparse_lu(sm, ordering)?;
-    solve_with_factor(&factor, b)
 }
 
 /// `chol(A [, ordering])` — sparse Cholesky factorization. Returns an
@@ -15861,7 +15807,7 @@ fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> 
             Value::Str(s) => parse_ordering_arg("chol", s.as_str())?,
             other => {
                 return Err(ScriptError::type_err(format!(
-                    "chol: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    "chol: ordering must be a string (\"auto\"|\"identity\"|\"amd\"|\"nd\"), got {}",
                     other.type_name()
                 )))
             }
@@ -15921,7 +15867,7 @@ fn builtin_lu_sparse(args: Vec<Value>) -> Result<Value, ScriptError> {
             Value::Str(s) => parse_ordering_arg("lu", s.as_str())?,
             other => {
                 return Err(ScriptError::type_err(format!(
-                    "lu: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    "lu: ordering must be a string (\"auto\"|\"identity\"|\"amd\"|\"nd\"), got {}",
                     other.type_name()
                 )))
             }

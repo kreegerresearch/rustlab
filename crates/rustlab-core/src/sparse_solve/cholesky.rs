@@ -245,6 +245,29 @@ pub fn symbolic_col_counts<T: SparseScalar, O: OrderingMethod>(
     Ok(compute_col_counts(&c, &parent))
 }
 
+/// Total `nnz(L)` of `a` factored in its own (natural) order, or `None`
+/// as soon as the count passes `cap`. The work is O(min(nnz(L), cap)),
+/// so comparing an ordering against the natural order costs no more than
+/// the better of the two.
+pub(crate) fn natural_fill_capped<T: SparseScalar>(a: &SparseCsc<T>, cap: usize) -> Option<usize> {
+    let n = a.ncols();
+    let parent = column_elimination_tree(a);
+    let mut mark: Vec<usize> = vec![usize::MAX; n];
+    let mut s: Vec<usize> = vec![0usize; n];
+    let mut total = n;
+    if total > cap {
+        return None;
+    }
+    for k in 0..n {
+        let top = ereach(a, k, &parent, &mut s, &mut mark);
+        total += n - top;
+        if total > cap {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 /// Pattern of row k of L given the upper-triangular pattern of `c`'s
 /// column k and the elimination tree. Returns `top` such that
 /// `s[top..n]` lists the columns `j < k` with `L(k, j) != 0` in
