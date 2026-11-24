@@ -25,7 +25,7 @@ use ndarray::Array1;
 use num_complex::Complex;
 use rustlab_core::sparse_solve::{
     AmdOrdering, IdentityOrdering, NestedDissectionOrdering, ReducedChol, RowSingletonSplit,
-    SparseCsc, SparseScalar, SparseSolveError, SpdAutoOrdering, TriangularSolve,
+    SparseCsc, SparseScalar, SparseSolveError, SpdAutoOrdering,
 };
 use rustlab_core::{CVector, SparseMat, C64};
 
@@ -40,8 +40,77 @@ pub(crate) enum AutoFactor {
     Plain(SparseFactor),
     ReducedReal(ReducedChol<f64>),
     ReducedComplex(ReducedChol<C64>),
-    TriReal(TriangularSolve<f64>),
-    TriComplex(TriangularSolve<C64>),
+    TriReal(RowTriangular<f64>),
+    TriComplex(RowTriangular<C64>),
+}
+
+/// A diagonal or triangular matrix kept row by row, solved by row-oriented
+/// substitution. `SparseMat` entries are row-major, so building it is one
+/// sequential pass (no column scatter), which matters for `R \ b` on a
+/// large `chol` factor.
+pub(crate) struct RowTriangular<T> {
+    row_ptr: Vec<usize>,
+    cols: Vec<usize>,
+    vals: Vec<T>,
+    upper: bool,
+    diagonal: bool,
+}
+
+impl<T: SparseScalar> RowTriangular<T> {
+    fn build(sm: &SparseMat, upper: bool, diagonal: bool, conv: impl Fn(C64) -> T) -> Self {
+        let n = sm.rows;
+        let mut row_ptr = vec![0usize; n + 1];
+        for &(i, _, _) in &sm.entries {
+            row_ptr[i + 1] += 1;
+        }
+        for i in 0..n {
+            row_ptr[i + 1] += row_ptr[i];
+        }
+        let mut next = row_ptr[..n].to_vec();
+        let mut cols = vec![0usize; sm.entries.len()];
+        let mut vals = vec![T::zero(); sm.entries.len()];
+        for &(i, j, v) in &sm.entries {
+            cols[next[i]] = j;
+            vals[next[i]] = conv(v);
+            next[i] += 1;
+        }
+        RowTriangular {
+            row_ptr,
+            cols,
+            vals,
+            upper,
+            diagonal,
+        }
+    }
+
+    /// Every diagonal entry is stored and nonzero (checked when built).
+    fn solve(&self, b: &[T]) -> Vec<T> {
+        let n = b.len();
+        let mut x = vec![T::zero(); n];
+        let mut row = |i: usize, x: &mut [T]| {
+            let mut s = b[i];
+            let mut d = T::one();
+            for p in self.row_ptr[i]..self.row_ptr[i + 1] {
+                let j = self.cols[p];
+                if j == i {
+                    d = self.vals[p];
+                } else {
+                    s -= self.vals[p] * x[j];
+                }
+            }
+            x[i] = s / d;
+        };
+        if self.upper {
+            for i in (0..n).rev() {
+                row(i, &mut x);
+            }
+        } else {
+            for i in 0..n {
+                row(i, &mut x);
+            }
+        }
+        x
+    }
 }
 
 impl AutoFactor {
@@ -52,8 +121,8 @@ impl AutoFactor {
             AutoFactor::Plain(f) if f.kind() == "chol" => "cholesky",
             AutoFactor::Plain(_) => "lu",
             AutoFactor::ReducedReal(_) | AutoFactor::ReducedComplex(_) => "reduced-cholesky",
-            AutoFactor::TriReal(TriangularSolve::Diagonal(_))
-            | AutoFactor::TriComplex(TriangularSolve::Diagonal(_)) => "diagonal",
+            AutoFactor::TriReal(t) if t.diagonal => "diagonal",
+            AutoFactor::TriComplex(t) if t.diagonal => "diagonal",
             AutoFactor::TriReal(_) | AutoFactor::TriComplex(_) => "triangular",
         }
     }
@@ -175,23 +244,105 @@ fn factor_triangular(sm: &SparseMat) -> Option<AutoFactor> {
     if diag != n {
         return None;
     }
-    fn build<T: SparseScalar>(csc: SparseCsc<T>, below: bool, above: bool) -> TriangularSolve<T> {
-        match (below, above) {
-            (false, false) => {
-                let d = (0..csc.ncols()).map(|j| csc.get(j, j)).collect();
-                TriangularSolve::Diagonal(d)
-            }
-            (true, _) => TriangularSolve::Lower(csc),
-            (false, true) => TriangularSolve::Upper(csc),
-        }
-    }
+    let (upper, diagonal) = (!below, !below && !above);
     if super::builtins::sparse_all_real(sm, None) {
-        let csc: SparseCsc<f64> = sm.to_csc().ok()?;
-        Some(AutoFactor::TriReal(build(csc, below, above)))
+        Some(AutoFactor::TriReal(RowTriangular::build(
+            sm,
+            upper,
+            diagonal,
+            |v| v.re,
+        )))
     } else {
-        let csc: SparseCsc<C64> = sm.to_csc().ok()?;
-        Some(AutoFactor::TriComplex(build(csc, below, above)))
+        Some(AutoFactor::TriComplex(RowTriangular::build(
+            sm, upper, diagonal, |v| v,
+        )))
     }
+}
+
+/// One-shot `\` on a triangular `sm` whose entries are row-major sorted
+/// (what `chol` returns): substitution read straight from the entries, no
+/// copy. `None` when `sm` is not such a matrix; the caller then factors.
+pub(crate) fn solve_triangular_in_place(sm: &SparseMat, columns: &[CVector]) -> Option<Vec<CVector>> {
+    let n = sm.rows;
+    if n == 0 || n != sm.cols {
+        return None;
+    }
+    let (mut below, mut above, mut real) = (false, false, true);
+    let mut diag = 0usize;
+    let mut prev: Option<(usize, usize)> = None;
+    for &(i, j, v) in &sm.entries {
+        if !v.re.is_finite() || !v.im.is_finite() || prev.is_some_and(|p| p >= (i, j)) {
+            return None;
+        }
+        prev = Some((i, j));
+        below |= i > j;
+        above |= i < j;
+        if below && above {
+            return None;
+        }
+        diag += usize::from(i == j);
+        real &= v.im.abs() < 1e-12;
+    }
+    if diag != n {
+        return None;
+    }
+    let upper = !below;
+    let solve_one = |b: &CVector| -> CVector {
+        if real {
+            let part = |pick: fn(C64) -> f64| {
+                let bv: Vec<f64> = b.iter().map(|&z| pick(z)).collect();
+                sweep(&sm.entries, &bv, upper, |v| v.re)
+            };
+            let re = part(|z| z.re);
+            if b.iter().all(|z| z.im == 0.0) {
+                return Array1::from_iter(re.into_iter().map(|v| Complex::new(v, 0.0)));
+            }
+            let im = part(|z| z.im);
+            Array1::from_iter(re.into_iter().zip(im).map(|(r, i)| Complex::new(r, i)))
+        } else {
+            let bv: Vec<C64> = b.iter().copied().collect();
+            Array1::from_vec(sweep(&sm.entries, &bv, upper, |v| v))
+        }
+    };
+    Some(columns.iter().map(solve_one).collect())
+}
+
+/// Row-oriented substitution over row-major entries in which every row
+/// holds its (nonzero) diagonal: forward for lower, backward for upper.
+fn sweep<T: SparseScalar>(
+    entries: &[(usize, usize, C64)],
+    b: &[T],
+    upper: bool,
+    conv: impl Fn(C64) -> T,
+) -> Vec<T> {
+    let mut x = vec![T::zero(); b.len()];
+    let mut run = |it: &mut dyn Iterator<Item = &(usize, usize, C64)>| {
+        let mut cur: Option<usize> = None;
+        let (mut s, mut d) = (T::zero(), T::one());
+        for &(i, j, v) in it {
+            if cur != Some(i) {
+                if let Some(r) = cur {
+                    x[r] = s / d;
+                }
+                cur = Some(i);
+                s = b[i];
+            }
+            if i == j {
+                d = conv(v);
+            } else {
+                s -= conv(v) * x[j];
+            }
+        }
+        if let Some(r) = cur {
+            x[r] = s / d;
+        }
+    };
+    if upper {
+        run(&mut entries.iter().rev());
+    } else {
+        run(&mut entries.iter());
+    }
+    x
 }
 
 /// `None` when `sm` has no row singleton. Otherwise the Cholesky of the

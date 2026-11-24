@@ -69,7 +69,8 @@ pub(crate) fn hermitian_from_triangle<T: ToC64 + rustlab_core::sparse_solve::Fro
             coo.push((j, i, t.conj()));
         }
     }
-    coo.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    // The column scatter keeps rows ascending for row-major input and
+    // sorts any column that is not.
     SparseCsc::from_coo_sorted(sm.rows, sm.cols, &coo)
 }
 
@@ -86,6 +87,18 @@ pub(crate) fn partial_chol<T: SparseScalar>(
     }
 }
 
+/// A `SparseMat` from entries that are already unique and row-major.
+/// Entries of `L` that cancelled to exactly zero are not stored.
+fn sparse(rows: usize, cols: usize, mut entries: Vec<(usize, usize, C64)>) -> SparseMat {
+    entries.retain(|e| e.2.re != 0.0 || e.2.im != 0.0);
+    SparseMat {
+        rows,
+        cols,
+        entries,
+        ordering_hint: None,
+    }
+}
+
 /// `R = L^H` as a `q × n` sparse matrix. `L` is lower with sorted rows,
 /// so column `j` of `L` is row `j` of `R`, already in row-major order.
 fn upper_from_l<T: ToC64>(l: &SparseCsc<T>) -> SparseMat {
@@ -95,7 +108,7 @@ fn upper_from_l<T: ToC64>(l: &SparseCsc<T>) -> SparseMat {
             entries.push((j, i, v.conj().to_c64()));
         }
     }
-    SparseMat::from_sorted_entries(l.ncols(), l.nrows(), entries)
+    sparse(l.ncols(), l.nrows(), entries)
 }
 
 /// `L` itself as an `n × q` sparse matrix (row-major entries).
@@ -116,7 +129,7 @@ fn lower_from_l<T: ToC64>(l: &SparseCsc<T>) -> SparseMat {
             next[i] += 1;
         }
     }
-    SparseMat::from_sorted_entries(n, l.ncols(), entries)
+    sparse(n, l.ncols(), entries)
 }
 
 /// `P` with `P(perm[k], k) = 1`, so `P' * S * P = S(perm, perm)`.
@@ -124,7 +137,7 @@ fn permutation_matrix(perm: &[usize], inv: &[usize]) -> SparseMat {
     let entries = (0..perm.len())
         .map(|r| (r, inv[r], Complex::new(1.0, 0.0)))
         .collect();
-    SparseMat::from_sorted_entries(perm.len(), perm.len(), entries)
+    sparse(perm.len(), perm.len(), entries)
 }
 
 /// The factor of one scalar type, turned into script values.

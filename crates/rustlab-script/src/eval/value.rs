@@ -924,12 +924,7 @@ impl Value {
             v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v.clone())),
             Value::Logical(a) => Ok(Value::Logical(a.transpose())),
             Value::Complex(c) => Ok(Value::Complex(f(*c))),
-            Value::SparseMatrix(sm) => {
-                let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, f(v))).collect();
-                Ok(Value::SparseMatrix(SparseMat::new(
-                    sm.cols, sm.rows, entries,
-                )))
-            }
+            Value::SparseMatrix(sm) => Ok(Value::SparseMatrix(sm.transpose_map(f))),
             other => Err(format!("cannot transpose {}", other.type_name())),
         }
     }

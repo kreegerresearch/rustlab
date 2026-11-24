@@ -92,7 +92,7 @@ impl<T: SparseScalar> SparseChol<T> {
         let n = a.ncols();
         let perm = ord.order(a);
         let c = perm.permute_symmetric(a);
-        let num = up_looking(&c, false);
+        let num = up_looking::<T, false>(&c);
         if let Some(col) = num.failed {
             return Err(SparseSolveError::NotSpd { col });
         }
@@ -134,7 +134,7 @@ impl<T: SparseScalar> SparseChol<T> {
         let n = a.ncols();
         let perm = ord.order(a);
         let c = perm.permute_symmetric(a);
-        let mut num = up_looking(&c, true);
+        let mut num = up_looking::<T, true>(&c);
         let q = num.failed.unwrap_or(n);
         num.col_ptr.truncate(q + 1);
         let nnz = num.col_ptr[q];
@@ -187,9 +187,10 @@ impl<T: SparseScalar> SparseChol<T> {
 
 /// Up-looking numeric factorization of `c` (already permuted), reading
 /// its upper triangle. Stops at the first pivot that is not positive,
-/// unless `keep_going`: then rows past that column are still reduced
-/// against the columns before it, which is all of `L(:, 0..q)`.
-fn up_looking<T: SparseScalar>(c: &SparseCsc<T>, keep_going: bool) -> Numeric<T> {
+/// unless `KEEP_GOING`: then rows past that column are still reduced
+/// against the columns before it, which is all of `L(:, 0..q)`. A const
+/// parameter so the ordinary factor's inner loop has no extra test.
+fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(c: &SparseCsc<T>) -> Numeric<T> {
     let n = c.ncols();
     let parent = column_elimination_tree(c);
 
@@ -253,7 +254,7 @@ fn up_looking<T: SparseScalar>(c: &SparseCsc<T>, keep_going: bool) -> Numeric<T>
         // Triangular solve, processing pattern in topo order.
         for p in top..n {
             let j = s[p];
-            if j >= q {
+            if KEEP_GOING && j >= q {
                 // Unfinished column: rows below q are not part of the
                 // partial factor. Its updates only reach rows above j.
                 x[j] = T::zero();
@@ -287,7 +288,7 @@ fn up_looking<T: SparseScalar>(c: &SparseCsc<T>, keep_going: bool) -> Numeric<T>
             next[j] = slot + 1;
         }
 
-        if k >= q {
+        if KEEP_GOING && k >= q {
             continue;
         }
         // Diagonal pivot: L(k, k) = sqrt(d). Goes in the reserved
@@ -299,7 +300,7 @@ fn up_looking<T: SparseScalar>(c: &SparseCsc<T>, keep_going: bool) -> Numeric<T>
             }
             None => {
                 failed = Some(k);
-                if !keep_going {
+                if !KEEP_GOING {
                     break;
                 }
                 q = k;

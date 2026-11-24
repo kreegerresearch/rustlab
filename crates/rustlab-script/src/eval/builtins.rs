@@ -10522,6 +10522,12 @@ pub(crate) fn sparse_square_mldivide(
 ) -> Result<Value, String> {
     let n = sm.rows;
     let columns = sparse_rhs_columns(n, b)?;
+    if let Some(mut solved) = super::sparse_auto::solve_triangular_in_place(sm, &columns) {
+        if solved.len() == 1 {
+            return Ok(solution_column(solved.pop().unwrap()));
+        }
+        return Ok(pack_sparse_columns(&solved));
+    }
     let factor =
         super::sparse_auto::factor(sm, super::sparse_auto::Mode::Auto, OrderingChoice::Auto)
             .map_err(|e| format!("mldivide: {e}"))?;

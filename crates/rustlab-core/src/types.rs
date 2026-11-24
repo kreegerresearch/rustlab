@@ -416,6 +416,54 @@ impl SparseMat {
         }
     }
 
+    /// Transpose with `f` applied to every value (`conj` for `A'`), in
+    /// O(nnz + rows + cols): two stable counting sorts, so the result is
+    /// row-major sorted whatever the order of `entries`. Entries are unique
+    /// and nonzero already, so nothing is merged or dropped. No hint.
+    pub fn transpose_map(&self, f: impl Fn(C64) -> C64) -> Self {
+        // Stable counting sort of `src` by `key`, writing `map(e)`.
+        fn counting_sort(
+            src: &[(usize, usize, C64)],
+            buckets: usize,
+            key: impl Fn(&(usize, usize, C64)) -> usize,
+            map: impl Fn(&(usize, usize, C64)) -> (usize, usize, C64),
+        ) -> Vec<(usize, usize, C64)> {
+            let mut start = vec![0usize; buckets + 1];
+            for e in src {
+                start[key(e) + 1] += 1;
+            }
+            for i in 0..buckets {
+                start[i + 1] += start[i];
+            }
+            let mut out = vec![(0usize, 0usize, Complex::new(0.0, 0.0)); src.len()];
+            for e in src {
+                let k = key(e);
+                out[start[k]] = map(e);
+                start[k] += 1;
+            }
+            out
+        }
+        let row_major = self
+            .entries
+            .windows(2)
+            .all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1));
+        let swap = |&(r, c, v): &(usize, usize, C64)| (c, r, f(v));
+        // Sorted input is already ordered by the new column within each new
+        // row, so one stable pass on the new row is enough.
+        let entries = if row_major {
+            counting_sort(&self.entries, self.cols, |e| e.1, swap)
+        } else {
+            let by_row = counting_sort(&self.entries, self.rows, |e| e.0, |e| *e);
+            counting_sort(&by_row, self.cols, |e| e.1, swap)
+        };
+        Self {
+            rows: self.cols,
+            cols: self.rows,
+            entries,
+            ordering_hint: None,
+        }
+    }
+
     /// Row-wise compressed copy: `(row_ptr, cols, vals)`. Entries keep their
     /// stored order within a row, whatever the order of `entries`.
     fn csr(&self) -> (Vec<usize>, Vec<usize>, Vec<C64>) {

@@ -3789,6 +3789,22 @@ impl Evaluator {
         if op == BinOp::Mul && (is_transpose_expr(lhs) || is_transpose_expr(rhs)) {
             return self.eval_transposed_matmul(lhs, rhs);
         }
+        // `S \ b` with a square sparse `S` in the workspace: solve from a
+        // borrow. Copying a large factor (`R \ b` after `chol`) costs as much
+        // as the substitution itself.
+        if op == BinOp::LeftDiv && !self.profiler.is_enabled() {
+            if let Expr::Var(name) = lhs {
+                if matches!(self.env.get(name), Some(Value::SparseMatrix(sm)) if sm.rows == sm.cols)
+                {
+                    let r = Value::widen_int(self.eval_expr(rhs)?);
+                    let Some(Value::SparseMatrix(sm)) = self.env.get(name) else {
+                        unreachable!("checked above; evaluating b cannot rebind a name")
+                    };
+                    return builtins::sparse_square_mldivide(sm, &r)
+                        .map_err(ScriptError::type_err);
+                }
+            }
+        }
         // Left to right, as before; a borrowed variable is only looked up.
         let l = self.binop_operand(lhs)?;
         let r = self.binop_operand(rhs)?;

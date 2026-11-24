@@ -198,29 +198,33 @@ impl<T: SparseScalar> SparseCsc<T> {
             next[c] = p + 1;
         }
 
-        // Within each column, sort row indices ascending. The input is
-        // row-major so this is already the case for typical inputs, but
-        // we sort defensively to absorb any caller pathology.
-        for j in 0..cols {
-            let lo = col_ptr[j];
-            let hi = col_ptr[j + 1];
-            if hi - lo > 1 {
-                let mut combined: Vec<(usize, T)> =
-                    (lo..hi).map(|p| (row_idx[p], values[p])).collect();
-                combined.sort_by_key(|&(r, _)| r);
-                for (k, (r, v)) in combined.into_iter().enumerate() {
-                    row_idx[lo + k] = r;
-                    values[lo + k] = v;
-                }
-            }
-        }
-
-        SparseCsc {
+        let mut csc = SparseCsc {
             rows,
             cols,
             col_ptr,
             row_idx,
             values,
+        };
+        csc.sort_rows_within_columns();
+        csc
+    }
+
+    /// Sort row indices ascending within each column. Row-major input is
+    /// already sorted, which is checked first; anything else is sorted
+    /// defensively to absorb any caller pathology.
+    fn sort_rows_within_columns(&mut self) {
+        for j in 0..self.cols {
+            let lo = self.col_ptr[j];
+            let hi = self.col_ptr[j + 1];
+            if hi - lo > 1 && self.row_idx[lo..hi].windows(2).any(|w| w[0] > w[1]) {
+                let mut combined: Vec<(usize, T)> =
+                    (lo..hi).map(|p| (self.row_idx[p], self.values[p])).collect();
+                combined.sort_by_key(|&(r, _)| r);
+                for (k, (r, v)) in combined.into_iter().enumerate() {
+                    self.row_idx[lo + k] = r;
+                    self.values[lo + k] = v;
+                }
+            }
         }
     }
 
@@ -336,10 +340,32 @@ impl<T: SparseScalar> SparseCsc<T> {
 impl SparseMat {
     pub fn to_csc<T: FromComplex>(&self) -> Result<SparseCsc<T>, SparseSolveError> {
         const REAL_TOL: f64 = 1e-12;
-        let mut converted: Vec<(usize, usize, T)> = Vec::with_capacity(self.entries.len());
-        for &(r, c, v) in &self.entries {
-            converted.push((r, c, T::from_c64(v, REAL_TOL)?));
+        let cols = self.cols;
+        let mut col_ptr = vec![0usize; cols + 1];
+        for &(_, c, _) in &self.entries {
+            col_ptr[c + 1] += 1;
         }
-        Ok(SparseCsc::from_coo_sorted(self.rows, self.cols, &converted))
+        for j in 0..cols {
+            col_ptr[j + 1] += col_ptr[j];
+        }
+        let nnz = self.entries.len();
+        let mut row_idx = vec![0usize; nnz];
+        let mut values = vec![T::zero(); nnz];
+        let mut next = col_ptr[..cols].to_vec();
+        for &(r, c, v) in &self.entries {
+            let p = next[c];
+            row_idx[p] = r;
+            values[p] = T::from_c64(v, REAL_TOL)?;
+            next[c] = p + 1;
+        }
+        let mut csc = SparseCsc {
+            rows: self.rows,
+            cols,
+            col_ptr,
+            row_idx,
+            values,
+        };
+        csc.sort_rows_within_columns();
+        Ok(csc)
     }
 }
