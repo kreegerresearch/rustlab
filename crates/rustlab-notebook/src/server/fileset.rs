@@ -112,6 +112,19 @@ pub fn resolve_watch_inputs(inputs: &[PathBuf]) -> Result<WatchSet> {
     Ok(WatchSet::Files { root, files })
 }
 
+/// Expand quoted glob patterns among the `watch` arguments.
+pub fn expand_watch_args(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    Ok(inputs.to_vec())
+}
+
+pub(crate) fn has_glob_meta(_arg: &str) -> bool {
+    false
+}
+
+fn glob_match(_pattern: &str, _name: &str) -> bool {
+    false
+}
+
 /// Deepest directory that contains every path in `files`.
 fn common_ancestor(files: &[PathBuf]) -> Option<PathBuf> {
     let mut root = files.first()?.parent()?.to_path_buf();
@@ -177,6 +190,34 @@ mod tests {
         assert_eq!(common_ancestor(&siblings), Some(PathBuf::from("/a")));
         let apart = vec![PathBuf::from("/a/x.md"), PathBuf::from("/b/y.md")];
         assert_eq!(common_ancestor(&apart), Some(PathBuf::from("/")));
+    }
+
+    #[test]
+    fn glob_segment_matching() {
+        assert!(glob_match("*.md", "intro.md"));
+        assert!(glob_match("*.md", ".md"));
+        assert!(!glob_match("*.md", "intro.rlab"));
+        assert!(glob_match("ch?.md", "ch1.md"));
+        assert!(!glob_match("ch?.md", "ch10.md"));
+        assert!(glob_match("[a-c]*.md", "b.md"));
+        assert!(!glob_match("[a-c]*.md", "d.md"));
+        assert!(glob_match("[!a]*.md", "b.md"));
+        assert!(!glob_match("[!a]*.md", "a.md"));
+        assert!(glob_match("[^a]*.md", "b.md"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("a*b*c", "aXbYc"));
+        assert!(!glob_match("a*b*c", "aXbY"));
+        assert!(glob_match("lesson-*.md", "lesson-ünï.md"));
+        // An unclosed `[` is a literal.
+        assert!(glob_match("a[b.md", "a[b.md"));
+    }
+
+    #[test]
+    fn glob_detection() {
+        assert!(has_glob_meta("course/**/*.md"));
+        assert!(has_glob_meta("ch?.md"));
+        assert!(has_glob_meta("[ab].md"));
+        assert!(!has_glob_meta("course/intro.md"));
     }
 
     #[test]

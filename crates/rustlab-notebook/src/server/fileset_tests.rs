@@ -1,7 +1,9 @@
 //! `watch a.md ch2/b.md demo.rlab` — several files served as one
 //! collection rooted at their common ancestor directory.
 
-use super::fileset::{default_jail_root, initial_path, resolve_watch_inputs, WatchSet};
+use super::fileset::{
+    default_jail_root, expand_watch_args, initial_path, resolve_watch_inputs, WatchSet,
+};
 use super::*;
 use axum::body::{to_bytes, Body};
 use rustlab_plot::Theme;
@@ -211,6 +213,185 @@ fn file_set_jail_is_each_notebooks_own_directory_unless_widened() {
     assert_eq!(default_jail_root(&dir, None).unwrap(), Some(root.clone()));
     let single = resolve_watch_inputs(&[root.join("intro.md")]).unwrap();
     assert_eq!(default_jail_root(&single, None).unwrap(), None);
+}
+
+// ── Glob patterns ───────────────────────────────────────────────────
+
+/// `course/` with notebooks at three depths plus things a glob must skip.
+fn glob_tree() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    for (file, text) in [
+        ("course/b.md", "# B\n"),
+        ("course/a.md", "# A\n"),
+        ("course/ch1/b.md", "# Ch1 B\n"),
+        ("course/ch1/deep/c.md", "# C\n"),
+        ("course/ch1/x.txt", "not a notebook\n"),
+        ("course/ch1/run.rlab", "disp(1)\n"),
+        ("course/.hidden/h.md", "# hidden dir\n"),
+        ("course/ch1/.secret.md", "# hidden file\n"),
+        ("course/target/t.md", "# build output\n"),
+        ("course/node_modules/n.md", "# vendored\n"),
+        ("course/.git/g.md", "# git\n"),
+        ("labs/z.rlab", "disp(2)\n"),
+        ("labs/a.rlab", "disp(3)\n"),
+        ("labs/notes.md", "# Notes\n"),
+    ] {
+        write(&root.join(file), text);
+    }
+    std::fs::create_dir_all(root.join("course/empty")).unwrap();
+    (dir, root)
+}
+
+fn s(p: &Path) -> PathBuf {
+    p.to_path_buf()
+}
+
+#[test]
+fn double_star_walks_every_depth_sorted_and_skips_hidden_and_junk() {
+    let (_d, root) = glob_tree();
+    let got = expand_watch_args(&[root.join("course/**/*.md")]).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            root.join("course/a.md"),
+            root.join("course/b.md"),
+            root.join("course/ch1/b.md"),
+            root.join("course/ch1/deep/c.md"),
+        ]
+    );
+}
+
+#[test]
+fn matches_go_in_place_and_keep_order_between_arguments() {
+    let (_d, root) = glob_tree();
+    let got = expand_watch_args(&[
+        root.join("labs/notes.md"),
+        root.join("labs/*.rlab"),
+        root.join("course/*.md"),
+    ])
+    .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            root.join("labs/notes.md"),
+            root.join("labs/a.rlab"),
+            root.join("labs/z.rlab"),
+            root.join("course/a.md"),
+            root.join("course/b.md"),
+        ]
+    );
+}
+
+#[test]
+fn a_glob_skips_other_file_types_and_directories() {
+    let (_d, root) = glob_tree();
+    // `*` matches x.txt (skipped), run.rlab, b.md, and the `deep` folder
+    // (ignored) — no "directory among files" error.
+    let got = expand_watch_args(&[root.join("course/ch1/*")]).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            root.join("course/ch1/b.md"),
+            root.join("course/ch1/run.rlab")
+        ]
+    );
+    let set = resolve_watch_inputs(&[root.join("course/ch1/*"), root.join("course/a.md")]).unwrap();
+    assert!(matches!(set, WatchSet::Files { .. }));
+    // A literal non-notebook is still an error.
+    let err = resolve_watch_inputs(&[root.join("course/ch1/*"), root.join("course/ch1/x.txt")])
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("x.txt"));
+}
+
+#[test]
+fn a_pattern_that_matches_nothing_is_named() {
+    let (_d, root) = glob_tree();
+    let pattern = root.join("course/*.rlab");
+    let err = resolve_watch_inputs(&[root.join("course/a.md"), pattern.clone()]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains(&pattern.display().to_string()), "{msg}");
+    assert!(msg.contains("matched no"), "{msg}");
+    // Only non-notebooks or only folders count as no match too.
+    assert!(expand_watch_args(&[root.join("course/ch1/*.txt")]).is_err());
+    assert!(expand_watch_args(&[root.join("course/e*")]).is_err());
+    assert!(expand_watch_args(&[root.join("missing/**/*.md")]).is_err());
+}
+
+#[test]
+fn glob_and_literal_duplicates_collapse_in_first_position() {
+    let (_d, root) = glob_tree();
+    let set = resolve_watch_inputs(&[
+        root.join("course/b.md"),
+        root.join("course/*.md"),
+        root.join("course/**/b.md"),
+    ])
+    .unwrap();
+    match set {
+        WatchSet::Files { files, .. } => assert_eq!(
+            files,
+            vec![
+                root.join("course/b.md"),
+                root.join("course/a.md"),
+                root.join("course/ch1/b.md"),
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    // A glob that finds one file is single-file watch.
+    match resolve_watch_inputs(&[root.join("labs/n*.md")]).unwrap() {
+        WatchSet::Single(p) => assert_eq!(p, root.join("labs/notes.md")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_existing_path_with_bracket_characters_is_literal() {
+    let (_d, root) = glob_tree();
+    write(&root.join("course/a[1].md"), "# Bracket\n");
+    let got = expand_watch_args(&[root.join("course/a[1].md")]).unwrap();
+    assert_eq!(got, vec![s(&root.join("course/a[1].md"))]);
+}
+
+#[test]
+fn hidden_names_match_only_when_the_pattern_asks_for_them() {
+    let (_d, root) = glob_tree();
+    let got = expand_watch_args(&[root.join("course/ch1/.*.md")]).unwrap();
+    assert_eq!(got, vec![root.join("course/ch1/.secret.md")]);
+    // A literal hidden folder before the pattern is fine.
+    let got = expand_watch_args(&[root.join("course/.hidden/*.md")]).unwrap();
+    assert_eq!(got, vec![root.join("course/.hidden/h.md")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn double_star_does_not_follow_symlinked_folders() {
+    let (_d, root) = glob_tree();
+    // A loop back to the top and a link to another tree.
+    std::os::unix::fs::symlink(root.join("course"), root.join("course/ch1/loop")).unwrap();
+    std::os::unix::fs::symlink(root.join("labs"), root.join("course/labs-link")).unwrap();
+    let got = expand_watch_args(&[root.join("course/**/*.md")]).unwrap();
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert!(got.iter().all(|p| !p.to_string_lossy().contains("loop")));
+    assert!(got
+        .iter()
+        .all(|p| !p.to_string_lossy().contains("labs-link")));
+}
+
+#[test]
+fn relative_patterns_resolve_against_the_working_directory() {
+    let (_d, root) = glob_tree();
+    let _cwd = crate::CwdGuard::new();
+    std::env::set_current_dir(&root).unwrap();
+    let got = expand_watch_args(&[PathBuf::from("labs/*.rlab")]).unwrap();
+    let canon: Vec<PathBuf> = got
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap())
+        .collect();
+    assert_eq!(
+        canon,
+        vec![root.join("labs/a.rlab"), root.join("labs/z.rlab")]
+    );
 }
 
 // ── State, URLs, drawer ─────────────────────────────────────────────

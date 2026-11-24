@@ -82,6 +82,25 @@ fn several_paths_need_the_interactive_server() {
 }
 
 #[test]
+fn a_quoted_pattern_that_matches_nothing_exits_2_and_names_it() {
+    let dir = tree();
+    let (code, err) = watch(&["intro.md", "ch9/**/*.md"], dir.path());
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains("ch9/**/*.md") && err.contains("matched no"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_quoted_pattern_with_the_rerender_mode_exits_2() {
+    let dir = tree();
+    let (code, err) = watch(&["**/*.md", "--obsidian"], dir.path());
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("pattern"), "{err}");
+}
+
+#[test]
 fn help_documents_several_files() {
     let out = Command::new(env!("CARGO_BIN_EXE_rustlab-notebook"))
         .args(["watch", "--help"])
@@ -93,4 +112,5 @@ fn help_documents_several_files() {
         "{text}"
     );
     assert!(text.contains("common folder"), "{text}");
+    assert!(text.contains("'course/**/*.md'"), "{text}");
 }
