@@ -146,10 +146,10 @@ fn sparse_chol_and_lu_solve_a_scaled_system() {
     // [[2, -1], [-1, 2]] [1; 0] = [2; -1], so solving for [1; 0] gives [2/3; 1/3].
     let ev = eval(
         "A = sparse([1, 2, 1, 2], [1, 2, 2, 1], [2, 2, -1, -1], 2, 2)\n\
-         x = solve(chol(A), [1; 0])\n\
+         x = decomposition(A, \"chol\") \\ [1; 0]\n\
          y = solve(lu(A), [1; 0])\n\
          S = sparse([1, 2], [1, 2], [1e-14, 1e-14], 2, 2)\n\
-         z = solve(chol(S), [1e-14; 0])",
+         z = decomposition(S, \"chol\") \\ [1e-14; 0]",
     );
     for name in ["x", "y"] {
         let v = vec_c(&ev, name);
@@ -176,7 +176,7 @@ fn sparse_keeps_a_tiny_entry_and_drops_an_exact_zero() {
          kc = nnz(C)\n\
          N = sparse([1], [1], [NaN], 2, 2)\n\
          kn = nnz(N)\n\
-         x = solve(chol(1e-16 * speye(2)), [1e-16; 0])",
+         x = chol(1e-16 * speye(2)) \\ (chol(1e-16 * speye(2))' \\ [1e-16; 0])",
     );
     assert_re(&ev, "k", 4.0, 0.0);
     assert_re(&ev, "v", 1e-16, 1e-30);

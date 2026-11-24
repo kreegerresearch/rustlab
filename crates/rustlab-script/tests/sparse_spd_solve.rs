@@ -161,7 +161,7 @@ fn nd_ordering_is_accepted_everywhere() {
     let ev = eval(
         "L = -1 * laplacian_2d(12, 12); b = ones(144, 1);
          x1 = spsolve(L, b, \"lu\", \"nd\"); x1 = x1(:);
-         F = chol(L, \"nd\"); x2 = solve(F, b); x2 = x2(:);
+         [R, p, P] = chol(L, \"nd\"); x2 = P * (R \\ (R' \\ (P' * b))); x2 = x2(:);
          G = lu(L, \"nd\"); x3 = solve(G, b); x3 = x3(:);
          x0 = L \\ b; x0 = x0(:);
          d = max([norm(x1 - x0), norm(x2 - x0), norm(x3 - x0)]) / norm(x0);",
