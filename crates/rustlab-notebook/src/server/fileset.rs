@@ -56,8 +56,10 @@ fn has_extension(path: &Path, ext: &str) -> bool {
 /// served, and mixing the two rules would be guesswork. Every missing
 /// path is reported at once. The same file named twice (any spelling or
 /// symlink) is served once; if that leaves one file it is single-file
-/// watch.
+/// watch. Quoted glob patterns are expanded first ([`expand_watch_args`]).
 pub fn resolve_watch_inputs(inputs: &[PathBuf]) -> Result<WatchSet> {
+    let expanded = expand_watch_args(inputs)?;
+    let inputs = expanded.as_slice();
     if inputs.is_empty() {
         anyhow::bail!("watch needs a notebook file, a directory, or several files");
     }
@@ -112,17 +114,224 @@ pub fn resolve_watch_inputs(inputs: &[PathBuf]) -> Result<WatchSet> {
     Ok(WatchSet::Files { root, files })
 }
 
+/// Folders a `**` walk never enters, besides any hidden (`.`) folder.
+const SKIPPED_DIRS: &[&str] = &["target", "node_modules"];
+
 /// Expand quoted glob patterns among the `watch` arguments.
+///
+/// An argument is a pattern when it contains `*`, `?`, or `[` and does
+/// not name an existing path (so a file called `a[1].md` stays literal).
+/// `*`, `?`, and `[...]` (`[!...]` / `[^...]` negate, `a-z` ranges)
+/// match within one path segment; a whole `**` segment matches any
+/// number of folders. A pattern's matches are `.md` / `.rlab` files only,
+/// sorted by path, and take the pattern's place in the argument list, so
+/// order between arguments is kept. Folders and other files are skipped.
+/// Wildcards do not match hidden names unless the pattern segment starts
+/// with `.`. A `**` walk skips hidden folders, `target`, and
+/// `node_modules`, and does not enter symlinked folders, so a link back
+/// up the tree cannot loop. A pattern with no matches is an error that
+/// names it. Literal arguments pass through unchanged; shell-expanded
+/// globs arrive as literals.
 pub fn expand_watch_args(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    Ok(inputs.to_vec())
+    let mut out = Vec::with_capacity(inputs.len());
+    for arg in inputs {
+        let text = arg.to_string_lossy();
+        if !has_glob_meta(&text) || arg.exists() {
+            out.push(arg.clone());
+            continue;
+        }
+        let (base, segments) = split_pattern(&text);
+        let mut found = Vec::new();
+        walk_pattern(&base, &segments, &mut found);
+        if found.is_empty() {
+            anyhow::bail!("pattern {text} matched no .md or .rlab files");
+        }
+        found.sort();
+        found.dedup();
+        out.extend(found);
+    }
+    Ok(out)
 }
 
-pub(crate) fn has_glob_meta(_arg: &str) -> bool {
-    false
+/// True when `arg` has a glob metacharacter (`*`, `?`, `[`).
+pub fn has_glob_meta(arg: &str) -> bool {
+    arg.contains(['*', '?', '['])
 }
 
-fn glob_match(_pattern: &str, _name: &str) -> bool {
-    false
+fn is_separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
+}
+
+/// Split a pattern into the literal folder before its first wildcard
+/// segment (kept verbatim, so `/abs/`, `C:\x\`, and `./` survive) and
+/// the segments from there on.
+fn split_pattern(text: &str) -> (PathBuf, Vec<String>) {
+    let mut start = 0;
+    let mut cut = 0;
+    for (i, c) in text.char_indices() {
+        if is_separator(c) {
+            if has_glob_meta(&text[start..i]) {
+                break;
+            }
+            start = i + c.len_utf8();
+            cut = start;
+        }
+    }
+    let base = PathBuf::from(&text[..cut]);
+    let segments = text[cut..]
+        .split(is_separator)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    (base, segments)
+}
+
+fn is_notebook_file(path: &Path) -> bool {
+    (has_extension(path, "md") || is_script(path)) && path.is_file()
+}
+
+/// Entries of `dir` (`.` when empty) as `(name, path, is_real_dir)`.
+/// `is_real_dir` does not follow symlinks.
+fn entries(dir: &Path) -> Vec<(String, PathBuf, bool)> {
+    let read = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let Ok(rd) = std::fs::read_dir(read) else {
+        return Vec::new();
+    };
+    rd.filter_map(|e| e.ok())
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let real_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            (name, dir.join(e.file_name()), real_dir)
+        })
+        .collect()
+}
+
+fn walk_pattern(dir: &Path, segments: &[String], out: &mut Vec<PathBuf>) {
+    let Some((seg, rest)) = segments.split_first() else {
+        return;
+    };
+    if seg == "**" {
+        // A trailing `**` means every notebook below.
+        let star = ["*".to_string()];
+        let rest: &[String] = if rest.is_empty() { &star } else { rest };
+        walk_pattern(dir, rest, out);
+        for (name, path, real_dir) in entries(dir) {
+            if real_dir && !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_str()) {
+                walk_pattern(&path, segments, out);
+            }
+        }
+        return;
+    }
+    let mut visit = |path: PathBuf| {
+        if rest.is_empty() {
+            if is_notebook_file(&path) {
+                out.push(path);
+            }
+        } else if path.is_dir() {
+            walk_pattern(&path, rest, out);
+        }
+    };
+    if !has_glob_meta(seg) {
+        visit(dir.join(seg));
+        return;
+    }
+    for (name, path, _) in entries(dir) {
+        if name.starts_with('.') && !seg.starts_with('.') {
+            continue;
+        }
+        if glob_match(seg, &name) {
+            visit(path);
+        }
+    }
+}
+
+/// Match one path segment against a pattern segment.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0, 0);
+    // Where the last `*` resumes: (pattern index after it, name index).
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() {
+            match p[pi] {
+                '*' => {
+                    while pi < p.len() && p[pi] == '*' {
+                        pi += 1;
+                    }
+                    star = Some((pi, ni));
+                    continue;
+                }
+                '?' => {
+                    pi += 1;
+                    ni += 1;
+                    continue;
+                }
+                '[' => match class_match(&p[pi..], n[ni]) {
+                    Some((true, len)) => {
+                        pi += len;
+                        ni += 1;
+                        continue;
+                    }
+                    Some((false, _)) => {}
+                    // An unclosed `[` is a literal.
+                    None if n[ni] == '[' => {
+                        pi += 1;
+                        ni += 1;
+                        continue;
+                    }
+                    None => {}
+                },
+                c if c == n[ni] => {
+                    pi += 1;
+                    ni += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        match star {
+            Some((sp, sn)) => {
+                pi = sp;
+                ni = sn + 1;
+                star = Some((sp, sn + 1));
+            }
+            None => return false,
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// `[...]` at the start of `p` against `c`: `Some((matched, length))`,
+/// or `None` when the class is not closed.
+fn class_match(p: &[char], c: char) -> Option<(bool, usize)> {
+    let mut i = 1;
+    let negate = matches!(p.get(1), Some('!') | Some('^'));
+    if negate {
+        i += 1;
+    }
+    let first = i;
+    let mut hit = false;
+    while i < p.len() {
+        if p[i] == ']' && i > first {
+            return Some((hit != negate, i + 1));
+        }
+        if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
+            hit |= p[i] <= c && c <= p[i + 2];
+            i += 3;
+        } else {
+            hit |= p[i] == c;
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Deepest directory that contains every path in `files`.

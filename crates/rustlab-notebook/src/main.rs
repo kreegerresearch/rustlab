@@ -118,6 +118,7 @@ enum Command {
             rustlab-notebook watch analysis.md                             # interactive server (one notebook)\n  \
             rustlab-notebook watch notebooks/                              # interactive server (whole directory + index)\n  \
             rustlab-notebook watch intro.md ch2/filters.md demo.rlab       # interactive server (these files, common folder)\n  \
+            rustlab-notebook watch 'course/**/*.md' 'labs/*.rlab'         # quoted patterns, expanded by rustlab-notebook\n  \
             rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
             rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
             rustlab-notebook watch analysis.md --editable                  # edit the .md in the browser (writes back)\n  \
@@ -126,7 +127,8 @@ enum Command {
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
             A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.\n\n\
-            Several files are browsed the same way, as a tree rooted at their common folder: /n/ch2/filters for ch2/filters.md, /n/demo.rlab for a script. Only the listed files are served. Each notebook's file I/O is jailed to its own folder (--jail-root widens it). A missing path, a directory among files, or another file type is an error.")]
+            Several files are browsed the same way, as a tree rooted at their common folder: /n/ch2/filters for ch2/filters.md, /n/demo.rlab for a script. Only the listed files are served. Each notebook's file I/O is jailed to its own folder (--jail-root widens it). A missing path, a directory among files, or another file type is an error.\n\n\
+            A quoted path with *, ?, or [...] is a pattern (** matches any number of folders). Its .md and .rlab matches, sorted by path, take its place in the list; other files and folders are skipped. Wildcards skip hidden names; ** also skips target, node_modules, and symlinked folders. A pattern with no matches is an error. Patterns your shell already expanded work the same way.")]
     Watch {
         /// A notebook .md file, a directory of notebooks, or several .md /
         /// .rlab files (interactive server). The re-render-on-save mode
@@ -687,6 +689,16 @@ fn main() {
             apply_cache_policy(cache, no_cache, &settings);
             let inputs = input;
             let input = inputs[0].clone();
+            let has_pattern = inputs.iter().any(|p| {
+                rustlab_notebook::server::fileset::has_glob_meta(&p.to_string_lossy())
+                    && !p.exists()
+            });
+            if has_pattern && (obsidian || output.is_some()) {
+                eprintln!(
+                    "error: --obsidian / --output re-render one directory; a glob pattern needs the interactive server (drop --obsidian / --output, or pass the directory)"
+                );
+                std::process::exit(2);
+            }
             if inputs.len() > 1 && (obsidian || output.is_some()) {
                 eprintln!(
                     "error: --obsidian / --output re-render one directory; several paths need the interactive server (drop --obsidian / --output)"
