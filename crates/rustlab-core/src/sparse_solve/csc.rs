@@ -43,6 +43,18 @@ pub trait SparseScalar:
     /// matrix). Returns `None` if the input is not real-positive within
     /// the given tolerance — that signals the matrix isn't SPD.
     fn checked_sqrt_real_pos(&self, tol: f64) -> Option<Self>;
+
+    /// Real part.
+    fn re(&self) -> f64;
+
+    /// `|x|²` without the square root.
+    fn abs2(&self) -> f64;
+
+    /// A real value of this type.
+    fn from_f64(v: f64) -> Self;
+
+    /// Every part finite.
+    fn is_finite(&self) -> bool;
 }
 
 impl SparseScalar for f64 {
@@ -51,6 +63,18 @@ impl SparseScalar for f64 {
     }
     fn one() -> Self {
         1.0
+    }
+    fn re(&self) -> f64 {
+        *self
+    }
+    fn abs2(&self) -> f64 {
+        self * self
+    }
+    fn from_f64(v: f64) -> Self {
+        v
+    }
+    fn is_finite(&self) -> bool {
+        f64::is_finite(*self)
     }
     fn abs(&self) -> f64 {
         f64::abs(*self)
@@ -73,6 +97,18 @@ impl SparseScalar for C64 {
     }
     fn one() -> Self {
         Complex::new(1.0, 0.0)
+    }
+    fn re(&self) -> f64 {
+        self.re
+    }
+    fn abs2(&self) -> f64 {
+        self.re * self.re + self.im * self.im
+    }
+    fn from_f64(v: f64) -> Self {
+        Complex::new(v, 0.0)
+    }
+    fn is_finite(&self) -> bool {
+        self.re.is_finite() && self.im.is_finite()
     }
     fn abs(&self) -> f64 {
         self.norm()

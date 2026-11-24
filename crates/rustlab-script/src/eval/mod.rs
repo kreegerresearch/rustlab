@@ -4,6 +4,7 @@ pub(crate) mod elementwise;
 pub mod fast_hash;
 pub(crate) mod fdtd;
 pub(crate) mod interp1;
+pub(crate) mod iterative;
 pub mod line_io;
 pub(crate) mod linsys;
 pub(crate) mod order_stats;
@@ -3580,6 +3581,18 @@ impl Evaluator {
         } else {
             vals
         };
+
+        // `pcg` takes function handles, so it runs on the evaluator.
+        if name == "pcg" {
+            let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
+            let tracking = self.profiler.enter("pcg");
+            let result = self.eval_pcg(vals, nargout);
+            if tracking {
+                let out = result.as_ref().map_or(0, Self::value_bytes);
+                self.profiler.exit("pcg", in_bytes, out);
+            }
+            return result;
+        }
 
         let _cancel_scope = self.cancel.as_ref().map(builtin_cancel::enter);
         let result = if !self.profiler.is_enabled() {

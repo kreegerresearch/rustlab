@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.87
+
+### Added
+- **`pcg`** — preconditioned conjugate gradients for Hermitian positive definite systems, MATLAB's signature and semantics: `x = pcg(A, b, tol, maxit, M1, M2, x0)` and `[x, flag, relres, iter, resvec] = pcg(...)`. Defaults `tol = 1e-6`, `maxit = min(n, 20)`, `[]` takes a default. `A` is a matrix or a handle `afun(x) = A*x`; `M1`, `M2` are matrices (`M = M1*M2`; triangular and diagonal ones are solved by substitution, others factored once) or handles `mfun(r) = M \ r`. `flag` is 0 converged, 1 `maxit`, 2 preconditioner not finite, 3 stagnated, 4 breakdown; a run that does not converge returns its best iterate. `x` is `n×1`. With fewer than two outputs `pcg` prints MATLAB's line — `pcg converged at iteration N ...` on stdout, or `warning: pcg stopped at iteration N ...` on stderr — and asking for `flag` prints nothing. Complex Hermitian `A` works. `A \ b` is unchanged and stays a direct solve.
+- **`ichol`** — incomplete Cholesky of a sparse Hermitian positive definite matrix, MATLAB's options: `opts.type` `"nofill"` (IC(0), default) or `"ict"` with `opts.droptol`, `opts.michol = "on"` (row sums kept), `opts.diagcomp` (factor `A + α·diag(diag(A))`), `opts.shape = "upper"`. Returns a sparse lower `L` with `L*L' ≈ A`; reads the lower triangle; a nonpositive pivot is an error.
+- 41³ 3-D Poisson (68,921 unknowns, `tol = 1e-8`, release build): sparse `A \ b` 5.4 s; `pcg` 0.11 s unpreconditioned (147 iterations), 0.16 s with `ichol` (48 iterations), 0.14 s with `michol` (39). Table in `docs/sparse_solve.md` § Iterative solves; script `perf/sparse_pcg_phase3.rlab`.
+
+### MATLAB differences
+- `ichol(A, struct("michol", "on"))` on a complex matrix is an error (the dropped entries cannot keep a complex diagonal real).
+- `[x, flag] = h(A, b)` with `h = @pcg` returns one output, as for every function handle in rustlab (handles are called with one output); call `pcg` by name for several outputs.
+
 ## 0.3.86
 
 ### Breaking / behavior changes

@@ -5,6 +5,7 @@ A matrix algebra and DSP toolkit written in Rust — scriptable from the command
 **[Browse the rendered notebook gallery →](gallery/)** — 43 worked
 notebooks (DSP filter design, spectral estimation, vector calculus,
 contour and surface plots, sparse direct solves with Cholesky and LU,
+sparse iterative solves with `pcg` and `ichol`,
 multi-source electrostatics, dielectric Poisson, and more), all rendered
 with plots inline. GitHub displays them directly — no install needed
 to read.
@@ -476,7 +477,7 @@ rustlab ships with 401 builtins. Here are the most commonly used; see [`docs/qui
 | **Streaming** | `state_init`, `filter_stream`, `audio_in`, `audio_out`, `audio_read`, `audio_write` |
 | **Structs** | `struct`, `isstruct`, `fieldnames`, `isfield`, `rmfield` |
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
-| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `chol`, `lu`, `solve`, `pin_dirichlet`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
+| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `chol`, `lu`, `solve`, `pcg`, `ichol`, `pin_dirichlet`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `laplacian_eps_3d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
 | **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
 | **FDTD (3-D)** | `fdtd3d`, `fdtd_info`, `fdtd_media`, `fdtd_pec`, `fdtd_cpml`, `gaussian_pulse`, `fdtd_source`, `fdtd_port`, `fdtd_s11`, `fdtd_probe`, `fdtd_run`, `fdtd_step`, `fdtd_record`, `fdtd_slice`, `fdtd_ntff`, `fdtd_farfield` (Yee stepper with PEC walls, dielectric / magnetic / lossy materials, PEC volumes and faces, CPML absorber, one lumped port, near-to-far) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |

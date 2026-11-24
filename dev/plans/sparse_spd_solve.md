@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86). Phases 3–5 not started.
-**Current phase:** 3 — `pcg` and `ichol`; waiting for Michael's go-ahead.
+**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86, PR #167). Phase 3 complete (0.3.87). Phases 4–5 not started.
+**Current phase:** 4 — sparse `chol` outputs; waiting for Michael's go-ahead.
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -89,8 +89,8 @@ The nested-dissection prototype is a ~100-line level-set bisection: BFS from a p
 | `x = A \ b` (sparse, square) | Flowchart: banded / triangular / permuted triangular → Hermitian with positive real diagonal → CHOLMOD (falls back on failure) → UMFPACK LU (singletons removed first) | Phase 1: same SPD test, plus: if `A` is not Hermitian, strip row singletons and test the free block; Hermitian-positive-diagonal → Cholesky on the free block, else (or on Cholesky failure) the unchanged LU on the full `A`. Result is still a direct solve |
 | `spsolve(A, b [, mode] [, ordering])` | (rustlab-only) | Same auto path. `"cholesky"` also uses the reduction, and now **errors** when the matrix (or its free block) is not Hermitian instead of returning a wrong answer. `ordering` adds `"nd"` |
 | `R = chol(S)`, `[R, p, P] = chol(S)`, `chol(S, "lower")`, `"vector"` | Sparse factor, `R'*R = P'*S*P` | Phase 4. Today `chol(S)` returns an opaque handle; MATLAB returns the sparse factor. Keep the handle form for `solve(F, b)`, add the sparse outputs |
-| `x = pcg(A, b, tol, maxit, M1, M2, x0)`, `[x, flag, relres, iter, resvec] = pcg(...)` | Defaults `tol = 1e-6`, `maxit = min(n, 20)`; `A` may be a function handle; `M` a matrix or handle; prints a message when `flag ≠ 0` and `nargout < 2` | Phase 3, same signature and flags (0 converged, 1 maxit, 2 ill-conditioned M, 3 stagnated, 4 scalar too small/large) |
-| `L = ichol(A)`, `ichol(A, opts)` | `opts.type = "nofill"` (IC(0), default) / `"ict"` with `droptol`, `opts.michol`, `opts.diagcomp`; returns lower `L` with `A ≈ L*L'`, reads the lower triangle | Phase 3: `"nofill"`, `"ict"`, `michol`, `diagcomp` |
+| `x = pcg(A, b, tol, maxit, M1, M2, x0)`, `[x, flag, relres, iter, resvec] = pcg(...)` | Defaults `tol = 1e-6`, `maxit = min(n, 20)`; `A` may be a function handle; `M` a matrix or handle; with `nargout < 2` prints a message (converged line, or a warning when `flag ≠ 0`) | Phase 3 (0.3.87), same signature, messages, and flags (0 converged, 1 maxit, 2 ill-conditioned M, 3 stagnated, 4 scalar too small/large) |
+| `L = ichol(A)`, `ichol(A, opts)` | `opts.type = "nofill"` (IC(0), default) / `"ict"` with `droptol`, `opts.michol`, `opts.diagcomp`; returns lower `L` with `A ≈ L*L'`, reads the lower triangle | Phase 3 (0.3.87): `"nofill"`, `"ict"`, `michol`, `diagcomp`, `shape` |
 
 ---
 
@@ -167,9 +167,31 @@ Cost of the `n×1` result (rule in §7): none measurable at size; a 50×50 diago
 
 **Docs audit (0.3.86, same PR):** `docs/functions.md`, `docs/sparse_solve.md`, `docs/quickref.md`, `docs/agent-guide.md`, `README.md`, REPL help, Rust doc comments (`OrderingHint`, `spsolve`, `chol`, `OrderingChoice`), the `sparse_solve` / `sparse_scaling` / `sparse_complex` / `electrostatics` notebooks and their gallery pages, `examples/sparse/sparse_solve.rlab`, and `perf/sparse_solve_phase1to4.md` (marked historical) now describe the 0.3.85–0.3.86 behaviour. `sparse_scaling` renders in about 4 s.
 
-### Phase 3 — `pcg` and `ichol`
+### Phase 3 — `pcg` and `ichol` (0.3.87)
+
+**Status:** complete
 
 MATLAB signatures above. Function-handle `A` and `M`. Tests: convergence on a Poisson matrix in the iteration count bound, `flag` values, `ichol` `L*L'` equals `A` on the pattern, `"ict"` with `droptol = 0` equals the full Cholesky factor.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Failing tests first: core (`crates/rustlab-core/tests/sparse_pcg.rs`: IC(0) pattern and `L*L' = A` on it, lower-triangle-only read, ICT `droptol = 0` = full factor, drop rule, `michol` row sums, `diagcomp` = shifted IC(0), nonpositive pivot / missing diagonal, complex Hermitian, triangular solves, PCG within the `√κ` iteration bound on a 2-D Poisson matrix, `ichol` < none on 3-D, zero `b`, exact `x0`, warm start, flags 1–4, `maxit = 0`, complex Hermitian, operator errors), script (`crates/rustlab-script/tests/pcg_ichol.rs`: shapes, defaults, `[]`, every preconditioner form, handles, messages, argument errors, `ichol` options and errors), CLI (`crates/rustlab-cli/tests/pcg_messages.rs`: stdout / stderr messages and silence with `flag`) | done |
+| 2 | `rustlab-core`: `sparse_solve/ichol.rs`, `pcg.rs` (MATLAB `pcg.m` iteration, `PcgOperators` trait, `MatrixPcg`), `triangular.rs`; `SparseScalar` gains `re`, `abs2`, `from_f64`, `is_finite`; `SparseSolveError::NonpositivePivot` | done |
+| 3 | `rustlab-script`: `eval/iterative.rs` (`Evaluator::eval_pcg`, intercepted in `call_builtin_tracked_nargout`; `ichol` builtin) | done |
+| 4 | Docs (`functions.md`, `sparse_solve.md`, `quickref.md`, `agent-guide.md`, `README.md`), REPL help, `AGENTS.md`, CHANGELOG, `sparse_solve` notebook + gallery, version 0.3.87 | done |
+| 5 | Measure `pcg` against `\` on 3-D grids (`perf/sparse_pcg_phase3.rlab`) | done |
+
+#### Phase 3 results (release, 4-core VM, `b = rand`, `tol = 1e-8`)
+
+| Grid | sparse `\` | `pcg` none | `pcg` Jacobi | `pcg` + `ichol` nofill | + `michol` | + ICT 1e-2 | + ICT 1e-3 |
+|---|---|---|---|---|---|---|---|
+| 21³ (9,261) | 0.125 s | 0.007 s, 79 it | 0.008 s, 79 it | 0.006 + 0.008 s, 29 it | 0.005 + 0.007 s, 26 it | 0.005 + 0.008 s, 29 it | 0.026 + 0.010 s, 15 it |
+| 31³ (29,791) | 1.14 s | 0.034 s, 113 it | 0.037 s, 113 it | 0.022 + 0.036 s, 40 it | 0.019 + 0.029 s, 33 it | 0.019 + 0.035 s, 40 it | 0.079 + 0.043 s, 22 it |
+| 41³ (68,921) | 5.43 s | 0.107 s, 147 it | 0.117 s, 147 it | 0.051 + 0.109 s, 48 it | 0.056 + 0.083 s, 39 it | 0.048 + 0.100 s, 48 it | 0.193 + 0.138 s, 27 it |
+
+`ichol` time + `pcg` time; true relative residuals 5e-9 to 9e-9 for every `pcg` row, 4e-14 to 2e-13 for `\`. Jacobi is a no-op on a constant-diagonal Laplacian. One preconditioned iteration costs about three plain ones (two triangular solves), so IC(0) is near break-even in time on these grids; `michol` and ICT 1e-3 are the fastest preconditioned variants. Lesson 18-style 31³ `pin_dirichlet` sphere: `\` 0.19 s, `pcg` 0.025 s (114 iterations to 1e-10, flag 0) even though the pinned operator is not symmetric — not guaranteed, so the docs point to `\` for it.
+
+MATLAB comparison and trade-offs (rule in §7): no MATLAB choice cost measurable speed or memory, so every one is matched — flags, defaults, `[]`, `tol` clamping with warnings, best-iterate return, `resvec` lengths, message on stdout when converged and a warning on stderr otherwise (only with fewer than two outputs). Differences: `ichol` with `michol = "on"` on a complex matrix is an error; `[x, flag] = h(...)` for a handle `h = @pcg` gets one output (every rustlab handle call does); `ichol` is always in the natural order of `A` (as MATLAB's; reorder with `A(p, p)` first). Not measured against MATLAB itself (no MATLAB on the VM); iteration counts follow the same algorithm.
 
 ### Phase 4 — sparse `chol` outputs
 

@@ -464,6 +464,7 @@ impl BuiltinRegistry {
         r.register("nonzeros", builtin_nonzeros);
         r.register_nargout("find", builtin_find_nargout);
         r.register("spsolve", builtin_spsolve);
+        r.register("ichol", super::iterative::builtin_ichol);
         r.register_nargout("chol", builtin_chol);
         r.register_nargout("lu", builtin_lu);
         r.register("solve", builtin_solve);
@@ -11712,7 +11713,7 @@ fn fmt_scientific(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
 }
 
 /// `%g` / `%G`: `prec` is significant digits (0 is treated as 1).
-fn fmt_general(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
+pub(crate) fn fmt_general(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
     let prec = prec.max(1);
     if mag == 0.0 {
         return if hash {
@@ -15967,7 +15968,7 @@ fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
 /// context — matches existing rustlab convention.
 /// An `n×1` solution, as MATLAB's `\` returns (real storage when every
 /// imaginary part is zero). A 1×1 system gives a scalar.
-fn solution_column(x: CVector) -> Value {
+pub(crate) fn solution_column(x: CVector) -> Value {
     if x.len() == 1 {
         return spsolve_pack(x);
     }

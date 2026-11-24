@@ -836,6 +836,10 @@ pub const HELP: &[HelpEntry] = &[
         detail: "F = lu(A)                 — sparse A: opaque factor for solve(F, b)\nF = lu(A, ordering)       — ordering \"auto\" | \"identity\" | \"amd\" | \"nd\" (sparse only)\n[L, U] = lu(A)            — dense: L*U = A, permutation absorbed into L\n[L, U, P] = lu(A)         — dense: P*A = L*U, L unit lower, U upper\n[L, U, p] = lu(A, \"vector\") — p is a 1×n row and A(p, :) = L*U\n\n  A sparse matrix still returns a factor handle (partial pivoting,\n  threshold 0.1), including indefinite, non-Hermitian, and complex A.\n  Real-only sparse A uses the f64 path. Asking for [L, U, P] of a sparse\n  matrix is an error; use lu(full(A)).\n  A dense matrix does not return a factor handle. One output is an error\n  that points at [L, U] or [L, U, P].\n\nExample:\n  A = sparse([1+j, 2; 3, 4-j]);\n  F = lu(A);\n  x1 = solve(F, [1; j]);\n  [L, U, P] = lu([1, 2; 3, 4]);" },
     HelpEntry { name: "solve", brief: "Back-solve through a cached chol/lu factor",
         detail: "x = solve(F, b)  — apply factor F to right-hand side b\n\n  F must be a sparse-factor handle returned by chol() or lu(). b must\n  match the dimension of the factored matrix. A real factor refuses a\n  complex b — refactor with chol/lu on the complex matrix in that case\n  (A \\ b and spsolve split it into two real solves instead). The\n  result is a 1-D vector.\n\nExample:\n  L = -1 * laplacian_2d(50, 50);\n  F = chol(L);\n  x = solve(F, ones(2500, 1));      % single solve\n  x2 = solve(F, randn(2500, 1));    % cheap second solve" },
+    HelpEntry { name: "pcg", brief: "Preconditioned conjugate gradients (MATLAB pcg)",
+        detail: "x = pcg(A, b)\nx = pcg(A, b, tol, maxit, M1, M2, x0)\n[x, flag, relres, iter, resvec] = pcg(...)\n  A      — square matrix (sparse or dense), or a handle afun(x) = A*x\n  b      — column of length n\n  tol    — relative tolerance, default 1e-6 (clamped to [eps, 1-eps])\n  maxit  — iteration limit, default min(n, 20)\n  M1, M2 — preconditioner M = M1*M2, applied as M2 \\ (M1 \\ r). Matrices\n           (triangular / diagonal ones are solved by substitution, others\n           are factored once) or handles mfun(r) = M \\ r\n  x0     — initial guess, default zeros\n  []     — any argument: take the default\n\nPreconditioned conjugate gradients for Hermitian positive definite A,\nas MATLAB's pcg. Iterative: accurate to tol, not to roundoff (A \\ b is\nthe direct solve). x is an n×1 column.\n\nflag: 0 converged, 1 maxit reached, 2 preconditioner solve not finite,\n      3 stagnated, 4 a scalar became 0/Inf or p'*A*p <= 0 (indefinite A)\nrelres = norm(b - A*x) / norm(b); iter = iteration of the returned x\n(the best iterate when flag ≠ 0); resvec = residual norms, (iter+1)×1.\n\nWith fewer than two outputs pcg prints \"pcg converged at iteration N ...\"\n(stdout) or a \"warning: pcg stopped at iteration N ...\" (stderr).\nAsking for flag prints nothing.\n\nA is not checked for symmetry. A pin_dirichlet operator is not symmetric;\nuse A \\ b for it.\n\nExamples:\n  A = -1 * laplacian_3d(30, 30, 30); b = ones(27000, 1);\n  [x, flag, relres, iter] = pcg(A, b, 1e-8, 500);\n  L = ichol(A);\n  [x, flag, relres, iter] = pcg(A, b, 1e-8, 500, L, L');   % fewer iterations\n  [x, flag] = pcg(@(v) A * v, b, 1e-8, 500, @(r) r / 6); % handles" },
+    HelpEntry { name: "ichol", brief: "Incomplete Cholesky factor (MATLAB ichol)",
+        detail: "L = ichol(A)\nL = ichol(A, opts)\n\nIncomplete Cholesky factor of a sparse Hermitian positive definite A:\nsparse lower L with L*L' ≈ A, for pcg(A, b, tol, maxit, L, L').\nReads only the lower triangle. A must be sparse.\n\nopts (a struct; unknown fields are an error):\n  type     — \"nofill\" (IC(0), default: pattern of tril(A)) or \"ict\"\n  droptol  — \"ict\": drop L(i,j) when |L(i,j)| < droptol*norm(A(j:end,j),1);\n             0 (default) keeps everything = the full Cholesky factor\n  michol   — \"on\": modified IC, dropped entries go to the diagonal so\n             L*L'*e = A*e (real A only). Default \"off\"\n  diagcomp — factor A + diagcomp*diag(diag(A)). Default 0\n  shape    — \"lower\" (default) or \"upper\" (R = L', R'*R ≈ A)\n\nA pivot that is not real positive is an error (\"nonpositive pivot\");\ntry diagcomp > 0 or michol = \"on\".\n\nExamples:\n  A = -1 * laplacian_2d(100, 100);\n  L = ichol(A);\n  L = ichol(A, struct(\"type\", \"ict\", \"droptol\", 1e-3));\n  L = ichol(A, struct(\"michol\", \"on\"));\n  [x, flag] = pcg(A, ones(10000, 1), 1e-8, 500, L, L');" },
     HelpEntry { name: "spdiags", brief: "Build sparse matrix from diagonals",
         detail: "spdiags(V, D, m, n)  — place diagonals into an m×n sparse matrix\n  V — vector (single diag) or matrix (one column per diag)\n  D — scalar or vector of offsets (0=main, >0 super, <0 sub)\n\nExamples:\n  S = spdiags([1,2,3], 0, 3, 3)   — diagonal\n  T = spdiags([-ones(5,1), 2*ones(5,1), -ones(5,1)], [-1,0,1], 5, 5)" },
     HelpEntry { name: "sprand", brief: "Random sparse matrix with given density",
@@ -1624,7 +1628,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow {
         toolbox: "sparse",
         subcategory: "Solvers",
-        names: &["spsolve", "chol", "lu", "solve"],
+        names: &["spsolve", "chol", "lu", "solve", "pcg", "ichol"],
     },
     CategoryRow {
         toolbox: "sparse",
@@ -2148,6 +2152,7 @@ mod help_coverage_tests {
         "index_assign",
         "ls",
         "parmap",
+        "pcg",
         "pi",
         "profile",
         "profile_report",
