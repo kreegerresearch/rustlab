@@ -1,9 +1,11 @@
 # Sparse Direct Solve — Design and Algorithm Reference
 
 This document describes the end-to-end sparse linear solve pipeline:
-how sparse `A \ b`, `spsolve(A, b)`, `chol(A)`, `lu(A)`, and `solve(F, b)`
-flow from a script call to a numerical answer, what choices are made
-along the way, and why. The iterative `pcg` and its `ichol`
+how sparse `A \ b`, `spsolve(A, b)`, `chol(A)`, `decomposition(A)`,
+`lu(A)`, and `solve(F, b)` flow from a script call to a numerical answer,
+what choices are made along the way, and why. MATLAB's sparse `chol`
+outputs and `decomposition` (0.3.88) are covered in
+[Sparse `chol` outputs and `decomposition`](#sparse-chol-outputs-and-decomposition). The iterative `pcg` and its `ichol`
 preconditioner (0.3.87) are covered in [Iterative solves](#iterative-solves--pcg-and-ichol).
 Companion docs:
 
@@ -14,8 +16,8 @@ Companion docs:
 - `dev/plans/em_performance.md` — Phase 1 (factor reuse) and Phase 2 (ordering hint).
 - `dev/plans/sparse_spd_solve.md` — row-singleton Cholesky (0.3.85), nested
   dissection for Cholesky and LU, `n×1` results (0.3.86), `pcg` and
-  `ichol` (0.3.87), measurements, and the decisions for sparse `chol`
-  outputs.
+  `ichol` (0.3.87), sparse `chol` outputs and `decomposition` (0.3.88),
+  measurements, and decisions.
 - `perf/sparse_pcg_phase3.rlab` — `pcg` / `ichol` against `\` on 3-D grids.
 
 All sparse-solver code is **pure Rust**, hand-rolled per `AGENTS.md` Rule 9:
@@ -33,10 +35,12 @@ Chapter numbers below refer to this book.
                               │
               ┌───────────────┴───────────────┐
               │                               │
-   A \ b,  spsolve(A, b, …)            chol(A) / lu(A)
+   A \ b,  spsolve(A, b, …),        chol(A) → R, p, P
+   decomposition(A)                  lu(A) → handle
               │                               │
    sparse_auto::factor                        │
-   (SPD? row singletons? else LU)             │
+   (triangular? SPD? row singletons?          │
+    else LU)                                  │
               └───────────┬───────────────────┘
                           │
         factor_sparse_*() / ReducedChol
@@ -80,7 +84,8 @@ Two layers:
 spsolve(A, b)
 spsolve(A, b, mode)
 spsolve(A, b, mode, ordering)
-chol(A)              chol(A, ordering)
+[R, p, P] = chol(A [, "lower"] [, "vector"] [, ordering])
+decomposition(A [, "auto" | "chol" | "lu" | "qr"] [, "upper" | "lower"])
 lu(A)                lu(A, ordering)
 solve(F, b)
 ```
@@ -96,6 +101,12 @@ columns of `b`.
 `spsolve` and square sparse `A \ b` (one factorization for all columns
 of `b`):
 
+0. (`"auto"` only, 0.3.88) A diagonal, upper triangular, or lower
+   triangular matrix whose diagonal entries are all stored and finite →
+   substitution (`TriangularSolve`), as MATLAB's `\` checks for a
+   triangular matrix first. This is what `R \ b` and `R' \ b` take for a
+   `chol` factor. A zero on the diagonal falls through to the steps below
+   unchanged.
 1. `SparseMat::is_spd_estimate(1e-10)` (`crates/rustlab-core/src/types.rs`)
    — Hermitian symmetry and a real-positive diagonal → Cholesky of `A`.
 2. Otherwise `RowSingletonSplit::find` (`sparse_solve/singleton.rs`)
@@ -341,7 +352,7 @@ grid Cholesky factor with identity ordering (`nnz = 8 × 10^6`), the
 solve itself is in the millisecond range — three orders of magnitude
 cheaper than the factor.
 
-This is why `chol(A)` / `lu(A)` returning a reusable factor handle is
+This is why `decomposition(A)` / `lu(A)` returning a reusable factor is
 the recommended pattern for parameter sweeps and animations: factor
 once, solve many.
 
@@ -362,24 +373,91 @@ pub enum SparseFactor {
 mirror the realness × factorization cross-product so the back-solve
 doesn't re-detect realness on every solve.
 
-`builtin_chol` errors on non-SPD `A` with no auto fallback to LU —
-the user explicitly chose Cholesky. It reads only the upper triangle and
-does not check symmetry (as MATLAB's `chol`), and it does not remove row
-singletons: for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`.
-Call `lu(A)` or `spsolve(A, b)` for auto dispatch.
+Since 0.3.88 only `lu(S)` returns this handle; a sparse `chol(S)` returns
+MATLAB's sparse factor `R` (next section), and `decomposition(S)` holds the
+reusable factor. `solve(F, b)` given a sparse matrix (an `R` from `chol`)
+errors with the three replacements: `S \ b`, `decomposition(S, "chol")`,
+or `[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)))`.
 
 `solve(F, b)` with a real factor refuses a complex `b` with a clear error
 rather than silently dropping the imaginary part (`\` and `spsolve` split
 it into two real solves instead). `solve(F, b)` returns a 1-D vector.
 
 Implementation lives in `factor_sparse_cholesky` / `factor_sparse_lu` /
-`solve_with_factor` in `builtins.rs`; `sparse_auto::factor` (used by `\`
-and `spsolve`) and the `chol`/`lu`/`solve` builtins all delegate to those
-helpers.
+`solve_with_factor` in `builtins.rs`; `sparse_auto::factor` (used by `\`,
+`spsolve`, and `decomposition`) and the `lu`/`solve` builtins delegate to
+those helpers.
 
-Planned (decision 3 in `dev/plans/sparse_spd_solve.md`): sparse `chol(S)`
-will return MATLAB's upper factor `R` (`[R, p]`, `[R, p, P]`), and
-`decomposition(S, "chol")` will take over the reusable-factor role.
+## Sparse `chol` outputs and `decomposition`
+
+Phase 4 of `dev/plans/sparse_spd_solve.md` (0.3.88), decision 3: sparse
+`chol(S)` returns MATLAB's factor.
+
+**`chol` (`eval/sparse_chol.rs`).** The options are parsed in any order:
+`"upper"` / `"lower"` (the triangle that is read), `"matrix"` / `"vector"`
+(the form of `P`), and, with three outputs only, an ordering name. The
+chosen triangle is mirrored into a Hermitian `SparseCsc`
+(`hermitian_from_triangle`), so a non-symmetric input behaves as MATLAB's
+(only that triangle counts) even after a symmetric permutation. Then
+`SparseChol::factor_flagged` runs the same up-looking factorization as
+`SparseChol::factor` (shared `up_looking` numeric pass, bit-identical
+factor when nothing fails) with one difference: when pivot `q` is not
+positive it records `q` and keeps going, reducing every later row against
+columns `0 .. q` only. The result (`PartialChol`) is the `n × q` block
+`L(:, 1:q)`, which is what MATLAB's sparse `[R, p] = chol(S)` returns as
+`R = L(:, 1:q)'` (`q × n`), with `R' * R` equal to `S` on the first `q`
+rows and columns. A dense `[R, p]` stays `q × q`, also as MATLAB.
+
+| Outputs | Ordering | Result |
+|---|---|---|
+| `R = chol(S)` | natural | `R' * R = S`; error if not positive definite |
+| `[R, p] = chol(S)` | natural | `p = 0` or the 1-based failed pivot |
+| `[R, p, P] = chol(S)` | `SpdAutoOrdering` (or the named one) | `R' * R = P' * S * P`, `P(perm(k), k) = 1` |
+| `[R, p, q] = chol(S, "vector")` | same | `R' * R = S(q, q)`, `q` a `1 × n` row |
+
+`R` is built straight from the CSC columns of `L` (column `j` of `L` is
+row `j` of `R`, already row-major), so no sort is needed; `"lower"` returns
+`L` through one counting-sort transpose. The factor is a COO `SparseMat`
+with `C64` entries (32 bytes per entry against 16 for the internal real
+CSC); see the measurements below.
+
+**Using `R`.** Sparse `\` step 0 makes `R \ b` and `R' \ b` substitutions.
+Two sparse matrices multiply to a sparse matrix (`SparseMat::matmul`,
+Gustavson row by row), so `R' * R` and `P' * S * P` can be checked at the
+sizes where `chol` is used; `P * x` and `P' * b` with a dense `x`, `b` are
+O(n) sparse-times-dense products.
+
+**`decomposition` (`eval/decomposition.rs`).** `Value::Decomposition`
+holds an `Arc` of either a sparse `AutoFactor` (the factor sparse `\`
+would use; `"lu"` forces LU; `"chol"` is the mirrored triangle factored
+with `SpdAutoOrdering`, an error if not positive definite) or a dense
+factor (`linsys::DenseFactor`: triangular, Cholesky, LU, or pivoted QR,
+chosen like dense `\`). `dA \ b` dispatches from `linsys::mldivide`;
+`b / dA` from `mrdivide` (`"chol"` only, since `A' = A`). `dA.Type` reports
+`chol`, `lu`, `qr`, `triangular`, or `diagonal`; a `pin_dirichlet` operator
+reports `chol` (the reduced Cholesky). A real sparse factor takes a
+complex `b` as two solves, which the `lu(S)` handle does not.
+
+**Measurements** (release build, 4-core VM, `perf/sparse_chol_phase4.rlab`;
+3-D Poisson `-laplacian_3d(n, n, n)`, `b` of ones and twos; the VM's
+run-to-run spread is about ±8%).
+
+| Grid (N, nnz(R)) | `S \ b` | `[R, p, P] = chol(S)` | `P*(R\(R'\(P'*b)))` | `decomposition(S, "chol")` | `dS \ b` | `R` as `SparseMat` / real CSC |
+|---|---|---|---|---|---|---|
+| 21³ (9,261, 0.98 M) | 0.16 s | 0.18 s | 0.065 s | 0.17 s | 0.003 s | 31 / 16 MB |
+| 31³ (29,791, 4.9 M) | 1.2 s | 1.5 s | 0.32 s | 1.2 s | 0.017 s | 157 / 79 MB |
+| 41³ (68,921, 15.9 M) | 6.9 s | 7.8 s | 1.08 s | 6.6 s | 0.066 s | 509 / 255 MB |
+
+Peak RSS at 41³: `[R, p, P] = chol(S)` plus one idiom solve 1.04 GB,
+`decomposition` plus one solve 316 MB, `S \ b` 303 MB (0.3.87's
+`F = chol(S); solve(F, b)`: 317 MB, factor 6.5–6.8 s against 6.4–6.6 s
+for `decomposition`). The idiom's cost is forming `R'` (a 15.9 M-entry
+transpose, ~0.6 s) and two in-place substitutions over the COO entries
+(~0.2 s each); `dS \ b` runs on the stored real CSC factor. The
+natural-order `R = chol(S)` on 25³ has 9.4 M entries and takes 2.8 s,
+against 2.0 M and 0.4 s with `P`. `R' * R - P' * S * P` (sparse
+products, max entry 7.5e-14) takes 27 s at 41³ because `R' * R` has
+roundoff-sized entries everywhere fill occurred; use it on small grids.
 
 ## Phase 2 — `OrderingHint` (historical: no longer read by `"auto"`)
 
@@ -451,7 +529,8 @@ crates/rustlab-core/src/
     ├── ordering.rs                 OrderingMethod trait, Identity/ColCount/Amd,
     │                               NestedDissection, SpdAuto
     ├── elimination_tree.rs         column elimination tree + post-order
-    ├── cholesky.rs                 SparseChol<T>::factor, ::solve
+    ├── cholesky.rs                 SparseChol<T>::factor, ::factor_flagged
+    │                               (PartialChol), ::solve
     ├── lu.rs                       SparseLU<T>::factor, ::solve
     ├── singleton.rs                RowSingletonSplit<T>, ReducedChol<T>
     ├── ichol.rs                    ichol (IC(0), ICT, michol, diagcomp)
@@ -460,8 +539,12 @@ crates/rustlab-core/src/
     └── tests.rs                    integration tests across modules
 
 crates/rustlab-script/src/eval/
-├── value.rs                        SparseFactor enum, Value::SparseFactor
-├── sparse_auto.rs                  auto / cholesky / lu choice for spsolve and sparse \
+├── value.rs                        SparseFactor enum, Value::SparseFactor,
+│                                   Value::Decomposition
+├── sparse_auto.rs                  triangular / cholesky / lu choice for spsolve,
+│                                   sparse \, and decomposition
+├── sparse_chol.rs                  MATLAB sparse chol outputs (R, p, P)
+├── decomposition.rs                decomposition(A), dA \ b, dA.Type
 ├── iterative.rs                    pcg (on the evaluator: handles) and ichol builtins
 └── builtins.rs                     spsolve / chol / lu / solve entry points
                                     factor_sparse_cholesky / _lu

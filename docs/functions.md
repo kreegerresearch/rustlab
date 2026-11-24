@@ -2019,7 +2019,7 @@ Left division. A rectangular `A` uses column-pivoted QR least squares. An ill-co
 
 A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector on the right is a column, and one solution is `n×1`. An explicit one-row matrix stays a row and does not match a tall `A`. `b'` of a vector is already a column, so that form still solves. Several columns of `b` are several right-hand sides.
 
-A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver: `spsolve(A, b)` in `"auto"` mode, factored once for all columns of `b`. That tries sparse Cholesky when `A` is Hermitian with a positive real diagonal, then Cholesky of the block left after removing the rows whose only nonzero is the diagonal (what `pin_dirichlet` writes; those unknowns are `b(k) / A(k, k)`), then sparse LU, all with a fill-reducing ordering chosen per matrix (see `spsolve`). The result is `n×1` (a 1×1 system gives a scalar), and a real `A` accepts a complex `b`. Before 0.3.86 the sparse result was a 1-D vector; drop any `x'` / `x.'` / `transpose(x)` used to make it a column. A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
+A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver: `spsolve(A, b)` in `"auto"` mode, factored once for all columns of `b`. A sparse diagonal or triangular matrix with no zero on the diagonal is solved by substitution (since 0.3.88; this is what `R \ b` takes for a `chol` factor `R`). Otherwise it tries sparse Cholesky when `A` is Hermitian with a positive real diagonal, then Cholesky of the block left after removing the rows whose only nonzero is the diagonal (what `pin_dirichlet` writes; those unknowns are `b(k) / A(k, k)`), then sparse LU, all with a fill-reducing ordering chosen per matrix (see `spsolve`). The result is `n×1` (a 1×1 system gives a scalar), and a real `A` accepts a complex `b`. Before 0.3.86 the sparse result was a 1-D vector; drop any `x'` / `x.'` / `transpose(x)` used to make it a column. A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
 ```
 x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
 
@@ -2360,6 +2360,8 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
 
+The product of two sparse matrices is sparse, as in MATLAB (`S1 * S2`, `R' * R`, `P' * S * P`; since 0.3.88 — it used to be dense). It is computed row by row without a dense intermediate; entries that cancel to exactly zero are not stored. `sparse * dense` and `dense * sparse` are dense.
+
 ### Indexing a sparse matrix
 `S(i, j)` with two scalars is the element. `S(rows, cols)` that selects more than one row **and** more than one column returns a **sparse** matrix, gathered from the stored entries in O(nnz + selected entries) without densifying; subscripts may be vectors, ranges with `end`, `:`, or logical masks, in any order and with repeats, as on a dense matrix. The ordering hint of a `laplacian_*` matrix is not carried over. A single row or column is dense: `S(k, :)` is a row and `S(:, k)` an `N×1` column, the same shapes as on a dense matrix. (MATLAB returns sparse there too.)
 
@@ -2462,42 +2464,81 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3; 1/3]  (2×1)
 
 The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust. For a full design walkthrough — dispatch chain, ordering hints, factor reuse, the underlying Davis algorithms — see `docs/sparse_solve.md`.
 
-### `chol(A)` / `chol(A, ordering)`, `lu(A)` / `lu(A, ordering)`, `solve(F, b)`
+### `chol(A)`, `[R, p] = chol(A)`, `[R, p, P] = chol(A)`
 
-Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
+Cholesky factor, MATLAB's `chol`. Sparse and dense `A` give the same factor; a sparse `A` returns a sparse factor (since 0.3.88 — it used to return a handle, see the migration note below).
 
-A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation row (`size(p)` is `[1, n]`, matching MATLAB's `1×n` `whos` line), and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+| Call | Returns |
+|---|---|
+| `R = chol(A)` | Upper triangular `R` with `R' * R = A`. Errors when `A` is not positive definite. |
+| `L = chol(A, "lower")` | Lower `L` with `L * L' = A`, from the lower triangle. `"upper"` is the default. |
+| `[R, p] = chol(A)` | No error: `p = 0` on success, otherwise the 1-based pivot that was not positive. |
+| `[R, p, P] = chol(S)` | Sparse `S` only. Fill-reducing permutation matrix `P` with `R' * R = P' * S * P`. |
+| `[R, p, q] = chol(S, "vector")` | The permutation as a `1×n` row `q`: `R' * R = S(q, q)`. `"matrix"` is the default. |
+| `[R, p, P] = chol(S, ordering)` | rustlab extension: `"auto"` (default), `"nd"`, `"amd"`, `"natural"` / `"identity"` select `P`. Only with three outputs. |
 
-A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 1×1 matrix (`chol(4)` is `2`). `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. A diagonal entry that is not real fails that pivot. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
+Options may come in any order (`chol(S, "lower", "vector")`). With `"lower"`, every identity uses `L * L'` and `L` is `R'`.
 
-This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
-
-The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; nested dissection or the natural order by predicted fill), `"identity"` / `"natural"`, `"amd"`, or `"nd"` (nested dissection). `solve(F, b)` still returns a 1-D vector.
-
-`chol(A)` reads only the upper triangle and does not check symmetry (as in MATLAB). It does not remove row singletons; for a `pin_dirichlet` operator use `A \ b` or `spsolve(A, b)`. `solve(F, b)` with a real factor and a complex `b` is an error (unlike `\`); refactor the complex matrix or split the parts.
-
-Planned change (`dev/plans/sparse_spd_solve.md`, Phase 4): a sparse `chol(S)` will return MATLAB's upper factor `R` with `R' * R = S`, plus `[R, p]` and `[R, p, P]`, and the reusable handle moves to `decomposition(S, "chol")` with `dS \ b`. Until then `F = chol(S)` returns the handle described here.
+- **Which triangle.** `chol` reads only the upper triangle (`"lower"`: the lower one) and assumes `A` is Hermitian; symmetry is not checked, as in MATLAB. A diagonal entry that is not real fails that pivot. Complex Hermitian positive definite `A` works.
+- **Failure.** With one output a pivot that is not positive is an error. `[R, p]` returns `p > 0` instead. A dense `R` is then the leading `q × q` factor (`q = p − 1`); a sparse `R` is `q × n` (`L` with `"lower"` is `n × q`), and `R' * R` agrees with `A` on the first `q` rows and columns, as MATLAB documents. With `P`, the same holds for `P' * S * P`.
+- **Permutation.** One- and two-output `chol(S)` factor `S` in its own order, as MATLAB does, so a 2-D or 3-D grid can fill in heavily: the natural-order factor of a 30×30 Laplacian has 1.6× the entries of the permuted one, a 9³ Laplacian 2.1×, a 25³ one 4.7× (9.4 M against 2.0 M, 2.8 s against 0.4 s). Ask for `P` to get the fill-reducing order. The default ordering is nested dissection or the natural order, whichever predicts the smaller factor (`SpdAutoOrdering`); MATLAB uses AMD, so `P` and `R` differ from MATLAB's but satisfy the same identity.
+- **Using `R`.** `R \ b` and `R' \ b` are triangular solves (sparse `\` detects triangular and diagonal matrices), so `x = P * (R \ (R' \ (P' * b)))` costs two substitutions plus forming `R'`. Sparse products stay sparse (`R' * R`, `P' * S * P`).
+- **Cost.** `R` is a COO sparse matrix with complex entries, 32 bytes per entry against 16 in the internal real factor `decomposition` keeps. On a 41³ Laplacian (68,921 unknowns, 15.9 M factor entries): `[R, p, P] = chol(S)` 7.3–7.8 s and 509 MB for `R` (peak 1.0 GB with the idiom), the idiom 1.1 s per solve; `decomposition(S, "chol")` 6.6–7.1 s, 316 MB peak, 0.06 s per `dS \ b`. To solve more than once, keep a `decomposition`.
+- **Dense `A`.** `chol(4)` is `2`. `[R, p, P]` needs a sparse matrix (`chol(sparse(A))`). `chol` does not remove row singletons: on a `pin_dirichlet` operator use `A \ b`, `spsolve`, or `decomposition(A)`.
 
 ```
-% Animation / sweep: factor once, solve per frame
+S = -1 * laplacian_2d(30, 30);           % SPD, 900 unknowns
+b = ones(900, 1);
+R = chol(S);                              % R' * R = S
+[R, p, P] = chol(S);                      % R' * R = P' * S * P, p = 0
+x = P * (R \ (R' \ (P' * b)));           % same as S \ b
+[R, p, q] = chol(S, "vector");            % R' * R = S(q, q)
+[R, p] = chol(S - 10 * speye(900));       % indefinite: no error, p > 0
+```
+
+**Migration from the 0.3.87 handle.** `F = chol(S); x = solve(F, b)` now passes a sparse matrix to `solve`, which errors and names these replacements:
+
+```
+x = S \ b;                                   % one solve
+dS = decomposition(S, "chol"); x = dS \ b;   % factor once, solve many (the old handle)
+[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)));
+```
+
+Printing `chol(S, "nd")` to see the factor size becomes `[R, p, P] = chol(S, "nd"); nnz(R)`.
+
+### `decomposition(A)` / `decomposition(A, type)` / `dA \ b`
+
+MATLAB's `decomposition`: factor `A` once, then solve with `dA \ b` as many times as needed. This is the reusable factor that a sparse `chol(S)` handle used to be.
+
+- `type` — `"auto"` (default: the factor `A \ b` would use), `"chol"`, `"lu"`, or `"qr"` (dense only; the auto choice for a rectangular dense `A`). `decomposition(A, "chol", "lower")` reads the lower triangle; `"upper"` is the default.
+- `dA \ b` — `b` may have several columns. One column gives `n×1`, as `\` does. A real factor takes a complex `b` (two real solves). `b / dA` works for a `"chol"` decomposition (`A` is Hermitian).
+- `dA.Type` — `"chol"`, `"lu"`, `"qr"`, `"triangular"`, or `"diagonal"`. `dA.MatrixSize` — `[m, n]`. `class(dA)` is `"decomposition"`.
+- Sparse `"auto"` takes the same path as sparse `\`, including the `pin_dirichlet` reduction (`Type` is `"chol"`). Sparse `"chol"` mirrors the chosen triangle, uses the fill-reducing ordering, and errors when the matrix is not positive definite. Sparse `"lu"` is the threshold-0.1 LU with the automatic ordering.
+- `solve(dA, b)` is the same as `dA \ b`.
+
+```
 L = -1 * laplacian_2d(100, 100);          % SPD
-F = chol(L);                              % factor cost (~0.03 s)
+dL = decomposition(L, "chol");            % factor once
 for k = 1:50
-  rho = randn(10000, 1);
-  v = solve(F, rho);                      % per-frame solve (~0.005 s)
+  v = dL \ randn(10000, 1);               % per-frame solve
   imagesc(reshape(v, 100, 100));
   frame
 end
 saveanim("sweep.html");
+```
 
-% LU for non-Hermitian / complex
+### `lu(A)` / `lu(A, ordering)`, `solve(F, b)`
+
+`lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle; `solve(F, b)` runs the cached triangular solves on a right-hand side. The optional `ordering` matches `spsolve`'s: `"auto"` (default; nested dissection or the natural order by predicted fill), `"identity"` / `"natural"`, `"amd"`, or `"nd"`. `solve(F, b)` returns a 1-D vector, and a real factor refuses a complex `b` (unlike `\` and `decomposition`). `solve` also accepts a `decomposition`. A sparse matrix as the first argument of `solve` is an error that names the `chol` migration above.
+
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation row (`size(p)` is `[1, n]`, matching MATLAB's `1×n` `whos` line), and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+
+```
 A = sparse([1+j, 2; 3, 4-j]);
 F = lu(A);
 x1 = solve(F, [1; j]);
 x2 = solve(F, [j; 1]);
 ```
-
-`chol()` errors when `A` is not SPD — there is no auto fallback to LU, on the assumption that the user explicitly chose Cholesky. If you want auto-dispatch with a single call, use `spsolve(A, b)`. A real factor refuses a complex `b`; refactor with `chol`/`lu` on the complex matrix in that case.
 
 ### `pcg(A, b)` / `pcg(A, b, tol, maxit, M1, M2, x0)` / `[x, flag, relres, iter, resvec] = pcg(...)`
 

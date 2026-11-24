@@ -1,0 +1,44 @@
+# Sparse chol outputs and decomposition (dev/plans/sparse_spd_solve.md, Phase 4).
+#
+#   rustlab run --plot none perf/sparse_chol_phase4.rlab
+#
+# For each 3-D Poisson grid: sparse A \ b, [R, p, P] = chol(S) and the MATLAB
+# solve idiom, decomposition(S, "chol") and dS \ b, and the factor sizes.
+# Bytes: the COO SparseMat R holds 32 bytes per entry (row, col, complex
+# value); the internal real CSC factor 16 (row, value) plus 8 per column.
+
+for n = [21, 31, 41]
+  N = n ^ 3;
+  S = -1 * laplacian_3d(n, n, n);
+  b = ones(N, 1);
+  b(1:2:N) = 2;
+  fprintf("\n%d^3 Poisson, N = %d, nnz(S) = %d\n", n, N, nnz(S));
+
+  tic; y = S \ b; t = toc;
+  fprintf("  S \\ b                              %8.3f s\n", t);
+
+  tic; [R, p, P] = chol(S); t_chol = toc;
+  tic; x = P * (R \ (R' \ (P' * b))); t_sol = toc;
+  fprintf("  [R, p, P] = chol(S)                %8.3f s   nnz(R) = %d\n", t_chol, nnz(R));
+  fprintf("  P * (R \\ (R' \\ (P' * b)))          %8.3f s   rel diff %.1e\n", t_sol, norm(x - y) / norm(y));
+  fprintf("  R as SparseMat   %7.1f MB   internal real CSC %7.1f MB\n", 32 * nnz(R) / 1e6, (16 * nnz(R) + 8 * (N + 1)) / 1e6);
+
+  tic; dS = decomposition(S, "chol"); t_dec = toc;
+  tic; z = dS \ b; t_dsol = toc;
+  fprintf("  decomposition(S, 'chol')           %8.3f s\n", t_dec);
+  fprintf("  dS \\ b                             %8.3f s   rel diff %.1e\n", t_dsol, norm(z - y) / norm(y));
+
+  tic; K = R' * R - P' * S * P; t_chk = toc;
+  v = nonzeros(K); kmax = 0;
+  if numel(v) > 0
+    kmax = max(abs(v));
+  end
+  fprintf("  R' * R - P' * S * P (sparse)       %8.3f s   max |K| %.1e\n", t_chk, kmax);
+end
+
+# The natural-order factor (one-output chol) fills in on 3-D grids.
+n = 25;
+S = -1 * laplacian_3d(n, n, n);
+tic; R0 = chol(S); t0 = toc;
+tic; [R, p, P] = chol(S); t1 = toc;
+fprintf("\n25^3: R = chol(S) %.3f s, nnz %d; [R, p, P] = chol(S) %.3f s, nnz %d\n", t0, nnz(R0), t1, nnz(R));

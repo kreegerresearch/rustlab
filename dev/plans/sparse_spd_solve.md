@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86, PR #167). Phase 3 complete (0.3.87). Phases 4–5 not started.
-**Current phase:** 4 — sparse `chol` outputs; waiting for Michael's go-ahead.
+**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86, PR #167). Phase 3 complete (0.3.87, PR #169). Phase 4 complete (0.3.88). Phase 5 not started.
+**Current phase:** 5 — faster factor kernel; waiting for Michael's go-ahead.
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -88,7 +88,8 @@ The nested-dissection prototype is a ~100-line level-set bisection: BFS from a p
 |---|---|---|
 | `x = A \ b` (sparse, square) | Flowchart: banded / triangular / permuted triangular → Hermitian with positive real diagonal → CHOLMOD (falls back on failure) → UMFPACK LU (singletons removed first) | Phase 1: same SPD test, plus: if `A` is not Hermitian, strip row singletons and test the free block; Hermitian-positive-diagonal → Cholesky on the free block, else (or on Cholesky failure) the unchanged LU on the full `A`. Result is still a direct solve |
 | `spsolve(A, b [, mode] [, ordering])` | (rustlab-only) | Same auto path. `"cholesky"` also uses the reduction, and now **errors** when the matrix (or its free block) is not Hermitian instead of returning a wrong answer. `ordering` adds `"nd"` |
-| `R = chol(S)`, `[R, p, P] = chol(S)`, `chol(S, "lower")`, `"vector"` | Sparse factor, `R'*R = P'*S*P` | Phase 4. Today `chol(S)` returns an opaque handle; MATLAB returns the sparse factor. Keep the handle form for `solve(F, b)`, add the sparse outputs |
+| `R = chol(S)`, `[R, p, P] = chol(S)`, `chol(S, "lower")`, `"vector"` | Sparse factor, `R'*R = P'*S*P` | Phase 4 (0.3.88): MATLAB's outputs; the reusable factor moved to `decomposition(S, "chol")`, and `solve(R, b)` errors with the replacements (decision 3) |
+| `dA = decomposition(A [, type])`, `dA \ b` | Factor once; `Type`, `MatrixSize` | Phase 4 (0.3.88): `"auto"`, `"chol"` (+ `"upper"` / `"lower"`), `"lu"`, `"qr"` (dense) |
 | `x = pcg(A, b, tol, maxit, M1, M2, x0)`, `[x, flag, relres, iter, resvec] = pcg(...)` | Defaults `tol = 1e-6`, `maxit = min(n, 20)`; `A` may be a function handle; `M` a matrix or handle; with `nargout < 2` prints a message (converged line, or a warning when `flag ≠ 0`) | Phase 3 (0.3.87), same signature, messages, and flags (0 converged, 1 maxit, 2 ill-conditioned M, 3 stagnated, 4 scalar too small/large) |
 | `L = ichol(A)`, `ichol(A, opts)` | `opts.type = "nofill"` (IC(0), default) / `"ict"` with `droptol`, `opts.michol`, `opts.diagcomp`; returns lower `L` with `A ≈ L*L'`, reads the lower triangle | Phase 3 (0.3.87): `"nofill"`, `"ict"`, `michol`, `diagcomp`, `shape` |
 
@@ -193,9 +194,36 @@ MATLAB signatures above. Function-handle `A` and `M`. Tests: convergence on a Po
 
 MATLAB comparison and trade-offs (rule in §7): no MATLAB choice cost measurable speed or memory, so every one is matched — flags, defaults, `[]`, `tol` clamping with warnings, best-iterate return, `resvec` lengths, message on stdout when converged and a warning on stderr otherwise (only with fewer than two outputs). Differences: `ichol` with `michol = "on"` on a complex matrix is an error; `[x, flag] = h(...)` for a handle `h = @pcg` gets one output (every rustlab handle call does); `ichol` is always in the natural order of `A` (as MATLAB's; reorder with `A(p, p)` first). Not measured against MATLAB itself (no MATLAB on the VM); iteration counts follow the same algorithm.
 
-### Phase 4 — sparse `chol` outputs
+### Phase 4 — sparse `chol` outputs and `decomposition` (0.3.88)
 
-`R = chol(S)`, `[R, p] = chol(S)` (p = 0 or the failing column), `[R, p, P] = chol(S)` and `"vector"` with the fill-reducing ordering, `"lower"`. What one-output `chol(S)` returns is open question 3.
+**Status:** complete
+
+Decision 3: `R = chol(S)` (`R'*R = S`, natural order, error if not positive definite), `[R, p] = chol(S)` (`p = 0` or the failed pivot; `R` is `q × n`, `q = p − 1`, and `R'*R` matches `S` on the L-shaped region, as MATLAB documents for sparse input), `[R, p, P] = chol(S)` with a fill-reducing `P` (`R'*R = P'*S*P`), `"vector"` (`R'*R = S(q, q)`, `q` a `1×n` row), `"lower"` (`L*L' = …`). The factor-once handle is MATLAB's `decomposition(S, "chol")`; `solve(R, b)` errors naming `S \ b`, `decomposition`, and the `[R, p, P]` idiom.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Failing tests first: core `SparseChol::factor_flagged` (bit-identical to `factor` when SPD, `L*L^H = A(p, p)`, failed pivot and the L-shaped block, complex Hermitian, 0×0 / 1×1 / zero diagonal, not square) in `crates/rustlab-core/tests/sparse_chol_flagged.rs`; script (`crates/rustlab-script/tests/sparse_chol.rs`): every output form and option order, `R` equals the dense natural-order factor, `p` and the `q × n` block, `P'*S*P` and `S(q, q)` identities, fill reduction on 3-D, explicit orderings, only the chosen triangle read, complex Hermitian, 1×1 / diagonal / empty / singular, bad inputs, dense `chol` unchanged and dense `[R, p, P]` an error, the MATLAB solve idiom, sparse triangular `\`, the `solve(chol(S), b)` migration error, `decomposition` types / fields / `b / dA` / complex `b` / dense matrices, sparse × sparse; `sparse_auto` unit test that `R \ b` takes the triangular path; migrated `chol` handle tests | done |
+| 2 | Core: `up_looking` numeric pass shared by `SparseChol::factor` and `factor_flagged` (`KEEP_GOING` const parameter so the ordinary factor's loop is unchanged), `PartialChol`, `SparseChol::perm()`; `SparseMat::matmul` (Gustavson), `SparseMat::transpose_map` (counting sort, one pass on row-major input); `SparseMat::to_csc` without the intermediate triplet copy and a sortedness check before the per-column sort | done |
+| 3 | Script: `eval/sparse_chol.rs` (options, mirrored triangle, `R` / `L` / `P` output), `eval/decomposition.rs` (`Value::Decomposition`, sparse `AutoFactor` or `linsys::DenseFactor`), sparse `\` step 0 (triangular / diagonal, `RowTriangular`, and `solve_triangular_in_place` straight from row-major entries for a one-shot `\`), borrowed `S \ b` for a workspace sparse matrix, `solve` migration error, sparse × sparse in `Value::binop` | done |
+| 4 | Docs (`functions.md`, `sparse_solve.md`, `quickref.md`, `agent-guide.md`, `README.md`), REPL help (`chol`, `decomposition`, `solve`, `mldivide`), `AGENTS.md`, CHANGELOG with migration notes, `sparse_solve` / `sparse_scaling` notebooks and gallery, version 0.3.88 | done |
+| 5 | Measure (decision 3's two items): memory of `R` as `SparseMat` vs the internal factor, and that `R \ (R' \ b)` is a triangular solve (`perf/sparse_chol_phase4.rlab`) | done |
+
+#### Phase 4 results (release, 4-core VM, spread ±8% run to run)
+
+| 41³ Poisson (68,921 unknowns, 15.9 M factor entries) | Time | Peak RSS |
+|---|---|---|
+| `S \ b` (best of 5; 0.3.87 best of 5: 6.25 s) | 6.13 s | 303 MB |
+| `decomposition(S, "chol")` / `dS \ b` (0.3.87 handle: 6.5–6.8 s / 0.06 s, 317 MB) | 6.4–6.6 s / 0.06 s | 316 MB |
+| `[R, p, P] = chol(S)` | 7.3–7.8 s | — |
+| `x = P * (R \ (R' \ (P' * b)))` | 1.04–1.08 s | 1.04 GB (with the `chol`) |
+
+Trade-offs (rule in §7), measured and kept on the fast path:
+- **Memory of `R`.** `R` is a COO `SparseMat` with `C64` entries: 32 bytes per entry, 509 MB at 41³ against 255 MB for the internal real CSC factor (decision 3's estimate was 150 vs 74 MB for the Lesson 18 sphere's 4.6 M entries; same 2×). Building it costs 0.2–1.2 s over `decomposition` at 41³, and the peak with one idiom solve is 1.04 GB against 316 MB, because `L`, `R`, and `R'` coexist. A real-storage sparse type (16 bytes per entry, like MATLAB's) would halve it; that is a change to `SparseMat` across the interpreter, not in Phase 4's scope.
+- **Idiom speed.** `R \ b` hits a substitution, not LU (sparse `\` step 0). It reads the row-major COO entries in place (0.055 s per substitution at 31³, 4.9 M entries; it was 0.31 s through a CSC conversion and 1.8 s for `R'` through `SparseMat::new` before this phase's fixes). The idiom is still 16× a `dS \ b` at 41³ (1.08 s vs 0.066 s), most of it forming `R'` (a 15.9 M-entry transpose). MATLAB's idiom is also slower than a reused factor; docs and help point repeated solves at `decomposition`.
+- **Ordering of `P`.** `SpdAutoOrdering` (nested dissection or natural by fill), not MATLAB's AMD. Same identities, different `P` and `R`. On 3-D grids ND gives the smaller factor; rustlab's basic AMD is O(n²) and gives the largest of the three.
+- **One-output `chol(S)` is in the natural order** (MATLAB): 25³ natural factor 9.4 M entries / 2.8 s vs 2.0 M / 0.4 s with `P`. Documented; no rustlab-only default.
+
+Observable changes beyond `chol`: sparse × sparse returns a sparse matrix (MATLAB; it was dense), and sparse `\` on a diagonal or triangular matrix uses substitution (last digits change against the Cholesky / LU it used before; decision 4). `perf/bench_*.rlab` unchanged within noise; workspace tests pass.
 
 ### Phase 5 — faster factor kernel
 
