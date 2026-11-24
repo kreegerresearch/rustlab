@@ -427,6 +427,13 @@ fn resolve_watch_page(state: &ServerState, path: &str) -> PageHit {
     if let Some(slug) = state.link_slugs.get(&key) {
         return PageHit::Serve(slug.clone());
     }
+    // A listed `.rlab` script keeps its extension in the URL
+    // (`/n/demo.rlab`), so it cannot collide with `demo.md`.
+    if super::fileset::is_script(std::path::Path::new(&decoded)) {
+        if let Some(slug) = state.link_slugs.get(&decoded) {
+            return PageHit::Serve(slug.clone());
+        }
+    }
     // Legacy `/n/<stem>`. An exact path already won, so a root
     // `intro.md` is served above and is not part of this search.
     // `/n/<stem>-N` is not an alias: it 404s unless a file is named that.
@@ -627,7 +634,7 @@ pub(super) async fn serve_notebook_path(
                 let html = nb.html.read().await.clone();
                 let parsed = crate::gitdiff::parse_query(query);
                 let cli = crate::gitdiff::diff_default();
-                let html = if state.git_enabled {
+                let html = if state.git_enabled && !super::fileset::is_script(&nb.source_path) {
                     if let Some(compare) = crate::gitdiff::resolve_compare(&parsed, cli.as_deref())
                     {
                         let comments_on = parsed.cm.unwrap_or(state.comments_on);

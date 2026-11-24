@@ -279,8 +279,9 @@ fn rewrite_link_dest_to(
                         .map(str::to_string)
                 },
             )?;
-            if *index_at_root && resolved == "index.md" {
-                // The index page's body, hoisted to the server root.
+            if *index_at_root && resolved == "index.md" && !slugs.contains_key("index.md") {
+                // The index page's body, hoisted to the server root. A
+                // file set that names index.md serves it as a page.
                 return Some(format!("/{fragment}"));
             }
             if *index_at_root {

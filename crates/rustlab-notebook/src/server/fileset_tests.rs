@@ -316,6 +316,17 @@ async fn rlab_file_is_a_read_only_script_page() {
         std::fs::read_to_string(root.join("demo.rlab")).unwrap(),
         "x = 6 * 7;\ndisp(x)\n"
     );
+    // The same guard backs cell save and annotate.
+    assert!(http::notebook_md_target(&root.join("demo.rlab"), None).is_err());
+    assert!(
+        page.contains("const CELL_EDIT = false;"),
+        "script page offers cell editing"
+    );
+    let (_, md_page, _) = get(&app, "/n/intro").await;
+    assert!(
+        md_page.contains("const CELL_EDIT = true;"),
+        "control: .md pages edit"
+    );
     // A listed notebook in a subfolder saves (its own directory is the jail).
     let (st, msg) = post(
         &app,
@@ -339,6 +350,17 @@ async fn rlab_file_is_a_read_only_script_page() {
     assert!(std::fs::read_to_string(root.join("ch2/secret.md"))
         .unwrap()
         .contains("not listed"));
+}
+
+#[test]
+fn a_lone_rlab_file_is_a_script_page_too() {
+    let (_d, root) = sample_tree();
+    let set = resolve_watch_inputs(&[root.join("demo.rlab")]).unwrap();
+    let state = state_for(&set, false, None);
+    assert!(state.single);
+    let html = futures_html(&state, "demo");
+    assert!(html.contains("<title>demo.rlab"), "{html}");
+    assert!(html.contains("42"), "script did not run");
 }
 
 #[test]
