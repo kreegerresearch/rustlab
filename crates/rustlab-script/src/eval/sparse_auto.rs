@@ -1,9 +1,12 @@
 //! The direct-solver choice behind sparse `A \ b` and `spsolve(A, b)`.
 //!
-//! MATLAB's sparse `\` tries Cholesky when `A` is Hermitian with a positive
-//! real diagonal and otherwise runs an LU that first strips row and column
-//! singletons. Here:
+//! MATLAB's sparse `\` checks for a triangular matrix first, tries Cholesky
+//! when `A` is Hermitian with a positive real diagonal, and otherwise runs an
+//! LU that first strips row and column singletons. Here:
 //!
+//! 0. Diagonal, upper, or lower triangular with no zero on the diagonal →
+//!    substitution (`"auto"` only). This is what `R \ (R' \ b)` takes for
+//!    a `chol` factor.
 //! 1. Hermitian with a positive real diagonal → sparse Cholesky.
 //! 2. Not Hermitian, but the block left after removing the row singletons
 //!    (the rows `pin_dirichlet` writes) is → solve the pinned unknowns
@@ -22,7 +25,7 @@ use ndarray::Array1;
 use num_complex::Complex;
 use rustlab_core::sparse_solve::{
     AmdOrdering, IdentityOrdering, NestedDissectionOrdering, ReducedChol, RowSingletonSplit,
-    SparseCsc, SparseScalar, SparseSolveError, SpdAutoOrdering,
+    SparseCsc, SparseScalar, SparseSolveError, SpdAutoOrdering, TriangularSolve,
 };
 use rustlab_core::{CVector, SparseMat, C64};
 
@@ -37,16 +40,21 @@ pub(crate) enum AutoFactor {
     Plain(SparseFactor),
     ReducedReal(ReducedChol<f64>),
     ReducedComplex(ReducedChol<C64>),
+    TriReal(TriangularSolve<f64>),
+    TriComplex(TriangularSolve<C64>),
 }
 
 impl AutoFactor {
-    /// `"cholesky"`, `"reduced-cholesky"`, or `"lu"`.
-    #[cfg(test)]
+    /// `"cholesky"`, `"reduced-cholesky"`, `"lu"`, `"triangular"`, or
+    /// `"diagonal"`.
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             AutoFactor::Plain(f) if f.kind() == "chol" => "cholesky",
             AutoFactor::Plain(_) => "lu",
             AutoFactor::ReducedReal(_) | AutoFactor::ReducedComplex(_) => "reduced-cholesky",
+            AutoFactor::TriReal(TriangularSolve::Diagonal(_))
+            | AutoFactor::TriComplex(TriangularSolve::Diagonal(_)) => "diagonal",
+            AutoFactor::TriReal(_) | AutoFactor::TriComplex(_) => "triangular",
         }
     }
 
@@ -56,6 +64,7 @@ impl AutoFactor {
             AutoFactor::Plain(f) => f.nnz(),
             AutoFactor::ReducedReal(r) => r.nnz(),
             AutoFactor::ReducedComplex(r) => r.nnz(),
+            AutoFactor::TriReal(_) | AutoFactor::TriComplex(_) => 0,
         }
     }
 
@@ -63,8 +72,8 @@ impl AutoFactor {
     pub(crate) fn solve(&self, b: &CVector) -> Result<CVector, String> {
         let real_factor = match self {
             AutoFactor::Plain(f) => f.scalar() == "real",
-            AutoFactor::ReducedReal(_) => true,
-            AutoFactor::ReducedComplex(_) => false,
+            AutoFactor::ReducedReal(_) | AutoFactor::TriReal(_) => true,
+            AutoFactor::ReducedComplex(_) | AutoFactor::TriComplex(_) => false,
         };
         if real_factor && b.iter().any(|c| c.im != 0.0) {
             let re = self.solve_one(&b.mapv(|c| Complex::new(c.re, 0.0)))?;
@@ -94,6 +103,16 @@ impl AutoFactor {
                     .map(Array1::from_vec)
                     .map_err(|e| e.to_string())
             }
+            AutoFactor::TriReal(t) => {
+                let br: Vec<f64> = b.iter().map(|c| c.re).collect();
+                Ok(Array1::from_iter(
+                    t.solve(&br).into_iter().map(|v| Complex::new(v, 0.0)),
+                ))
+            }
+            AutoFactor::TriComplex(t) => {
+                let bc: Vec<C64> = b.iter().copied().collect();
+                Ok(Array1::from_vec(t.solve(&bc)))
+            }
         }
     }
 }
@@ -107,6 +126,11 @@ pub(crate) fn factor(
 ) -> Result<AutoFactor, String> {
     if mode == Mode::Lu {
         return factor_sparse_lu(sm, ordering).map(AutoFactor::Plain);
+    }
+    if mode == Mode::Auto {
+        if let Some(f) = factor_triangular(sm) {
+            return Ok(f);
+        }
     }
     if sm.is_spd_estimate(1e-10) {
         match factor_sparse_cholesky(sm, ordering) {
@@ -125,6 +149,49 @@ pub(crate) fn factor(
         }
     }
     factor_sparse_lu(sm, ordering).map(AutoFactor::Plain)
+}
+
+/// Substitution for a square matrix with entries on at most one side of
+/// the diagonal and every diagonal entry stored (so nonzero) and every
+/// entry finite. `None` otherwise, including the empty matrix.
+fn factor_triangular(sm: &SparseMat) -> Option<AutoFactor> {
+    let n = sm.rows;
+    if n == 0 || n != sm.cols {
+        return None;
+    }
+    let (mut below, mut above) = (false, false);
+    let mut diag = 0usize;
+    for &(i, j, v) in &sm.entries {
+        if !v.re.is_finite() || !v.im.is_finite() {
+            return None;
+        }
+        below |= i > j;
+        above |= i < j;
+        if below && above {
+            return None;
+        }
+        diag += usize::from(i == j);
+    }
+    if diag != n {
+        return None;
+    }
+    fn build<T: SparseScalar>(csc: SparseCsc<T>, below: bool, above: bool) -> TriangularSolve<T> {
+        match (below, above) {
+            (false, false) => {
+                let d = (0..csc.ncols()).map(|j| csc.get(j, j)).collect();
+                TriangularSolve::Diagonal(d)
+            }
+            (true, _) => TriangularSolve::Lower(csc),
+            (false, true) => TriangularSolve::Upper(csc),
+        }
+    }
+    if super::builtins::sparse_all_real(sm, None) {
+        let csc: SparseCsc<f64> = sm.to_csc().ok()?;
+        Some(AutoFactor::TriReal(build(csc, below, above)))
+    } else {
+        let csc: SparseCsc<C64> = sm.to_csc().ok()?;
+        Some(AutoFactor::TriComplex(build(csc, below, above)))
+    }
 }
 
 /// `None` when `sm` has no row singleton. Otherwise the Cholesky of the
@@ -247,6 +314,32 @@ mod tests {
         assert_eq!(
             factor(&sm, Mode::Lu, OrderingChoice::Auto).unwrap().nnz(),
             lu_nnz(&sm, OrderingChoice::Identity)
+        );
+    }
+
+    #[test]
+    fn a_chol_factor_takes_the_triangular_solve() {
+        let sm = matrix("R = chol(-1 * laplacian_2d(9, 9)); A = R;");
+        let f = factor(&sm, Mode::Auto, OrderingChoice::Auto).unwrap();
+        assert_eq!(f.kind(), "triangular");
+        let sm = matrix("R = chol(-1 * laplacian_2d(9, 9)); A = R';");
+        let f = factor(&sm, Mode::Auto, OrderingChoice::Auto).unwrap();
+        assert_eq!(f.kind(), "triangular");
+        let sm = matrix("A = 3 * speye(5);");
+        let f = factor(&sm, Mode::Auto, OrderingChoice::Auto).unwrap();
+        assert_eq!(f.kind(), "diagonal");
+        // A zero on the diagonal keeps the old path; explicit modes too.
+        let sm = matrix("A = sparse([1, 1; 0, 0]) + sparse([0, 0; 0, 0]);");
+        assert_ne!(
+            factor(&sm, Mode::Auto, OrderingChoice::Auto)
+                .map(|f| f.kind())
+                .unwrap_or("err"),
+            "triangular"
+        );
+        let sm = matrix("A = sparse([2, 1; 0, 4]);");
+        assert_eq!(
+            factor(&sm, Mode::Lu, OrderingChoice::Auto).unwrap().kind(),
+            "lu"
         );
     }
 

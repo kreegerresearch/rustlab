@@ -1,4 +1,5 @@
 pub(crate) mod builtin_cancel;
+pub mod decomposition;
 pub mod builtins;
 pub(crate) mod elementwise;
 pub mod fast_hash;
@@ -18,6 +19,7 @@ pub mod shared;
 pub mod sparam_analysis;
 pub mod sparam_conv;
 pub(crate) mod sparse_auto;
+pub(crate) mod sparse_chol;
 pub(crate) mod subscript;
 pub mod table;
 pub(crate) mod tensor3_lift;
@@ -2573,6 +2575,7 @@ impl Evaluator {
                     Value::Struct(fields) => fields.get(field.as_str()).cloned().ok_or_else(|| {
                         ScriptError::runtime(format!("struct has no field '{}'", field))
                     }),
+                    Value::Decomposition(d) => d.field(field).map_err(ScriptError::runtime),
                     Value::StateSpace { a, b, c, d } => match field.as_str() {
                         "A" => Ok(Value::Matrix(a.into())),
                         "B" => Ok(Value::Matrix(b.into())),

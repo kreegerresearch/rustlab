@@ -35,6 +35,9 @@ pub(crate) fn take_singular_warns() -> u32 {
 }
 
 pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
+    if let Value::Decomposition(d) = &a {
+        return d.solve(&b);
+    }
     if let Some(s) = scalar_like(&a) {
         if !s.re.is_finite() || !s.im.is_finite() {
             return Err("mldivide: entries must be finite".to_string());
@@ -72,6 +75,16 @@ pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
 /// element-wise and does not come through here. A scalar numerator does.
 /// The reduction is `(A' \ B')'`: conjugate transpose, not `.'`.
 pub(crate) fn mrdivide(b: Value, a: Value) -> Result<Value, String> {
+    if let Value::Decomposition(d) = &a {
+        // `A` is Hermitian for "chol", so `(A' \ B')'` is `(dA \ B')'`.
+        if d.kind() != "chol" {
+            return Err(format!(
+                "mrdivide: b / dA needs a \"chol\" decomposition (this one is \"{}\"); use (A' \\ b')'",
+                d.kind()
+            ));
+        }
+        return d.solve(&b.transpose()?)?.transpose();
+    }
     let bt = b.transpose()?;
     let at = a.transpose()?;
     let x = mldivide(at, bt)?;
@@ -126,6 +139,170 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
     } else if rcond < ILL_RCOND {
         warn_rcond(rcond);
     }
+    Ok(pack(&x, real))
+}
+
+/// The factor `decomposition(A)` keeps for a dense `A`. Solves take the
+/// same paths as `solve_ab`, with the factorization done once.
+#[derive(Debug)]
+pub(crate) enum DenseFactor {
+    /// An empty `A`: every solution is `cols × k` zeros.
+    Empty,
+    Triangular {
+        a: Array2<C64>,
+        upper: bool,
+    },
+    /// Upper `R` with `A = R' * R`.
+    Chol(Array2<C64>),
+    Lu(lu::Lu),
+    Qr(qr::Qr),
+}
+
+#[derive(Debug)]
+pub(crate) struct DenseDecomp {
+    pub factor: DenseFactor,
+    pub rows: usize,
+    pub cols: usize,
+    pub real: bool,
+    pub kind: &'static str,
+}
+
+/// Factor a dense `A` as `decomposition(A, kind)`. `kind` is `"auto"`,
+/// `"chol"`, `"lu"`, or `"qr"`; `lower` makes `"chol"` read the lower
+/// triangle.
+pub(crate) fn dense_decomposition(
+    a: &Value,
+    kind: &str,
+    lower: bool,
+) -> Result<DenseDecomp, String> {
+    let real = value_is_real(a);
+    let m = value_to_matrix(a.clone(), "decomposition")?;
+    if !entries_finite(&m) {
+        return Err("decomposition: entries must be finite".to_string());
+    }
+    let (rows, cols) = m.dim();
+    let square = rows == cols;
+    if kind != "qr" && kind != "auto" && !square {
+        return Err(format!(
+            "decomposition: \"{kind}\" needs a square matrix (got {rows}×{cols}); use \"qr\""
+        ));
+    }
+    let done = |factor, kind| DenseDecomp {
+        factor,
+        rows,
+        cols,
+        real,
+        kind,
+    };
+    if rows == 0 || cols == 0 {
+        let k = if kind == "auto" {
+            if square {
+                "lu"
+            } else {
+                "qr"
+            }
+        } else {
+            static_kind(kind)
+        };
+        return Ok(done(DenseFactor::Empty, k));
+    }
+    match kind {
+        "chol" => {
+            let f = if lower {
+                chol::lower(&m)
+            } else {
+                chol::upper(&m)
+            }?;
+            if f.p != 0 {
+                return Err(format!(
+                    "decomposition: matrix is not positive definite (failed at pivot {})",
+                    f.p
+                ));
+            }
+            let r = if lower {
+                f.factor
+                    .t()
+                    .mapv(|z| z.conj())
+                    .as_standard_layout()
+                    .to_owned()
+            } else {
+                f.factor
+            };
+            Ok(done(DenseFactor::Chol(r), "chol"))
+        }
+        "lu" => Ok(done(DenseFactor::Lu(lu::lu(&m)), "lu")),
+        "qr" => Ok(done(DenseFactor::Qr(qr::qr(&m, true)), "qr")),
+        _ if !square => Ok(done(DenseFactor::Qr(qr::qr(&m, true)), "qr")),
+        _ => {
+            if let Some(upper) = triangle_kind(&m) {
+                let diagonal = upper && triangle_kind(&m.t().to_owned()) == Some(true);
+                let k = if diagonal { "diagonal" } else { "triangular" };
+                return Ok(done(DenseFactor::Triangular { a: m, upper }, k));
+            }
+            if is_hermitian(&m) {
+                if let Ok(f) = chol::upper(&m) {
+                    if f.p == 0 {
+                        return Ok(done(DenseFactor::Chol(f.factor), "chol"));
+                    }
+                }
+            }
+            Ok(done(DenseFactor::Lu(lu::lu(&m)), "lu"))
+        }
+    }
+}
+
+fn static_kind(kind: &str) -> &'static str {
+    match kind {
+        "chol" => "chol",
+        "qr" => "qr",
+        _ => "lu",
+    }
+}
+
+/// `dA \ b` for a dense decomposition. Singular and ill-conditioned
+/// factors warn on every solve, as `\` does.
+pub(crate) fn dense_decomposition_solve(d: &DenseDecomp, b: &Value) -> Result<Value, String> {
+    let real = d.real && value_is_real(b);
+    let bm = rhs_columns(b)?;
+    if bm.nrows() != d.rows {
+        return Err(format!(
+            "mldivide: A is {}×{} but b has {} rows\n  hint: a vector is a column; an explicit row has one row",
+            d.rows,
+            d.cols,
+            bm.nrows()
+        ));
+    }
+    if !entries_finite(&bm) {
+        return Err("mldivide: entries must be finite".to_string());
+    }
+    let x = match &d.factor {
+        DenseFactor::Empty => Array2::zeros((d.cols, bm.ncols())),
+        DenseFactor::Triangular { a, upper } => {
+            let (x, singular) = triangular_solve(a, &bm, *upper);
+            if singular {
+                warn_singular();
+            }
+            x
+        }
+        DenseFactor::Chol(r) => chol::solve_upper(r, &bm),
+        DenseFactor::Lu(f) => {
+            if f.singular {
+                warn_singular();
+            } else if f.rcond < ILL_RCOND {
+                warn_rcond(f.rcond);
+            }
+            lu::solve(f, &bm)
+        }
+        DenseFactor::Qr(f) => {
+            let (x, rank, rcond) = qr::least_squares(f, &bm);
+            if rank < d.rows.min(d.cols) {
+                warn_singular();
+            } else if rcond < ILL_RCOND {
+                warn_rcond(rcond);
+            }
+            x
+        }
+    };
     Ok(pack(&x, real))
 }
 
@@ -495,7 +672,7 @@ pub(crate) fn builtin_chol_dense(args: &[Value], nargout: usize) -> Result<Value
     }
     if nargout > 2 {
         return Err(ScriptError::type_err(
-            "chol: returns at most [R, p]".to_string(),
+            "chol: [R, p, P] needs a sparse matrix; use [R, p, P] = chol(sparse(A))".to_string(),
         ));
     }
     let lower = if args.len() == 2 {
