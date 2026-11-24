@@ -438,6 +438,7 @@ forward-looking design, see
 rustlab-notebook watch intro.md ch2/filters.md demo.rlab
 rustlab-notebook watch intro.md ch2/filters.md --editable
 rustlab-notebook watch intro.md ch2/filters.md --jail-root .   # let ch2/filters.md read ../data.csv
+rustlab-notebook watch 'course/**/*.md' 'labs/*.rlab'          # quoted patterns, expanded by rustlab-notebook
 ```
 
 Several paths are served by one server as a small collection:
@@ -475,11 +476,35 @@ Several paths are served by one server as a small collection:
   and plots show and refresh on save. ▶ Run works. A script has no cell
   editor, write-back, annotate, or git comparison; `/save` and
   `/annotate` refuse it. `watch demo.rlab` alone serves the same page.
+- **Patterns.** A quoted argument with `*`, `?`, or `[...]` is expanded
+  by `rustlab-notebook` itself, so it works without shell globbing and
+  `**` works in any shell. `*`, `?`, and `[...]` (`[!...]` or `[^...]`
+  negate, `a-z` ranges) match within one folder or file name; a whole
+  `**` segment matches any number of folders, including none
+  (`course/**/*.md` includes `course/intro.md`).
+  - The matches are sorted by path and take the pattern's place in the
+    list: `watch intro.md 'labs/*.rlab' outro.md` serves `intro.md`,
+    then the labs in name order, then `outro.md`.
+  - Only `.md` and `.rlab` files are collected. Other files and folders
+    the pattern matches are skipped, so `'ch1/*'` is fine next to
+    data files. A literal non-notebook is still an error.
+  - Wildcards skip hidden names unless the pattern segment starts with
+    `.` (`'.*.md'`). A `**` walk also skips `target` and `node_modules`
+    and does not enter symlinked folders, so a link back up the tree
+    cannot loop. A literal folder in the pattern (`.notes/*.md`) is
+    used as written.
+  - A pattern that matches no notebook is an error that names it
+    (exit 2). An argument that names an existing path is literal even
+    when it contains `[`, so `a[1].md` still works.
+  - A file reached twice (two patterns, or a pattern and a literal
+    path) is served once, at its first position.
+  - Patterns your shell expanded arrive as plain paths and behave the
+    same. Patterns do not change the jail.
 - **Errors.** Every missing path is named and the command exits 2. A
   directory among other paths exits 2 (pass the directory alone, or
   list its files), as does a file that is not `.md` or `.rlab`. The
-  same file named twice is served once. Several paths with
-  `--obsidian` or `--output` exit 2: that mode takes one directory.
+  same file named twice is served once. Several paths, or a pattern,
+  with `--obsidian` or `--output` exit 2: that mode takes one directory.
 
 #### In-browser editor (`--editable`)
 
