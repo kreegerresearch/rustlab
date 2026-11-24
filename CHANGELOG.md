@@ -13,7 +13,7 @@ should re-validate against those entries when upgrading.
   - *Migration — `F = chol(S); x = solve(F, b)` now errors* (`solve` gets a sparse matrix) and the message lists the replacements. Use one of:
     - `x = S \ b` — one solve.
     - `dS = decomposition(S, "chol"); x = dS \ b` — factor once, solve many; this is the old handle's behaviour and speed (41³ Poisson: factor 6.4–6.6 s vs 6.5–6.8 s, 0.06 s per solve), and a real factor now also takes a complex `b`.
-    - `[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)))` — MATLAB's idiom with the factor; about 1.1 s per solve at 41³ (it forms `R'`), so keep a `decomposition` for repeated solves.
+    - `[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)))` — MATLAB's idiom with the factor; about 0.32 s per solve at 41³ (`R' \ y` runs on `R` without forming the transpose), so a `decomposition` (0.05 s) is still the faster choice for repeated solves.
   - `chol(S, "nd")` (or `"amd"`, `"natural"`, `"auto"`) with one output now errors; an ordering selects `P`, so use `[R, p, P] = chol(S, "nd")`. To read a factor's size, use `nnz(R)` instead of printing the handle.
   - One- and two-output `chol(S)` factor `S` in its own order, as MATLAB does, so on a 3-D grid `R` can be several times larger than the permuted factor (25³: 9.4 M entries vs 2.0 M); ask for `P` when size matters.
   - `R` is a COO sparse matrix with complex entries, 32 bytes per entry against 16 in the internal factor (41³: 509 MB vs 255 MB). `lu(S)` handles and `solve(F, b)` with them are unchanged.
@@ -24,6 +24,7 @@ should re-validate against those entries when upgrading.
 - **`decomposition(A [, type])`** with `dA \ b` — MATLAB's factor-once object. `type` is `"auto"` (default; the factor `\` would use, including the `pin_dirichlet` reduction), `"chol"` (with `"upper"` / `"lower"`), `"lu"`, or `"qr"` (dense). `dA.Type`, `dA.MatrixSize`, `class(dA)`; `b / dA` for `"chol"`; `solve(dA, b)`. Sparse and dense matrices.
 
 ### Performance
+- **Fused `A' \ b` and `A.' \ b`** for a triangular or diagonal sparse `A` with a full diagonal held in a variable (such as `chol`'s `R`): the substitution runs on `A`'s rows, conjugated for `'`, without forming `A'`, and gives the same result bit for bit. Other matrices transpose as before. At 41³, `R' \ y` 0.9 s → 0.16 s and one `P * (R \ (R' \ (P' * b)))` solve 0.92–1.09 s → 0.32 s; peak memory with `[R, p, P] = chol(S)` 1,044 MB → 801 MB.
 - Sparse `A'` / `A.'` is a counting sort (31³ `chol` factor, 4.9 M entries: 1.8 s → 0.2 s). Sparse `S \ b` with `S` in the workspace no longer copies `S` first. Sparse-to-CSC conversion skips an intermediate copy and the per-column sort when rows are already sorted. `S \ b` on 3-D Poisson matrices is unchanged (41³ best of 5: 6.13 s vs 6.25 s). Measurements in `docs/sparse_solve.md` and `perf/sparse_chol_phase4.rlab`.
 
 ### MATLAB differences

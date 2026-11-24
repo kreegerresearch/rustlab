@@ -106,7 +106,10 @@ of `b`):
    substitution (`TriangularSolve`), as MATLAB's `\` checks for a
    triangular matrix first. This is what `R \ b` and `R' \ b` take for a
    `chol` factor. A zero on the diagonal falls through to the steps below
-   unchanged.
+   unchanged. `A' \ b` and `A.' \ b` with such an `A` in a variable are
+   fused in the evaluator (`Evaluator::eval_arith_binop` →
+   `builtins::sparse_transposed_mldivide`): a column-oriented substitution
+   on `A'` that reads `A`'s rows, so `A'` is never formed.
 1. `SparseMat::is_spd_estimate(1e-10)` (`crates/rustlab-core/src/types.rs`)
    — Hermitian symmetry and a real-positive diagonal → Cholesky of `A`.
 2. Otherwise `RowSingletonSplit::find` (`sparse_solve/singleton.rs`)
@@ -444,16 +447,25 @@ run-to-run spread is about ±8%).
 
 | Grid (N, nnz(R)) | `S \ b` | `[R, p, P] = chol(S)` | `P*(R\(R'\(P'*b)))` | `decomposition(S, "chol")` | `dS \ b` | `R` as `SparseMat` / real CSC |
 |---|---|---|---|---|---|---|
-| 21³ (9,261, 0.98 M) | 0.16 s | 0.18 s | 0.065 s | 0.17 s | 0.003 s | 31 / 16 MB |
-| 31³ (29,791, 4.9 M) | 1.2 s | 1.5 s | 0.32 s | 1.2 s | 0.017 s | 157 / 79 MB |
-| 41³ (68,921, 15.9 M) | 6.9 s | 7.8 s | 1.08 s | 6.6 s | 0.066 s | 509 / 255 MB |
+| 21³ (9,261, 0.98 M) | 0.12 s | 0.15 s | 0.010 s | 0.10 s | 0.002 s | 31 / 16 MB |
+| 31³ (29,791, 4.9 M) | 1.2 s | 1.3 s | 0.073 s | 1.1 s | 0.014 s | 157 / 79 MB |
+| 41³ (68,921, 15.9 M) | 5.9 s | 7.4 s | 0.33 s | 6.1 s | 0.052 s | 509 / 255 MB |
 
-Peak RSS at 41³: `[R, p, P] = chol(S)` plus one idiom solve 1.04 GB,
+Peak RSS at 41³: `[R, p, P] = chol(S)` plus one idiom solve 801 MB (the
+same as `chol` alone: `L` and `R` coexist while `R` is built),
 `decomposition` plus one solve 316 MB, `S \ b` 303 MB (0.3.87's
-`F = chol(S); solve(F, b)`: 317 MB, factor 6.5–6.8 s against 6.4–6.6 s
-for `decomposition`). The idiom's cost is forming `R'` (a 15.9 M-entry
-transpose, ~0.6 s) and two in-place substitutions over the COO entries
-(~0.2 s each); `dS \ b` runs on the stored real CSC factor. The
+`F = chol(S); solve(F, b)`: 317 MB, factor 6.5–6.8 s against 5.8–6.4 s
+for `decomposition`). The idiom is two in-place substitutions over the
+COO entries, about 0.16 s each at 41³; `P' * b` and `P * z` take 1–4 ms.
+`R' \ c` is fused: with `R` (or any triangular sparse matrix with a full
+diagonal) in the workspace, `R' \ c` and `R.' \ c` run a column-oriented
+substitution on `R'`, which reads `R`'s rows in order (row `i` of `R` is
+column `i` of `R'`), so `R'` is never formed. Before the fusion the
+transpose of the 15.9 M entries took ~0.7 s and 509 MB, and one idiom
+solve was 0.92–1.09 s with a 1,044 MB peak. Each unknown receives its
+updates in the same order as the row-oriented solve on an explicit `R'`,
+so the two agree bit for bit. `dS \ b` runs on the stored real CSC
+factor. The
 natural-order `R = chol(S)` on 25³ has 9.4 M entries and takes 2.8 s,
 against 2.0 M and 0.4 s with `P`. `R' * R - P' * S * P` (sparse
 products, max entry 7.5e-14) takes 27 s at 41³ because `R' * R` has
