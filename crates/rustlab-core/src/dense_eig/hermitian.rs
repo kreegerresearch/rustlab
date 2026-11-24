@@ -12,12 +12,15 @@
 //! `Q D Z` are orthonormal. Real input stays real throughout: every
 //! reflector phase is `x / |x|`, which is exactly `±1` for real `x`.
 
-use crate::Sum0;
 use super::MAX_ITER_PER_EIGENVALUE;
+use crate::Sum0;
 use crate::{CMatrix, CoreError, C64};
 use ndarray::Array2;
 
-pub(super) fn eig(a: &CMatrix, want_vectors: bool) -> Result<(Vec<f64>, Option<CMatrix>), CoreError> {
+pub(super) fn eig(
+    a: &CMatrix,
+    want_vectors: bool,
+) -> Result<(Vec<f64>, Option<CMatrix>), CoreError> {
     let n = a.nrows();
     let (mut d, mut e, q) = tridiagonalize(a, want_vectors);
     let mut z: Array2<f64> = Array2::eye(n);
@@ -52,7 +55,11 @@ fn tridiagonalize(a: &CMatrix, want_q: bool) -> (Vec<f64>, Vec<f64>, Option<CMat
             continue;
         }
         let x0 = t[[k + 1, k]];
-        let phase = if x0 == zero { C64::new(1.0, 0.0) } else { x0 / x0.norm() };
+        let phase = if x0 == zero {
+            C64::new(1.0, 0.0)
+        } else {
+            x0 / x0.norm()
+        };
         let alpha = -phase * norm;
         let mut v = vec![zero; n];
         for i in k + 1..n {
@@ -103,7 +110,11 @@ fn tridiagonalize(a: &CMatrix, want_q: bool) -> (Vec<f64>, Vec<f64>, Option<CMat
     for k in 0..n.saturating_sub(1) {
         let s = t[[k + 1, k]];
         sub[k] = s.norm();
-        dphase[k + 1] = if s == zero { dphase[k] } else { dphase[k] * s / s.norm() };
+        dphase[k + 1] = if s == zero {
+            dphase[k]
+        } else {
+            dphase[k] * s / s.norm()
+        };
     }
     if let Some(q) = q.as_mut() {
         for i in 0..n {

@@ -241,6 +241,14 @@ pub fn spawn(
     Ok((watcher, handle))
 }
 
+pub fn spawn_set(
+    _set: &super::fileset::WatchSet,
+    _theme: &'static ThemeColors,
+    _state: Arc<ServerState>,
+) -> Result<(RecommendedWatcher, tokio::task::JoinHandle<()>)> {
+    anyhow::bail!("not implemented")
+}
+
 /// Resolve an event path back to a notebook slug. Tries an exact
 /// canonical-path match first, then falls back to a unique file-name
 /// match (handles atomic-rename saves where the new inode hasn't been

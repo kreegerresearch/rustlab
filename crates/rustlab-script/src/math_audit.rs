@@ -680,10 +680,7 @@ fn sort_order_and_indices() {
 fn xcorr_hand_sum_lags_scale_and_column() {
     // Positive lag m is sum_n x[n+m] conj(y[n]). Lags -3..3, zero lag at
     // index 4. y = [1+j, 2], so the products use conj(y).
-    let r = vec_c(
-        &eval("r = xcorr([1, 2, 3, 4], [1+j, 2])"),
-        "r",
-    );
+    let r = vec_c(&eval("r = xcorr([1, 2, 3, 4], [1+j, 2])"), "r");
     let want = [
         (0.0, 0.0),
         (0.0, 0.0),
@@ -1013,7 +1010,10 @@ fn xcorr_nan_inf_and_maxlag_edges_stay_finite_or_propagate() {
 fn printing_a_real_matrix_matches_the_short_preview() {
     let ev = eval("A = [1, -2; 3, 4]; C = [1+2j, 0; 0, -3]");
     let real = format!("{}", ev.get("A").unwrap());
-    assert_eq!(real, "Matrix(2x2)\n  [1.000000, -2.000000]\n  [3.000000, 4.000000]");
+    assert_eq!(
+        real,
+        "Matrix(2x2)\n  [1.000000, -2.000000]\n  [3.000000, 4.000000]"
+    );
     let complex = format!("{}", ev.get("C").unwrap());
     assert!(
         complex.contains("1.000000+2.000000j"),

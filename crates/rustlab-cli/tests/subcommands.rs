@@ -61,7 +61,12 @@ fn write_fixture(dir: &Path, name: &str, contents: &str) {
 #[test]
 fn filter_fir_lowpass_prints_header_and_taps() {
     let out = run(&["filter", "fir", "--taps", "8", "--cutoff", "1000"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     let stdout = stdout_str(&out);
     assert!(
@@ -93,7 +98,12 @@ fn filter_fir_rejects_unknown_type() {
 #[test]
 fn filter_iir_lowpass_prints_b_and_a_coefficients() {
     let out = run(&["filter", "iir", "--order", "2", "--cutoff", "1000"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     let stdout = stdout_str(&out);
     assert!(
@@ -129,7 +139,12 @@ fn convolve_direct_computes_full_convolution() {
         dir.path(),
         &["convolve", "--signal", "sig.csv", "--kernel", "ker.csv"],
     );
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     // [1,2,3] * [1,1] = [1,3,5,3], printed as "re,im" per line.
     let expected = "\
@@ -159,14 +174,21 @@ fn convolve_overlap_add_matches_direct_result() {
             "overlap-add",
         ],
     );
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     // FFT-based path: compare numerically (it may print -0.0000000000 for im).
     let stdout = stdout_str(&out);
     let values: Vec<(f64, f64)> = stdout
         .lines()
         .map(|l| {
-            let (re, im) = l.split_once(',').unwrap_or_else(|| panic!("bad line: {l:?}"));
+            let (re, im) = l
+                .split_once(',')
+                .unwrap_or_else(|| panic!("bad line: {l:?}"));
             (re.parse().unwrap(), im.parse().unwrap())
         })
         .collect();
@@ -182,7 +204,13 @@ fn convolve_overlap_add_matches_direct_result() {
 
 #[test]
 fn convolve_missing_signal_file_is_an_error() {
-    let out = run(&["convolve", "--signal", "nope.csv", "--kernel", "also_nope.csv"]);
+    let out = run(&[
+        "convolve",
+        "--signal",
+        "nope.csv",
+        "--kernel",
+        "also_nope.csv",
+    ]);
     assert_error_contains(&out, "failed to read \"nope.csv\"");
 }
 
@@ -208,13 +236,7 @@ fn convolve_rejects_unknown_method() {
     let out = run_in(
         dir.path(),
         &[
-            "convolve",
-            "--signal",
-            "sig.csv",
-            "--kernel",
-            "ker.csv",
-            "--method",
-            "magic",
+            "convolve", "--signal", "sig.csv", "--kernel", "ker.csv", "--method", "magic",
         ],
     );
     assert_error_contains(&out, "unknown method 'magic': use direct or overlap-add");
@@ -225,7 +247,12 @@ fn convolve_rejects_unknown_method() {
 #[test]
 fn window_hann_prints_expected_samples() {
     let out = run(&["window", "--type", "hann", "--length", "4"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     let expected = "\
 w[   0] = +0.0000000000
@@ -247,8 +274,16 @@ fn window_plot_flag_is_headless_safe() {
     // --plot must not hang or open a TUI when stdout is not a terminal;
     // the samples are still printed and the plot call is a silent no-op.
     let out = run(&["window", "--type", "hamming", "--length", "8", "--plot"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
-    let samples = stdout_str(&out).lines().filter(|l| l.starts_with("w[")).count();
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
+    let samples = stdout_str(&out)
+        .lines()
+        .filter(|l| l.starts_with("w["))
+        .count();
     assert_eq!(samples, 8, "stdout:\n{}", stdout_str(&out));
 }
 
@@ -260,10 +295,23 @@ fn plot_line_is_silent_noop_without_a_tty() {
     write_fixture(dir.path(), "sig.csv", "1\n2\n3\n");
 
     let out = run_in(dir.path(), &["plot", "--input", "sig.csv"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
     // Under cargo test stdout is not a TTY, so rendering is skipped entirely.
-    assert!(out.stdout.is_empty(), "unexpected stdout: {}", stdout_str(&out));
-    assert!(out.stderr.is_empty(), "unexpected stderr: {}", stderr_str(&out));
+    assert!(
+        out.stdout.is_empty(),
+        "unexpected stdout: {}",
+        stdout_str(&out)
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "unexpected stderr: {}",
+        stderr_str(&out)
+    );
 }
 
 #[test]
@@ -286,7 +334,12 @@ fn plot_missing_input_file_is_an_error() {
 #[test]
 fn info_prints_version_and_usage_summary() {
     let out = run(&["info"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     let stdout = stdout_str(&out);
     let first = stdout.lines().next().unwrap_or("");
@@ -314,7 +367,12 @@ fn info_prints_version_and_usage_summary() {
 #[test]
 fn help_points_at_docs_and_stays_short() {
     let out = run(&["--help"]);
-    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit {}: {}",
+        out.status,
+        stderr_str(&out)
+    );
     let stdout = stdout_str(&out);
     assert!(
         stdout.contains("rustlab docs") && stdout.contains("rustlab docs --json"),
@@ -348,21 +406,23 @@ fn run_syntax_error_reports_error_on_stderr() {
         "parse failure must exit 1; stderr:\n{stderr}"
     );
     assert!(
-        stderr.lines().any(|l| l.starts_with("error:") && l.contains("parse error")),
+        stderr
+            .lines()
+            .any(|l| l.starts_with("error:") && l.contains("parse error")),
         "expected an `error: ... parse error ...` line on stderr; actual stderr:\n{stderr}"
     );
     // Script produced no output before the parse failure.
-    assert!(out.stdout.is_empty(), "unexpected stdout: {}", stdout_str(&out));
+    assert!(
+        out.stdout.is_empty(),
+        "unexpected stdout: {}",
+        stdout_str(&out)
+    );
 }
 
 #[test]
 fn run_runtime_error_reports_line_number_on_stderr() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    write_fixture(
-        dir.path(),
-        "oob.rlab",
-        "v = [1, 2, 3];\nprintln(v(10));\n",
-    );
+    write_fixture(dir.path(), "oob.rlab", "v = [1, 2, 3];\nprintln(v(10));\n");
 
     let out = run_in(dir.path(), &["run", "oob.rlab"]);
     let stderr = stderr_str(&out);

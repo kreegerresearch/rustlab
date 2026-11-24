@@ -1,12 +1,12 @@
 //! `xcorr` and `xcov`. The sums live in `rustlab-dsp`; this module reads
 //! script values without widening real storage and packs the lag axis.
 
-use rustlab_core::Sum0;
 use super::shared::Shared;
 use super::value::Value;
 use crate::error::ScriptError;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
+use rustlab_core::Sum0;
 use rustlab_core::{CMatrix, CVector, C64};
 use rustlab_dsp::xcorr::lag_count;
 use rustlab_dsp::{xcorr_c64, xcorr_f64, XcorrMethod, XcorrScale};

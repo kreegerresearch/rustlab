@@ -162,11 +162,11 @@ fn missing_store_is_handled_gracefully_for_status_and_errors_for_others() {
     // list/clear/prune all expect existing stores.
     for sub in [&["list"][..], &["clear"][..], &["prune"][..]] {
         let out = run_cache(&missing, sub);
-        assert!(!out.status.success(), "{sub:?} should error on missing store");
-        let s = String::from_utf8_lossy(&out.stderr);
         assert!(
-            s.contains("no cache file"),
-            "stderr for {sub:?}:\n{s}"
+            !out.status.success(),
+            "{sub:?} should error on missing store"
         );
+        let s = String::from_utf8_lossy(&out.stderr);
+        assert!(s.contains("no cache file"), "stderr for {sub:?}:\n{s}");
     }
 }

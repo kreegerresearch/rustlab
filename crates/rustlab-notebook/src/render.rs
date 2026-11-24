@@ -6175,6 +6175,29 @@ w = 4
     }
 
     #[test]
+    fn link_dest_file_set_serves_a_listed_index_md_as_a_page() {
+        // `watch index.md ch2/a.md` names index.md on the command line, so
+        // it is a notebook at /n/index, not the listing body at `/`.
+        let mode = LinkMode::Server {
+            slugs: [
+                ("index.md".to_string(), "index".to_string()),
+                ("ch2/a.md".to_string(), "ch2/a".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            current_rel_dir: "ch2".to_string(),
+            index_at_root: true,
+        };
+        assert_eq!(
+            rewrite_link_dest("../index.md#top", &mode).as_deref(),
+            Some("/n/index#top")
+        );
+        // Directory mode never lists index.md, so it still maps to `/`.
+        let dir = server_mode(&[("ch2/a.md", "ch2/a")], "ch2");
+        assert_eq!(rewrite_link_dest("../index.md", &dir).as_deref(), Some("/"));
+    }
+
+    #[test]
     fn link_dest_single_file_server_leaves_index_md_alone() {
         // A single-file serve's `/` redirects back to the lone notebook —
         // mapping index.md there sent `[home](index.md)` in a circle.

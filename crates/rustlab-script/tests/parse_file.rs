@@ -46,5 +46,8 @@ fn parse_file_missing_file_returns_runtime_error() {
     let missing = dir.path().join("does-not-exist.rlab");
     let err = parse_file(&missing).expect_err("should fail on missing file");
     let msg = format!("{err}");
-    assert!(msg.contains("read"), "error should mention the read failure: {msg}");
+    assert!(
+        msg.contains("read"),
+        "error should mention the read failure: {msg}"
+    );
 }

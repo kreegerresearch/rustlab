@@ -121,7 +121,9 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // Matrix product: same check and kernel as `binop`, without copying
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
-        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => {
+        (Value::Matrix(a), Value::Matrix(b))
+            if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] =>
+        {
             // Size check lives in `matmul` (once per call). The elementwise
             // kernels above are unchanged.
             let product = rustlab_core::matmul::matmul(&a.view(), &b.view()).map_err(|_| {
@@ -146,7 +148,10 @@ fn scalar_of(v: &Value) -> C64 {
 /// with no real-output rule.
 fn is_scalar_op(op: BinOp) -> bool {
     use BinOp::*;
-    matches!(op, Add | Sub | Mul | ElemMul | Div | ElemDiv | Pow | ElemPow)
+    matches!(
+        op,
+        Add | Sub | Mul | ElemMul | Div | ElemDiv | Pow | ElemPow
+    )
 }
 
 /// A dense array whose elements are one row-major contiguous slice, so a
@@ -193,7 +198,9 @@ fn shaped_like(like: &Value, data: Vec<C64>) -> Value {
     match like {
         Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data).into()),
         Value::Matrix(m) => Value::Matrix(
-            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count").into(),
+            ndarray::Array2::from_shape_vec(m.dim(), data)
+                .expect("same element count")
+                .into(),
         ),
         _ => unreachable!("checked by the caller"),
     }
@@ -208,22 +215,52 @@ macro_rules! with_op {
     ($op:expr, scalar, $f:ident => $body:expr) => {{
         use BinOp::*;
         match $op {
-            Add => { let $f = |x: C64, y: C64| x + y; $body }
-            Sub => { let $f = |x: C64, y: C64| x - y; $body }
-            Mul | ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            Div | ElemDiv => { let $f = Value::div_c64; $body }
-            Pow | ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
+            Add => {
+                let $f = |x: C64, y: C64| x + y;
+                $body
+            }
+            Sub => {
+                let $f = |x: C64, y: C64| x - y;
+                $body
+            }
+            Mul | ElemMul => {
+                let $f = |x: C64, y: C64| x * y;
+                $body
+            }
+            Div | ElemDiv => {
+                let $f = Value::div_c64;
+                $body
+            }
+            Pow | ElemPow => {
+                let $f = |x: C64, y: C64| Value::pow_c64(x, y);
+                $body
+            }
             _ => unreachable!("checked by the caller"),
         }
     }};
     ($op:expr, elem, $f:ident => $body:expr) => {{
         use BinOp::*;
         match $op {
-            Add => { let $f = |x: C64, y: C64| x + y; $body }
-            Sub => { let $f = |x: C64, y: C64| x - y; $body }
-            ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            ElemDiv => { let $f = Value::div_c64; $body }
-            ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
+            Add => {
+                let $f = |x: C64, y: C64| x + y;
+                $body
+            }
+            Sub => {
+                let $f = |x: C64, y: C64| x - y;
+                $body
+            }
+            ElemMul => {
+                let $f = |x: C64, y: C64| x * y;
+                $body
+            }
+            ElemDiv => {
+                let $f = Value::div_c64;
+                $body
+            }
+            ElemPow => {
+                let $f = |x: C64, y: C64| Value::pow_c64(x, y);
+                $body
+            }
             _ => unreachable!("checked by the caller"),
         }
     }};
@@ -243,7 +280,10 @@ struct RealFlags {
     output_needs_zeroing: bool,
 }
 
-const NO_FLAGS: RealFlags = RealFlags { inputs_real: true, output_needs_zeroing: false };
+const NO_FLAGS: RealFlags = RealFlags {
+    inputs_real: true,
+    output_needs_zeroing: false,
+};
 
 fn combine(f: RealFlags, g: RealFlags) -> RealFlags {
     RealFlags {
@@ -574,7 +614,12 @@ fn zip_arrays(op: BinOp, l: Operand, r: Operand, real_rule: bool) -> Value {
     with_op!(op, elem, f => zip_arrays_with(f, l, r, real_rule))
 }
 
-fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, real_rule: bool) -> Value {
+fn zip_arrays_with(
+    f: impl Fn(C64, C64) -> C64 + Sync,
+    l: Operand,
+    r: Operand,
+    real_rule: bool,
+) -> Value {
     let (mut out, flags) = match (l, r) {
         (Operand::Owned(mut a), r) if unique(&a) => {
             let b = data(r.get());
@@ -873,7 +918,11 @@ fn assert_covered(seen: &[u64], n: usize) {
 }
 
 /// `v[start..start+n]` copied in parallel, or `None` when short.
-pub(crate) fn par_vector_copy(v: &rustlab_core::CVector, start: usize, n: usize) -> Option<rustlab_core::CVector> {
+pub(crate) fn par_vector_copy(
+    v: &rustlab_core::CVector,
+    start: usize,
+    n: usize,
+) -> Option<rustlab_core::CVector> {
     if n < PAR_MIN_LEN {
         return None;
     }
@@ -975,7 +1024,8 @@ fn sum_chunk_f64(xs: &[f64]) -> f64 {
 fn sum_chunk(xs: &[C64]) -> C64 {
     // SAFETY: `Complex<f64>` is `#[repr(C)]` with fields `re, im`, so a
     // slice of n complex values is 2n contiguous `f64`, re first.
-    let words: &[f64] = unsafe { std::slice::from_raw_parts(xs.as_ptr().cast::<f64>(), xs.len() * 2) };
+    let words: &[f64] =
+        unsafe { std::slice::from_raw_parts(xs.as_ptr().cast::<f64>(), xs.len() * 2) };
     let mut lanes = [0.0f64; 16];
     let mut blocks = words.chunks_exact(16);
     for b in &mut blocks {
@@ -1008,8 +1058,12 @@ mod tests {
 
     fn mat_of(rows: usize, cols: usize, xs: &[(f64, f64)]) -> Value {
         Value::Matrix(
-            Array2::from_shape_vec((rows, cols), xs.iter().map(|&(r, i)| C64::new(r, i)).collect())
-                .unwrap().into(),
+            Array2::from_shape_vec(
+                (rows, cols),
+                xs.iter().map(|&(r, i)| C64::new(r, i)).collect(),
+            )
+            .unwrap()
+            .into(),
         )
     }
 
@@ -1029,7 +1083,10 @@ mod tests {
                 .collect(),
             other => panic!("unexpected {other:?}"),
         };
-        elems.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()
+        elems
+            .iter()
+            .map(|c| (c.re.to_bits(), c.im.to_bits()))
+            .collect()
     }
 
     fn same_kind(a: &Value, b: &Value) -> bool {
@@ -1091,14 +1148,77 @@ mod tests {
 
     #[test]
     fn matches_binop_bit_for_bit() {
-        let real_v = vec_of(&[(1.5, 0.0), (-2.0, 0.0), (0.0, 0.0), (-0.0, 0.0), (3.0, -0.0)]);
-        let real_w = vec_of(&[(-4.0, 0.0), (0.5, 0.0), (-1.0, 0.0), (2.0, 0.0), (-3.0, 0.0)]);
-        let cplx_v = vec_of(&[(1.0, 2.0), (-2.0, 0.5), (0.0, -1.0), (3.0, 0.0), (1e-17, 1e-17)]);
-        let special = vec_of(&[(f64::INFINITY, 0.0), (f64::NAN, 0.0), (-1.0, 0.0), (0.0, 0.0), (1e308, 0.0)]);
-        let tiny_im = vec_of(&[(1.0, 1e-18), (2.0, -1e-18), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0)]);
-        let real_m = mat_of(2, 3, &[(1.0, 0.0), (-2.0, 0.0), (3.0, 0.0), (-0.5, 0.0), (0.0, 0.0), (7.0, 0.0)]);
-        let real_n = mat_of(2, 3, &[(-1.0, 0.0), (4.0, 0.0), (-3.0, 0.0), (2.0, 0.0), (-5.0, 0.0), (0.25, 0.0)]);
-        let cplx_m = mat_of(2, 3, &[(1.0, 1.0), (0.0, -2.0), (3.0, 0.0), (-1.0, 0.5), (2.0, 2.0), (0.0, 0.0)]);
+        let real_v = vec_of(&[
+            (1.5, 0.0),
+            (-2.0, 0.0),
+            (0.0, 0.0),
+            (-0.0, 0.0),
+            (3.0, -0.0),
+        ]);
+        let real_w = vec_of(&[
+            (-4.0, 0.0),
+            (0.5, 0.0),
+            (-1.0, 0.0),
+            (2.0, 0.0),
+            (-3.0, 0.0),
+        ]);
+        let cplx_v = vec_of(&[
+            (1.0, 2.0),
+            (-2.0, 0.5),
+            (0.0, -1.0),
+            (3.0, 0.0),
+            (1e-17, 1e-17),
+        ]);
+        let special = vec_of(&[
+            (f64::INFINITY, 0.0),
+            (f64::NAN, 0.0),
+            (-1.0, 0.0),
+            (0.0, 0.0),
+            (1e308, 0.0),
+        ]);
+        let tiny_im = vec_of(&[
+            (1.0, 1e-18),
+            (2.0, -1e-18),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+        ]);
+        let real_m = mat_of(
+            2,
+            3,
+            &[
+                (1.0, 0.0),
+                (-2.0, 0.0),
+                (3.0, 0.0),
+                (-0.5, 0.0),
+                (0.0, 0.0),
+                (7.0, 0.0),
+            ],
+        );
+        let real_n = mat_of(
+            2,
+            3,
+            &[
+                (-1.0, 0.0),
+                (4.0, 0.0),
+                (-3.0, 0.0),
+                (2.0, 0.0),
+                (-5.0, 0.0),
+                (0.25, 0.0),
+            ],
+        );
+        let cplx_m = mat_of(
+            2,
+            3,
+            &[
+                (1.0, 1.0),
+                (0.0, -2.0),
+                (3.0, 0.0),
+                (-1.0, 0.5),
+                (2.0, 2.0),
+                (0.0, 0.0),
+            ],
+        );
         let row_m = mat_of(1, 3, &[(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
         let scalars = [
             Value::Scalar(0.001),
@@ -1108,7 +1228,9 @@ mod tests {
             Value::Scalar(0.5),
             Value::Complex(C64::new(1.0, -1.0)),
         ];
-        let arrays = [&real_v, &real_w, &cplx_v, &special, &tiny_im, &real_m, &real_n, &cplx_m, &row_m];
+        let arrays = [
+            &real_v, &real_w, &cplx_v, &special, &tiny_im, &real_m, &real_n, &cplx_m, &row_m,
+        ];
         for op in OPS {
             for a in arrays {
                 for b in arrays {
@@ -1166,11 +1288,22 @@ mod tests {
         let m = Array2::from_shape_fn((rows, cols), |(i, j)| {
             C64::new((i * 31 + j) as f64 * 0.25 - 3.0, ((j % 7) as f64) - 3.0)
         });
-        for &(r0, nr, c0, nc) in &[(0, rows, 0, cols), (1, 5, 3, cols - 10), (0, rows, 1, cols - 2)] {
-            let got = par_block_copy(&m, (r0, nr), (c0, nc)).expect("large block takes the parallel path");
-            assert_eq!(got, m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned());
+        for &(r0, nr, c0, nc) in &[
+            (0, rows, 0, cols),
+            (1, 5, 3, cols - 10),
+            (0, rows, 1, cols - 2),
+        ] {
+            let got = par_block_copy(&m, (r0, nr), (c0, nc))
+                .expect("large block takes the parallel path");
+            assert_eq!(
+                got,
+                m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned()
+            );
         }
-        assert!(par_block_copy(&m, (0, 1), (0, 10)).is_none(), "small blocks stay sequential");
+        assert!(
+            par_block_copy(&m, (0, 1), (0, 10)).is_none(),
+            "small blocks stay sequential"
+        );
 
         let v = Array1::from_iter((0..PAR_MIN_LEN + 999).map(|k| C64::new(k as f64, -(k as f64))));
         let got = par_vector_copy(&v, 5, PAR_MIN_LEN + 3).unwrap();
@@ -1191,7 +1324,18 @@ mod tests {
         let data: Vec<C64> = (0..6).map(|k| C64::new(k as f64 - 2.5, 0.0)).collect();
         let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap().into());
         assert!(!is_contiguous(&fortran));
-        let row = mat_of(2, 3, &[(1.0, 0.0), (-2.0, 0.0), (3.0, 0.0), (0.5, 0.0), (-1.0, 0.0), (2.0, 0.0)]);
+        let row = mat_of(
+            2,
+            3,
+            &[
+                (1.0, 0.0),
+                (-2.0, 0.0),
+                (3.0, 0.0),
+                (0.5, 0.0),
+                (-1.0, 0.0),
+                (2.0, 0.0),
+            ],
+        );
         for op in OPS {
             check(op, &fortran, &row);
             check(op, &row, &fortran);
@@ -1207,7 +1351,12 @@ mod tests {
             Value::Vector(a) => a.as_ptr(),
             _ => unreachable!(),
         };
-        let out = binop(BinOp::Mul, Operand::Owned(v), Operand::Owned(Value::Scalar(3.0))).unwrap();
+        let out = binop(
+            BinOp::Mul,
+            Operand::Owned(v),
+            Operand::Owned(Value::Scalar(3.0)),
+        )
+        .unwrap();
         match out {
             Value::Vector(a) => assert_eq!(a.as_ptr(), ptr, "result should reuse the temporary"),
             _ => panic!(),
@@ -1217,7 +1366,12 @@ mod tests {
     #[test]
     fn shared_owned_operand_is_not_written() {
         let v = vec_of(&[(1.0, 0.0), (2.0, 0.0)]);
-        let out = binop(BinOp::Mul, Operand::Owned(v.clone()), Operand::Owned(Value::Scalar(3.0))).unwrap();
+        let out = binop(
+            BinOp::Mul,
+            Operand::Owned(v.clone()),
+            Operand::Owned(Value::Scalar(3.0)),
+        )
+        .unwrap();
         assert_eq!(bits(&v), bits(&vec_of(&[(1.0, 0.0), (2.0, 0.0)])));
         assert_eq!(bits(&out), bits(&vec_of(&[(3.0, 0.0), (6.0, 0.0)])));
     }
@@ -1225,8 +1379,16 @@ mod tests {
     #[test]
     fn par_transpose_matches_the_definition() {
         // Serial, and parallel with output rows split across chunks.
-        for (rows, cols) in [(1, 1), (3, 5), (33, 65), (7, PAR_MIN_LEN / 7 + 3), (PAR_MIN_LEN / 5 + 1, 5)] {
-            let src: Vec<C64> = (0..rows * cols).map(|k| C64::new(k as f64, 0.5 - k as f64)).collect();
+        for (rows, cols) in [
+            (1, 1),
+            (3, 5),
+            (33, 65),
+            (7, PAR_MIN_LEN / 7 + 3),
+            (PAR_MIN_LEN / 5 + 1, 5),
+        ] {
+            let src: Vec<C64> = (0..rows * cols)
+                .map(|k| C64::new(k as f64, 0.5 - k as f64))
+                .collect();
             for conj in [false, true] {
                 let got = par_transpose(&src, rows, cols, conj);
                 assert_eq!(got.len(), rows * cols);
@@ -1234,7 +1396,11 @@ mod tests {
                     for j in 0..cols {
                         let x = src[i * cols + j];
                         let want = if conj { x.conj() } else { x };
-                        assert_eq!(got[j * rows + i], want, "{rows}×{cols} ({i}, {j}) conj={conj}");
+                        assert_eq!(
+                            got[j * rows + i],
+                            want,
+                            "{rows}×{cols} ({i}, {j}) conj={conj}"
+                        );
                     }
                 }
             }
@@ -1292,7 +1458,9 @@ mod tests {
 
     #[test]
     fn sum_is_exact_on_integers_and_matches_edge_cases() {
-        let ints: Vec<C64> = (1..=1_000_003).map(|k| C64::new(k as f64, -(k % 7) as f64)).collect();
+        let ints: Vec<C64> = (1..=1_000_003)
+            .map(|k| C64::new(k as f64, -(k % 7) as f64))
+            .collect();
         let want_re = 1_000_003.0 * 1_000_004.0 / 2.0;
         let want_im: f64 = -(1..=1_000_003u64).map(|k| (k % 7) as f64).sum::<f64>();
         assert_eq!(sum_c64(&ints), C64::new(want_re, want_im));
@@ -1300,7 +1468,12 @@ mod tests {
         assert_eq!(sum_c64(&[C64::new(2.5, -1.0)]), C64::new(2.5, -1.0));
         let inf = sum_c64(&[C64::new(1.0, 0.0), C64::new(f64::INFINITY, 0.0)]);
         assert_eq!(inf.re, f64::INFINITY);
-        assert!(sum_c64(&[C64::new(f64::INFINITY, 0.0), C64::new(f64::NEG_INFINITY, 0.0)]).re.is_nan());
+        assert!(sum_c64(&[
+            C64::new(f64::INFINITY, 0.0),
+            C64::new(f64::NEG_INFINITY, 0.0)
+        ])
+        .re
+        .is_nan());
         let mut v = noise(300_001, 3);
         v[123_456] = C64::new(f64::NAN, 0.0);
         assert!(sum_c64(&v).re.is_nan());
@@ -1310,22 +1483,51 @@ mod tests {
     fn sum_is_the_same_on_any_thread_count() {
         for n in [5, 4095, 4096, 4097, PAR_MIN_LEN - 1, PAR_MIN_LEN, 811_008] {
             let v = noise(n, n as u64);
-            let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-            let many = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+            let one = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap();
+            let many = rayon::ThreadPoolBuilder::new()
+                .num_threads(8)
+                .build()
+                .unwrap();
             let a = one.install(|| sum_c64(&v));
             let b = many.install(|| sum_c64(&v));
-            assert_eq!((a.re.to_bits(), a.im.to_bits()), (b.re.to_bits(), b.im.to_bits()), "n = {n}");
+            assert_eq!(
+                (a.re.to_bits(), a.im.to_bits()),
+                (b.re.to_bits(), b.im.to_bits()),
+                "n = {n}"
+            );
             assert_eq!(sum_c64(&v), a, "n = {n}, repeat");
         }
     }
 
     #[test]
     fn real_sum_is_the_real_part_of_the_complex_sum() {
-        for n in [0, 1, 3, 7, 8, 9, 15, 16, 17, 4095, 4096, 4097, 100_003, PAR_MIN_LEN + 5] {
+        for n in [
+            0,
+            1,
+            3,
+            7,
+            8,
+            9,
+            15,
+            16,
+            17,
+            4095,
+            4096,
+            4097,
+            100_003,
+            PAR_MIN_LEN + 5,
+        ] {
             let v = noise(n, 11 + n as u64);
             let re: Vec<f64> = v.iter().map(|z| z.re).collect();
             let widened: Vec<C64> = re.iter().map(|&x| C64::new(x, 0.0)).collect();
-            assert_eq!(sum_f64(&re).to_bits(), sum_c64(&widened).re.to_bits(), "n = {n}");
+            assert_eq!(
+                sum_f64(&re).to_bits(),
+                sum_c64(&widened).re.to_bits(),
+                "n = {n}"
+            );
         }
     }
 
@@ -1345,7 +1547,10 @@ mod tests {
             let abs: f64 = v.iter().map(|z| z.re.abs()).sum();
             let err = (sum_c64(&v).re - s).abs();
             assert!(err <= n as f64 * f64::EPSILON * abs, "n = {n}: {err}");
-            assert!(err <= 64.0 * f64::EPSILON * abs, "n = {n}: {err} (blocked order should be near pairwise)");
+            assert!(
+                err <= 64.0 * f64::EPSILON * abs,
+                "n = {n}: {err} (blocked order should be near pairwise)"
+            );
         }
     }
 }

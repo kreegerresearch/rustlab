@@ -112,12 +112,10 @@ pub(crate) fn tokens(s: &str, mode: Mode) -> Vec<Range<usize>> {
                     .find('>')
                     .filter(|&k| !rest[..k].contains('\n'))
                     .map(|k| i + k + 1),
-                '[' => bracket_end(s, i, '[', ']').map(|e| {
-                    match s[e..].chars().next() {
-                        Some('(') => bracket_end(s, e, '(', ')').unwrap_or(e),
-                        Some('[') => bracket_end(s, e, '[', ']').unwrap_or(e),
-                        _ => e,
-                    }
+                '[' => bracket_end(s, i, '[', ']').map(|e| match s[e..].chars().next() {
+                    Some('(') => bracket_end(s, e, '(', ')').unwrap_or(e),
+                    Some('[') => bracket_end(s, e, '[', ']').unwrap_or(e),
+                    _ => e,
                 }),
                 _ => None,
             };
@@ -364,7 +362,9 @@ mod tests {
     fn math_is_replaced_whole() {
         let d = diff("Let $x$ be.", "Let $y$ be.", Mode::Prose).unwrap();
         assert_eq!(d.changed, vec!["$x$", "$y$"]);
-        assert!(d.merged.contains(&format!("{DEL_OPEN}$x${DEL_CLOSE}{INS_OPEN}$y${INS_CLOSE}")));
+        assert!(d
+            .merged
+            .contains(&format!("{DEL_OPEN}$x${DEL_CLOSE}{INS_OPEN}$y${INS_CLOSE}")));
     }
 
     #[test]

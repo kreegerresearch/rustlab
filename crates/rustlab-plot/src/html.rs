@@ -1430,6 +1430,9 @@ mod tests {
         });
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
         assert_eq!(div.matches(r#"type: "scatter""#).count(), 2, "{div}");
-        assert!(div.contains("0.25,0.5,0.75"), "line samples missing:\n{div}");
+        assert!(
+            div.contains("0.25,0.5,0.75"),
+            "line samples missing:\n{div}"
+        );
     }
 }

@@ -1,12 +1,12 @@
-use rustlab_core::Sum0;
-use super::tensor3_lift;
 use super::shared::Shared;
+use super::tensor3_lift;
 use crate::error::ScriptError;
 use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
 use rand_distr::{Distribution, Normal, StandardNormal, Uniform};
+use rustlab_core::Sum0;
 use rustlab_core::{CMatrix, CVector, Filter, SparseMat, SparseVec, C64};
 use rustlab_core::{IntClass, OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
@@ -2511,12 +2511,12 @@ fn minmax_real_stored_as<const IS_MAX: bool>(a: &Value, b: &Value) -> Option<Val
         (Value::Scalar(x), Value::Matrix(y)) => {
             matrix(Shared::shape(y), right(*x, Shared::real_slice(y)?))
         }
-        (Value::Vector(x), Value::Vector(y)) if Shared::len(x) == Shared::len(y) => Some(
-            Value::real_vector(Array1::from_vec(zip(
+        (Value::Vector(x), Value::Vector(y)) if Shared::len(x) == Shared::len(y) => {
+            Some(Value::real_vector(Array1::from_vec(zip(
                 Shared::real_slice(x)?,
                 Shared::real_slice(y)?,
-            ))),
-        ),
+            ))))
+        }
         (Value::Vector(x), Value::Scalar(y)) => Some(Value::real_vector(Array1::from_vec(left(
             Shared::real_slice(x)?,
             *y,
@@ -9929,10 +9929,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else if p == f64::INFINITY {
                 v.iter().map(|c| c.norm()).fold(0.0_f64, f64::max)
             } else {
-                v.iter()
-                    .map(|c| c.norm().powf(p))
-                    .sum0()
-                    .powf(1.0 / p)
+                v.iter().map(|c| c.norm().powf(p)).sum0().powf(1.0 / p)
             };
             Ok(Value::Scalar(n))
         }
@@ -9982,11 +9979,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             let n = if p == 1.0 {
                 sv.entries.iter().map(|(_, c)| c.norm()).sum0()
             } else if p == 2.0 {
-                sv.entries
-                    .iter()
-                    .map(|(_, c)| c.norm_sqr())
-                    .sum0()
-                    .sqrt()
+                sv.entries.iter().map(|(_, c)| c.norm_sqr()).sum0().sqrt()
             } else if p == f64::INFINITY {
                 sv.entries
                     .iter()
@@ -14574,10 +14567,7 @@ fn hermitian_eigh(g: &Array2<C64>) -> Result<(Vec<f64>, Array2<C64>), ScriptErro
 }
 
 fn normalize_column(a: &mut Array2<C64>, col: usize) {
-    let nrm = (0..a.nrows())
-        .map(|r| a[[r, col]].norm_sqr())
-        .sum0()
-        .sqrt();
+    let nrm = (0..a.nrows()).map(|r| a[[r, col]].norm_sqr()).sum0().sqrt();
     if nrm > 0.0 {
         for r in 0..a.nrows() {
             a[[r, col]] /= nrm;

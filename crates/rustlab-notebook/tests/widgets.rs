@@ -59,14 +59,20 @@ fn slider_renders_as_range_input_at_its_default() {
     let html = render_with(None);
     // The control is emitted as a labelled range input carrying the
     // widget name and declared bounds.
-    assert!(html.contains("class=\"rl-widget\""), "no widget form:\n{html}");
+    assert!(
+        html.contains("class=\"rl-widget\""),
+        "no widget form:\n{html}"
+    );
     assert!(html.contains("data-widget-name=\"gain\""));
     assert!(html.contains("type=\"range\""));
     assert!(html.contains("min=\"0\""));
     assert!(html.contains("max=\"10\""));
     assert!(html.contains("step=\"0.5\""));
     // Default value 2 is reflected in the input and the readout.
-    assert!(html.contains("value=\"2\""), "default not reflected:\n{html}");
+    assert!(
+        html.contains("value=\"2\""),
+        "default not reflected:\n{html}"
+    );
 }
 
 #[test]
@@ -74,7 +80,10 @@ fn default_value_drives_code_output() {
     // With no override, widget("gain") resolves to the declared default 2,
     // so the code block prints 2 * 100 = 200.
     let html = render_with(None);
-    assert!(html.contains("200"), "expected default-driven output 200:\n{html}");
+    assert!(
+        html.contains("200"),
+        "expected default-driven output 200:\n{html}"
+    );
 }
 
 #[test]
@@ -86,10 +95,19 @@ fn override_value_drives_a_new_render() {
     overrides.insert("gain".to_string(), WidgetValue::Number(7.0));
     let html = render_with(Some(&overrides));
 
-    assert!(html.contains("value=\"7\""), "slider not at override:\n{html}");
-    assert!(html.contains("700"), "output didn't follow the slider:\n{html}");
+    assert!(
+        html.contains("value=\"7\""),
+        "slider not at override:\n{html}"
+    );
+    assert!(
+        html.contains("700"),
+        "output didn't follow the slider:\n{html}"
+    );
     // And the stale default-driven output is gone.
-    assert!(!html.contains(">200<"), "stale default output still present");
+    assert!(
+        !html.contains(">200<"),
+        "stale default output still present"
+    );
 }
 
 #[test]
@@ -99,8 +117,14 @@ fn override_for_unknown_widget_is_ignored() {
     let mut overrides = BTreeMap::new();
     overrides.insert("ghost".to_string(), WidgetValue::Number(99.0));
     let html = render_with(Some(&overrides));
-    assert!(html.contains("200"), "declared default should still drive output");
-    assert!(!html.contains("9900"), "unknown override must not be applied");
+    assert!(
+        html.contains("200"),
+        "declared default should still drive output"
+    );
+    assert!(
+        !html.contains("9900"),
+        "unknown override must not be applied"
+    );
 }
 
 #[test]
@@ -118,8 +142,14 @@ fn malformed_widget_fence_becomes_a_caution_callout() {
         None,
         &rustlab_notebook::render::LinkMode::single_file(),
     );
-    assert!(html.contains("callout-caution"), "expected a caution callout:\n{html}");
-    assert!(!html.contains("class=\"rl-widget\""), "broken widget must not render a control");
+    assert!(
+        html.contains("callout-caution"),
+        "expected a caution callout:\n{html}"
+    );
+    assert!(
+        !html.contains("class=\"rl-widget\""),
+        "broken widget must not render a control"
+    );
 }
 
 // ── Phase 2: number + option widgets, coercion / carry-over ──────────
@@ -174,15 +204,27 @@ fn render_src(src: &str, overrides: Option<&BTreeMap<String, WidgetValue>>) -> S
 #[test]
 fn option_renders_radio_group_with_default_checked() {
     let html = render_src(NB_OPTION, None);
-    assert!(html.contains("data-widget-type=\"option\""), "no option widget:\n{html}");
+    assert!(
+        html.contains("data-widget-type=\"option\""),
+        "no option widget:\n{html}"
+    );
     assert!(html.contains("type=\"radio\""));
     // All three choices present.
     for c in ["hamming", "hann", "blackman"] {
-        assert!(html.contains(&format!("value=\"{c}\"")), "missing choice {c}");
+        assert!(
+            html.contains(&format!("value=\"{c}\"")),
+            "missing choice {c}"
+        );
     }
     // Default choice is checked, and drives the code output.
-    assert!(html.contains("value=\"hamming\" checked"), "default not checked:\n{html}");
-    assert!(html.contains(">hamming<") || html.contains("hamming"), "default output missing");
+    assert!(
+        html.contains("value=\"hamming\" checked"),
+        "default not checked:\n{html}"
+    );
+    assert!(
+        html.contains(">hamming<") || html.contains("hamming"),
+        "default output missing"
+    );
 }
 
 #[test]
@@ -191,8 +233,14 @@ fn option_string_override_drives_output_and_selection() {
     overrides.insert("window".to_string(), WidgetValue::Text("blackman".into()));
     let html = render_src(NB_OPTION, Some(&overrides));
     // The picked choice is now checked, and widget("window") returns it.
-    assert!(html.contains("value=\"blackman\" checked"), "override not selected:\n{html}");
-    assert!(!html.contains("value=\"hamming\" checked"), "stale default still checked");
+    assert!(
+        html.contains("value=\"blackman\" checked"),
+        "override not selected:\n{html}"
+    );
+    assert!(
+        !html.contains("value=\"hamming\" checked"),
+        "stale default still checked"
+    );
     assert!(html.contains("blackman"), "output didn't follow the choice");
 }
 
@@ -203,7 +251,10 @@ fn option_invalid_choice_override_falls_back_to_default() {
     let mut overrides = BTreeMap::new();
     overrides.insert("window".to_string(), WidgetValue::Text("kaiser".into()));
     let html = render_src(NB_OPTION, Some(&overrides));
-    assert!(html.contains("value=\"hamming\" checked"), "invalid choice should reset to default");
+    assert!(
+        html.contains("value=\"hamming\" checked"),
+        "invalid choice should reset to default"
+    );
     assert!(!html.contains("kaiser"), "invalid choice must not leak in");
 }
 
@@ -213,7 +264,10 @@ fn number_override_clamps_to_declared_bounds() {
     let mut overrides = BTreeMap::new();
     overrides.insert("order".to_string(), WidgetValue::Number(999.0));
     let html = render_src(NB_NUMBER, Some(&overrides));
-    assert!(html.contains("value=\"64\""), "number not clamped to max:\n{html}");
+    assert!(
+        html.contains("value=\"64\""),
+        "number not clamped to max:\n{html}"
+    );
     assert!(html.contains("65"), "clamped value didn't drive output");
 }
 
@@ -232,10 +286,12 @@ fn wrong_typed_override_falls_back_to_default() {
     let mut overrides = BTreeMap::new();
     overrides.insert("order".to_string(), WidgetValue::Text("oops".into()));
     let html = render_src(NB_NUMBER, Some(&overrides));
-    assert!(html.contains("value=\"8\""), "should fall back to numeric default:\n{html}");
+    assert!(
+        html.contains("value=\"8\""),
+        "should fall back to numeric default:\n{html}"
+    );
     assert!(html.contains("9"), "default 8 + 1 = 9");
 }
-
 
 // ── Phase 3: scoped re-render (widget-aware prefix cache) ────────────
 
@@ -321,7 +377,10 @@ fn scoped_rerender_produces_correct_new_values() {
         &rustlab_notebook::render::LinkMode::single_file(),
     );
     assert!(html.contains("11"), "cached upstream block still present");
-    assert!(html.contains("70"), "widget-reading block recomputed (b=70)");
+    assert!(
+        html.contains("70"),
+        "widget-reading block recomputed (b=70)"
+    );
     assert!(html.contains("71"), "downstream block recomputed (c=71)");
     assert!(!html.contains(">20<"), "stale b=20 must be gone");
 }

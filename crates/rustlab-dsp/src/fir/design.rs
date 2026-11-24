@@ -1,9 +1,9 @@
-use rustlab_core::Sum0;
 use crate::convolution::convolve;
 use crate::error::DspError;
 use crate::window::WindowFunction;
 use ndarray::Array1;
 use num_complex::Complex;
+use rustlab_core::Sum0;
 use rustlab_core::{CVector, CoreError, Filter, C64};
 use std::f64::consts::PI;
 

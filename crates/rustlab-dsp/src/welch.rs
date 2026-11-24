@@ -8,12 +8,12 @@
 //! `segment_iter` is the crate-private helper shared by `pwelch_psd` and
 //! `stft` (Phase 2).
 
-use rustlab_core::Sum0;
 use crate::convolution::next_power_of_two;
 use crate::error::DspError;
 use crate::fft::fft_raw;
 use ndarray::Array1;
 use num_complex::Complex;
+use rustlab_core::Sum0;
 use rustlab_core::{CVector, RVector};
 
 /// One-sided / two-sided dispatch for PSD output.

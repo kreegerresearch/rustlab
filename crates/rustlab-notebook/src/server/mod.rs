@@ -19,6 +19,9 @@ pub mod browser;
 pub mod cell;
 pub mod diff;
 pub mod drawer;
+pub mod fileset;
+#[cfg(test)]
+mod fileset_tests;
 pub mod http;
 pub mod page;
 pub mod render_loop;
@@ -466,6 +469,20 @@ fn build_state(
         comments_on,
         git_enabled,
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_set_state(
+    _set: &fileset::WatchSet,
+    _theme: &'static ThemeColors,
+    _editable: bool,
+    _annotate: bool,
+    _comments_on: bool,
+    _csp_nonce: String,
+    _jail_root: Option<PathBuf>,
+    _git_enabled: bool,
+) -> Result<Arc<http::ServerState>> {
+    anyhow::bail!("not implemented")
 }
 
 /// Single-file `watch` cannot resolve cross-notebook `.md` links (the

@@ -202,10 +202,7 @@ pub fn check_impurity(body: &[Stmt]) -> ImpurityReport {
 /// defined; `cache add file` similarly installs every function from
 /// the file before gating, so sibling calls within a file are fully
 /// analysed.
-pub fn check_transitive_impurity<'b, F>(
-    body: &'b [Stmt],
-    user_fn_body: &F,
-) -> ImpurityReport
+pub fn check_transitive_impurity<'b, F>(body: &'b [Stmt], user_fn_body: &F) -> ImpurityReport
 where
     F: for<'a> Fn(&'a str) -> Option<&'b [Stmt]>,
 {
@@ -352,7 +349,12 @@ fn visit_expr_collect_call_names(e: &Expr, out: &mut BTreeSet<String>) {
                 visit_expr_collect_call_names(a, out);
             }
         }
-        Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
+        Expr::Number(_)
+        | Expr::Imag(_)
+        | Expr::IntLit(_)
+        | Expr::Str(_)
+        | Expr::Var(_)
+        | Expr::All => {}
     }
 }
 
@@ -682,7 +684,12 @@ fn visit_expr_for_impure_calls(e: &Expr, out: &mut BTreeSet<String>) {
                 visit_expr_for_impure_calls(a, out);
             }
         }
-        Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
+        Expr::Number(_)
+        | Expr::Imag(_)
+        | Expr::IntLit(_)
+        | Expr::Str(_)
+        | Expr::Var(_)
+        | Expr::All => {}
     }
 }
 
@@ -738,8 +745,7 @@ mod tests {
     fn impure_names_are_registered_or_reserved() {
         use crate::eval::BuiltinRegistry;
         let reg = BuiltinRegistry::with_defaults();
-        let reserved: std::collections::BTreeSet<&str> =
-            IMPURE_RESERVED.iter().copied().collect();
+        let reserved: std::collections::BTreeSet<&str> = IMPURE_RESERVED.iter().copied().collect();
         assert_eq!(
             reserved.len(),
             IMPURE_RESERVED.len(),
@@ -781,36 +787,29 @@ mod tests {
 
     #[test]
     fn pure_function_has_no_free_vars() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = x + 1\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  y = x + 1\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert!(report.is_clean(), "unexpected free vars: {:?}", report);
     }
 
     #[test]
     fn unbound_name_is_flagged_as_free() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = x + k\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  y = x + k\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert_eq!(report.free_vars, vec!["k".to_string()]);
     }
 
     #[test]
     fn locals_assigned_in_body_are_not_free() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  k = 2\n  y = x + k\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  k = 2\n  y = x + k\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert!(report.is_clean(), "{:?}", report);
     }
 
     #[test]
     fn for_loop_var_counts_as_local() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = 0\n  for i = 1:10\n    y = y + i\n  end\nend\n",
-        );
+        let (params, body) =
+            parse_one_fn("function y = f(x)\n  y = 0\n  for i = 1:10\n    y = y + i\n  end\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert!(report.is_clean(), "{:?}", report);
     }
@@ -818,9 +817,8 @@ mod tests {
     #[test]
     fn multi_assign_targets_are_locals() {
         // `[a, b] = expr` should introduce a and b as locals.
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  [a, b] = size(x)\n  y = a + b\nend\n",
-        );
+        let (params, body) =
+            parse_one_fn("function y = f(x)\n  [a, b] = size(x)\n  y = a + b\nend\n");
         // `size` is a builtin in our hypothetical environment.
         let is_builtin = |n: &str| n == "size";
         let report = check_free_vars(&body, &params, &is_builtin, &no_siblings);
@@ -829,9 +827,7 @@ mod tests {
 
     #[test]
     fn builtin_callback_suppresses_flag() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = sqrt(x)\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  y = sqrt(x)\nend\n");
         let is_builtin = |n: &str| n == "sqrt";
         let report = check_free_vars(&body, &params, &is_builtin, &no_siblings);
         assert!(report.is_clean());
@@ -839,9 +835,7 @@ mod tests {
 
     #[test]
     fn sibling_callback_suppresses_flag() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = helper(x) + 1\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  y = helper(x) + 1\nend\n");
         let is_sibling = |n: &str| n == "helper";
         let report = check_free_vars(&body, &params, &no_builtins, &is_sibling);
         assert!(report.is_clean());
@@ -851,9 +845,7 @@ mod tests {
     fn lambda_params_dont_leak_out() {
         // The lambda parameter `t` is bound inside the lambda and
         // should NOT bubble up as a free var of `f`.
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  g = @(t) t + x\n  y = g(1)\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  g = @(t) t + x\n  y = g(1)\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert!(report.is_clean(), "{:?}", report);
     }
@@ -862,18 +854,14 @@ mod tests {
     fn lambda_body_can_still_capture_free_var() {
         // Lambda references `k` which is neither its param nor bound
         // in the enclosing scope.
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  g = @(t) t + k\n  y = g(1)\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  g = @(t) t + k\n  y = g(1)\nend\n");
         let report = check_free_vars(&body, &params, &no_builtins, &no_siblings);
         assert_eq!(report.free_vars, vec!["k".to_string()]);
     }
 
     #[test]
     fn function_handle_reference_counts_as_use() {
-        let (params, body) = parse_one_fn(
-            "function y = f(x)\n  y = feval(@helper, x)\nend\n",
-        );
+        let (params, body) = parse_one_fn("function y = f(x)\n  y = feval(@helper, x)\nend\n");
         let is_builtin = |n: &str| n == "feval";
         // helper isn't a sibling or builtin → flagged.
         let report = check_free_vars(&body, &params, &is_builtin, &no_siblings);
@@ -884,9 +872,7 @@ mod tests {
 
     #[test]
     fn pure_function_has_no_impure_calls() {
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  y = sqrt(x * x)\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  y = sqrt(x * x)\nend\n");
         let report = check_impurity(&body);
         assert!(report.is_clean(), "{:?}", report);
     }
@@ -902,18 +888,14 @@ mod tests {
 
     #[test]
     fn direct_rand_call_is_flagged() {
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  y = x + rand()\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  y = x + rand()\nend\n");
         let report = check_impurity(&body);
         assert_eq!(report.impure_calls, vec!["rand".to_string()]);
     }
 
     #[test]
     fn plot_call_is_flagged() {
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  plot(x)\n  y = x\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  plot(x)\n  y = x\nend\n");
         let report = check_impurity(&body);
         assert_eq!(report.impure_calls, vec!["plot".to_string()]);
     }
@@ -921,9 +903,7 @@ mod tests {
     #[test]
     fn nested_call_in_expression_is_found() {
         // `2 + rand()` — the rand call is nested inside a BinOp.
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  y = x + 2 + rand()\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  y = x + 2 + rand()\nend\n");
         let report = check_impurity(&body);
         assert_eq!(report.impure_calls, vec!["rand".to_string()]);
     }
@@ -933,27 +913,21 @@ mod tests {
         // Aliasing `rand` via @rand still gets called somewhere — the
         // walker flags the handle even if the actual call site is
         // hidden in a builtin like feval.
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  g = @rand\n  y = x\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  g = @rand\n  y = x\nend\n");
         let report = check_impurity(&body);
         assert_eq!(report.impure_calls, vec!["rand".to_string()]);
     }
 
     #[test]
     fn hold_directive_is_flagged_as_graphics_side_effect() {
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  hold on\n  y = x\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  hold on\n  y = x\nend\n");
         let report = check_impurity(&body);
         assert_eq!(report.impure_calls, vec!["hold".to_string()]);
     }
 
     #[test]
     fn multiple_distinct_impure_calls_are_collected() {
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  plot(x)\n  y = x + rand()\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  plot(x)\n  y = x + rand()\nend\n");
         let report = check_impurity(&body);
         // Sorted alphabetically (BTreeSet ordering).
         assert_eq!(
@@ -968,9 +942,7 @@ mod tests {
         // body sees only `g` — which isn't on the denylist — so the
         // report is clean. This documents the limitation; Phase 6
         // would add transitive analysis.
-        let (_, body) = parse_one_fn(
-            "function y = f(x)\n  y = g(x)\nend\n",
-        );
+        let (_, body) = parse_one_fn("function y = f(x)\n  y = g(x)\nend\n");
         let report = check_impurity(&body);
         assert!(
             report.is_clean(),

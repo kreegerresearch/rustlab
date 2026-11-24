@@ -797,7 +797,11 @@ fn feed_stmt_kind_canonical(
     ctx: &mut CanonicalCtx<'_>,
 ) {
     match kind {
-        StmtKind::Assign { name, expr, suppress } => {
+        StmtKind::Assign {
+            name,
+            expr,
+            suppress,
+        } => {
             h.update(&[0x01]);
             feed_name_ref(h, stack, name);
             feed_expr_canonical(h, expr, stack, ctx);
@@ -829,7 +833,12 @@ fn feed_stmt_kind_canonical(
             feed_stmts_canonical(h, body, &mut sub_stack, ctx);
             sub_stack.exit_function();
         }
-        StmtKind::FieldAssign { object, field, expr, suppress } => {
+        StmtKind::FieldAssign {
+            object,
+            field,
+            expr,
+            suppress,
+        } => {
             h.update(&[0x04]);
             feed_name_ref(h, stack, object);
             feed_str(h, field); // field names ARE structural (struct schema)
@@ -855,7 +864,11 @@ fn feed_stmt_kind_canonical(
             }
             feed_stmts_canonical(h, else_body, stack, ctx);
         }
-        StmtKind::Switch { expr, cases, otherwise } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            otherwise,
+        } => {
             h.update(&[0x07]);
             feed_expr_canonical(h, expr, stack, ctx);
             h.update(&(cases.len() as u64).to_le_bytes());
@@ -902,7 +915,11 @@ fn feed_stmt_kind_canonical(
                 }
             }
         }
-        StmtKind::MultiAssign { names, expr, suppress } => {
+        StmtKind::MultiAssign {
+            names,
+            expr,
+            suppress,
+        } => {
             h.update(&[0x0d]);
             h.update(&(names.len() as u64).to_le_bytes());
             for n in names {
@@ -922,7 +939,12 @@ fn feed_stmt_kind_canonical(
             feed_expr_canonical(h, cond, stack, ctx);
             feed_stmts_canonical(h, body, stack, ctx);
         }
-        StmtKind::IndexAssign { name, indices, expr, suppress } => {
+        StmtKind::IndexAssign {
+            name,
+            indices,
+            expr,
+            suppress,
+        } => {
             h.update(&[0x10]);
             feed_name_ref(h, stack, name);
             h.update(&(indices.len() as u64).to_le_bytes());

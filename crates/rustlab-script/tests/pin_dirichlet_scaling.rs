@@ -58,7 +58,10 @@ fn pinned_nodes_are_exact_at_small_spacing() {
         let ev = eval(&capacitor(h, ""));
         let pin = scalar(&ev, "pin_err");
         let gnd = scalar(&ev, "gnd_err");
-        assert!(pin <= 1e-14, "h = {h}: max |V - 1| on the conductor = {pin:e}");
+        assert!(
+            pin <= 1e-14,
+            "h = {h}: max |V - 1| on the conductor = {pin:e}"
+        );
         assert!(gnd <= 1e-14, "h = {h}: max |V| on the ground = {gnd:e}");
     }
 }
@@ -154,11 +157,17 @@ fn explicit_numeric_scale() {
 #[test]
 fn scale_option_errors() {
     let base = "A = speye(3); b = zeros(1, 3);";
-    let e = eval_err(&format!("{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"scale\", 0);"));
+    let e = eval_err(&format!(
+        "{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"scale\", 0);"
+    ));
     assert!(e.contains("scale"), "{e}");
-    let e = eval_err(&format!("{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"scale\", \"big\");"));
+    let e = eval_err(&format!(
+        "{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"scale\", \"big\");"
+    ));
     assert!(e.contains("auto"), "{e}");
-    let e = eval_err(&format!("{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"size\", 1);"));
+    let e = eval_err(&format!(
+        "{base} [X, y] = pin_dirichlet(A, b, [1], 1.0, \"size\", 1);"
+    ));
     assert!(e.contains("scale"), "{e}");
 }
 

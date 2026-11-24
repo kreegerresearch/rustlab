@@ -29,7 +29,10 @@ fn happy_script_exits_zero() {
 #[test]
 fn runtime_error_exits_one() {
     // Undefined variable → runtime error mid-script.
-    assert_eq!(run_script("x = 1;\ny = undefined_variable_xyz + 1;\n"), Some(1));
+    assert_eq!(
+        run_script("x = 1;\ny = undefined_variable_xyz + 1;\n"),
+        Some(1)
+    );
 }
 
 #[test]
@@ -56,7 +59,10 @@ fn error_after_output_still_exits_one() {
         .expect("launch rustlab");
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("42"), "pre-error output still printed: {stdout}");
+    assert!(
+        stdout.contains("42"),
+        "pre-error output still printed: {stdout}"
+    );
 }
 
 #[test]

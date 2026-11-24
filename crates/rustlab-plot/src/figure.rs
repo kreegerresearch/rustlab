@@ -928,7 +928,11 @@ pub fn emit_pending_terminal_skips() {
         return;
     }
     let list = kinds.join(", ");
-    let (verb, pron) = if kinds.len() == 1 { ("was", "it") } else { ("were", "them") };
+    let (verb, pron) = if kinds.len() == 1 {
+        ("was", "it")
+    } else {
+        ("were", "them")
+    };
     eprintln!(
         "rustlab: {list} {verb} not rendered to the terminal — \
          use savefig(\"plot.svg\" or \"plot.html\") to view {pron}."
@@ -1328,7 +1332,12 @@ mod close_tests {
         loop {
             assert!(close_figure(prev));
             let next = current_figure_id();
-            assert!(next < prev, "current id should shrink: was {}, now {}", prev, next);
+            assert!(
+                next < prev,
+                "current id should shrink: was {}, now {}",
+                prev,
+                next
+            );
             if next == 0 {
                 break;
             }
@@ -1533,14 +1542,26 @@ mod series_color_parse_tests {
 
     #[test]
     fn gray_and_grey_parse() {
-        assert_eq!(SeriesColor::parse("gray"), Some(SeriesColor::Rgb(128, 128, 128)));
-        assert_eq!(SeriesColor::parse("GREY"), Some(SeriesColor::Rgb(128, 128, 128)));
+        assert_eq!(
+            SeriesColor::parse("gray"),
+            Some(SeriesColor::Rgb(128, 128, 128))
+        );
+        assert_eq!(
+            SeriesColor::parse("GREY"),
+            Some(SeriesColor::Rgb(128, 128, 128))
+        );
     }
 
     #[test]
     fn hex_rrggbb_parses() {
-        assert_eq!(SeriesColor::parse("#FF8000"), Some(SeriesColor::Rgb(255, 128, 0)));
-        assert_eq!(SeriesColor::parse("#000000"), Some(SeriesColor::Rgb(0, 0, 0)));
+        assert_eq!(
+            SeriesColor::parse("#FF8000"),
+            Some(SeriesColor::Rgb(255, 128, 0))
+        );
+        assert_eq!(
+            SeriesColor::parse("#000000"),
+            Some(SeriesColor::Rgb(0, 0, 0))
+        );
     }
 
     #[test]

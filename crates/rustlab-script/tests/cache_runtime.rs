@@ -114,11 +114,7 @@ fn add_file_rejects_free_variable_as_hard_error() {
     let dir = tempfile::tempdir().unwrap();
     let bad = dir.path().join("bad.rlab");
     // References `k` which isn't a param or local — must hard-error.
-    std::fs::write(
-        &bad,
-        "function y = f(x)\n  y = x + k\nend\n",
-    )
-    .unwrap();
+    std::fs::write(&bad, "function y = f(x)\n  y = x + k\nend\n").unwrap();
     let store = dir.path().join("c.rcache");
     let mut ev = Evaluator::new();
     run(&mut ev, &format!("cache enable \"{}\"\n", store.display())).unwrap();
@@ -168,8 +164,11 @@ fn add_file_with_no_functions_errors() {
     let store = dir.path().join("e.rcache");
     let mut ev = Evaluator::new();
     run(&mut ev, &format!("cache enable \"{}\"\n", store.display())).unwrap();
-    let err = run(&mut ev, &format!("cache add file \"{}\"\n", empty.display()))
-        .expect_err("no fns → error");
+    let err = run(
+        &mut ev,
+        &format!("cache add file \"{}\"\n", empty.display()),
+    )
+    .expect_err("no fns → error");
     assert!(format!("{err}").contains("no function definitions"));
 }
 
@@ -210,8 +209,7 @@ fn add_function_unknown_name_errors() {
     let store = dir.path().join("u.rcache");
     let mut ev = Evaluator::new();
     run(&mut ev, &format!("cache enable \"{}\"\n", store.display())).unwrap();
-    let err = run(&mut ev, "cache add function nope\n")
-        .expect_err("undefined fn → error");
+    let err = run(&mut ev, "cache add function nope\n").expect_err("undefined fn → error");
     assert!(format!("{err}").contains("not a user-defined function"));
 }
 
@@ -229,8 +227,8 @@ fn add_function_explicit_mode_rejects_impure() {
         ),
     )
     .unwrap();
-    let err = run(&mut ev, "cache add function noisy\n")
-        .expect_err("impure in explicit mode → error");
+    let err =
+        run(&mut ev, "cache add function noisy\n").expect_err("impure in explicit mode → error");
     let msg = format!("{err}");
     assert!(msg.contains("impure"), "{msg}");
     assert!(msg.contains("rand"), "should name the builtin: {msg}");
@@ -265,8 +263,11 @@ fn clear_returns_zero_on_empty_store() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("clr.rcache");
     let mut ev = Evaluator::new();
-    run(&mut ev, &format!("cache enable \"{}\"\ncache clear\n", store.display()))
-        .expect("script");
+    run(
+        &mut ev,
+        &format!("cache enable \"{}\"\ncache clear\n", store.display()),
+    )
+    .expect("script");
 }
 
 #[test]
@@ -281,8 +282,11 @@ fn prune_default_30d() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("p.rcache");
     let mut ev = Evaluator::new();
-    run(&mut ev, &format!("cache enable \"{}\"\ncache prune\n", store.display()))
-        .expect("script");
+    run(
+        &mut ev,
+        &format!("cache enable \"{}\"\ncache prune\n", store.display()),
+    )
+    .expect("script");
 }
 
 #[test]
@@ -312,8 +316,7 @@ fn prune_with_unknown_unit_errors() {
     run(&mut ev, &format!("cache enable \"{}\"\n", store.display())).unwrap();
     // `older=30q` — "q" isn't a unit. The number-bareword parser in
     // Phase 3a assembles "30q" then runtime parser rejects.
-    let err = run(&mut ev, "cache prune older=\"30q\"\n")
-        .expect_err("bad unit → error");
+    let err = run(&mut ev, "cache prune older=\"30q\"\n").expect_err("bad unit → error");
     assert!(format!("{err}").contains("unknown unit"));
 }
 
@@ -340,8 +343,11 @@ fn status_does_not_error_in_either_state() {
     // Active state.
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("st.rcache");
-    run(&mut ev, &format!("cache enable \"{}\"\ncache status\n", store.display()))
-        .expect("status active");
+    run(
+        &mut ev,
+        &format!("cache enable \"{}\"\ncache status\n", store.display()),
+    )
+    .expect("status active");
 }
 
 #[test]

@@ -47,7 +47,11 @@ pub(crate) fn to_columns(t: &Shared<CTensor3>) -> Value {
 pub(crate) fn from_columns(name: &str, v: Value, shape: [usize; 3]) -> Result<Value, String> {
     let [m, n, p] = shape;
     let np = n * p;
-    let bad = |what: &str| Err(format!("{name}: unexpected {what} result for a {m}x{n}x{p} Tensor3"));
+    let bad = |what: &str| {
+        Err(format!(
+            "{name}: unexpected {what} result for a {m}x{n}x{p} Tensor3"
+        ))
+    };
     match v {
         Value::Matrix(mat) => {
             if Shared::shape(&mat) != [m, np] {
@@ -82,7 +86,9 @@ pub(crate) fn from_columns(name: &str, v: Value, shape: [usize; 3]) -> Result<Va
             (1, 1, 1),
             f64::from(u8::from(b)),
         ))),
-        Value::Complex(c) if m * np == 1 => Ok(Value::Tensor3(Array3::from_elem((1, 1, 1), c).into())),
+        Value::Complex(c) if m * np == 1 => {
+            Ok(Value::Tensor3(Array3::from_elem((1, 1, 1), c).into()))
+        }
         other => bad(other.type_name()),
     }
 }

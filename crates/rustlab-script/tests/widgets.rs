@@ -61,7 +61,8 @@ fn widget_without_a_table_errors() {
     let stmts = parse("z = widget(\"cutoff\");");
     let err = ev.run(&stmts).unwrap_err();
     assert!(
-        err.to_string().contains("only available when rendering a notebook"),
+        err.to_string()
+            .contains("only available when rendering a notebook"),
         "expected no-notebook error, got: {err}"
     );
 }

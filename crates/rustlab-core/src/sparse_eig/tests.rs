@@ -175,13 +175,24 @@ fn eigs_smallest_shift_invert_on_larger_grid() {
     got.sort_by(|x, y| x.partial_cmp(y).unwrap());
     for k in 0..3 {
         let kk = (k + 1) as f64;
-        let analytic =
-            4.0 * (kk * std::f64::consts::PI / (2.0 * (n as f64 + 1.0))).sin().powi(2);
+        let analytic = 4.0
+            * (kk * std::f64::consts::PI / (2.0 * (n as f64 + 1.0)))
+                .sin()
+                .powi(2);
         let rel = (got[k] - analytic).abs() / analytic;
-        assert!(rel < 1e-3, "eig {k}: got {} expected {} (rel {rel})", got[k], analytic);
+        assert!(
+            rel < 1e-3,
+            "eig {k}: got {} expected {} (rel {rel})",
+            got[k],
+            analytic
+        );
     }
     // The residual is now small (and computed against A, not discarded).
-    assert!(result.residual < 1e-6, "residual {} too large", result.residual);
+    assert!(
+        result.residual < 1e-6,
+        "residual {} too large",
+        result.residual
+    );
 }
 
 #[test]
@@ -250,10 +261,7 @@ fn eigs_gen_smallest_resolves_on_larger_grid() {
         .unwrap()
         .values[0]
         .re;
-    let mu_std = eigs(&a, 1, Which::SmallestMagnitude, None)
-        .unwrap()
-        .values[0]
-        .re;
+    let mu_std = eigs(&a, 1, Which::SmallestMagnitude, None).unwrap().values[0].re;
     let expected = mu_std / 2.0;
     let rel = (lambda_gen - expected).abs() / expected.abs();
     assert!(
@@ -312,10 +320,7 @@ fn lanczos_basis_orthonormal_and_tridiagonal() {
         for j in 0..m {
             let expected = if i == j { 1.0 } else { 0.0 };
             let g = dot(&basis[i], &basis[j]);
-            assert!(
-                (g - expected).abs() < 1e-12,
-                "V^T V at ({i},{j}): {g}"
-            );
+            assert!((g - expected).abs() < 1e-12, "V^T V at ({i},{j}): {g}");
         }
     }
 

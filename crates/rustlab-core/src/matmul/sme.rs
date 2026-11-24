@@ -63,7 +63,13 @@ fn detect() -> bool {
         // SAFETY: `v` and `len` are valid for writes of the sizes given; no
         // new value is set.
         let r = unsafe {
-            sysctlbyname(name.as_ptr(), (&mut v as *mut c_int).cast(), &mut len, std::ptr::null_mut(), 0)
+            sysctlbyname(
+                name.as_ptr(),
+                (&mut v as *mut c_int).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
         };
         r == 0 && v == 1
     };
@@ -94,7 +100,10 @@ fn detect() -> bool {
 /// [`available`] and that the inner dimensions agree. Row-major result.
 pub(crate) fn gemm(a: &ArrayView2<f64>, b: &ArrayView2<f64>) -> Array2<f64> {
     let (m, n) = (a.nrows(), b.ncols());
-    let out = product(Src::of_f64(a), Src::of_f64(b), |c, np| unpack(c, np, m, n, |x| x)).expect("real operands");
+    let out = product(Src::of_f64(a), Src::of_f64(b), |c, np| {
+        unpack(c, np, m, n, |x| x)
+    })
+    .expect("real operands");
     Array2::from_shape_vec((m, n), out).expect("length matches the shape")
 }
 
@@ -105,7 +114,9 @@ pub(crate) fn gemm(a: &ArrayView2<f64>, b: &ArrayView2<f64>) -> Array2<f64> {
 /// parts.
 pub(crate) fn gemm_real_c64(a: &ArrayView2<C64>, b: &ArrayView2<C64>) -> Option<CMatrix> {
     let (m, n) = (a.nrows(), b.ncols());
-    let out = product(Src::of_c64(a), Src::of_c64(b), |c, np| unpack(c, np, m, n, |x| C64::new(x, 0.0)))?;
+    let out = product(Src::of_c64(a), Src::of_c64(b), |c, np| {
+        unpack(c, np, m, n, |x| C64::new(x, 0.0))
+    })?;
     Some(Array2::from_shape_vec((m, n), out).expect("length matches the shape"))
 }
 
@@ -124,7 +135,14 @@ struct Src {
 impl Src {
     fn of_f64(a: &ArrayView2<f64>) -> Src {
         let s = a.strides();
-        Src { ptr: a.as_ptr(), rows: a.nrows(), cols: a.ncols(), row_stride: s[0], col_stride: s[1], complex: false }
+        Src {
+            ptr: a.as_ptr(),
+            rows: a.nrows(),
+            cols: a.ncols(),
+            row_stride: s[0],
+            col_stride: s[1],
+            complex: false,
+        }
     }
 
     fn of_c64(a: &ArrayView2<C64>) -> Src {
@@ -219,7 +237,10 @@ fn pack(src: &Src, len: usize, along: isize, kstride: isize, k: usize, out: &mut
             // SAFETY: (r0 + r, kk) is inside the view whose strides these
             // are, so the word (and, for complex storage, the next one) is
             // inside its allocation.
-            let at = unsafe { src.ptr.offset((r0 + r) as isize * along + kk as isize * kstride) };
+            let at = unsafe {
+                src.ptr
+                    .offset((r0 + r) as isize * along + kk as isize * kstride)
+            };
             unsafe { (*at, *at.add(im_off)) }
         };
         if along.unsigned_abs() <= kstride.unsigned_abs() {
@@ -365,7 +386,9 @@ mod tests {
     fn filled(m: usize, n: usize, seed: u64) -> Array2<f64> {
         let mut s = seed;
         Array2::from_shape_fn((m, n), |_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
         })
     }
@@ -396,7 +419,11 @@ mod tests {
                 for &k in &[1, 2, 8, 33, 128] {
                     let a = filled(m, k, (m * 1000 + k) as u64);
                     let b = filled(k, n, (n * 1000 + k + 7) as u64);
-                    assert_bits(&gemm(&a.view(), &b.view()), &fma_reference(&a.view(), &b.view()), &format!("{m}x{k}x{n}"));
+                    assert_bits(
+                        &gemm(&a.view(), &b.view()),
+                        &fma_reference(&a.view(), &b.view()),
+                        &format!("{m}x{k}x{n}"),
+                    );
                 }
             }
         }
@@ -414,7 +441,11 @@ mod tests {
         let big = filled(80, 74, 3);
         let a = big.slice(ndarray::s![..;2, ..;2]); // 40 × 37, strided
         let b = filled(37, 19, 4);
-        assert_bits(&gemm(&a, &b.view()), &fma_reference(&a, &b.view()), "strided A");
+        assert_bits(
+            &gemm(&a, &b.view()),
+            &fma_reference(&a, &b.view()),
+            "strided A",
+        );
     }
 
     #[test]
@@ -424,7 +455,11 @@ mod tests {
         }
         let a = filled(512, 512, 5);
         let b = filled(512, 512, 6);
-        assert_bits(&gemm(&a.view(), &b.view()), &fma_reference(&a.view(), &b.view()), "512^3");
+        assert_bits(
+            &gemm(&a.view(), &b.view()),
+            &fma_reference(&a.view(), &b.view()),
+            "512^3",
+        );
 
         let mut a = filled(20, 9, 7);
         let b = filled(9, 18, 8);
@@ -459,7 +494,9 @@ mod tests {
         let b = filled(128, 512, 10);
         let want = gemm(&a.view(), &b.view());
         std::thread::scope(|s| {
-            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| gemm(&a.view(), &b.view()))).collect();
+            let hs: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| gemm(&a.view(), &b.view())))
+                .collect();
             for h in hs {
                 assert_bits(&h.join().unwrap(), &want, "thread");
             }
@@ -474,7 +511,13 @@ mod tests {
         if !available() {
             return;
         }
-        for &(m, k, n) in &[(512, 512, 512), (129, 128, 512), (129, 128, 128), (129, 32, 129), (32, 32, 32)] {
+        for &(m, k, n) in &[
+            (512, 512, 512),
+            (129, 128, 512),
+            (129, 128, 128),
+            (129, 32, 129),
+            (32, 32, 32),
+        ] {
             let a = filled(m, k, 1);
             let b = filled(k, n, 2);
             let (mb, nb) = (m.div_ceil(BLOCK), n.div_ceil(BLOCK));
@@ -504,7 +547,13 @@ mod tests {
                 pb = y;
             });
             let tp = ta + tb;
-            println!("  pack A {:.1} us ({} el), pack B {:.1} us ({} el)", ta * 1e6, m * k, tb * 1e6, k * n);
+            println!(
+                "  pack A {:.1} us ({} el), pack B {:.1} us ({} el)",
+                ta * 1e6,
+                m * k,
+                tb * 1e6,
+                k * n
+            );
             let tg = time(&mut || {
                 std::hint::black_box(gemm(&a.view(), &b.view()));
             });
