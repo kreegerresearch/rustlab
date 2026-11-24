@@ -182,27 +182,29 @@ definite" error — useful as an assertion during development.
 ## Orderings
 
 The order in which unknowns are eliminated decides how much the factor
-fills in. The fourth argument of `spsolve` (and the second of `chol`
-and `lu`) picks it: `"auto"` (default), `"identity"` / `"natural"`,
-`"nd"` (nested dissection), or `"amd"` (basic minimum degree). Printing
-a factor handle shows its size:
+fills in. The fourth argument of `spsolve` (and the second of `lu`)
+picks it: `"auto"` (default), `"identity"` / `"natural"`, `"nd"`
+(nested dissection), or `"amd"` (basic minimum degree). The same names
+select the permutation of `[R, p, P] = chol(A, ordering)`, so `nnz(R)`
+shows the size of each factor:
 
 ```rustlab
-F_nat = chol(A, "identity");
-F_nd  = chol(A, "nd");
-F_amd = chol(A, "amd");
-print(F_nat)     % natural order: a band of width ny
-print(F_nd)      % nested dissection: the smallest of the three
-print(F_amd)
-print(chol(A))   % "auto" picks the smaller of nested dissection and natural
+[R_nat, p, P] = chol(A, "natural");
+[R_nd,  p, P] = chol(A, "nd");
+[R_amd, p, P] = chol(A, "amd");
+[R_auto, p, P] = chol(A);     % "auto": the smaller of nested dissection and natural
+print(nnz(R_nat))     % natural order: a band of width ny
+print(nnz(R_nd))      % nested dissection: the smallest of the three
+print(nnz(R_amd))
+print(nnz(R_auto))
 ```
 
 <!-- rustlab:output-start -->
 ```text
-<chol factor 2500×2500, real, nnz=125049>
-<chol factor 2500×2500, real, nnz=52993>
-<chol factor 2500×2500, real, nnz=229975>
-<chol factor 2500×2500, real, nnz=52993>
+125049
+52993
+229975
+52993
 ```
 
 <!-- rustlab:output-end -->
@@ -210,6 +212,72 @@ print(chol(A))   % "auto" picks the smaller of nested dissection and natural
 On a 1-D band the natural order has no fill and `"auto"` keeps it; on
 2-D and 3-D grids nested dissection wins, and by more as the grid grows
 (see the `sparse_scaling` notebook).
+
+## The Cholesky factor — MATLAB's `chol`
+
+`R = chol(A)` returns the sparse upper factor with $R^H R = A$, in the
+matrix's own order, as MATLAB does. Asking for a third output adds a
+fill-reducing permutation $P$ with $R^H R = P^T A P$, and that factor is
+smaller (the natural order is a band of width `ny`). `R \ b` is a
+triangular solve, so two of them and two permutations solve the system:
+
+```rustlab
+R0 = chol(A);
+[R, p, P] = chol(A);
+print(p)                                     % → 0: positive definite
+print(nnz(R0))                               % natural order
+print(nnz(R))                                % with P
+print(norm(full(R' * R - P' * A * P)))       % → roundoff (A's entries are ~1e4)
+x = P * (R \ (R' \ (P' * b)));
+print(norm(x - A \ b) / norm(A \ b))         % → ~1e-15
+```
+
+<!-- rustlab:output-start -->
+```text
+0
+125049
+52993
+0.000000000016437768377715555
+0.0000000000000005517231230662504
+```
+
+<!-- rustlab:output-end -->
+
+`[R, p] = chol(M)` never errors: on a matrix that is not positive
+definite it returns the pivot that failed, and `R` is the first
+$p - 1$ rows of the factor. That is MATLAB's test for definiteness:
+
+```rustlab
+[R1, p1] = chol(A - 2000 * speye(n));       % shifted so it is indefinite
+print(p1)                                    % → the failed pivot, no error
+```
+
+<!-- rustlab:output-start -->
+```text
+105
+```
+
+<!-- rustlab:output-end -->
+
+To factor once and solve many right-hand sides, keep a
+`decomposition`. It holds the same factor `\` would use, including the
+pinned-row reduction:
+
+```rustlab
+dA = decomposition(A, "chol");
+print(dA.Type)                               % → chol
+x1 = dA \ b;
+x2 = dA \ (2 * b);                           % no new factorization
+print(norm(x2 - 2 * x1))                     % → 0
+```
+
+<!-- rustlab:output-start -->
+```text
+chol
+0
+```
+
+<!-- rustlab:output-end -->
 
 ## Real-vs-complex auto-routing
 
@@ -348,7 +416,7 @@ Systems*, and George & Liu for the ordering:
 
 See `docs/sparse_solve.md` for the design walkthrough and
 `dev/plans/sparse_spd_solve.md` for measurements and planned work
-(MATLAB-style sparse `chol` outputs).
+(a faster, supernodal factor kernel).
 
 ## Cheat sheet
 
@@ -358,7 +426,8 @@ See `docs/sparse_solve.md` for the design walkthrough and
 | `spsolve(A, b, "cholesky")`         | Cholesky only; error if not Hermitian positive definite |
 | `spsolve(A, b, "lu")`               | sparse LU                                                |
 | `spsolve(A, b, mode, "nd")`         | force an ordering (`"identity"`, `"amd"`, `"nd"`)        |
-| `F = chol(A)`, `solve(F, b)`        | factor once, solve many right-hand sides                 |
+| `dA = decomposition(A)`, `dA \ b`   | factor once, solve many right-hand sides                 |
+| `[R, p, P] = chol(A)`               | sparse factor, `R'*R = P'*A*P`; `p > 0` if not SPD       |
 | `[x, flag] = pcg(A, b, tol, maxit)` | iterative, accurate to `tol`; SPD `A`                    |
 | `L = ichol(A)`, `pcg(..., L, L')`   | incomplete Cholesky preconditioner                       |
 

@@ -468,6 +468,7 @@ impl BuiltinRegistry {
         r.register_nargout("chol", builtin_chol);
         r.register_nargout("lu", builtin_lu);
         r.register("solve", builtin_solve);
+        r.register("decomposition", super::decomposition::builtin_decomposition);
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
         r.register("laplacian_2d", builtin_laplacian_2d);
@@ -10521,12 +10522,43 @@ pub(crate) fn sparse_square_mldivide(
 ) -> Result<Value, String> {
     let n = sm.rows;
     let columns = sparse_rhs_columns(n, b)?;
+    if let Some(solved) = super::sparse_auto::solve_triangular_in_place(sm, &columns) {
+        return Ok(pack_solved(solved));
+    }
     let factor =
         super::sparse_auto::factor(sm, super::sparse_auto::Mode::Auto, OrderingChoice::Auto)
             .map_err(|e| format!("mldivide: {e}"))?;
+    solve_columns(&factor, &columns).map_err(|e| format!("mldivide: {e}"))
+}
+
+/// `A' \\ b` (`conj`) or `A.' \\ b` for a square sparse `A` without forming
+/// the transpose, when `A` is triangular with a full diagonal. `None` when
+/// the fused path does not apply (including a `b` of the wrong height);
+/// the caller then transposes and solves as usual, which reports errors.
+pub(crate) fn sparse_transposed_mldivide(
+    sm: &rustlab_core::SparseMat,
+    b: &Value,
+    conj: bool,
+) -> Option<Value> {
+    let columns = sparse_rhs_columns(sm.rows, b).ok()?;
+    super::sparse_auto::solve_transposed_triangular_in_place(sm, &columns, conj).map(pack_solved)
+}
+
+fn pack_solved(mut solved: Vec<CVector>) -> Value {
+    if solved.len() == 1 {
+        return solution_column(solved.pop().unwrap());
+    }
+    pack_sparse_columns(&solved)
+}
+
+/// Solve every column through one factor; one column is `n×1`.
+pub(crate) fn solve_columns(
+    factor: &super::sparse_auto::AutoFactor,
+    columns: &[CVector],
+) -> Result<Value, String> {
     let mut solved = Vec::with_capacity(columns.len());
-    for col in &columns {
-        solved.push(factor.solve(col).map_err(|e| format!("mldivide: {e}"))?);
+    for col in columns {
+        solved.push(factor.solve(col)?);
     }
     if solved.len() == 1 {
         return Ok(solution_column(solved.pop().unwrap()));
@@ -10534,7 +10566,7 @@ pub(crate) fn sparse_square_mldivide(
     Ok(pack_sparse_columns(&solved))
 }
 
-fn sparse_rhs_columns(n: usize, b: &Value) -> Result<Vec<CVector>, String> {
+pub(crate) fn sparse_rhs_columns(n: usize, b: &Value) -> Result<Vec<CVector>, String> {
     let rows_err = |rows: usize| {
         format!(
             "mldivide: A is {n}×{n} but b has {rows} rows\n  hint: a vector is a column; an explicit row has one row"
@@ -15756,57 +15788,17 @@ pub(crate) fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CV
     }
 }
 
-/// `chol(A [, ordering])` — sparse Cholesky factorization. Returns an
-/// opaque factor handle suitable for `solve(F, b)`. Errors when `A` is
-/// not Hermitian positive definite (no auto fallback to LU; users who
-/// want that should call `lu(A)` or `spsolve(A, b)`). Reads only the
-/// upper triangle. Optional `ordering` argument is `"auto"` (default;
-/// nested dissection or natural by predicted fill), `"identity"`,
-/// `"amd"`, or `"nd"`.
+/// `chol(A, ...)`. A sparse matrix returns MATLAB's sparse factor `R`
+/// (and `p`, `P`) — see `eval/sparse_chol.rs`. Anything else is a dense
+/// matrix (`linsys::builtin_chol_dense`).
 fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    check_args_range("chol", &args, 1, 2)?;
+    check_args_range("chol", &args, 1, 4)?;
     // A scalar and a vector are matrices here, the same as `lu` and `\`.
-    // `chol(4)` is the 1×1 factor. Only a sparse matrix returns a handle.
-    if !matches!(args.first(), Some(Value::SparseMatrix(_))) {
-        return super::linsys::builtin_chol_dense(&args, nargout);
+    // `chol(4)` is the 1×1 factor.
+    if matches!(args.first(), Some(Value::SparseMatrix(_))) {
+        return super::sparse_chol::builtin_chol_sparse(&args, nargout);
     }
-    if nargout > 1 {
-        return Err(ScriptError::type_err(
-            "chol: a sparse matrix returns a factor handle. Use chol(full(A)) for the dense factor"
-                .to_string(),
-        ));
-    }
-    let sm = match &args[0] {
-        Value::SparseMatrix(sm) => sm,
-        other => {
-            return Err(ScriptError::type_err(format!(
-                "chol: A must be a matrix, got {}",
-                other.type_name()
-            )))
-        }
-    };
-    if sm.rows != sm.cols {
-        return Err(ScriptError::type_err(format!(
-            "chol: A must be square (got {}×{})",
-            sm.rows, sm.cols
-        )));
-    }
-    let ordering = if args.len() == 2 {
-        match &args[1] {
-            Value::Str(s) => parse_ordering_arg("chol", s.as_str())?,
-            other => {
-                return Err(ScriptError::type_err(format!(
-                    "chol: ordering must be a string (\"auto\"|\"identity\"|\"amd\"|\"nd\"), got {}",
-                    other.type_name()
-                )))
-            }
-        }
-    } else {
-        OrderingChoice::Auto
-    };
-    let factor = factor_sparse_cholesky(sm, ordering)
-        .map_err(|e| ScriptError::type_err(format!("chol: {e}")))?;
-    Ok(Value::SparseFactor(factor))
+    super::linsys::builtin_chol_dense(&args, nargout)
 }
 
 fn builtin_mldivide(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -15869,17 +15861,32 @@ fn builtin_lu_sparse(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::SparseFactor(factor))
 }
 
-/// `solve(F, b)` — back-solve using a cached factor returned by
-/// `chol` or `lu`. The single-factor / many-RHS pattern is the canonical
-/// fast path for parameter sweeps and animations: factor once, solve
-/// per-frame.
+/// `solve(F, b)` — back-solve through a factor handle from `lu(S)` or a
+/// `decomposition`. Factor once, solve per frame. Since 0.3.88 a sparse
+/// `chol(S)` returns the factor `R` itself, so a sparse matrix here gets
+/// a message naming the replacements.
 fn builtin_solve(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("solve", &args, 2)?;
     let factor = match &args[0] {
         Value::SparseFactor(f) => f,
+        Value::Decomposition(d) => {
+            return d
+                .solve(&args[1])
+                .map_err(|e| ScriptError::type_err(format!("solve: {e}")));
+        }
+        Value::SparseMatrix(_) => {
+            return Err(ScriptError::type_err(
+                "solve: the first argument is a sparse matrix, not a factor handle. Since 0.3.88 \
+                 chol(S) returns MATLAB's sparse factor R (R' * R = S) instead of a handle. Use one of:\n  \
+                 x = S \\ b\n  \
+                 dS = decomposition(S, \"chol\"); x = dS \\ b      % factor once, solve many\n  \
+                 [R, p, P] = chol(S); x = P * (R \\ (R' \\ (P' * b)))"
+                    .to_string(),
+            ))
+        }
         other => {
             return Err(ScriptError::type_err(format!(
-                "solve: first argument must be a sparse factor handle from chol() or lu(), got {}",
+                "solve: first argument must be a factor handle from lu() or a decomposition, got {}",
                 other.type_name()
             )))
         }

@@ -37,7 +37,7 @@ pub mod pcg;
 pub mod triangular;
 
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
-pub use cholesky::{symbolic_col_counts, SparseChol};
+pub use cholesky::{symbolic_col_counts, PartialChol, SparseChol};
 pub use lu::SparseLU;
 pub use ordering::{
     AmdOrdering, ColCountOrdering, IdentityOrdering, NestedDissectionOrdering, OrderingMethod,

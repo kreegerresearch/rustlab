@@ -1,4 +1,5 @@
 pub(crate) mod builtin_cancel;
+pub mod decomposition;
 pub mod builtins;
 pub(crate) mod elementwise;
 pub mod fast_hash;
@@ -18,6 +19,7 @@ pub mod shared;
 pub mod sparam_analysis;
 pub mod sparam_conv;
 pub(crate) mod sparse_auto;
+pub(crate) mod sparse_chol;
 pub(crate) mod subscript;
 pub mod table;
 pub(crate) mod tensor3_lift;
@@ -2573,6 +2575,7 @@ impl Evaluator {
                     Value::Struct(fields) => fields.get(field.as_str()).cloned().ok_or_else(|| {
                         ScriptError::runtime(format!("struct has no field '{}'", field))
                     }),
+                    Value::Decomposition(d) => d.field(field).map_err(ScriptError::runtime),
                     Value::StateSpace { a, b, c, d } => match field.as_str() {
                         "A" => Ok(Value::Matrix(a.into())),
                         "B" => Ok(Value::Matrix(b.into())),
@@ -3785,6 +3788,44 @@ impl Evaluator {
     ) -> Result<Value, ScriptError> {
         if op == BinOp::Mul && (is_transpose_expr(lhs) || is_transpose_expr(rhs)) {
             return self.eval_transposed_matmul(lhs, rhs);
+        }
+        // `S \ b` with a square sparse `S` in the workspace: solve from a
+        // borrow. Copying a large factor (`R \ b` after `chol`) costs as much
+        // as the substitution itself.
+        if op == BinOp::LeftDiv && !self.profiler.is_enabled() {
+            if let Expr::Var(name) = lhs {
+                if matches!(self.env.get(name), Some(Value::SparseMatrix(sm)) if sm.rows == sm.cols)
+                {
+                    let r = Value::widen_int(self.eval_expr(rhs)?);
+                    let Some(Value::SparseMatrix(sm)) = self.env.get(name) else {
+                        unreachable!("checked above; evaluating b cannot rebind a name")
+                    };
+                    return builtins::sparse_square_mldivide(sm, &r)
+                        .map_err(ScriptError::type_err);
+                }
+            }
+        }
+        // `A' \ b` / `A.' \ b` with a triangular sparse `A` in the
+        // workspace (`R' \ y` after `chol`): substitution on `A`'s rows,
+        // without forming `A'`. Anything else transposes as usual.
+        if op == BinOp::LeftDiv && !self.profiler.is_enabled() {
+            if let Expr::Transpose(inner) | Expr::NonConjTranspose(inner) = lhs {
+                if let Expr::Var(name) = inner.as_ref() {
+                    if matches!(self.env.get(name), Some(Value::SparseMatrix(sm)) if sm.rows == sm.cols)
+                    {
+                        let conj = matches!(lhs, Expr::Transpose(_));
+                        let r = Value::widen_int(self.eval_expr(rhs)?);
+                        let Some(Value::SparseMatrix(sm)) = self.env.get(name) else {
+                            unreachable!("checked above; evaluating b cannot rebind a name")
+                        };
+                        if let Some(x) = builtins::sparse_transposed_mldivide(sm, &r, conj) {
+                            return Ok(x);
+                        }
+                        let at = self.eval_expr(lhs)?;
+                        return Value::binop(op, at, r).map_err(ScriptError::type_err);
+                    }
+                }
+            }
         }
         // Left to right, as before; a borrowed variable is only looked up.
         let l = self.binop_operand(lhs)?;

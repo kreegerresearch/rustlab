@@ -158,6 +158,7 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
         | Value::AudioOut { .. }
         | Value::LiveFigure(_)
         | Value::SparseFactor(_)
+        | Value::Decomposition(_)
         | Value::Table(_)
         | Value::Stdin => false,
     }
@@ -316,6 +317,7 @@ fn encode_value(out: &mut Vec<u8>, v: &Value) -> Option<()> {
         | Value::AudioOut { .. }
         | Value::LiveFigure(_)
         | Value::SparseFactor(_)
+        | Value::Decomposition(_)
         | Value::Table(_)
         | Value::Stdin => return None,
     }

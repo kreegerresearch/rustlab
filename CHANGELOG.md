@@ -6,6 +6,31 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.88
+
+### Breaking / behavior changes
+- **Sparse `chol(S)` returns MATLAB's sparse factor `R` (`R' * R = S`) instead of a factor handle.** All of MATLAB's forms work: `R = chol(S)` (errors if `S` is not positive definite), `[R, p] = chol(S)` (no error; `p = 0` or the failed pivot, and `R` is the `(p−1)×n` partial factor), `[R, p, P] = chol(S)` (fill-reducing `P`, `R' * R = P' * S * P`), `[R, p, q] = chol(S, "vector")` (`R' * R = S(q, q)`, `q` a `1×n` row), `"matrix"`, and `"lower"` / `"upper"` in any order. Complex Hermitian positive definite matrices work. Only the chosen triangle is read. Dense `chol` is unchanged, except that `[R, p, P] = chol(A)` on a dense matrix now names `chol(sparse(A))` in its error.
+  - *Migration — `F = chol(S); x = solve(F, b)` now errors* (`solve` gets a sparse matrix) and the message lists the replacements. Use one of:
+    - `x = S \ b` — one solve.
+    - `dS = decomposition(S, "chol"); x = dS \ b` — factor once, solve many; this is the old handle's behaviour and speed (41³ Poisson: factor 6.4–6.6 s vs 6.5–6.8 s, 0.06 s per solve), and a real factor now also takes a complex `b`.
+    - `[R, p, P] = chol(S); x = P * (R \ (R' \ (P' * b)))` — MATLAB's idiom with the factor; about 0.32 s per solve at 41³ (`R' \ y` runs on `R` without forming the transpose), so a `decomposition` (0.05 s) is still the faster choice for repeated solves.
+  - `chol(S, "nd")` (or `"amd"`, `"natural"`, `"auto"`) with one output now errors; an ordering selects `P`, so use `[R, p, P] = chol(S, "nd")`. To read a factor's size, use `nnz(R)` instead of printing the handle.
+  - One- and two-output `chol(S)` factor `S` in its own order, as MATLAB does, so on a 3-D grid `R` can be several times larger than the permuted factor (25³: 9.4 M entries vs 2.0 M); ask for `P` when size matters.
+  - `R` is a COO sparse matrix with complex entries, 32 bytes per entry against 16 in the internal factor (41³: 509 MB vs 255 MB). `lu(S)` handles and `solve(F, b)` with them are unchanged.
+- **The product of two sparse matrices is sparse**, as in MATLAB (`S1 * S2`, `R' * R`, `P' * S * P`). It used to be dense. Values are the same; `issparse` is now true, and code that relied on a dense result should call `full(...)`.
+- **Sparse `A \ b` on a diagonal or triangular matrix** (every diagonal entry stored) uses substitution, as MATLAB checks first. Results can change in the last digits against the Cholesky or LU used before. A zero on the diagonal keeps the old path.
+
+### Added
+- **`decomposition(A [, type])`** with `dA \ b` — MATLAB's factor-once object. `type` is `"auto"` (default; the factor `\` would use, including the `pin_dirichlet` reduction), `"chol"` (with `"upper"` / `"lower"`), `"lu"`, or `"qr"` (dense). `dA.Type`, `dA.MatrixSize`, `class(dA)`; `b / dA` for `"chol"`; `solve(dA, b)`. Sparse and dense matrices.
+
+### Performance
+- **Fused `A' \ b` and `A.' \ b`** for a triangular or diagonal sparse `A` with a full diagonal held in a variable (such as `chol`'s `R`): the substitution runs on `A`'s rows, conjugated for `'`, without forming `A'`, and gives the same result bit for bit. Other matrices transpose as before. At 41³, `R' \ y` 0.9 s → 0.16 s and one `P * (R \ (R' \ (P' * b)))` solve 0.92–1.09 s → 0.32 s; peak memory with `[R, p, P] = chol(S)` 1,044 MB → 801 MB.
+- Sparse `A'` / `A.'` is a counting sort (31³ `chol` factor, 4.9 M entries: 1.8 s → 0.2 s). Sparse `S \ b` with `S` in the workspace no longer copies `S` first. Sparse-to-CSC conversion skips an intermediate copy and the per-column sort when rows are already sorted. `S \ b` on 3-D Poisson matrices is unchanged (41³ best of 5: 6.13 s vs 6.25 s). Measurements in `docs/sparse_solve.md` and `perf/sparse_chol_phase4.rlab`.
+
+### MATLAB differences
+- `[R, p, P] = chol(S)` uses rustlab's automatic ordering (nested dissection or natural, by predicted fill), not AMD, so `P` and `R` differ from MATLAB's; the identities hold. An ordering name as an extra argument (`"nd"`, `"amd"`, `"natural"`) is a rustlab extension.
+- `decomposition` has no `CheckCondition` option, `rcond`, or `isIllConditioned`; singular and ill-conditioned dense factors warn on each solve, as `\` does.
+
 ## 0.3.87
 
 ### Added

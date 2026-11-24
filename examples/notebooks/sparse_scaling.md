@@ -99,14 +99,18 @@ $N^{1.5}$, so the gap widens with the grid.
 
 ## Why: the size of the factor
 
-Time follows the number of entries in the Cholesky factor. Printing a
-factor handle shows it:
+Time follows the number of entries in the Cholesky factor. The
+three-output `chol` returns the factor for a chosen ordering, and
+`nnz(R)` counts it:
 
 ```rustlab
 A = -1 * laplacian_2d(100, 100);
-print(chol(A, "identity"))   % natural order
-print(chol(A, "amd"))        % minimum degree
-print(chol(A))               % auto: nested dissection here
+[R_nat, p, P] = chol(A, "natural");
+[R_amd, p, P] = chol(A, "amd");
+[R_auto, p, P] = chol(A);      % auto: nested dissection here
+print(nnz(R_nat))              % natural order
+print(nnz(R_amd))              % minimum degree
+print(nnz(R_auto))
 ```
 
 For the 100×100 grid (10 000 unknowns) nested dissection's factor is

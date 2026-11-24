@@ -276,6 +276,8 @@ pub enum Value {
     /// consumed by `solve(F, b)`. Reusing a factor across many RHS is
     /// the canonical fast path for parameter sweeps and animations.
     SparseFactor(SparseFactor),
+    /// MATLAB `decomposition(A)`: a matrix factored once for `dA \ b`.
+    Decomposition(Arc<super::decomposition::Decomposition>),
     /// The standard-input handle. `fgetl(stdin)` reads one line.
     /// Not a file id — there is no `fopen`.
     Stdin,
@@ -401,6 +403,7 @@ impl Value {
             Value::LiveFigure(_) => Err("cannot negate live_figure".to_string()),
             Value::StringArray(_) => Err("cannot negate string_array".to_string()),
             Value::SparseFactor(_) => Err("cannot negate sparse_factor".to_string()),
+            Value::Decomposition(_) => Err("cannot negate decomposition".to_string()),
             other => Err(format!("cannot negate {}", other.type_name())),
         }
     }
@@ -439,6 +442,7 @@ impl Value {
             Value::StringArray(_) => "string_array",
             Value::Table(_) => "table",
             Value::SparseFactor(_) => "sparse_factor",
+            Value::Decomposition(_) => "decomposition",
             Value::Stdin => "stdin",
         }
     }
@@ -921,10 +925,8 @@ impl Value {
             Value::Logical(a) => Ok(Value::Logical(a.transpose())),
             Value::Complex(c) => Ok(Value::Complex(f(*c))),
             Value::SparseMatrix(sm) => {
-                let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, f(v))).collect();
-                Ok(Value::SparseMatrix(SparseMat::new(
-                    sm.cols, sm.rows, entries,
-                )))
+                super::sparse_auto::note_sparse_transpose();
+                Ok(Value::SparseMatrix(sm.transpose_map(f)))
             }
             other => Err(format!("cannot transpose {}", other.type_name())),
         }
@@ -2781,6 +2783,11 @@ impl Value {
             return Self::binop(ElemDiv, rhs, lhs);
         }
 
+        // `b / dA` with a `decomposition`.
+        if op == Div && matches!(rhs, Value::Decomposition(_)) {
+            return super::linsys::mrdivide(lhs, rhs);
+        }
+
         // `A\b`. Scalar `A` is element-wise; everything else is a linear solve.
         if op == LeftDiv {
             let lhs = Self::widen_int(lhs);
@@ -3374,6 +3381,7 @@ impl Value {
                 match op {
                     Add => Ok(Value::SparseMatrix(a.add(&b).map_err(|e| e)?)),
                     Sub => Ok(Value::SparseMatrix(a.sub(&b).map_err(|e| e)?)),
+                    Mul => Ok(Value::SparseMatrix(a.matmul(b)?)),
                     _ => {
                         // Fall back to dense for other ops between two sparse matrices
                         Self::binop(op, Self::sparse_matrix_dense(a)?, Self::sparse_matrix_dense(b)?)
@@ -4310,6 +4318,7 @@ impl fmt::Display for Value {
                 sf.scalar(),
                 sf.nnz()
             ),
+            Value::Decomposition(d) => write!(f, "{d}"),
             Value::Table(t) => write!(f, "{t}"),
             Value::Stdin => write!(f, "stdin"),
         }

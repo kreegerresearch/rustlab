@@ -10398,8 +10398,8 @@ mod sparse_tests {
             "L = -1 * laplacian_2d(20, 20);\n\
              rhs = ones(400, 1);\n\
              x_direct = spsolve(L, rhs);\n\
-             F = chol(L);\n\
-             x_cached = solve(F, rhs);\n\
+             F = decomposition(L, \"chol\");\n\
+             x_cached = F \\ rhs;\n\
              diff = norm(x_direct - x_cached);",
         );
         let diff = get_scalar(&ev, "diff");
@@ -10414,8 +10414,8 @@ mod sparse_tests {
             "L = -1 * laplacian_2d(15, 15);\n\
              b1 = ones(225, 1);\n\
              b2 = (1:225)';\n\
-             F = chol(L);\n\
-             x1_cached = solve(F, b1);\n\
+             F = decomposition(L, \"chol\");\n\
+             x1_cached = F \\ b1;\n\
              x2_cached = solve(F, b2);\n\
              x1_direct = spsolve(L, b1);\n\
              x2_direct = spsolve(L, b2);\n\
@@ -10479,7 +10479,7 @@ mod sparse_tests {
         let result = std::panic::catch_unwind(|| {
             eval_str(
                 "L = -1 * laplacian_2d(5, 5);\n\
-                 F = chol(L);\n\
+                 F = decomposition(L, \"chol\");\n\
                  x = solve(F, [1; 2]);",
             )
         });
@@ -10487,17 +10487,18 @@ mod sparse_tests {
     }
 
     #[test]
-    fn chol_real_path_real_factor() {
-        // Real-input matrix should produce a real-flavored factor.
-        // The SparseFactor::scalar() string is "real" — surface it
-        // by checking the type_name / Display path below.
+    fn sparse_chol_returns_the_factor_and_lu_a_handle() {
+        // Since 0.3.88 a sparse chol returns MATLAB's sparse factor R;
+        // sparse lu still returns an opaque handle for solve(F, b).
         let ev = eval_str(
             "L = -1 * laplacian_2d(5, 5);\n\
-             F = chol(L);",
+             R = chol(L);\n\
+             F = lu(L);",
         );
-        // Just confirm we got back *something* of type sparse_factor.
-        let v = ev.vars().into_iter().find(|(n, _)| *n == "F").unwrap().1;
-        assert_eq!(v.type_name(), "sparse_factor");
+        let r = ev.vars().into_iter().find(|(n, _)| *n == "R").unwrap().1;
+        assert_eq!(r.type_name(), "sparse_matrix");
+        let f = ev.vars().into_iter().find(|(n, _)| *n == "F").unwrap().1;
+        assert_eq!(f.type_name(), "sparse_factor");
     }
 
     // ── Phase 2 (em_performance): identity-ordering hint for grids ──────────
@@ -10683,10 +10684,10 @@ mod sparse_tests {
         let ev = eval_str(
             "L = -1 * laplacian_2d(10, 10); \
              rhs = ones(100, 1); \
-             F_amd = chol(L, \"amd\"); \
-             x_amd = solve(F_amd, rhs); \
-             F_id  = chol(L, \"identity\"); \
-             x_id  = solve(F_id, rhs); \
+             [R1, p1, P1] = chol(L, \"amd\"); \
+             x_amd = P1 * (R1 \\ (R1' \\ (P1' * rhs))); \
+             [R2, p2, P2] = chol(L, \"identity\"); \
+             x_id  = P2 * (R2 \\ (R2' \\ (P2' * rhs))); \
              diff = norm(x_amd - x_id);",
         );
         assert!(get_scalar(&ev, "diff") < 1e-10);
