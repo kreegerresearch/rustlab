@@ -185,10 +185,10 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 
 `rustlab-notebook watch` has two modes:
 
-1. **Interactive server (bare-input default, single file).** Spins
-   up a local web server, renders the notebook to an HTML page,
-   opens your browser, and **live-reloads on save** via a
-   WebSocket push. Source `.md` is never modified.
+1. **Interactive server (bare-input default: one file, one directory,
+   or several files).** Spins up a local web server, renders the
+   notebooks to HTML pages, opens your browser, and **live-reloads on
+   save** via a WebSocket push. Source `.md` is never modified.
 2. **Re-render on save (with `--obsidian` or `--output`).** The
    long-running counterpart of `render`: re-renders any notebook
    whose source changes, debouncing filesystem events so a single
@@ -201,6 +201,7 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 ```
 rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
+rustlab-notebook watch intro.md ch2/filters.md demo.rlab # these files, browsed under their common folder
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
@@ -315,6 +316,8 @@ Behaviour:
   A single file stays at `/n/<stem>`. Passing
   a directory *with* `--obsidian`/`--output` still selects the
   re-render-on-save mode instead.
+- **Several files are one collection rooted at their common folder.**
+  See [Watching several files](#watching-several-files).
 - **Directory pages get the same navigation as `render`.** In
   directory mode each served page gets a topbar carrying
   `← Previous · Index · Next →` plus the page title, and a matching
@@ -428,6 +431,55 @@ For implementation status, the agent-handoff section, and
 forward-looking design, see
 `dev/plans/notebook_interactive_server.md` and
 `dev/plans/notebook_cell_execution.md`.
+
+#### Watching several files
+
+```
+rustlab-notebook watch intro.md ch2/filters.md demo.rlab
+rustlab-notebook watch intro.md ch2/filters.md --editable
+rustlab-notebook watch intro.md ch2/filters.md --jail-root .   # let ch2/filters.md read ../data.csv
+```
+
+Several paths are served by one server as a small collection:
+
+- **Tree.** The files are browsed like a directory rooted at their
+  deepest common folder (`.` above). The Contents drawer (`\`) shows
+  that folder tree next to the section outline, with folders collapsed
+  except the one that holds the open page. `/` lists the files.
+- **Only the named files.** `ch2/secret.md` next to `ch2/filters.md`
+  is not listed, has no page, and `/n/ch2/secret` and
+  `/raw/ch2/secret` are 404s. A named partial (`_setup.md`) or
+  `index.md` is served as an ordinary page, as with a single file.
+- **URLs.** `/n/<path relative to the common folder>` with `.md`
+  stripped: `/n/intro`, `/n/ch2/filters`. A script keeps its
+  extension: `/n/demo.rlab`. An old filename-only URL (`/n/filters`)
+  redirects when that name is unique. The URL is looked up in the list
+  and never opened as a path.
+- **Order.** Command-line order sets the listing, prev/next, and the
+  order of files inside the tree. The browser opens the first file.
+- **Links.** A link from one listed notebook to another goes to its
+  page. A link to an unlisted file stays as written.
+- **Jail.** Each notebook's file I/O (`load`, `save`, `savefig`,
+  `run`, embeds, prose images) is limited to its own folder, the same
+  as `watch` on that file alone. The common folder is not used as the
+  jail because it can be far wider than intended (`~/a/x.md ~/b/y.md`
+  would expose the home directory). `--jail-root DIR` widens the jail
+  to `DIR` for every file.
+- **Live reload** covers every listed file. Each file's folder is
+  watched non-recursively; the common folder is not watched as a tree.
+- **Writes.** `--editable` and `--annotate` work on every listed `.md`
+  and write only that file, with the usual loopback Host and Origin
+  checks.
+- **`.rlab` scripts.** A script is a read-only page titled with its
+  file name, holding the whole script as one code cell, so its output
+  and plots show and refresh on save. ▶ Run works. A script has no cell
+  editor, write-back, annotate, or git comparison; `/save` and
+  `/annotate` refuse it. `watch demo.rlab` alone serves the same page.
+- **Errors.** Every missing path is named and the command exits 2. A
+  directory among other paths exits 2 (pass the directory alone, or
+  list its files), as does a file that is not `.md` or `.rlab`. The
+  same file named twice is served once. Several paths with
+  `--obsidian` or `--output` exit 2: that mode takes one directory.
 
 #### In-browser editor (`--editable`)
 

@@ -6,6 +6,22 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.89
+
+### Added
+- **`rustlab-notebook watch` takes several files**: `rustlab-notebook watch intro.md ch2/filters.md demo.rlab` serves those files from one interactive server.
+  - The files are browsed like a directory rooted at their deepest common folder. The Contents drawer shows that folder tree (folders collapsed except the one holding the open page), and `/` lists the files. Only the named files are served; an unlisted file next to them is a 404, as is any URL that names a file outside the list.
+  - URLs are the path relative to the common folder: `/n/intro`, `/n/ch2/filters`, `/n/demo.rlab`. An old filename-only URL (`/n/filters`) redirects when that name is unique. A URL is looked up in the list and is never opened as a disk path.
+  - Pages, prev/next, and the index keep command-line order. The browser opens the first file. A link between two listed notebooks goes to its page; a link to an unlisted file stays as written. A named `index.md` is an ordinary page.
+  - Each notebook's file I/O (`load`, `save`, `savefig`, `run`, embeds) is jailed to its own folder, the same as `watch` on that file alone. The common folder is not the jail, because it can be much wider than intended (`~/a/x.md ~/b/y.md` would expose the home directory). `--jail-root DIR` widens it.
+  - Live reload covers every listed file. The folder of each file is watched non-recursively; the common folder is not watched as a tree.
+  - `--editable` and `--annotate` write only the listed `.md` files, with the same loopback Host and Origin checks.
+- **`.rlab` scripts in `watch`**: a listed script is a read-only page titled with its file name, holding one code cell with the whole script, so its output and plots show and refresh on save. ▶ Run works. It has no cell editor, write-back, annotate, or git comparison; `/save` and `/annotate` refuse it.
+
+### Breaking / behavior changes
+- **`rustlab-notebook watch demo.rlab`** (one script) now runs the script as a code cell. Before, the script text was rendered as Markdown prose and never ran. *Migration:* none needed; to show a script as text, put it in a ` ```text ` fence in a `.md` notebook.
+- **`watch` with several paths**: a missing path, a directory among other paths, or a file that is not `.md` / `.rlab` exits with code 2 and a message before any server starts. Several paths with `--obsidian` or `--output` also exit 2, because the re-render-on-save mode takes one directory. One path behaves as before.
+
 ## 0.3.88
 
 ### Breaking / behavior changes

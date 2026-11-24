@@ -332,6 +332,7 @@ rustlab-notebook render note.md --no-toc --no-comments --index /notebooks/ Noteb
 rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + plots/<stem>/*.svg
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042
+rustlab-notebook watch intro.md ch2/b.md run.rlab   # several files: /n/intro, /n/ch2/b, /n/run.rlab; each jailed to its own folder
 rustlab-notebook watch note.md --git-diff      # enable git comparison (off by default)
 rustlab-notebook watch note.md --git-diff --diff main   # compare each page with main by default
 rustlab-notebook check note.md                  # lint (exit 2 errors / 1 warnings / 0 clean)

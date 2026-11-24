@@ -4,11 +4,13 @@
 //! notebooks keyed by URL-safe slug, so `watch <dir>` can serve a whole
 //! directory behind a generated index page. Single-file `watch <file>`
 //! is just a one-entry set (DRY — same routing, same render loop).
+//! `watch a.md ch2/b.md` (several files) routes exactly like a directory
+//! rooted at their common ancestor whose listing is those files.
 //!
 //! | Path | Handler |
 //! |---|---|
-//! | `GET /` | single: redirect to the one notebook; directory: the index listing |
-//! | `GET /n/{*path}` | directory: `/n/<relative path without .md>`; single-file: `/n/<slug>`. An old `/n/<stem>` redirects only when that stem names one notebook. A path ending in `/ws` with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
+//! | `GET /` | single: redirect to the one notebook; directory or file set: the index listing |
+//! | `GET /n/{*path}` | directory or file set: `/n/<relative path without .md>` (a `.rlab` keeps its extension); single-file: `/n/<slug>`. An old `/n/<stem>` redirects only when that stem names one notebook. A path ending in `/ws` with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
 //! | `GET /raw/{*slug}` | raw `.md` source from disk (drives the split-view source pane). `slug` may contain `/` |
 //! | `POST /save/{*slug}` | write edited source back to disk — **only mounted when `--editable`** |
 //! | `GET /assets/{path}` | embedded KaTeX/Plotly/CodeMirror bundle from [`super::assets`] |

@@ -734,6 +734,8 @@ rustlab-notebook render analysis.md -f pdf           # → analysis.pdf (self-co
 rustlab-notebook render analysis.md -f markdown      # → analysis.md + plots/analysis/*.svg
 rustlab-notebook render analysis.md -f latex         # → analysis.tex + plots/analysis/*.svg
 rustlab-notebook render notebooks/ -o build/         # render all → *.html + index.html
+rustlab-notebook watch analysis.md                   # live-reload server at http://127.0.0.1:8042
+rustlab-notebook watch intro.md ch2/filters.md demo.rlab  # several files in one server, browsed under their common folder
 rustlab-notebook watch ~/obsidian-vault --obsidian   # live render in Obsidian (see docs/notebooks.md)
 rustlab-notebook clean note.md                       # strip rendered artifacts back to source (in place)
 rustlab-notebook strip note.md --in-place            # unwrap highlights and delete %% comments
