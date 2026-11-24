@@ -87,7 +87,7 @@ impl<T: SparseScalar> RowTriangular<T> {
     fn solve(&self, b: &[T]) -> Vec<T> {
         let n = b.len();
         let mut x = vec![T::zero(); n];
-        let mut row = |i: usize, x: &mut [T]| {
+        let row = |i: usize, x: &mut [T]| {
             let mut s = b[i];
             let mut d = T::one();
             for p in self.row_ptr[i]..self.row_ptr[i + 1] {
@@ -254,15 +254,41 @@ fn factor_triangular(sm: &SparseMat) -> Option<AutoFactor> {
         )))
     } else {
         Some(AutoFactor::TriComplex(RowTriangular::build(
-            sm, upper, diagonal, |v| v,
+            sm,
+            upper,
+            diagonal,
+            |v| v,
         )))
     }
 }
 
-/// One-shot `\` on a triangular `sm` whose entries are row-major sorted
-/// (what `chol` returns): substitution read straight from the entries, no
-/// copy. `None` when `sm` is not such a matrix; the caller then factors.
-pub(crate) fn solve_triangular_in_place(sm: &SparseMat, columns: &[CVector]) -> Option<Vec<CVector>> {
+#[cfg(test)]
+thread_local! {
+    static SPARSE_TRANSPOSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FUSED_SOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Called wherever a sparse transpose is materialized (test counter).
+#[inline]
+pub(crate) fn note_sparse_transpose() {
+    #[cfg(test)]
+    SPARSE_TRANSPOSES.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+pub(crate) fn sparse_transposes() -> usize {
+    SPARSE_TRANSPOSES.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) fn fused_solves() -> usize {
+    FUSED_SOLVES.with(|c| c.get())
+}
+
+/// `(upper, real)` for a square triangular `sm` whose entries are
+/// row-major sorted, finite, and include every diagonal entry (what
+/// `chol` returns). `None` otherwise. A diagonal matrix is upper.
+fn in_place_triangular(sm: &SparseMat) -> Option<(bool, bool)> {
     let n = sm.rows;
     if n == 0 || n != sm.cols {
         return None;
@@ -283,15 +309,22 @@ pub(crate) fn solve_triangular_in_place(sm: &SparseMat, columns: &[CVector]) -> 
         diag += usize::from(i == j);
         real &= v.im.abs() < 1e-12;
     }
-    if diag != n {
-        return None;
-    }
-    let upper = !below;
+    (diag == n).then_some((!below, real))
+}
+
+/// Solve every column with `sweep_real` / `sweep_complex`. A real matrix
+/// takes a complex column as two real solves.
+fn solve_columns_with(
+    columns: &[CVector],
+    real: bool,
+    sweep_real: impl Fn(&[f64]) -> Vec<f64>,
+    sweep_complex: impl Fn(&[C64]) -> Vec<C64>,
+) -> Vec<CVector> {
     let solve_one = |b: &CVector| -> CVector {
         if real {
             let part = |pick: fn(C64) -> f64| {
                 let bv: Vec<f64> = b.iter().map(|&z| pick(z)).collect();
-                sweep(&sm.entries, &bv, upper, |v| v.re)
+                sweep_real(&bv)
             };
             let re = part(|z| z.re);
             if b.iter().all(|z| z.im == 0.0) {
@@ -301,10 +334,99 @@ pub(crate) fn solve_triangular_in_place(sm: &SparseMat, columns: &[CVector]) -> 
             Array1::from_iter(re.into_iter().zip(im).map(|(r, i)| Complex::new(r, i)))
         } else {
             let bv: Vec<C64> = b.iter().copied().collect();
-            Array1::from_vec(sweep(&sm.entries, &bv, upper, |v| v))
+            Array1::from_vec(sweep_complex(&bv))
         }
     };
-    Some(columns.iter().map(solve_one).collect())
+    columns.iter().map(solve_one).collect()
+}
+
+/// One-shot `\` on a triangular `sm` whose entries are row-major sorted
+/// (what `chol` returns): substitution read straight from the entries, no
+/// copy. `None` when `sm` is not such a matrix; the caller then factors.
+pub(crate) fn solve_triangular_in_place(
+    sm: &SparseMat,
+    columns: &[CVector],
+) -> Option<Vec<CVector>> {
+    let (upper, real) = in_place_triangular(sm)?;
+    Some(solve_columns_with(
+        columns,
+        real,
+        |b| sweep(&sm.entries, b, upper, |v| v.re),
+        |b| sweep(&sm.entries, b, upper, |v| v),
+    ))
+}
+
+/// `A' \ b` (`conj`) or `A.' \ b` for the same kind of `A`, without
+/// forming the transpose. Row `i` of `A` is column `i` of `A'`, so a
+/// column-oriented substitution on `A'` reads `A`'s rows in order: forward
+/// for upper `A` (`A'` is lower), backward for lower `A`. Each unknown
+/// receives its updates in the same order as the row-oriented solve on a
+/// materialized transpose, so the result is bit-identical to it.
+pub(crate) fn solve_transposed_triangular_in_place(
+    sm: &SparseMat,
+    columns: &[CVector],
+    conj: bool,
+) -> Option<Vec<CVector>> {
+    let (upper, real) = in_place_triangular(sm)?;
+    #[cfg(test)]
+    FUSED_SOLVES.with(|c| c.set(c.get() + 1));
+    let f = move |v: C64| if conj { v.conj() } else { v };
+    Some(solve_columns_with(
+        columns,
+        real,
+        |b| sweep_transposed(&sm.entries, b, upper, |v| v.re),
+        |b| sweep_transposed(&sm.entries, b, upper, f),
+    ))
+}
+
+/// Column-oriented substitution on the transpose of a triangular `A`
+/// given by row-major entries with every diagonal stored: the diagonal is
+/// the first entry of each row when `A` is upper and the last when lower.
+fn sweep_transposed<T: SparseScalar>(
+    entries: &[(usize, usize, C64)],
+    b: &[T],
+    upper: bool,
+    conv: impl Fn(C64) -> T,
+) -> Vec<T> {
+    let mut y = b.to_vec();
+    let mut x = vec![T::zero(); b.len()];
+    let mut row = |seg: &[(usize, usize, C64)]| {
+        let (diag, rest) = if upper {
+            (seg[0], &seg[1..])
+        } else {
+            (seg[seg.len() - 1], &seg[..seg.len() - 1])
+        };
+        let i = diag.0;
+        let xi = y[i] / conv(diag.2);
+        x[i] = xi;
+        for &(_, j, v) in rest {
+            y[j] -= conv(v) * xi;
+        }
+    };
+    if upper {
+        let mut start = 0;
+        while start < entries.len() {
+            let i = entries[start].0;
+            let mut end = start + 1;
+            while end < entries.len() && entries[end].0 == i {
+                end += 1;
+            }
+            row(&entries[start..end]);
+            start = end;
+        }
+    } else {
+        let mut end = entries.len();
+        while end > 0 {
+            let i = entries[end - 1].0;
+            let mut start = end - 1;
+            while start > 0 && entries[start - 1].0 == i {
+                start -= 1;
+            }
+            row(&entries[start..end]);
+            end = start;
+        }
+    }
+    x
 }
 
 /// Row-oriented substitution over row-major entries in which every row
@@ -465,6 +587,32 @@ mod tests {
         assert_eq!(
             factor(&sm, Mode::Lu, OrderingChoice::Auto).unwrap().nnz(),
             lu_nnz(&sm, OrderingChoice::Identity)
+        );
+    }
+
+    fn run_counting(src: &str) -> (usize, usize) {
+        let stmts = parser::parse(lexer::tokenize(&format!("{src}\n")).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        let (t0, f0) = (sparse_transposes(), fused_solves());
+        ev.run(&stmts).unwrap();
+        (sparse_transposes() - t0, fused_solves() - f0)
+    }
+
+    #[test]
+    fn transposed_triangular_solve_is_fused() {
+        let setup = "R = chol(-1 * laplacian_2d(8, 8)); b = ones(64, 1);";
+        assert_eq!(run_counting(setup), (0, 0));
+        assert_eq!(run_counting(&format!("{setup} x = R' \\ b;")), (0, 1));
+        assert_eq!(run_counting(&format!("{setup} x = R.' \\ [b, b];")), (0, 1));
+        assert_eq!(
+            run_counting(&format!("{setup} [R, p, P] = chol(-1 * laplacian_2d(8, 8)); x = P * (R \\ (R' \\ (P' * b)));")),
+            (1, 1),
+            "in the MATLAB idiom only P' (n entries) is transposed; R' \\ c is fused"
+        );
+        // A general matrix still materializes its transpose.
+        assert_eq!(
+            run_counting("A = sparse([4, 1, 0; 2, 3, 1; 0, 2, 5]); x = A' \\ [1; 2; 3];"),
+            (1, 0)
         );
     }
 

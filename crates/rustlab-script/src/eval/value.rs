@@ -924,7 +924,10 @@ impl Value {
             v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v.clone())),
             Value::Logical(a) => Ok(Value::Logical(a.transpose())),
             Value::Complex(c) => Ok(Value::Complex(f(*c))),
-            Value::SparseMatrix(sm) => Ok(Value::SparseMatrix(sm.transpose_map(f))),
+            Value::SparseMatrix(sm) => {
+                super::sparse_auto::note_sparse_transpose();
+                Ok(Value::SparseMatrix(sm.transpose_map(f)))
+            }
             other => Err(format!("cannot transpose {}", other.type_name())),
         }
     }

@@ -3805,6 +3805,28 @@ impl Evaluator {
                 }
             }
         }
+        // `A' \ b` / `A.' \ b` with a triangular sparse `A` in the
+        // workspace (`R' \ y` after `chol`): substitution on `A`'s rows,
+        // without forming `A'`. Anything else transposes as usual.
+        if op == BinOp::LeftDiv && !self.profiler.is_enabled() {
+            if let Expr::Transpose(inner) | Expr::NonConjTranspose(inner) = lhs {
+                if let Expr::Var(name) = inner.as_ref() {
+                    if matches!(self.env.get(name), Some(Value::SparseMatrix(sm)) if sm.rows == sm.cols)
+                    {
+                        let conj = matches!(lhs, Expr::Transpose(_));
+                        let r = Value::widen_int(self.eval_expr(rhs)?);
+                        let Some(Value::SparseMatrix(sm)) = self.env.get(name) else {
+                            unreachable!("checked above; evaluating b cannot rebind a name")
+                        };
+                        if let Some(x) = builtins::sparse_transposed_mldivide(sm, &r, conj) {
+                            return Ok(x);
+                        }
+                        let at = self.eval_expr(lhs)?;
+                        return Value::binop(op, at, r).map_err(ScriptError::type_err);
+                    }
+                }
+            }
+        }
         // Left to right, as before; a borrowed variable is only looked up.
         let l = self.binop_operand(lhs)?;
         let r = self.binop_operand(rhs)?;

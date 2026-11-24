@@ -10522,16 +10522,33 @@ pub(crate) fn sparse_square_mldivide(
 ) -> Result<Value, String> {
     let n = sm.rows;
     let columns = sparse_rhs_columns(n, b)?;
-    if let Some(mut solved) = super::sparse_auto::solve_triangular_in_place(sm, &columns) {
-        if solved.len() == 1 {
-            return Ok(solution_column(solved.pop().unwrap()));
-        }
-        return Ok(pack_sparse_columns(&solved));
+    if let Some(solved) = super::sparse_auto::solve_triangular_in_place(sm, &columns) {
+        return Ok(pack_solved(solved));
     }
     let factor =
         super::sparse_auto::factor(sm, super::sparse_auto::Mode::Auto, OrderingChoice::Auto)
             .map_err(|e| format!("mldivide: {e}"))?;
     solve_columns(&factor, &columns).map_err(|e| format!("mldivide: {e}"))
+}
+
+/// `A' \\ b` (`conj`) or `A.' \\ b` for a square sparse `A` without forming
+/// the transpose, when `A` is triangular with a full diagonal. `None` when
+/// the fused path does not apply (including a `b` of the wrong height);
+/// the caller then transposes and solves as usual, which reports errors.
+pub(crate) fn sparse_transposed_mldivide(
+    sm: &rustlab_core::SparseMat,
+    b: &Value,
+    conj: bool,
+) -> Option<Value> {
+    let columns = sparse_rhs_columns(sm.rows, b).ok()?;
+    super::sparse_auto::solve_transposed_triangular_in_place(sm, &columns, conj).map(pack_solved)
+}
+
+fn pack_solved(mut solved: Vec<CVector>) -> Value {
+    if solved.len() == 1 {
+        return solution_column(solved.pop().unwrap());
+    }
+    pack_sparse_columns(&solved)
 }
 
 /// Solve every column through one factor; one column is `n×1`.
