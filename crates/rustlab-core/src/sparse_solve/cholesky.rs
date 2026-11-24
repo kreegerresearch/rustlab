@@ -28,6 +28,49 @@ pub struct SparseChol<T: SparseScalar> {
     n: usize,
 }
 
+/// Cholesky that runs past a failed pivot, for MATLAB's
+/// `[R, p] = chol(S)`: `l` holds the first `q` columns of `L`, all rows,
+/// where `q` is the failed column (or `n`). The first `q` rows and columns
+/// of `l * l^H` equal those of `P A P^T`.
+#[derive(Debug)]
+pub struct PartialChol<T: SparseScalar> {
+    /// `n × q` lower-trapezoidal block, diagonal first in each column.
+    l: SparseCsc<T>,
+    perm: Permutation,
+    failed: Option<usize>,
+}
+
+impl<T: SparseScalar> PartialChol<T> {
+    /// `n × q` block of `L`.
+    pub fn l(&self) -> &SparseCsc<T> {
+        &self.l
+    }
+
+    /// `perm()[k]` is the original index of permuted row/column `k`.
+    pub fn perm(&self) -> &Permutation {
+        &self.perm
+    }
+
+    /// 0-based column whose pivot was not positive, or `None`.
+    pub fn failed(&self) -> Option<usize> {
+        self.failed
+    }
+
+    pub fn into_parts(self) -> (SparseCsc<T>, Permutation, Option<usize>) {
+        (self.l, self.perm, self.failed)
+    }
+}
+
+/// Output of the numeric pass: flat CSC arrays sized from the symbolic
+/// counts, the per-column write cursors, and the failed column.
+struct Numeric<T> {
+    col_ptr: Vec<usize>,
+    row_idx: Vec<usize>,
+    values: Vec<T>,
+    next: Vec<usize>,
+    failed: Option<usize>,
+}
+
 impl<T: SparseScalar> SparseChol<T> {
     /// Factor a Hermitian-positive-definite sparse matrix.
     ///
@@ -49,120 +92,65 @@ impl<T: SparseScalar> SparseChol<T> {
         let n = a.ncols();
         let perm = ord.order(a);
         let c = perm.permute_symmetric(a);
-        let parent = column_elimination_tree(&c);
-
-        // Phase 6 of `dev/plans/em_performance.md`: replace the per-column
-        // `Vec<Vec<(usize, T)>>` accumulator (one heap allocation per
-        // column, growing dynamically) with a flat CSC layout sized from
-        // an up-front symbolic counts pass. The numeric pass writes
-        // directly into preallocated `Lp / Li / Lx` arrays, with one
-        // per-column write cursor.
-
-        // ── Symbolic pass — exact column counts of L ───────────────────
-        let col_count = compute_col_counts(&c, &parent);
-
-        // Prefix-sum to col_ptr. Allocate Li/Lx exactly once.
-        let mut col_ptr = vec![0usize; n + 1];
-        for j in 0..n {
-            col_ptr[j + 1] = col_ptr[j] + col_count[j];
+        let num = up_looking(&c, false);
+        if let Some(col) = num.failed {
+            return Err(SparseSolveError::NotSpd { col });
         }
-        let nnz = col_ptr[n];
-        let mut row_idx: Vec<usize> = vec![0usize; nnz];
-        let mut values: Vec<T> = vec![T::zero(); nnz];
-
-        // Per-column write cursor. Slot `col_ptr[j]` is reserved for the
-        // diagonal (written at the end of iteration j); below-diagonal
-        // entries go into `col_ptr[j] + 1 ..` in increasing-row order.
-        let mut next: Vec<usize> = (0..n).map(|j| col_ptr[j] + 1).collect();
-
-        // ── Numeric pass — same algorithm, flat-array writes ───────────
-        // Positive pivot test is relative to the largest entry. An absolute
-        // floor of 1e-12 treated `1e-16 * I` as indefinite.
-        let mut scale = 0.0_f64;
-        for j in 0..n {
-            for (_, val) in c.col_iter(j) {
-                scale = scale.max(val.abs());
-            }
-        }
-        let spd_tol = f64::EPSILON * (n as f64).max(1.0) * scale;
-        let mut x: Vec<T> = vec![T::zero(); n];
-        let mut mark: Vec<usize> = vec![usize::MAX; n];
-        let mut s: Vec<usize> = vec![0usize; n];
-
-        for k in 0..n {
-            // Pattern of row k of L (columns j < k where L(k, j) != 0).
-            let top = ereach(&c, k, &parent, &mut s, &mut mark);
-
-            // Initialize x with row k of A (upper-triangle of CSC, conjed
-            // by Hermitian symmetry to get the row).
-            x[k] = T::zero();
-            for (i, val) in c.col_iter(k) {
-                if i <= k {
-                    x[i] = val.conj();
-                }
-            }
-
-            let mut d = x[k];
-            x[k] = T::zero();
-
-            // Triangular solve, processing pattern in topo order.
-            for p in top..n {
-                let j = s[p];
-                let l_jj = values[col_ptr[j]]; // diagonal of column j
-                let lkj = x[j] / l_jj;
-                x[j] = T::zero();
-
-                // Propagate L(k, j) into x[row] for already-written
-                // below-diagonal entries of column j (indices
-                // col_ptr[j]+1 .. next[j]).
-                let lo = col_ptr[j] + 1;
-                let hi = next[j];
-                for off in lo..hi {
-                    let row = row_idx[off];
-                    let l_row_j = values[off];
-                    debug_assert!(row > j);
-                    debug_assert!(row < k, "column j entry row should be < k at iter k");
-                    x[row] -= lkj * l_row_j.conj();
-                }
-
-                // Diagonal update: d -= |L(k, j)|^2.
-                d -= lkj * lkj.conj();
-
-                // Append L(k, j) at column j's next free slot.
-                let slot = next[j];
-                debug_assert!(slot < col_ptr[j + 1], "column j over-filled at iter k");
-                row_idx[slot] = k;
-                values[slot] = lkj;
-                next[j] = slot + 1;
-            }
-
-            // Diagonal pivot: L(k, k) = sqrt(d). Goes in the reserved
-            // slot at col_ptr[k].
-            let pivot = match d.checked_sqrt_real_pos(spd_tol) {
-                Some(p) => p,
-                None => return Err(SparseSolveError::NotSpd { col: k }),
-            };
-            row_idx[col_ptr[k]] = k;
-            values[col_ptr[k]] = pivot;
-        }
-
         // Sanity check (debug builds): every column was filled exactly to
         // its symbolic count.
         debug_assert!(
-            (0..n).all(|j| next[j] == col_ptr[j + 1]),
+            (0..n).all(|j| num.next[j] == num.col_ptr[j + 1]),
             "symbolic count disagrees with numeric writes"
         );
-
         Ok(SparseChol {
             l: SparseCsc {
                 rows: n,
                 cols: n,
-                col_ptr,
-                row_idx,
-                values,
+                col_ptr: num.col_ptr,
+                row_idx: num.row_idx,
+                values: num.values,
             },
             perm,
             n,
+        })
+    }
+
+    /// Like [`SparseChol::factor`], but a pivot that is not positive is
+    /// reported in [`PartialChol::failed`] instead of an error, and the
+    /// factor is kept up to that column. The coupling rows below the
+    /// failed column are still computed (MATLAB's sparse `[R, p] = chol`
+    /// returns `R` as `q × n`). Only a non-square `a` is an error. With
+    /// no failure the factor is bit-identical to `factor`'s.
+    pub fn factor_flagged<O: OrderingMethod>(
+        a: &SparseCsc<T>,
+        ord: &O,
+    ) -> Result<PartialChol<T>, SparseSolveError> {
+        if !a.is_square() {
+            return Err(SparseSolveError::NotSquare {
+                rows: a.nrows(),
+                cols: a.ncols(),
+            });
+        }
+        let n = a.ncols();
+        let perm = ord.order(a);
+        let c = perm.permute_symmetric(a);
+        let mut num = up_looking(&c, true);
+        let q = num.failed.unwrap_or(n);
+        num.col_ptr.truncate(q + 1);
+        let nnz = num.col_ptr[q];
+        debug_assert!((0..q).all(|j| num.next[j] == num.col_ptr[j + 1]));
+        num.row_idx.truncate(nnz);
+        num.values.truncate(nnz);
+        Ok(PartialChol {
+            l: SparseCsc {
+                rows: n,
+                cols: q,
+                col_ptr: num.col_ptr,
+                row_idx: num.row_idx,
+                values: num.values,
+            },
+            perm,
+            failed: num.failed,
         })
     }
 
@@ -189,6 +177,142 @@ impl<T: SparseScalar> SparseChol<T> {
     /// Read-only access to the factor (mostly useful for tests / introspection).
     pub fn factor_csc(&self) -> &SparseCsc<T> {
         &self.l
+    }
+
+    /// The symmetric permutation: `L * L^H = A(p, p)` with `p = perm().perm()`.
+    pub fn perm(&self) -> &Permutation {
+        &self.perm
+    }
+}
+
+/// Up-looking numeric factorization of `c` (already permuted), reading
+/// its upper triangle. Stops at the first pivot that is not positive,
+/// unless `keep_going`: then rows past that column are still reduced
+/// against the columns before it, which is all of `L(:, 0..q)`.
+fn up_looking<T: SparseScalar>(c: &SparseCsc<T>, keep_going: bool) -> Numeric<T> {
+    let n = c.ncols();
+    let parent = column_elimination_tree(c);
+
+    // Phase 6 of `dev/plans/em_performance.md`: replace the per-column
+    // `Vec<Vec<(usize, T)>>` accumulator (one heap allocation per
+    // column, growing dynamically) with a flat CSC layout sized from
+    // an up-front symbolic counts pass. The numeric pass writes
+    // directly into preallocated `Lp / Li / Lx` arrays, with one
+    // per-column write cursor.
+
+    // ── Symbolic pass — exact column counts of L ───────────────────
+    let col_count = compute_col_counts(c, &parent);
+
+    // Prefix-sum to col_ptr. Allocate Li/Lx exactly once.
+    let mut col_ptr = vec![0usize; n + 1];
+    for j in 0..n {
+        col_ptr[j + 1] = col_ptr[j] + col_count[j];
+    }
+    let nnz = col_ptr[n];
+    let mut row_idx: Vec<usize> = vec![0usize; nnz];
+    let mut values: Vec<T> = vec![T::zero(); nnz];
+
+    // Per-column write cursor. Slot `col_ptr[j]` is reserved for the
+    // diagonal (written at the end of iteration j); below-diagonal
+    // entries go into `col_ptr[j] + 1 ..` in increasing-row order.
+    let mut next: Vec<usize> = (0..n).map(|j| col_ptr[j] + 1).collect();
+
+    // ── Numeric pass — same algorithm, flat-array writes ───────────
+    // Positive pivot test is relative to the largest entry. An absolute
+    // floor of 1e-12 treated `1e-16 * I` as indefinite.
+    let mut scale = 0.0_f64;
+    for j in 0..n {
+        for (_, val) in c.col_iter(j) {
+            scale = scale.max(val.abs());
+        }
+    }
+    let spd_tol = f64::EPSILON * (n as f64).max(1.0) * scale;
+    let mut x: Vec<T> = vec![T::zero(); n];
+    let mut mark: Vec<usize> = vec![usize::MAX; n];
+    let mut s: Vec<usize> = vec![0usize; n];
+    // Columns at or past `q` are never finished once a pivot fails.
+    let mut q = n;
+    let mut failed = None;
+
+    for k in 0..n {
+        // Pattern of row k of L (columns j < k where L(k, j) != 0).
+        let top = ereach(c, k, &parent, &mut s, &mut mark);
+
+        // Initialize x with row k of A (upper-triangle of CSC, conjed
+        // by Hermitian symmetry to get the row).
+        x[k] = T::zero();
+        for (i, val) in c.col_iter(k) {
+            if i <= k {
+                x[i] = val.conj();
+            }
+        }
+
+        let mut d = x[k];
+        x[k] = T::zero();
+
+        // Triangular solve, processing pattern in topo order.
+        for p in top..n {
+            let j = s[p];
+            if j >= q {
+                // Unfinished column: rows below q are not part of the
+                // partial factor. Its updates only reach rows above j.
+                x[j] = T::zero();
+                continue;
+            }
+            let l_jj = values[col_ptr[j]]; // diagonal of column j
+            let lkj = x[j] / l_jj;
+            x[j] = T::zero();
+
+            // Propagate L(k, j) into x[row] for already-written
+            // below-diagonal entries of column j (indices
+            // col_ptr[j]+1 .. next[j]).
+            let lo = col_ptr[j] + 1;
+            let hi = next[j];
+            for off in lo..hi {
+                let row = row_idx[off];
+                let l_row_j = values[off];
+                debug_assert!(row > j);
+                debug_assert!(row < k, "column j entry row should be < k at iter k");
+                x[row] -= lkj * l_row_j.conj();
+            }
+
+            // Diagonal update: d -= |L(k, j)|^2.
+            d -= lkj * lkj.conj();
+
+            // Append L(k, j) at column j's next free slot.
+            let slot = next[j];
+            debug_assert!(slot < col_ptr[j + 1], "column j over-filled at iter k");
+            row_idx[slot] = k;
+            values[slot] = lkj;
+            next[j] = slot + 1;
+        }
+
+        if k >= q {
+            continue;
+        }
+        // Diagonal pivot: L(k, k) = sqrt(d). Goes in the reserved
+        // slot at col_ptr[k].
+        match d.checked_sqrt_real_pos(spd_tol) {
+            Some(pivot) => {
+                row_idx[col_ptr[k]] = k;
+                values[col_ptr[k]] = pivot;
+            }
+            None => {
+                failed = Some(k);
+                if !keep_going {
+                    break;
+                }
+                q = k;
+            }
+        }
+    }
+
+    Numeric {
+        col_ptr,
+        row_idx,
+        values,
+        next,
+        failed,
     }
 }
 

@@ -416,6 +416,74 @@ impl SparseMat {
         }
     }
 
+    /// Row-wise compressed copy: `(row_ptr, cols, vals)`. Entries keep their
+    /// stored order within a row, whatever the order of `entries`.
+    fn csr(&self) -> (Vec<usize>, Vec<usize>, Vec<C64>) {
+        let mut ptr = vec![0usize; self.rows + 1];
+        for &(r, _, _) in &self.entries {
+            ptr[r + 1] += 1;
+        }
+        for i in 0..self.rows {
+            ptr[i + 1] += ptr[i];
+        }
+        let mut next = ptr[..self.rows].to_vec();
+        let mut cols = vec![0usize; self.entries.len()];
+        let mut vals = vec![Complex::new(0.0, 0.0); self.entries.len()];
+        for &(r, c, v) in &self.entries {
+            cols[next[r]] = c;
+            vals[next[r]] = v;
+            next[r] += 1;
+        }
+        (ptr, cols, vals)
+    }
+
+    /// Sparse × sparse product (Gustavson, row by row), as MATLAB's
+    /// `S1 * S2` of two sparse matrices. Work is O(flops + nnz(C) log)
+    /// and no dense `rows × cols` array is formed. Exact zeros that come
+    /// out of cancellation are dropped. The hint is not kept.
+    pub fn matmul(&self, other: &SparseMat) -> Result<Self, String> {
+        if self.cols != other.rows {
+            return Err(format!(
+                "sparse matrix multiply: inner dimensions differ ({}×{} * {}×{})",
+                self.rows, self.cols, other.rows, other.cols
+            ));
+        }
+        let (ap, ac, av) = self.csr();
+        let (bp, bc, bv) = other.csr();
+        let zero = Complex::new(0.0, 0.0);
+        let mut acc = vec![zero; other.cols];
+        let mut seen = vec![usize::MAX; other.cols];
+        let mut touched: Vec<usize> = Vec::new();
+        let mut entries = Vec::new();
+        for i in 0..self.rows {
+            touched.clear();
+            for p in ap[i]..ap[i + 1] {
+                let (k, a) = (ac[p], av[p]);
+                for q in bp[k]..bp[k + 1] {
+                    let j = bc[q];
+                    if seen[j] != i {
+                        seen[j] = i;
+                        acc[j] = zero;
+                        touched.push(j);
+                    }
+                    acc[j] += a * bv[q];
+                }
+            }
+            touched.sort_unstable();
+            for &j in &touched {
+                if sparse_keep(&acc[j]) {
+                    entries.push((i, j, acc[j]));
+                }
+            }
+        }
+        Ok(Self {
+            rows: self.rows,
+            cols: other.cols,
+            entries,
+            ordering_hint: None,
+        })
+    }
+
     /// Sparse matrix × dense vector (SpMV), O(nnz).
     pub fn spmv(&self, x: &CVector) -> Result<CVector, String> {
         if self.cols != x.len() {
