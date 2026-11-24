@@ -490,3 +490,78 @@ fn sparse_times_sparse_is_sparse() {
     assert_eq!(scalar(&ev, "k"), 0.0);
     assert!(eval_err("X = speye(3) * speye(4);").contains("dimension"));
 }
+
+// ─── Fused A' \ b and A.' \ b for triangular sparse A ─────────────────────
+
+/// Complex upper `R`, complex lower `L`, complex diagonal `D`, and a
+/// complex two-column right-hand side.
+const TRI: &str = "n = 6; N = n * n; L0 = -1 * laplacian_2d(n, n);
+     U = spdiags(0.3j * ones(N, 1), 1, N, N);
+     H = L0 + U + U';
+     R = chol(H); L = chol(H, \"lower\");
+     Rr = chol(L0); Lr = chol(L0, \"lower\");
+     D = spdiags((1:N)' + 2j * ones(N, 1), 0, N, N);
+     y = (1:N)' / N + 0.5j * ones(N, 1);
+     Y = [y, 2 * y - 1j];";
+
+#[test]
+fn transposed_triangular_solves_match_dense() {
+    let ev = eval(&format!(
+        "{TRI}
+         e1 = norm(R' \\ y - full(R)' \\ y);
+         e2 = norm(R.' \\ y - full(R).' \\ y);
+         e3 = norm(L' \\ y - full(L)' \\ y);
+         e4 = norm(L.' \\ y - full(L).' \\ y);
+         e5 = norm(D' \\ y - full(D)' \\ y);
+         e6 = norm(D.' \\ y - full(D).' \\ y);
+         e7 = norm(Rr' \\ y - full(Rr)' \\ y) + norm(Rr.' \\ y - full(Rr).' \\ y);
+         e8 = norm(Lr' \\ y - full(Lr)' \\ y) + norm(Lr.' \\ y - full(Lr).' \\ y);
+         e9 = norm(R' \\ Y - full(R)' \\ Y) + norm(L.' \\ Y - full(L).' \\ Y);
+         conj_differs = norm(R' \\ y - R.' \\ y) > 1e-3 && norm(D' \\ y - D.' \\ y) > 1e-3;
+         s = size(R' \\ y); col = s(1) == N && s(2) == 1;
+         s2 = size(R' \\ Y); two = s2(1) == N && s2(2) == 2;"
+    ));
+    for name in ["e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9"] {
+        assert!(scalar(&ev, name) < 1e-12, "{name} = {}", scalar(&ev, name));
+    }
+    assert_eq!(scalar(&ev, "conj_differs"), 1.0);
+    assert_eq!(scalar(&ev, "col"), 1.0);
+    assert_eq!(scalar(&ev, "two"), 1.0);
+}
+
+#[test]
+fn transposed_solve_matches_the_materialized_transpose_bit_for_bit() {
+    let ev = eval(&format!(
+        "{TRI}
+         Rt = R'; Rn = R.'; Lt = L'; Ln = L.';
+         d = norm(R' \\ y - Rt \\ y) + norm(R.' \\ y - Rn \\ y)
+           + norm(L' \\ y - Lt \\ y) + norm(L.' \\ y - Ln \\ y);
+         dr = norm(Rr' \\ real(y) - Rr.' \\ real(y));"
+    ));
+    assert_eq!(scalar(&ev, "d"), 0.0);
+    assert_eq!(scalar(&ev, "dr"), 0.0, "real: ' and .' agree");
+}
+
+#[test]
+fn transposed_solve_falls_back_for_other_matrices() {
+    let ev = eval(
+        "A = sparse([4, 1, 0; 2, 3, 1; 0, 2, 5]); b = [1; 2; 3];
+         e = norm(A' \\ b - full(A)' \\ b) + norm(A.' \\ b - full(A).' \\ b);
+         S = -1 * laplacian_2d(5, 5); c = ones(25, 1);
+         es = norm(S' \\ c - S \\ c);
+         M = sparse([2, 1; 0, 4]); f = (2 * M)' \\ [1; 1]; ef = norm(f - full(2 * M)' \\ [1; 1]);",
+    );
+    assert!(scalar(&ev, "e") < 1e-12);
+    assert!(scalar(&ev, "es") < 1e-12);
+    assert!(scalar(&ev, "ef") < 1e-14);
+    // Shape errors read the same as with an explicit transpose.
+    let e1 = eval_err("U = sparse([2, 1; 0, 4]); x = U' \\ [1; 2; 3];");
+    let e2 = eval_err("U = sparse([2, 1; 0, 4]); Ut = U'; x = Ut \\ [1; 2; 3];");
+    assert_eq!(e1, e2);
+    // A zero on the diagonal keeps the non-fused path's behaviour.
+    let z1 =
+        run("U = sparse([0, 1; 0, 4]); x = U' \\ [1; 2];").map(|ev| format!("{:?}", ev.get("x")));
+    let z2 = run("U = sparse([0, 1; 0, 4]); Ut = U'; x = Ut \\ [1; 2];")
+        .map(|ev| format!("{:?}", ev.get("x")));
+    assert_eq!(z1, z2);
+}
