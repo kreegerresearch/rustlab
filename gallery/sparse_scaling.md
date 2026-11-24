@@ -37,9 +37,9 @@ print(t_sp_small)            % sparse, seconds
 ```text
 [1×3]  225.000000  625.000000  1225.000000
 Matrix(1x3)
-  [0.002625, 0.053010, 0.680092]
+  [0.002960, 0.074230, 0.673098]
 Matrix(1x3)
-  [0.000297, 0.000815, 0.001695]
+  [0.000300, 0.000830, 0.001901]
 ```
 
 <!-- rustlab:output-end -->
@@ -93,13 +93,13 @@ print(t_amd)
 <!-- rustlab:output-start -->
 ```text
 Matrix(1x5)
-  [0.000738, 0.003798, 0.019525, 0.049205, 0.099118]
+  [0.000756, 0.003549, 0.019281, 0.066237, 0.103749]
 Matrix(1x5)
-  [0.000445, 0.003789, 0.046357, 0.210770, 0.601419]
+  [0.000416, 0.003989, 0.048479, 0.231059, 0.643288]
 Matrix(1x5)
-  [0.001258, 0.007096, 0.039357, 0.119538, 0.276030]
+  [0.001244, 0.007444, 0.041978, 0.131245, 0.296798]
 Matrix(1x3)
-  [0.001184, 0.014343, 0.245105]
+  [0.001166, 0.014348, 0.235050]
 ```
 
 <!-- rustlab:output-end -->
@@ -120,7 +120,7 @@ legend("dense", "Cholesky, natural", "Cholesky, minimum degree", "LU, auto order
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_scaling/plot-1-d5ac336b.svg)
+![plot 1](plots/sparse_scaling/plot-1-2ab4c248.svg)
 
 <!-- rustlab:output-end -->
 
@@ -131,21 +131,25 @@ $N^{1.5}$, so the gap widens with the grid.
 
 ## Why: the size of the factor
 
-Time follows the number of entries in the Cholesky factor. Printing a
-factor handle shows it:
+Time follows the number of entries in the Cholesky factor. The
+three-output `chol` returns the factor for a chosen ordering, and
+`nnz(R)` counts it:
 
 ```rustlab
 A = -1 * laplacian_2d(100, 100);
-print(chol(A, "identity"))   % natural order
-print(chol(A, "amd"))        % minimum degree
-print(chol(A))               % auto: nested dissection here
+[R_nat, p, P] = chol(A, "natural");
+[R_amd, p, P] = chol(A, "amd");
+[R_auto, p, P] = chol(A);      % auto: nested dissection here
+print(nnz(R_nat))              % natural order
+print(nnz(R_amd))              % minimum degree
+print(nnz(R_auto))
 ```
 
 <!-- rustlab:output-start -->
 ```text
-<chol factor 10000×10000, real, nnz=1000099>
-<chol factor 10000×10000, real, nnz=1917475>
-<chol factor 10000×10000, real, nnz=266896>
+1000099
+1917475
+266896
 ```
 
 <!-- rustlab:output-end -->
@@ -186,10 +190,10 @@ print(t3_nat(3) / t3_auto(3))   % speedup of auto over natural at 20³
 <!-- rustlab:output-start -->
 ```text
 Matrix(1x4)
-  [0.002592, 0.016500, 0.084025, 0.331287]
+  [0.002637, 0.016741, 0.083204, 0.319434]
 Matrix(1x3)
-  [0.003860, 0.052104, 0.396975]
-4.7244690340732705
+  [0.004315, 0.057081, 0.412011]
+4.951838232254092
 ```
 
 <!-- rustlab:output-end -->
@@ -207,7 +211,7 @@ legend("natural", "auto (nested dissection)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/sparse_scaling/plot-2-3f1a0086.svg)
+![plot 2](plots/sparse_scaling/plot-2-427563f4.svg)
 
 <!-- rustlab:output-end -->
 
@@ -233,7 +237,7 @@ print(t_cplx / t_real)                   % complex factor vs real factor
 
 <!-- rustlab:output-start -->
 ```text
-2.9484942011485
+3.1508915599119947
 ```
 
 <!-- rustlab:output-end -->
