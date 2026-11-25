@@ -6,6 +6,16 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.95
+
+### Added
+- **`laplacian_scpml_2d(sx_e, sx_h, sy_e, sy_h [, dx, dy] [, bc])`**: the 2-D frequency-domain stretched-coordinate PML operator `(1/sx_e)∂x(1/sx_h)∂x + (1/sy_e)∂y(1/sy_h)∂y` as a sparse complex matrix on the `laplacian_2d` grid (`k = (j-1)*ny + i`). `s_e` is the stretch at each cell, `s_h(j)` the stretch on the face between cells `j` and `j+1`. Add `(omega/c0)^2 * epsr` on the diagonal for the TMz Helmholtz operator with a PML.
+  - `"neumann"` drops the outer face, which is exactly the five-band assembly of `rustlab_em`'s `fdfd_tmz_pml_2d` (`lessons/_shared/em.rlab`); a verbatim copy of that function agrees to 1e-14 relative (Frobenius). `"dirichlet"` (default) keeps the outer face with the boundary cell's own `s_e`; `"periodic"` wraps through `s_h(n)`.
+  - All stretches 1 gives `laplacian_2d` with the same `bc` (bit for bit at unit spacing). `diag(sx_e(j)·sy_e(i)) * A` is complex symmetric.
+  - Pure Rust in `rustlab-dsp/src/scpml.rs`; frequency domain only (the FDTD absorber is `fdtd_cpml`). Requested by `rustlab_em` (`dev/rustlab/requests/lesson-review-findings-2026-11-19.md` item 6).
+- **`[s_e, s_h] = scpml_stretch(n, npml, sigma_max, omega [, order])`**: cell and face stretch factors `1 + jσ/(ω ε0)` for a polynomial (default cubic) PML of `npml` cells at both ends of an axis, the same profile as `rustlab_em`'s `pml_sigma_profile` / `pml_sigma_profile_h` / `pml_stretching_factor`. `ε0` is the CODATA 2018 `1/(μ0 c0²)`, about 1.4e-10 relative below the `8.854187817e-12` that `em.rlab` hard-codes.
+- **Example `examples/pde/scpml_point_source.rlab`**: a 2-D point source at 12 cells per wavelength with a 16-cell PML. `|E|` drops 125.7 dB across the layer, and the interior matches a 181×181 box to −107 dB (+2.7 dB with no PML).
+
 ## 0.3.94
 
 ### Added

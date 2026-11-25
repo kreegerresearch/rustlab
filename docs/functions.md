@@ -2800,6 +2800,47 @@ np = ny * nx;
 V = reshape(spsolve(A, b), ny, nx, nz);
 ```
 
+### `laplacian_scpml_2d(sx_e, sx_h, sy_e, sy_h [, dx, dy] [, bc])`
+
+The 2-D frequency-domain stretched-coordinate PML (SC-PML) operator
+
+$$\frac{1}{s_x^e}\,\partial_x \frac{1}{s_x^h}\,\partial_x + \frac{1}{s_y^e}\,\partial_y \frac{1}{s_y^h}\,\partial_y$$
+
+on the grid of `laplacian_2d`: rows index y, columns index x, node ordering `k = (j-1)*ny + i`. Returns an `(nx·ny) × (nx·ny)` sparse complex matrix. Adding `k0² ε` on the diagonal gives the TMz Helmholtz operator with a PML wherever the stretch is not 1 (Rumpf ch. 5; Taflove & Hagness ch. 7). This is the time-harmonic operator; the time-domain absorber is `fdtd_cpml`.
+
+`sx_e` and `sx_h` have `nx` entries, `sy_e` and `sy_h` have `ny` (rows or columns, real or complex, nonzero and finite). `s_e(j)` is the stretch at cell `j`; `s_h(j)` is the stretch on the face between cells `j` and `j+1`. Row `k` has `A(k, k±ny) = 1/(sx_e(j)·sx_h(face)·dx²)`, `A(k, k±1) = 1/(sy_e(i)·sy_h(face)·dy²)`, and minus their sum on the diagonal. `scpml_stretch` builds the vectors.
+
+The `bc` selector says what happens at the outer faces:
+- `"dirichlet"` (default, like the other builders): the ghost cell is 0; the outer face stays on the diagonal with the boundary cell's own `s_e` as its stretch (as `laplacian_eps_2d` uses the cell's own ε). `sx_h(nx)` and `sy_h(ny)` are not read.
+- `"neumann"`: the outer face is dropped from the off-diagonal and the diagonal (zero flux). This is exactly the assembly of `rustlab_em`'s `fdfd_tmz_pml_2d`.
+- `"periodic"`: wraps; `s_h(n)` is the face between the last and first cell. Useful for a PML on one axis only.
+
+With every stretch equal to 1 the result is `laplacian_2d(nx, ny, dx, dy, bc)` (bit for bit at unit spacing, to rounding otherwise). The matrix is not symmetric, but `diag(sx_e(j)·sy_e(i)) * A` is complex symmetric (transpose, no conjugate). Under `"neumann"` and `"periodic"` constants are in its null space. The result carries the `Identity` ordering hint like the other Laplacian builders; `\` uses LU on it.
+
+The dedicated builder, rather than a stretch option on `laplacian_eps_2d`, is deliberate: `laplacian_eps_2d` averages one cell-centred field onto faces with a harmonic mean, while SC-PML needs separate per-axis values sampled on the cell grid and on the face grid (a cell profile averaged onto faces leaves a far larger reflection off the PML's inner edge).
+
+```
+c0 = 299792458; eps0 = 1 / (1.25663706212e-6 * c0^2);
+omega = 2*pi*3e9; h = c0 / 3e9 / 12; n = 101; npml = 16;
+[se, sh] = scpml_stretch(n, npml, 4*eps0*c0/h, omega);
+L = laplacian_scpml_2d(se, sh, se, sh, h, h, "neumann");
+A = L + (omega/c0)^2 * speye(n*n);     # add epsr(:) via spdiags for a dielectric
+b = zeros(n*n, 1);  b(ij2k(51, 51, n)) = 1 / h^2;
+E = reshape(A \ b, n, n);
+```
+
+See `examples/pde/scpml_point_source.rlab`: across a 16-cell layer `|E|` drops 125.7 dB, and the interior agrees with a 181×181 box to −107 dB (+2.7 dB with no PML).
+
+### `[s_e, s_h] = scpml_stretch(n, npml, sigma_max, omega [, order])`
+
+SC-PML stretch factors `s = 1 + jσ/(ω ε0)` for a polynomial conductivity profile of `npml` cells at both ends of an axis of `n` cells, as `1×n` rows for `laplacian_scpml_2d`. With 1-based cell `i`, `σ_e(i) = sigma_max·(max(xl, 0)^m + max(xr, 0)^m)` with `xl = (npml − i + 1)/npml` and `xr = (i − (n − npml))/npml`: the outermost cells carry `sigma_max` and the interior is exactly 1. `s_h` is the same profile half a cell further on (the face between `i` and `i+1`; `s_h(n)` is the outer wall face). `order` `m` defaults to 3. `ε0 = 1/(μ0 c0²)` (CODATA 2018, the FDTD value). One output returns `s_e`.
+
+This is `rustlab_em`'s `pml_sigma_profile` / `pml_sigma_profile_h` / `pml_stretching_factor`; those hard-code `ε0 = 8.854187817e-12`, so the imaginary parts differ by about 1.4e-10 relative. `sigma_max ≈ 4·ε0·c0/h` with `npml` 16–20 is a good start. Errors when `2·npml > n`, `sigma_max < 0`, or `omega` / `order` is not positive.
+
+```
+[se, sh] = scpml_stretch(80, 16, 4*eps0*c0/h, omega);
+```
+
 ### `pin_dirichlet(A, b, mask_or_indices, values)` / `pin_dirichlet(..., "scale", s)`
 Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with `d_k` on the diagonal and 0 elsewhere (the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`), and `b(k)` is set to `d_k · value`. `spsolve(A, b)` or `A \ b` then reproduces the boundary potential while the operator acts everywhere else.
 

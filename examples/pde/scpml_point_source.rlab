@@ -1,0 +1,68 @@
+# SC-PML: a 2-D point source in an open box
+# Demonstrates: scpml_stretch, laplacian_scpml_2d, speye, ij2k, sparse \
+#
+# TMz Helmholtz  (1/sx_e)d/dx (1/sx_h)d/dx E + (1/sy_e)d/dy (1/sy_h)d/dy E
+# + k0^2 E = source,  on a 12-cells-per-wavelength grid with a 16-cell
+# cubic stretched-coordinate PML on all four sides. The field dies off
+# across the layer, and the interior agrees with the same source in a
+# much larger box, so little comes back from the PML. With every stretch
+# equal to 1 (no PML) the walls reflect and the interior field is wrong.
+#
+# "neumann" drops the outer face (zero flux), as rustlab_em's
+# fdfd_tmz_pml_2d does; the wall sits behind the PML either way.
+
+c0 = 299792458;
+eps0 = 1 / (1.25663706212e-6 * c0^2);
+f = 3e9;
+omega = 2 * pi * f;
+h = c0 / f / 12;
+npml = 16;
+smax = 4 * eps0 * c0 / h;
+
+function E = point_source(n, npml, smax, omega, h, c0)
+  [se, sh] = scpml_stretch(n, npml, smax, omega);
+  L = laplacian_scpml_2d(se, sh, se, sh, h, h, "neumann");
+  N = n * n;
+  A = L + (omega / c0)^2 * speye(N);
+  b = zeros(N, 1);
+  mid = (n + 1) / 2;
+  b(ij2k(mid, mid, n)) = 1 / h^2;
+  E = reshape(A \ b, n, n);
+end
+
+n = 101;
+E = point_source(n, npml, smax, omega, h, c0);
+E_big = point_source(181, npml, smax, omega, h, c0);
+E_bare = point_source(n, 0, smax, omega, h, c0);
+
+mid = (n + 1) / 2;
+off = (181 - n) / 2;
+core = (npml + 1):(n - npml);
+ref = E_big(core + off, core + off);
+scale = max(abs(E_big(mid + off, core + off)));
+
+row = abs(E(mid, :));
+atten_db = 20 * log10(row(npml + 1) / row(1));
+refl_db = 20 * log10(max(max(abs(E(core, core) - ref))) / scale);
+bare_db = 20 * log10(max(max(abs(E_bare(core, core) - ref))) / scale);
+
+fprintf("|E| across the PML (inner edge / outer cell): %6.1f dB\n", atten_db);
+fprintf("interior difference from the large box, PML:    %6.1f dB\n", refl_db);
+fprintf("interior difference from the large box, no PML: %6.1f dB\n", bare_db);
+
+if atten_db < 60 || refl_db > -50
+  error(sprintf("PML too weak: %.1f dB across, %.1f dB interior", atten_db, refl_db));
+end
+
+x = ((1:n) - mid) * h * 100;
+subplot(1, 2, 1);
+imagesc(real(E), "viridis");
+xlabel("x (cell)");
+ylabel("y (cell)");
+title("Re Ez, 16-cell SC-PML");
+subplot(1, 2, 2);
+plot(x, mag2db(row / max(row)), x, mag2db(abs(E_bare(mid, :)) / max(row)));
+xlabel("x (cm)");
+ylabel("|Ez| (dB)");
+title("Centre row");
+legend("SC-PML", "no PML");
