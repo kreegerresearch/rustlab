@@ -121,7 +121,7 @@ fn neumann_reproduces_rustlab_em_fdfd_tmz_pml_2d() {
          A = L + spdiags((omega / c0)^2 * epsr(:), 0, N, N);
          rel = norm(full(A - A_ref), \"fro\") / norm(full(A_ref), \"fro\");
          same_nnz = nnz(A) == nnz(A_ref);
-         [m, n] = size(A);"
+         sz = size(A); m = sz(1);"
     );
     let ev = eval(&src);
     let rel = scalar(&ev, "rel");
@@ -156,7 +156,7 @@ fn scpml_stretch_matches_rustlab_em_profiles() {
          [se3, sh3] = scpml_stretch(12, 3, smax, omega);
          one_out = scpml_stretch(12, 3, smax, omega);
          one_is_se = max(abs(one_out - se3));
-         [r, c] = size(se);"
+         sz = size(se); r = sz(1); c = sz(2);"
     );
     let ev = eval(&src);
     let worst = scalar(&ev, "worst");
@@ -218,14 +218,23 @@ fn point_source_is_absorbed_by_the_layer() {
     let atten = scalar(&ev, "atten_db");
     let refl = scalar(&ev, "refl_db");
     eprintln!("attenuation across the layer: {atten:.1} dB; interior difference: {refl:.1} dB");
-    assert!(atten > 60.0, "attenuation across the PML only {atten:.1} dB");
-    assert!(refl < -50.0, "interior difference vs larger box {refl:.1} dB");
+    assert!(
+        atten > 60.0,
+        "attenuation across the PML only {atten:.1} dB"
+    );
+    assert!(
+        refl < -50.0,
+        "interior difference vs larger box {refl:.1} dB"
+    );
 }
 
 #[test]
 fn bad_arguments_error() {
     let m = eval_err("laplacian_scpml_2d(ones(1, 4), ones(1, 3), ones(1, 5), ones(1, 5))");
-    assert!(m.contains("laplacian_scpml_2d") && m.contains("sx_h"), "{m}");
+    assert!(
+        m.contains("laplacian_scpml_2d") && m.contains("sx_h"),
+        "{m}"
+    );
     let m = eval_err("laplacian_scpml_2d(ones(1, 4), ones(1, 4), ones(1, 5), ones(1, 6), 1, 1)");
     assert!(m.contains("sy_h"), "{m}");
     let m = eval_err("laplacian_scpml_2d(ones(2, 4), ones(1, 8), ones(1, 5), ones(1, 5))");

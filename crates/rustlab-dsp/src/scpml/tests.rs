@@ -129,8 +129,7 @@ fn unit_stretch_unit_spacing_is_laplacian_2d_bit_for_bit() {
 fn unit_stretch_matches_laplacian_2d_any_spacing() {
     for bc in BCS {
         let (nx, ny, dx, dy) = (6, 5, 0.3, 0.07);
-        let l = laplacian_scpml_2d(&ones(nx), &ones(nx), &ones(ny), &ones(ny), dx, dy, bc)
-            .unwrap();
+        let l = laplacian_scpml_2d(&ones(nx), &ones(nx), &ones(ny), &ones(ny), dx, dy, bc).unwrap();
         let r = laplacian_2d_bc(nx, ny, dx, dy, bc).unwrap();
         let pattern = |s: &SparseMat| s.entries.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>();
         assert_eq!(pattern(&l), pattern(&r), "{bc:?}");
@@ -204,8 +203,16 @@ fn neumann_matches_rustlab_em_five_band_assembly() {
             r[[k, k]] = -ap_x - am_x - ap_y - am_y;
         }
     }
-    let l = laplacian_scpml_2d(&sx_e, &sx_h, &sy_e, &sy_h, dx, dy, BoundaryCondition::Neumann)
-        .unwrap();
+    let l = laplacian_scpml_2d(
+        &sx_e,
+        &sx_h,
+        &sy_e,
+        &sy_h,
+        dx,
+        dy,
+        BoundaryCondition::Neumann,
+    )
+    .unwrap();
     let err = max_abs(&(dense(&l) - &r));
     assert!(err <= 1e-14 * max_abs(&r), "max error {err:e}");
     // Five bands: one diagonal, two x bands of ny·(nx−1), two y of nx·(ny−1).
@@ -238,7 +245,10 @@ fn stretch_weighted_operator_is_complex_symmetric() {
         let a = dense(&l);
         for r in 0..a.nrows() {
             for c in 0..a.ncols() {
-                assert_eq!(a[[r, c]] == Complex::new(0.0, 0.0), a[[c, r]] == Complex::new(0.0, 0.0));
+                assert_eq!(
+                    a[[r, c]] == Complex::new(0.0, 0.0),
+                    a[[c, r]] == Complex::new(0.0, 0.0)
+                );
             }
         }
     }
@@ -246,8 +256,16 @@ fn stretch_weighted_operator_is_complex_symmetric() {
 
 #[test]
 fn unit_stretch_is_real_symmetric() {
-    let l = laplacian_scpml_2d(&ones(4), &ones(4), &ones(3), &ones(3), 0.1, 0.2, BoundaryCondition::Dirichlet)
-        .unwrap();
+    let l = laplacian_scpml_2d(
+        &ones(4),
+        &ones(4),
+        &ones(3),
+        &ones(3),
+        0.1,
+        0.2,
+        BoundaryCondition::Dirichlet,
+    )
+    .unwrap();
     let a = dense(&l);
     assert!(a.iter().all(|v| v.im == 0.0));
     assert_eq!(a, a.t());
@@ -293,7 +311,10 @@ fn nnz_counts() {
         let l = laplacian_scpml_2d(&sx_e, &sx_h, &sy_e, &sy_h, 1.0, 1.0, bc).unwrap();
         assert_eq!(l.nnz(), want, "{bc:?}");
         // Rows sorted, columns sorted within each row.
-        assert!(l.entries.windows(2).all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)));
+        assert!(l
+            .entries
+            .windows(2)
+            .all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)));
     }
 }
 
@@ -303,7 +324,10 @@ fn bad_sizes_and_values_error() {
     let bc = BoundaryCondition::Dirichlet;
     let msg = |r: Result<SparseMat, crate::error::DspError>| r.unwrap_err().to_string();
     let m = msg(laplacian_scpml_2d(&o(4), &o(3), &o(5), &o(5), 1.0, 1.0, bc));
-    assert!(m.contains("sx_h") && m.contains("4") && m.contains("3"), "{m}");
+    assert!(
+        m.contains("sx_h") && m.contains("4") && m.contains("3"),
+        "{m}"
+    );
     let m = msg(laplacian_scpml_2d(&o(4), &o(4), &o(5), &o(6), 1.0, 1.0, bc));
     assert!(m.contains("sy_h"), "{m}");
     let m = msg(laplacian_scpml_2d(&o(1), &o(1), &o(5), &o(5), 1.0, 1.0, bc));
@@ -312,7 +336,15 @@ fn bad_sizes_and_values_error() {
     assert!(m.contains("ny"), "{m}");
     let m = msg(laplacian_scpml_2d(&o(4), &o(4), &o(5), &o(5), 0.0, 1.0, bc));
     assert!(m.contains("dx"), "{m}");
-    let m = msg(laplacian_scpml_2d(&o(4), &o(4), &o(5), &o(5), 1.0, f64::NAN, bc));
+    let m = msg(laplacian_scpml_2d(
+        &o(4),
+        &o(4),
+        &o(5),
+        &o(5),
+        1.0,
+        f64::NAN,
+        bc,
+    ));
     assert!(m.contains("dy"), "{m}");
     let mut z = o(4);
     z[2] = Complex::new(0.0, 0.0);

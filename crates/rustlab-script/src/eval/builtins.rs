@@ -477,6 +477,8 @@ impl BuiltinRegistry {
         r.register("laplacian_3d", builtin_laplacian_3d);
         r.register("laplacian_eps_2d", builtin_laplacian_eps_2d);
         r.register("laplacian_eps_3d", builtin_laplacian_eps_3d);
+        r.register("laplacian_scpml_2d", builtin_laplacian_scpml_2d);
+        r.register_nargout("scpml_stretch", builtin_scpml_stretch_nargout);
         r.register("ij2k", builtin_ij2k);
         r.register("k2ij", builtin_k2ij);
         r.register("ijk2k", builtin_ijk2k);
@@ -16610,6 +16612,59 @@ fn builtin_laplacian_eps_3d(args: Vec<Value>) -> Result<Value, ScriptError> {
         Some(real) => rustlab_dsp::laplacian::laplacian_eps_3d_real(real, dx, dy, dz, bc),
         None => rustlab_dsp::laplacian::laplacian_eps_3d(eps_map, dx, dy, dz, bc),
     })
+}
+
+fn stretch_vector(name: &str, label: &str, v: &Value) -> Result<Vec<C64>, ScriptError> {
+    v.to_cvector()
+        .map(|a| a.to_vec())
+        .map_err(|e| ScriptError::type_err(format!("{name}: {label}: {e}")))
+}
+
+/// `laplacian_scpml_2d(sx_e, sx_h, sy_e, sy_h [, dx, dy] [, bc])` — the 2-D
+/// stretched-coordinate PML operator
+/// `(1/sx_e)∂x(1/sx_h)∂x + (1/sy_e)∂y(1/sy_h)∂y` on `laplacian_2d`'s grid.
+fn builtin_laplacian_scpml_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    const NAME: &str = "laplacian_scpml_2d";
+    check_args_range(NAME, &args, 4, 7)?;
+    let sx_e = stretch_vector(NAME, "sx_e", &args[0])?;
+    let sx_h = stretch_vector(NAME, "sx_h", &args[1])?;
+    let sy_e = stretch_vector(NAME, "sy_e", &args[2])?;
+    let sy_h = stretch_vector(NAME, "sy_h", &args[3])?;
+    let (spacing, bc) = parse_spacing_and_bc(NAME, &args, 4, 2)?;
+    laplacian_value(rustlab_dsp::laplacian_scpml_2d(
+        &sx_e, &sx_h, &sy_e, &sy_h, spacing[0], spacing[1], bc,
+    ))
+}
+
+/// `[s_e, s_h] = scpml_stretch(n, npml, sigma_max, omega [, order])` — cell
+/// and face SC-PML stretch factors `1 + jσ/(ω ε0)` for a polynomial profile
+/// (default cubic) on an axis of `n` cells. One output is `s_e`.
+fn builtin_scpml_stretch_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    const NAME: &str = "scpml_stretch";
+    check_args_range(NAME, &args, 4, 5)?;
+    let count = |i: usize, label: &str| {
+        args[i]
+            .to_usize()
+            .map_err(|e| ScriptError::type_err(format!("{NAME}: {label}: {e}")))
+    };
+    let real = |i: usize, label: &str| spacing_scalar(NAME, &args[i], label);
+    let n = count(0, "n")?;
+    let npml = count(1, "npml")?;
+    let sigma_max = real(2, "sigma_max")?;
+    let omega = real(3, "omega")?;
+    let order = if args.len() == 5 {
+        real(4, "order")?
+    } else {
+        3.0
+    };
+    let (s_e, s_h) = rustlab_dsp::scpml_stretch(n, npml, sigma_max, omega, order)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    let row = |v: Vec<C64>| Value::Vector(Array1::from_vec(v).into());
+    if nargout >= 2 {
+        Ok(Value::Tuple(vec![row(s_e), row(s_h)]))
+    } else {
+        Ok(row(s_e))
+    }
 }
 
 /// `ij2k(i, j, ny)` — convert 1-based grid indices `(i, j)` to flat

@@ -7,6 +7,7 @@ pub mod fixed;
 pub mod iir;
 pub mod laplacian;
 pub mod rasterize;
+pub mod scpml;
 pub mod stft;
 pub mod upfirdn;
 pub mod vector_calc;
@@ -39,6 +40,7 @@ pub use rasterize::{
     disk_coverage, disk_mask, polygon_coverage, polygon_mask, rect_coverage, rect_mask,
     MAX_COVERAGE_K,
 };
+pub use scpml::{laplacian_scpml_2d, scpml_stretch};
 pub use stft::stft;
 pub use upfirdn::upfirdn;
 pub use vector_calc::{
