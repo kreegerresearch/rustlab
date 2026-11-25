@@ -2263,7 +2263,7 @@ v(6) = 99       % grows v = [0, 0, 7, 0, 0, 99]
 
 ## Rank-3 Tensors
 
-A `Tensor3` is a complex 3-dimensional array of shape `(m, n, p)` — `m` rows, `n` columns, `p` pages. Elements use 1-based indexing `A(i, j, k)`. Slicing with `A(:, :, k)` extracts page `k` as a regular Matrix (the trailing singleton is dropped).
+A `Tensor3` is a complex 3-dimensional array of shape `(m, n, p)` — `m` rows, `n` columns, `p` pages. Elements use 1-based indexing `A(i, j, k)`. A slice drops its singleton dimensions: `A(:, :, k)` is an `m×n` Matrix and `A(i, :, :)` an `n×p` Matrix (MATLAB returns `1×n×p`; see [Indexing and assignment](#indexing-and-assignment)).
 
 **Conventions and limitations:**
 - All Tensor3 storage is complex (`C64`); real values are stored with imaginary part 0.
@@ -2292,28 +2292,61 @@ Create an m×n×p tensor with samples drawn uniformly from `[0, 1)`.
 Create an m×n×p tensor with samples drawn from the standard normal `N(0, 1)`.
 
 ### Indexing and assignment
+
+Three subscripts drop **every** singleton dimension of the result. MATLAB keeps them, so `T(i, :, :)` is `1×n×p` there and needs `squeeze`. In rustlab it is already an `n×p` matrix. `squeeze` exists and passes a matrix through, so `squeeze(T(i, :, :))` gives the same matrix in both.
+
+Shapes for `T = reshape(1:24, 2, 3, 4)` (`m, n, p = 2, 3, 4`):
+
+| Read | rustlab | MATLAB |
+|---|---|---|
+| `T(i, :, :)`, `T(end, :, :)` | `n×p` matrix, `M(j, k) = T(i, j, k)` | `1×n×p`; `squeeze` gives `n×p` |
+| `T(i:i, :, :)` (one-element range) | `n×p` matrix | `1×n×p` |
+| `T(:, j, :)` | `m×p` matrix | `m×1×p`; `squeeze` gives `m×p` |
+| `T(:, :, k)`, `T(:, :, end)` | `m×n` matrix | `m×n` |
+| `T(1:2, :, :)`, `T(:, :, 1:2)`, `T(:, 1:2, 2:3)` | Tensor3 of the selected sizes | same |
+| `T(:, :, :)` | the whole Tensor3 | same |
+| `T(:, j, k)` | `m×1` column | `m×1` |
+| `T(i, :, k)` | 1-D row of `n` | `1×n` |
+| `T(i, j, :)` | 1-D row of `p` | `1×1×p`; `squeeze` gives `p×1` (rustlab's `squeeze` keeps the row) |
+| `T(i, j, k)`, `T(end, end, end)` | scalar | scalar |
+| `T(:, [true, false, true], 1)`, `T(:, :, logical(v))` | a logical subscript selects on that axis, same shape rules | same |
+| `T(:)` | `m·n·p × 1` column, column-major (`i` fastest, then `j`, then `k`) | same |
+| `T(k)`, `T(end)`, `T(end-1)` | scalar at that column-major position | same |
+| `T(3:6)`, `T([3, 4])` | 1-D row | `1×4` / `1×2` |
+| `T([3; 4])` | `2×1` column | same |
+| `T(mask)`, `mask` a logical vector of length `m·n·p` | row of the selected values | same |
+| `T(T > 20)` (0/1 Tensor3 of the same size) | column of the selected values, column-major | column |
+| `T(i, j)` | two subscripts fold the trailing dims: `j` runs over `1:n·p`, `T(i, j) = T(i, mod(j-1, n)+1, floor((j-1)/n)+1)`; `T(:, :)` is `m×(n·p)` | same |
+
+There is no rank-3 logical: a comparison of a Tensor3 gives a 0/1 Tensor3. As an index, a same-size Tensor3 whose entries are all 0 or 1 is a mask.
+
 ```
 T = reshape(1:24, 2, 3, 4)
-
-# Single element — 1-based on every axis
 T(1, 1, 1)            # → 1
 T(2, 3, 4)            # → 24
-
-# Page slice — trailing singleton dropped, returns Matrix(2, 3)
-page2 = T(:, :, 2)
-
-# Slabs along the page axis
-row1 = T(1, :, :)     # Matrix(3, 4)
+page2 = T(:, :, 2)    # Matrix(2, 3)
+row1 = T(1, :, :)     # Matrix(3, 4) — no squeeze needed
 col2 = T(:, 2, :)     # Matrix(2, 4)
-
-# Range slice keeps rank-3 if the result has more than one non-singleton dim
 chunk = T(:, :, 1:2)  # Tensor3(2, 3, 2)
-
-# Assignment mirrors indexing
-U = zeros3(2, 2, 3)
-U(:, :, 2) = [1, 2; 3, 4]    # page write
-U(1, 1, 1) = 99               # element write
+big = T(T > 20)       # Matrix(4, 1): 21, 22, 23, 24
 ```
+
+Assignment takes the same subscripts. With three subscripts, the right-hand side is a scalar (broadcast), a Tensor3 of the region's size, or the region with its singletons dropped: `T(i, :, :) = M` needs an `n×p` `M` (a `1×n×p` Tensor3 also works), `T(:, j, :) = M` needs `m×p`, `T(:, :, k) = M` needs `m×n`. When only one subscript selects more than one element (`T(i, j, :)`, `T(:, j, k)`), a row or a column of that length fills it. Any other shape is an error. One subscript writes linear, column-major positions: `T(k) = x`, `T(end) = x`, `T(idx) = v`, `T(:) = v`, `T(mask) = x`, `T(T > 0) = 0`. The right-hand side is a scalar or any array with one value per position.
+
+```
+U = zeros3(2, 3, 4)
+U(:, :, 2) = [1, 2, 3; 4, 5, 6]    # page write
+U(2, :, :) = reshape(1:12, 3, 4)   # first-axis slab
+U(1, 2, :) = [1; 2; 3; 4]          # fibre, row or column
+U(1, 1, 1) = 99                    # element write
+U(5) = 7                           # linear: U(1, 3, 1)
+U(U > 50) = 0                      # mask
+```
+
+Differences from MATLAB:
+- A write past the end is an error; MATLAB grows the array. Preallocate with `zeros3`, or build with `cat(3, ...)`.
+- `T(i, j) = x` (two subscripts) is an error on a Tensor3; use three subscripts or a linear index. The two-subscript read works.
+- `T(:, :, k) = []` deletion is not supported on a Tensor3.
 
 ### Arithmetic
 ```
@@ -2338,7 +2371,7 @@ C = min(T, 1); D = max(T, 0);   # two-argument min / max
 k = find(R <= a);               # column-major linear indices, the T(:) order
 v = T(find(M));                 # gather the masked values
 ```
-- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), `!`, and `and` / `or` / `xor` return **0/1 doubles**, not a logical: there is no rank-3 logical (the same rule as `cat(3, L, L)`). So `T(M)` with a `Tensor3` mask is an error; use `T(find(M))` to gather, or `.*` to apply the mask.
+- Comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), `!`, and `and` / `or` / `xor` return **0/1 doubles**, not a logical: there is no rank-3 logical (the same rule as `cat(3, L, L)`). As an index, a same-size 0/1 Tensor3 is a mask: `T(M)` gathers the selected values as a column and `T(M) = 0` writes them (`T(find(M))` gives the same values as a row).
 - Unary functions: `abs`, `sign`, `sqrt`, `exp`, `log`, `log10`, `log2`, `floor`, `ceil`, `round`, `real`, `imag`, `conj`, `angle`, the trig and hyperbolic functions, and `mod(T, m)`. `sqrt` and `log` of a negative entry are complex, as for a matrix.
 - `min(T, s)` / `max(T, s)` / `min(T, U)` are element-wise. The reducing forms (`min(T)`, `max(T, [], dim)`) do not take a `Tensor3`.
 - `find(T)` returns the column-major linear indices of the nonzero entries. As in MATLAB, `[r, c] = find(T)` gives the row and a column index that runs over the trailing dimensions merged (`c = (k-1)*n + j`), and `[r, c, v] = find(T)` adds the values. For three subscripts use `[i, j, k] = ind2sub(size(T), find(T))`.
