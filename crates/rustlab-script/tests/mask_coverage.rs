@@ -83,7 +83,14 @@ fn full_inside_is_one_and_outside_is_zero() {
          hi = max([max(max(D)), max(max(R)), max(max(P))]);
          frac = sum(sum(and(D > 0, D < 1)));"
     ));
-    for (n, want) in [("dc", 1.0), ("rc", 1.0), ("pc", 1.0), ("dk", 0.0), ("rk", 0.0), ("pk", 0.0)] {
+    for (n, want) in [
+        ("dc", 1.0),
+        ("rc", 1.0),
+        ("pc", 1.0),
+        ("dk", 0.0),
+        ("rk", 0.0),
+        ("pk", 0.0),
+    ] {
         assert_eq!(scalar(&ev, n), want, "{n}");
     }
     assert_eq!(scalar(&ev, "lo"), 0.0);
@@ -103,8 +110,16 @@ fn area_is_within_h_over_k() {
         let h = 0.05;
         let bd = 2.0 * std::f64::consts::PI * h / k as f64;
         let br = 2.0 * (1.37 + 0.92) * h / k as f64;
-        assert!(scalar(&ev, "ed") <= bd, "disk K={k}: {} > {bd}", scalar(&ev, "ed"));
-        assert!(scalar(&ev, "er") <= br, "rect K={k}: {} > {br}", scalar(&ev, "er"));
+        assert!(
+            scalar(&ev, "ed") <= bd,
+            "disk K={k}: {} > {bd}",
+            scalar(&ev, "ed")
+        );
+        assert!(
+            scalar(&ev, "er") <= br,
+            "rect K={k}: {} > {br}",
+            scalar(&ev, "er")
+        );
     }
 }
 
@@ -113,7 +128,7 @@ fn map_is_symmetric() {
     let ev = eval(
         "x = ((0:39) - 19.5) * 0.07; [X, Y] = meshgrid(x, x);
          D = disk_mask(X, Y, 0, 0, 0.9, \"coverage\", 6);
-         s = max(max(abs(D - D'))) + max(max(abs(D - fliplr(D)))) + max(max(abs(D - flipud(D))));",
+         s = max(max(abs(D - D'))) + max(max(abs(D - fliplr(D)))) + max(max(abs(D - D(end:-1:1, :))));",
     );
     assert_eq!(scalar(&ev, "s"), 0.0);
 }
@@ -132,24 +147,40 @@ fn option_name_is_case_insensitive() {
 #[test]
 fn invalid_k_errors() {
     for bad in ["0", "-2", "2.5", "NaN", "Inf", "\"four\"", "[2, 3]", "1025"] {
-        let msg = eval_err(&format!("{GRID} D = disk_mask(X, Y, 0, 0, 1, \"coverage\", {bad});"));
+        let msg = eval_err(&format!(
+            "{GRID} D = disk_mask(X, Y, 0, 0, 1, \"coverage\", {bad});"
+        ));
         assert!(
             msg.contains("disk_mask") && msg.contains("coverage"),
             "K={bad}: {msg}"
         );
     }
-    let msg = eval_err(&format!("{GRID} R = rect_mask(X, Y, 0, 0, 1, 1, \"coverage\", 0);"));
-    assert!(msg.contains("rect_mask") && msg.contains("coverage"), "{msg}");
-    let msg = eval_err(&format!("{GRID} {TRI} P = polygon_mask(X, Y, V, \"coverage\", 0);"));
-    assert!(msg.contains("polygon_mask") && msg.contains("coverage"), "{msg}");
+    let msg = eval_err(&format!(
+        "{GRID} R = rect_mask(X, Y, 0, 0, 1, 1, \"coverage\", 0);"
+    ));
+    assert!(
+        msg.contains("rect_mask") && msg.contains("coverage"),
+        "{msg}"
+    );
+    let msg = eval_err(&format!(
+        "{GRID} {TRI} P = polygon_mask(X, Y, V, \"coverage\", 0);"
+    ));
+    assert!(
+        msg.contains("polygon_mask") && msg.contains("coverage"),
+        "{msg}"
+    );
 }
 
 #[test]
 fn bad_option_forms_error() {
     // Unknown name, missing value, a bare trailing number.
-    let msg = eval_err(&format!("{GRID} D = disk_mask(X, Y, 0, 0, 1, \"area\", 4);"));
+    let msg = eval_err(&format!(
+        "{GRID} D = disk_mask(X, Y, 0, 0, 1, \"area\", 4);"
+    ));
     assert!(msg.contains("coverage"), "{msg}");
-    let msg = eval_err(&format!("{GRID} D = disk_mask(X, Y, 0, 0, 1, \"coverage\");"));
+    let msg = eval_err(&format!(
+        "{GRID} D = disk_mask(X, Y, 0, 0, 1, \"coverage\");"
+    ));
     assert!(msg.contains("disk_mask"), "{msg}");
     let msg = eval_err(&format!("{GRID} D = disk_mask(X, Y, 0, 0, 1, 4);"));
     assert!(msg.contains("disk_mask"), "{msg}");

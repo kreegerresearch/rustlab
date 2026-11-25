@@ -8,10 +8,17 @@
 //!
 //! Coordinate matrices `X` and `Y` are interpreted as real-valued; only the
 //! real part of each entry is used.
+//!
+//! `rect_coverage`, `disk_coverage`, and `polygon_coverage` are the
+//! fractional forms (`"coverage", K` at script level): each cell of a
+//! meshgrid gets the fraction of its K×K sub-samples inside the shape, in
+//! `[0, 1]`. See the section comment above [`MAX_COVERAGE_K`] for the cell
+//! convention.
 
 use crate::error::DspError;
 use num_complex::Complex;
-use rustlab_core::CMatrix;
+use rayon::prelude::*;
+use rustlab_core::{CMatrix, RMatrix};
 
 const ONE: Complex<f64> = Complex::new(1.0, 0.0);
 
@@ -163,6 +170,309 @@ pub fn polygon_mask(x: &CMatrix, y: &CMatrix, verts: &CMatrix) -> Result<CMatrix
     }
 
     Ok(out)
+}
+
+// ─── Fractional coverage ────────────────────────────────────────────────────
+//
+// `*_coverage` returns, for each meshgrid cell, the fraction of K×K
+// sub-samples that the binary predicate accepts. Cell `(i, j)` is centred on
+// its node `(X(i, j), Y(i, j))`; along each axis its width is the mean of the
+// two neighbouring spacings (one spacing at the first and last node), so on a
+// uniform grid the cells tile the grid exactly and the outer cells reach half
+// a spacing past the outermost nodes. Sub-sample `s` of `K` sits at offset
+// `(2s + 1 − K) / (2K)` cell widths from the node, so odd `K` includes the
+// node itself and `K = 1` is exactly the binary mask. Each sub-sample goes
+// through the same arithmetic and comparison as the binary builder, and the
+// fast paths below (separable counts, whole-cell early outs, scanline
+// crossings) are exact: they give the count a brute-force K×K loop would.
+
+/// Largest sub-sample count per axis accepted by the coverage builders.
+pub const MAX_COVERAGE_K: usize = 1024;
+
+/// Below this many sub-sample rows × cells the rows are filled serially.
+const PAR_MIN_WORK: usize = 1 << 15;
+
+fn check_k(name: &str, k: usize) -> Result<(), DspError> {
+    if k == 0 || k > MAX_COVERAGE_K {
+        return Err(DspError::InvalidParameter(format!(
+            "{name}: \"coverage\" K must be an integer in 1..{MAX_COVERAGE_K}, got {k}"
+        )));
+    }
+    Ok(())
+}
+
+/// The node coordinates of a meshgrid pair: `X(1, :)` and `Y(:, 1)`.
+///
+/// Coverage needs cells, so `X` must be constant down each column and `Y`
+/// constant along each row (the `meshgrid` layout), with at least two
+/// strictly monotonic, finite nodes along each axis.
+pub(crate) fn meshgrid_axes(
+    name: &str,
+    x: &CMatrix,
+    y: &CMatrix,
+) -> Result<(Vec<f64>, Vec<f64>), DspError> {
+    check_xy_shape(name, x, y)?;
+    let (ny, nx) = x.dim();
+    if ny < 2 || nx < 2 {
+        return Err(DspError::InvalidParameter(format!(
+            "{name}: \"coverage\" needs at least 2 nodes along each axis to size the cells, got a {ny}×{nx} grid"
+        )));
+    }
+    let xs: Vec<f64> = (0..nx).map(|j| x[[0, j]].re).collect();
+    let ys: Vec<f64> = (0..ny).map(|i| y[[i, 0]].re).collect();
+    let layout_ok = x.indexed_iter().all(|((_, j), v)| v.re == xs[j])
+        && y.indexed_iter().all(|((i, _), v)| v.re == ys[i]);
+    if !layout_ok {
+        return Err(DspError::InvalidParameter(format!(
+            "{name}: \"coverage\" needs meshgrid coordinates (X constant down each column, Y constant along each row), as from [X, Y] = meshgrid(x, y)"
+        )));
+    }
+    for (label, axis) in [("x", &xs), ("y", &ys)] {
+        let up = axis[1] > axis[0];
+        let ok = axis.iter().all(|v| v.is_finite())
+            && axis
+                .windows(2)
+                .all(|p| if up { p[1] > p[0] } else { p[1] < p[0] });
+        if !ok {
+            return Err(DspError::InvalidParameter(format!(
+                "{name}: \"coverage\" needs finite, strictly increasing or decreasing {label} nodes"
+            )));
+        }
+    }
+    Ok((xs, ys))
+}
+
+/// `K` sub-sample coordinates per node, node-major (`out[j*K + s]`).
+pub(crate) fn cell_samples(axis: &[f64], k: usize) -> Vec<f64> {
+    let n = axis.len();
+    let offsets: Vec<f64> = (0..k)
+        .map(|s| ((2 * s + 1) as f64 - k as f64) / (2 * k) as f64)
+        .collect();
+    let mut out = Vec::with_capacity(n * k);
+    for j in 0..n {
+        let w = if j == 0 {
+            axis[1] - axis[0]
+        } else if j == n - 1 {
+            axis[n - 1] - axis[n - 2]
+        } else {
+            (axis[j + 1] - axis[j - 1]) * 0.5
+        };
+        out.extend(offsets.iter().map(|&o| axis[j] + o * w));
+    }
+    out
+}
+
+/// Fill an `ny × nx` row-major map one row at a time, on the rayon pool
+/// when `work` is large.
+fn fill_rows<F>(ny: usize, nx: usize, work: usize, f: F) -> RMatrix
+where
+    F: Fn(usize, &mut [f64]) + Sync + Send,
+{
+    let mut out = vec![0.0; ny * nx];
+    if work >= PAR_MIN_WORK {
+        out.par_chunks_mut(nx)
+            .enumerate()
+            .for_each(|(i, row)| f(i, row));
+    } else {
+        out.chunks_mut(nx)
+            .enumerate()
+            .for_each(|(i, row)| f(i, row));
+    }
+    RMatrix::from_shape_vec((ny, nx), out).expect("ny × nx buffer")
+}
+
+/// Fractional-coverage form of [`rect_mask`]: the fraction of each cell's
+/// K×K sub-samples with `x0 ≤ x ≤ x0+w` and `y0 ≤ y ≤ y0+h`.
+///
+/// The rectangle is separable, so the count is `cx(j)·cy(i)` from one pass
+/// over each axis. `K = 1` is bit-identical to [`rect_mask`].
+#[allow(clippy::too_many_arguments)]
+pub fn rect_coverage(
+    x: &CMatrix,
+    y: &CMatrix,
+    x0: f64,
+    y0: f64,
+    w: f64,
+    h: f64,
+    k: usize,
+) -> Result<RMatrix, DspError> {
+    check_xy_shape("rect_mask", x, y)?;
+    check_finite_nonneg("rect_mask", "w", w)?;
+    check_finite_nonneg("rect_mask", "h", h)?;
+    if !x0.is_finite() || !y0.is_finite() {
+        return Err(DspError::InvalidParameter(format!(
+            "rect_mask: x0 and y0 must be finite, got x0={x0}, y0={y0}"
+        )));
+    }
+    check_k("rect_mask", k)?;
+    let (xs, ys) = meshgrid_axes("rect_mask", x, y)?;
+    let x_hi = x0 + w;
+    let y_hi = y0 + h;
+    let counts = |samples: Vec<f64>, lo: f64, hi: f64| -> Vec<u64> {
+        samples
+            .chunks(k)
+            .map(|c| c.iter().filter(|&&v| v >= lo && v <= hi).count() as u64)
+            .collect()
+    };
+    let cx = counts(cell_samples(&xs, k), x0, x_hi);
+    let cy = counts(cell_samples(&ys, k), y0, y_hi);
+    let denom = (k * k) as f64;
+    let (ny, nx) = (ys.len(), xs.len());
+    Ok(fill_rows(ny, nx, ny * nx, |i, row| {
+        for (v, &c) in row.iter_mut().zip(&cx) {
+            *v = (c * cy[i]) as f64 / denom;
+        }
+    }))
+}
+
+/// Fractional-coverage form of [`disk_mask`]: the fraction of each cell's
+/// K×K sub-samples with `(x−xc)² + (y−yc)² ≤ r²`.
+///
+/// Cells whose nearest sub-sample is outside, or whose farthest sub-sample
+/// is inside, are filled without the K×K loop. `K = 1` is bit-identical to
+/// [`disk_mask`].
+pub fn disk_coverage(
+    x: &CMatrix,
+    y: &CMatrix,
+    xc: f64,
+    yc: f64,
+    r: f64,
+    k: usize,
+) -> Result<RMatrix, DspError> {
+    check_xy_shape("disk_mask", x, y)?;
+    check_finite_nonneg("disk_mask", "r", r)?;
+    if !xc.is_finite() || !yc.is_finite() {
+        return Err(DspError::InvalidParameter(format!(
+            "disk_mask: xc and yc must be finite, got xc={xc}, yc={yc}"
+        )));
+    }
+    check_k("disk_mask", k)?;
+    let (xs, ys) = meshgrid_axes("disk_mask", x, y)?;
+    let squares = |samples: Vec<f64>, c: f64| -> Vec<f64> {
+        samples
+            .into_iter()
+            .map(|v| {
+                let d = v - c;
+                d * d
+            })
+            .collect()
+    };
+    let dx2 = squares(cell_samples(&xs, k), xc);
+    let dy2 = squares(cell_samples(&ys, k), yc);
+    let range = |d2: &[f64]| -> Vec<(f64, f64)> {
+        d2.chunks(k)
+            .map(|c| {
+                c.iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                        (lo.min(v), hi.max(v))
+                    })
+            })
+            .collect()
+    };
+    let rx = range(&dx2);
+    let ry = range(&dy2);
+    let r_sq = r * r;
+    let denom = (k * k) as f64;
+    let (ny, nx) = (ys.len(), xs.len());
+    Ok(fill_rows(ny, nx, ny * nx * k, |i, row| {
+        let (ylo, yhi) = ry[i];
+        let dy = &dy2[i * k..(i + 1) * k];
+        for (j, v) in row.iter_mut().enumerate() {
+            let (xlo, xhi) = rx[j];
+            *v = if xlo + ylo > r_sq {
+                0.0
+            } else if xhi + yhi <= r_sq {
+                1.0
+            } else {
+                let dx = &dx2[j * k..(j + 1) * k];
+                let mut c = 0u64;
+                for &b in dy {
+                    c += dx.iter().filter(|&&a| a + b <= r_sq).count() as u64;
+                }
+                c as f64 / denom
+            };
+        }
+    }))
+}
+
+/// Fractional-coverage form of [`polygon_mask`]: the fraction of each
+/// cell's K×K sub-samples inside the polygon by the same even-odd (PNPOLY)
+/// rule.
+///
+/// Each sub-sample row computes its edge crossings once, sorts them, and
+/// counts crossings to the right of a sub-sample by binary search; a cell
+/// with no crossing between its first and last sub-sample is filled whole.
+/// `K = 1` is bit-identical to [`polygon_mask`].
+pub fn polygon_coverage(
+    x: &CMatrix,
+    y: &CMatrix,
+    verts: &CMatrix,
+    k: usize,
+) -> Result<RMatrix, DspError> {
+    check_xy_shape("polygon_mask", x, y)?;
+    let (n_verts, vcols) = verts.dim();
+    if vcols != 2 {
+        return Err(DspError::InvalidParameter(format!(
+            "polygon_mask: verts must be N×2 (each row is [x, y]); got shape {:?}",
+            verts.dim()
+        )));
+    }
+    check_k("polygon_mask", k)?;
+    let (xs, ys) = meshgrid_axes("polygon_mask", x, y)?;
+    let (ny, nx) = (ys.len(), xs.len());
+    if n_verts < 3 {
+        return Ok(RMatrix::zeros((ny, nx)));
+    }
+    let vx: Vec<f64> = (0..n_verts).map(|v| verts[[v, 0]].re).collect();
+    let vy: Vec<f64> = (0..n_verts).map(|v| verts[[v, 1]].re).collect();
+    let sx = cell_samples(&xs, k);
+    let sy = cell_samples(&ys, k);
+    // First and last sub-sample bound each cell's samples (they are monotonic).
+    let span: Vec<(f64, f64)> = sx
+        .chunks(k)
+        .map(|c| (c[0].min(c[k - 1]), c[0].max(c[k - 1])))
+        .collect();
+    let denom = (k * k) as f64;
+    Ok(fill_rows(ny, nx, ny * nx * k, |i, row| {
+        let mut counts = vec![0u64; nx];
+        let mut cross: Vec<f64> = Vec::with_capacity(n_verts);
+        for &ty in &sy[i * k..(i + 1) * k] {
+            cross.clear();
+            let mut prev = n_verts - 1;
+            for v in 0..n_verts {
+                let (yi, yj) = (vy[v], vy[prev]);
+                if (yi > ty) != (yj > ty) {
+                    let (xi, xj) = (vx[v], vx[prev]);
+                    let x_cross = (xj - xi) * (ty - yi) / (yj - yi) + xi;
+                    // A NaN crossing never toggles in PNPOLY (`tx < NaN` is false).
+                    if !x_cross.is_nan() {
+                        cross.push(x_cross);
+                    }
+                }
+                prev = v;
+            }
+            cross.sort_unstable_by(f64::total_cmp);
+            // Crossings strictly right of `t`: the toggles PNPOLY applies.
+            let right_of = |t: f64| cross.len() - cross.partition_point(|&c| !(t < c));
+            for (j, cnt) in counts.iter_mut().enumerate() {
+                let (lo, hi) = span[j];
+                let g = right_of(lo);
+                if g == right_of(hi) {
+                    if g % 2 == 1 {
+                        *cnt += k as u64;
+                    }
+                } else {
+                    *cnt += sx[j * k..(j + 1) * k]
+                        .iter()
+                        .filter(|&&t| right_of(t) % 2 == 1)
+                        .count() as u64;
+                }
+            }
+        }
+        for (v, &c) in row.iter_mut().zip(&counts) {
+            *v = c as f64 / denom;
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -322,7 +632,9 @@ mod tests {
 
     /// `n` nodes spaced `h` apart, centred on 0 and exactly antisymmetric.
     fn centred(n: usize, h: f64) -> Vec<f64> {
-        (0..n).map(|k| (2.0 * k as f64 - (n - 1) as f64) * 0.5 * h).collect()
+        (0..n)
+            .map(|k| (2.0 * k as f64 - (n - 1) as f64) * 0.5 * h)
+            .collect()
     }
 
     fn triangle() -> CMatrix {
@@ -423,7 +735,8 @@ mod tests {
 
                 let t = triangle();
                 let p = polygon_coverage(&x, &y, &t, k).unwrap();
-                let (ax, ay, bx, by, cx, cy) = (-0.9, -0.7, 1.1, -0.4, 0.2, 1.05);
+                let (ax, ay, bx, by, cx, cy): (f64, f64, f64, f64, f64, f64) =
+                    (-0.9, -0.7, 1.1, -0.4, 0.2, 1.05);
                 let area = 0.5 * ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs();
                 let per = f64::hypot(bx - ax, by - ay)
                     + f64::hypot(cx - bx, cy - by)
@@ -491,7 +804,11 @@ mod tests {
         let uniform: Vec<f64> = (0..37).map(|k| -1.3 + k as f64 * 0.071).collect();
         let nonuni: Vec<f64> = (0..29).map(|k| -1.2 + 0.0031 * (k * k) as f64).collect();
         let decreasing: Vec<f64> = uniform.iter().rev().copied().collect();
-        for (xv, yv) in [(&uniform, &uniform), (&nonuni, &uniform), (&decreasing, &nonuni)] {
+        for (xv, yv) in [
+            (&uniform, &uniform),
+            (&nonuni, &uniform),
+            (&decreasing, &nonuni),
+        ] {
             let (x, y) = meshgrid(xv, yv);
             assert_bitwise_binary(
                 &disk_coverage(&x, &y, 0.1, -0.05, 0.77, 1).unwrap(),
@@ -526,7 +843,9 @@ mod tests {
 
     #[test]
     fn coverage_fast_paths_match_brute_force() {
-        let xv: Vec<f64> = (0..23).map(|k| -1.1 + 0.0042 * (k * k) as f64 + 0.03 * k as f64).collect();
+        let xv: Vec<f64> = (0..23)
+            .map(|k| -1.1 + 0.0042 * (k * k) as f64 + 0.03 * k as f64)
+            .collect();
         let yv: Vec<f64> = (0..19).map(|k| 1.0 - 0.111 * k as f64).collect();
         let (x, y) = meshgrid(&xv, &yv);
         let t = triangle();
@@ -573,7 +892,10 @@ mod tests {
         let (x, y) = meshgrid(&c, &c);
         for k in [0, MAX_COVERAGE_K + 1] {
             assert!(disk_coverage(&x, &y, 0.0, 0.0, 1.0, k).is_err(), "K={k}");
-            assert!(rect_coverage(&x, &y, 0.0, 0.0, 1.0, 1.0, k).is_err(), "K={k}");
+            assert!(
+                rect_coverage(&x, &y, 0.0, 0.0, 1.0, 1.0, k).is_err(),
+                "K={k}"
+            );
             assert!(polygon_coverage(&x, &y, &triangle(), k).is_err(), "K={k}");
         }
         assert!(disk_coverage(&x, &y, 0.0, 0.0, 1.0, MAX_COVERAGE_K).is_ok());
