@@ -169,7 +169,7 @@ pub fn polygon_mask(x: &CMatrix, y: &CMatrix, verts: &CMatrix) -> Result<CMatrix
 mod tests {
     use super::*;
     use ndarray::Array2;
-    use rustlab_core::C64;
+    use rustlab_core::{RMatrix, C64};
 
     fn meshgrid(xv: &[f64], yv: &[f64]) -> (CMatrix, CMatrix) {
         let m = xv.len();
@@ -316,5 +316,295 @@ mod tests {
         verts[[1, 0]] = C64::new(1.0, 0.0);
         verts[[2, 1]] = C64::new(1.0, 0.0);
         assert!(polygon_mask(&x, &y, &verts).is_err());
+    }
+
+    // ─── Fractional coverage ────────────────────────────────────────────
+
+    /// `n` nodes spaced `h` apart, centred on 0 and exactly antisymmetric.
+    fn centred(n: usize, h: f64) -> Vec<f64> {
+        (0..n).map(|k| (2.0 * k as f64 - (n - 1) as f64) * 0.5 * h).collect()
+    }
+
+    fn triangle() -> CMatrix {
+        let pts = [(-0.9, -0.7), (1.1, -0.4), (0.2, 1.05)];
+        CMatrix::from_shape_fn((3, 2), |(r, c)| {
+            C64::new(if c == 0 { pts[r].0 } else { pts[r].1 }, 0.0)
+        })
+    }
+
+    fn total(m: &RMatrix) -> f64 {
+        m.iter().sum()
+    }
+
+    fn assert_bitwise_binary(cov: &RMatrix, bin: &CMatrix, what: &str) {
+        assert_eq!(cov.dim(), bin.dim());
+        for ((idx, a), b) in cov.indexed_iter().zip(bin.iter()) {
+            assert_eq!(a.to_bits(), b.re.to_bits(), "{what}: mismatch at {idx:?}");
+        }
+    }
+
+    /// Brute-force K×K reference: every sub-sample through the binary
+    /// predicate, counted, divided by K². The fast paths must match it bit
+    /// for bit.
+    fn brute(x: &CMatrix, y: &CMatrix, k: usize, inside: impl Fn(f64, f64) -> bool) -> RMatrix {
+        let (xs, ys) = meshgrid_axes("brute", x, y).unwrap();
+        let sx = cell_samples(&xs, k);
+        let sy = cell_samples(&ys, k);
+        let (ny, nx) = x.dim();
+        RMatrix::from_shape_fn((ny, nx), |(i, j)| {
+            let mut c = 0u64;
+            for &py in &sy[i * k..(i + 1) * k] {
+                for &px in &sx[j * k..(j + 1) * k] {
+                    if inside(px, py) {
+                        c += 1;
+                    }
+                }
+            }
+            c as f64 / (k * k) as f64
+        })
+    }
+
+    #[test]
+    fn coverage_full_inside_is_one_and_outside_is_zero() {
+        let c = centred(41, 0.1);
+        let (x, y) = meshgrid(&c, &c);
+        for k in [1, 2, 5, 16] {
+            let d = disk_coverage(&x, &y, 0.0, 0.0, 1.0, k).unwrap();
+            assert_eq!(d[[20, 20]], 1.0, "disk centre, K={k}");
+            assert_eq!(d[[0, 0]], 0.0, "disk corner, K={k}");
+            assert!(d.iter().all(|&a| (0.0..=1.0).contains(&a)));
+
+            let r = rect_coverage(&x, &y, -1.0, -0.5, 1.5, 1.0, k).unwrap();
+            assert_eq!(r[[20, 15]], 1.0, "rect interior, K={k}");
+            assert_eq!(r[[40, 40]], 0.0, "rect outside, K={k}");
+            assert!(r.iter().all(|&a| (0.0..=1.0).contains(&a)));
+
+            let p = polygon_coverage(&x, &y, &triangle(), k).unwrap();
+            assert_eq!(p[[20, 20]], 1.0, "triangle interior, K={k}");
+            assert_eq!(p[[40, 0]], 0.0, "triangle outside, K={k}");
+            assert!(p.iter().all(|&a| (0.0..=1.0).contains(&a)));
+        }
+    }
+
+    #[test]
+    fn coverage_boundary_cells_are_fractional() {
+        let c = centred(41, 0.1);
+        let (x, y) = meshgrid(&c, &c);
+        // A rectangle edge through the middle of a column of cells covers
+        // half of each cell in that column (even K puts K/2 samples inside).
+        let r = rect_coverage(&x, &y, 1e-9, -5.0, 10.0, 10.0, 8).unwrap();
+        assert_eq!(r[[20, 20]], 0.5);
+        assert_eq!(r[[20, 21]], 1.0);
+        assert_eq!(r[[20, 19]], 0.0);
+        let d = disk_coverage(&x, &y, 0.0, 0.0, 1.0, 8).unwrap();
+        assert!(d.iter().any(|&a| a > 0.0 && a < 1.0));
+    }
+
+    #[test]
+    fn coverage_area_converges_within_h_over_k() {
+        // |sum(α)·h² − A| ≤ P·h/K, with P the perimeter: the sub-sample error
+        // in a boundary cell is at most one sub-row of that cell.
+        for (n, h) in [(31, 0.1), (61, 0.05), (121, 0.025)] {
+            let c = centred(n, h);
+            let (x, y) = meshgrid(&c, &c);
+            let r0 = 1.0;
+            for k in [1, 2, 4, 8, 16, 32] {
+                let bound = |perimeter: f64| perimeter * h / k as f64;
+
+                let d = disk_coverage(&x, &y, 0.03, -0.02, r0, k).unwrap();
+                let err = (total(&d) * h * h - std::f64::consts::PI * r0 * r0).abs();
+                let b = bound(2.0 * std::f64::consts::PI * r0);
+                assert!(err <= b, "disk h={h} K={k}: err {err} > {b}");
+
+                let rc = rect_coverage(&x, &y, -0.83, -0.41, 1.37, 0.92, k).unwrap();
+                let err = (total(&rc) * h * h - 1.37 * 0.92).abs();
+                let b = bound(2.0 * (1.37 + 0.92));
+                assert!(err <= b, "rect h={h} K={k}: err {err} > {b}");
+
+                let t = triangle();
+                let p = polygon_coverage(&x, &y, &t, k).unwrap();
+                let (ax, ay, bx, by, cx, cy) = (-0.9, -0.7, 1.1, -0.4, 0.2, 1.05);
+                let area = 0.5 * ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs();
+                let per = f64::hypot(bx - ax, by - ay)
+                    + f64::hypot(cx - bx, cy - by)
+                    + f64::hypot(ax - cx, ay - cy);
+                let err = (total(&p) * h * h - area).abs();
+                let b = bound(per);
+                assert!(err <= b, "triangle h={h} K={k}: err {err} > {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_refines_the_binary_area() {
+        // On a coarse grid, K = 16 is much closer to π than the binary mask.
+        let h = 0.2;
+        let c = centred(15, h);
+        let (x, y) = meshgrid(&c, &c);
+        let e1 = (total(&disk_coverage(&x, &y, 0.0, 0.0, 1.0, 1).unwrap()) * h * h
+            - std::f64::consts::PI)
+            .abs();
+        let e16 = (total(&disk_coverage(&x, &y, 0.0, 0.0, 1.0, 16).unwrap()) * h * h
+            - std::f64::consts::PI)
+            .abs();
+        assert!(e16 < 0.25 * e1, "K=1 err {e1}, K=16 err {e16}");
+        assert!(e16 < 0.01, "K=16 err {e16}");
+    }
+
+    #[test]
+    fn coverage_is_symmetric() {
+        let c = centred(40, 0.07);
+        let (x, y) = meshgrid(&c, &c);
+        for k in [1, 3, 4, 9] {
+            let d = disk_coverage(&x, &y, 0.0, 0.0, 0.9, k).unwrap();
+            let r = rect_coverage(&x, &y, -0.6, -0.6, 1.2, 1.2, k).unwrap();
+            let sq = CMatrix::from_shape_fn((4, 2), |(i, j)| {
+                let p = [(-0.6, -0.6), (0.6, -0.6), (0.6, 0.6), (-0.6, 0.6)][i];
+                C64::new(if j == 0 { p.0 } else { p.1 }, 0.0)
+            });
+            let p = polygon_coverage(&x, &y, &sq, k).unwrap();
+            let n = c.len();
+            for m in [&d, &r] {
+                for i in 0..n {
+                    for j in 0..n {
+                        let v = m[[i, j]];
+                        assert_eq!(v, m[[j, i]], "transpose K={k} ({i},{j})");
+                        assert_eq!(v, m[[n - 1 - i, j]], "flipud K={k} ({i},{j})");
+                        assert_eq!(v, m[[i, n - 1 - j]], "fliplr K={k} ({i},{j})");
+                    }
+                }
+            }
+            // The polygon square is symmetric under transpose (vertices in
+            // the grid's sub-sample set never sit exactly on an edge here).
+            for i in 0..n {
+                for j in 0..n {
+                    assert_eq!(p[[i, j]], p[[j, i]], "polygon transpose K={k}");
+                    assert_eq!(p[[i, j]], r[[i, j]], "polygon vs rect K={k}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_k1_equals_binary_mask() {
+        // Uniform, off-grid, non-uniform, and decreasing coordinates.
+        let uniform: Vec<f64> = (0..37).map(|k| -1.3 + k as f64 * 0.071).collect();
+        let nonuni: Vec<f64> = (0..29).map(|k| -1.2 + 0.0031 * (k * k) as f64).collect();
+        let decreasing: Vec<f64> = uniform.iter().rev().copied().collect();
+        for (xv, yv) in [(&uniform, &uniform), (&nonuni, &uniform), (&decreasing, &nonuni)] {
+            let (x, y) = meshgrid(xv, yv);
+            assert_bitwise_binary(
+                &disk_coverage(&x, &y, 0.1, -0.05, 0.77, 1).unwrap(),
+                &disk_mask(&x, &y, 0.1, -0.05, 0.77).unwrap(),
+                "disk",
+            );
+            assert_bitwise_binary(
+                &rect_coverage(&x, &y, -0.5, -0.3, 0.9, 0.7, 1).unwrap(),
+                &rect_mask(&x, &y, -0.5, -0.3, 0.9, 0.7).unwrap(),
+                "rect",
+            );
+            assert_bitwise_binary(
+                &polygon_coverage(&x, &y, &triangle(), 1).unwrap(),
+                &polygon_mask(&x, &y, &triangle()).unwrap(),
+                "polygon",
+            );
+        }
+        // Nodes exactly on the boundary: the inclusive rule is kept.
+        let xv: Vec<f64> = (0..=10).map(|k| k as f64 / 10.0).collect();
+        let (x, y) = meshgrid(&xv, &xv);
+        assert_bitwise_binary(
+            &rect_coverage(&x, &y, 0.0, 0.0, 1.0, 1.0, 1).unwrap(),
+            &rect_mask(&x, &y, 0.0, 0.0, 1.0, 1.0).unwrap(),
+            "rect inclusive",
+        );
+        assert_bitwise_binary(
+            &disk_coverage(&x, &y, 0.5, 0.5, 0.0, 1).unwrap(),
+            &disk_mask(&x, &y, 0.5, 0.5, 0.0).unwrap(),
+            "disk r=0",
+        );
+    }
+
+    #[test]
+    fn coverage_fast_paths_match_brute_force() {
+        let xv: Vec<f64> = (0..23).map(|k| -1.1 + 0.0042 * (k * k) as f64 + 0.03 * k as f64).collect();
+        let yv: Vec<f64> = (0..19).map(|k| 1.0 - 0.111 * k as f64).collect();
+        let (x, y) = meshgrid(&xv, &yv);
+        let t = triangle();
+        let tv: Vec<(f64, f64)> = (0..3).map(|r| (t[[r, 0]].re, t[[r, 1]].re)).collect();
+        for k in [1, 2, 3, 7, 10] {
+            let (xc, yc, r) = (0.13, -0.08, 0.66);
+            let d = disk_coverage(&x, &y, xc, yc, r, k).unwrap();
+            let db = brute(&x, &y, k, |px, py| {
+                let (dx, dy) = (px - xc, py - yc);
+                dx * dx + dy * dy <= r * r
+            });
+            assert_eq!(d, db, "disk K={k}");
+
+            let (x0, y0, w, h) = (-0.7, -0.45, 1.1, 0.8);
+            let rc = rect_coverage(&x, &y, x0, y0, w, h, k).unwrap();
+            let rb = brute(&x, &y, k, |px, py| {
+                px >= x0 && px <= x0 + w && py >= y0 && py <= y0 + h
+            });
+            assert_eq!(rc, rb, "rect K={k}");
+
+            let p = polygon_coverage(&x, &y, &t, k).unwrap();
+            let pb = brute(&x, &y, k, |px, py| {
+                let mut inside = false;
+                let mut prev = tv.len() - 1;
+                for (kk, &(xi, yi)) in tv.iter().enumerate() {
+                    let (xj, yj) = tv[prev];
+                    if (yi > py) != (yj > py) {
+                        let x_cross = (xj - xi) * (py - yi) / (yj - yi) + xi;
+                        if px < x_cross {
+                            inside = !inside;
+                        }
+                    }
+                    prev = kk;
+                }
+                inside
+            });
+            assert_eq!(p, pb, "polygon K={k}");
+        }
+    }
+
+    #[test]
+    fn coverage_rejects_invalid_k() {
+        let c = centred(5, 0.5);
+        let (x, y) = meshgrid(&c, &c);
+        for k in [0, MAX_COVERAGE_K + 1] {
+            assert!(disk_coverage(&x, &y, 0.0, 0.0, 1.0, k).is_err(), "K={k}");
+            assert!(rect_coverage(&x, &y, 0.0, 0.0, 1.0, 1.0, k).is_err(), "K={k}");
+            assert!(polygon_coverage(&x, &y, &triangle(), k).is_err(), "K={k}");
+        }
+        assert!(disk_coverage(&x, &y, 0.0, 0.0, 1.0, MAX_COVERAGE_K).is_ok());
+    }
+
+    #[test]
+    fn coverage_needs_a_meshgrid() {
+        let c = centred(5, 0.5);
+        let (x, y) = meshgrid(&c, &c);
+        // X varying down a column is not a meshgrid X.
+        let mut bad = x.clone();
+        bad[[3, 1]] = C64::new(9.0, 0.0);
+        assert!(disk_coverage(&bad, &y, 0.0, 0.0, 1.0, 2).is_err());
+        assert!(disk_coverage(&x, &bad.t().to_owned(), 0.0, 0.0, 1.0, 2).is_err());
+        // One node along an axis gives no cell width.
+        let (x1, y1) = meshgrid(&[0.0], &c);
+        assert!(disk_coverage(&x1, &y1, 0.0, 0.0, 1.0, 2).is_err());
+        // Repeated coordinates give a zero-width cell.
+        let (x2, y2) = meshgrid(&[0.0, 0.0, 1.0], &c);
+        assert!(rect_coverage(&x2, &y2, 0.0, 0.0, 1.0, 1.0, 2).is_err());
+        // Shape and parameter checks still apply.
+        assert!(disk_coverage(&x, &y, 0.0, 0.0, -1.0, 2).is_err());
+        assert!(rect_coverage(&x, &y, 0.0, 0.0, 1.0, -1.0, 2).is_err());
+    }
+
+    #[test]
+    fn coverage_degenerate_polygon_is_zero() {
+        let c = centred(7, 0.3);
+        let (x, y) = meshgrid(&c, &c);
+        let two = CMatrix::zeros((2, 2));
+        assert_eq!(total(&polygon_coverage(&x, &y, &two, 4).unwrap()), 0.0);
+        assert!(polygon_coverage(&x, &y, &CMatrix::zeros((3, 3)), 4).is_err());
     }
 }
