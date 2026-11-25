@@ -471,7 +471,12 @@ impl Evaluator {
         // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
         // bind `end` per axis. A single index binds `end` to the
         // element count. Anything else (no container yet) binds 0.
-        let idx_vals: Vec<Value> = if indices.len() == 3
+        let idx_vals: Vec<Value> = if self.subscripts_are_plain(indices) {
+            indices
+                .iter()
+                .map(|a| self.eval_expr(a))
+                .collect::<Result<_, _>>()?
+        } else if indices.len() == 3
             && matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_)))
         {
             let (m, n, p) = match self.env.get(name.as_str()) {
@@ -2577,10 +2582,10 @@ impl Evaluator {
                     }),
                     Value::Decomposition(d) => d.field(field).map_err(ScriptError::runtime),
                     Value::StateSpace { a, b, c, d } => match field.as_str() {
-                        "A" => Ok(Value::Matrix(a.into())),
-                        "B" => Ok(Value::Matrix(b.into())),
-                        "C" => Ok(Value::Matrix(c.into())),
-                        "D" => Ok(Value::Matrix(d.into())),
+                        "A" => Ok(Value::Matrix((*a).into())),
+                        "B" => Ok(Value::Matrix((*b).into())),
+                        "C" => Ok(Value::Matrix((*c).into())),
+                        "D" => Ok(Value::Matrix((*d).into())),
                         other => Err(ScriptError::runtime(format!(
                             "ss has no field '{}'; valid fields are A, B, C, D",
                             other
@@ -3676,6 +3681,36 @@ impl Evaluator {
     /// branch of `Expr::Call`). Kept out of `eval_expr` so its locals do not
     /// enlarge every recursive `eval_expr` frame.
     #[inline(never)]
+    /// Whether no subscript can read `end`: each is built only from
+    /// literals, `:`, operators, ranges, matrix literals, and variables
+    /// already in the workspace (not `end`). Such subscripts are evaluated
+    /// without binding `end`, which costs a key allocation and two table
+    /// updates per index. Calls, lambdas, fields, and unknown names (which
+    /// may be bare-word builtins that see the workspace) keep the binding.
+    fn subscripts_are_plain(&self, args: &[Expr]) -> bool {
+        fn plain(ev: &Evaluator, e: &Expr) -> bool {
+            match e {
+                Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::All => {
+                    true
+                }
+                Expr::Var(n) => n != "end" && ev.env.contains_key(n.as_str()),
+                Expr::BinOp { lhs, rhs, .. } => plain(ev, lhs) && plain(ev, rhs),
+                Expr::UnaryMinus(x)
+                | Expr::UnaryNot(x)
+                | Expr::Transpose(x)
+                | Expr::NonConjTranspose(x) => plain(ev, x),
+                Expr::Range { start, step, stop } => {
+                    plain(ev, start)
+                        && step.as_deref().is_none_or(|s| plain(ev, s))
+                        && plain(ev, stop)
+                }
+                Expr::Matrix(rows) => rows.iter().flatten().all(|x| plain(ev, x)),
+                _ => false,
+            }
+        }
+        args.iter().all(|a| plain(self, a))
+    }
+
     fn eval_var_index(&mut self, name: &str, args: &[Expr]) -> Result<Value, ScriptError> {
         // A scalar / complex / bool / integer is a 1×1 value; promote
         // it to a 1-element container so `s(1)` indexes like MATLAB
@@ -3709,7 +3744,11 @@ impl Evaluator {
         let shape = IndexShape::of(promoted.as_ref().unwrap_or(&self.env[name]));
 
         // For 3-argument tensor3 indexing, bind `end` per-dimension.
-        let idx_vals: Vec<Value> = if args.len() == 3 {
+        let idx_vals: Vec<Value> = if self.subscripts_are_plain(args) {
+            args.iter()
+                .map(|a| self.eval_expr(a))
+                .collect::<Result<_, _>>()?
+        } else if args.len() == 3 {
             if let Some((m, n, p)) = shape.tensor {
                 self.set_env("end", Value::Scalar(m as f64));
                 let iv = self.eval_expr(&args[0])?;

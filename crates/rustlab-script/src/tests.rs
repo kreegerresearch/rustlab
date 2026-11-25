@@ -4096,7 +4096,9 @@ mod phase3_tests {
 
     fn get_ss(ev: &Evaluator, name: &str) -> (CMatrix, CMatrix, CMatrix, CMatrix) {
         match ev.get(name).unwrap() {
-            Value::StateSpace { a, b, c, d } => (a.clone(), b.clone(), c.clone(), d.clone()),
+            Value::StateSpace { a, b, c, d } => {
+                ((**a).clone(), (**b).clone(), (**c).clone(), (**d).clone())
+            }
             other => panic!("expected ss for '{name}', got {other:?}"),
         }
     }
