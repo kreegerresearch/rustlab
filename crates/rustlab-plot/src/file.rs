@@ -1684,6 +1684,8 @@ where
             .y_desc(sp.ylabel.as_str())
             .x_labels(tick_budget(pw, x_tick_w))
             .y_labels(tick_budget(ph, y_tick_w))
+            .x_label_formatter(&|v| format_linear_tick(*v))
+            .y_label_formatter(&|v| format_linear_tick(*v))
             .draw()
             .map_err(err)?;
     }
@@ -1987,13 +1989,7 @@ fn format_cbar_value(v: f64, range: f64) -> String {
     } else {
         format!("{:.3}", v)
     };
-    // A value that rounds to zero must not print as "-0.000". The sign is
-    // floating-point drift, and on a symmetric colour scale a signed zero
-    // reads as a real negative bin sitting next to the positive one.
-    match s.strip_prefix('-') {
-        Some(rest) if rest.parse::<f64>() == Ok(0.0) => rest.to_string(),
-        _ => s,
-    }
+    crate::unsigned_zero_label(s)
 }
 
 fn render_quiver_to_backend<DB>(
@@ -2221,10 +2217,14 @@ impl plotters::coord::ranged1d::Ranged for AxisTicks {
     }
 }
 
-/// Format a linear-axis tick exactly as plotters' default `f64` formatter, so
-/// switching every axis to [`AxisTicks`] does not change linear tick labels.
+/// Format a linear-axis tick as plotters' default `f64` formatter does, except
+/// that a value that rounds to zero reads `0.0` rather than `-0.0`.
 fn format_linear_tick(v: f64) -> String {
-    <plotters::coord::types::RangedCoordf64 as plotters::coord::ranged1d::ValueFormatter<f64>>::format(&v)
+    crate::unsigned_zero_label(
+        <plotters::coord::types::RangedCoordf64 as plotters::coord::ranged1d::ValueFormatter<
+            f64,
+        >>::format(&v),
+    )
 }
 
 fn bounds(xs: &[f64]) -> (f64, f64) {

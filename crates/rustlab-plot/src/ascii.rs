@@ -23,7 +23,7 @@ pub(crate) fn fmt_g(v: f64) -> String {
         return "0".to_string();
     }
     let abs = v.abs();
-    if abs < 0.001 || abs >= 10000.0 {
+    let s = if abs < 0.001 || abs >= 10000.0 {
         format!("{:.2e}", v)
     } else if abs >= 100.0 {
         format!("{:.0}", v)
@@ -31,12 +31,18 @@ pub(crate) fn fmt_g(v: f64) -> String {
         format!("{:.1}", v)
     } else {
         format!("{:.2}", v)
-    }
+    };
+    crate::unsigned_zero_label(s)
 }
 
-/// Terminal axis labels: the two bounds and the midpoint.
+/// Terminal axis labels: the two bounds and the midpoint. A midpoint within
+/// rounding error of zero (`(-0.7 + 0.7000000000000001) / 2` is `5.6e-17`)
+/// is labelled `0`.
 pub(crate) fn axis_tick_labels(lo: f64, hi: f64) -> [String; 3] {
-    let mid = (lo + hi) / 2.0;
+    let mut mid = (lo + hi) / 2.0;
+    if mid.abs() <= (hi - lo).abs() * 1e-12 {
+        mid = 0.0;
+    }
     [fmt_g(lo), fmt_g(mid), fmt_g(hi)]
 }
 

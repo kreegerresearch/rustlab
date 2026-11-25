@@ -65,7 +65,9 @@ pub use eval::line_io::{
     set_keyboard_handler, set_keyboard_line_reader, statement_ready, IoGuard, KeyboardLine,
 };
 pub use eval::output::{capturing, start_capture, stop_capture};
-pub use eval::value::{default_number_format, set_default_number_format, NumberFormat};
+pub use eval::value::{
+    default_number_format, display_zero, set_default_number_format, NumberFormat,
+};
 pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;

@@ -995,9 +995,9 @@ fn whos_size(v: &rustlab_script::Value) -> String {
 }
 
 fn whos_preview(v: &rustlab_script::Value) -> String {
-    use rustlab_script::Value;
+    use rustlab_script::{display_zero, Value};
     match v {
-        Value::Scalar(n) => format!("{n}"),
+        Value::Scalar(n) => format!("{}", display_zero(*n)),
         Value::Int { data, .. } => format!("{data}"),
         Value::IntArray {
             data, rows, cols, ..
@@ -1011,10 +1011,11 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
             }
         }
         Value::Complex(c) => {
-            if c.im >= 0.0 {
-                format!("{}+{}j", c.re, c.im)
+            let (re, im) = (display_zero(c.re), display_zero(c.im));
+            if im >= 0.0 {
+                format!("{re}+{im}j")
             } else {
-                format!("{}{}j", c.re, c.im)
+                format!("{re}{im}j")
             }
         }
         Value::Bool(b) => format!("{b}"),
@@ -1046,10 +1047,13 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
                 .iter()
                 .take(3)
                 .map(|c| {
-                    if c.im == 0.0 {
-                        format!("{:.4}", c.re)
+                    let (re, im) = (display_zero(c.re), display_zero(c.im));
+                    if im == 0.0 {
+                        format!("{re:.4}")
+                    } else if im > 0.0 {
+                        format!("{re:.4}+{im:.4}j")
                     } else {
-                        format!("{:.4}+{:.4}j", c.re, c.im)
+                        format!("{re:.4}{im:.4}j")
                     }
                 })
                 .collect();

@@ -761,9 +761,14 @@ fn draw_colorbar(
     );
 }
 
-/// Colorbar end label, one decimal.
+/// Colorbar end label, one decimal. A value that rounds to zero reads `0.0`,
+/// not `-0.0`, like the static backends' tick labels.
 fn colorbar_label(v: f64) -> String {
-    format!("{:.1}", v)
+    let s = format!("{:.1}", v);
+    match s.strip_prefix('-') {
+        Some(rest) if rest.parse::<f64>() == Ok(0.0) => rest.to_string(),
+        _ => s,
+    }
 }
 
 #[cfg(test)]
