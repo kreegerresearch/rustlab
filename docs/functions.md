@@ -243,14 +243,14 @@ Create 2D grid matrices from two vectors. Returns a tuple `[X, Y]` where X repli
 ```
 - Useful for evaluating functions over a 2D grid: `R = sqrt(X .^ 2 + Y .^ 2)`.
 
-### `rect_mask(X, Y, x0, y0, w, h)`
+### `rect_mask(X, Y, x0, y0, w, h)` / `rect_mask(..., "coverage", K)`
 Axis-aligned rectangle mask. Returns an `ny×nx` real-valued matrix the same shape as the meshgrid inputs, with `1.0` inside `[x0, x0+w] × [y0, y0+h]` (inclusive on all four sides) and `0.0` outside. `w` and `h` must be finite and non-negative; zero-extent rectangles match only the boundary line / point.
 ```
 [X, Y] = meshgrid(linspace(0, 1, 21), linspace(0, 1, 21))
 M = rect_mask(X, Y, 0.25, 0.25, 0.5, 0.5)
 ```
 
-### `disk_mask(X, Y, xc, yc, r)`
+### `disk_mask(X, Y, xc, yc, r)` / `disk_mask(..., "coverage", K)`
 Closed-disk mask. Returns an `ny×nx` real-valued matrix with `1.0` where `(X-xc)² + (Y-yc)² ≤ r²` and `0.0` elsewhere. `r` must be finite and non-negative; `r = 0` matches only the cells closest to the centre.
 ```
 [X, Y] = meshgrid(linspace(-1.5, 1.5, 200), linspace(-1.5, 1.5, 200))
@@ -258,13 +258,27 @@ D = disk_mask(X, Y, 0, 0, 1)
 # sum(sum(D)) * (3/199)^2  ≈  π
 ```
 
-### `polygon_mask(X, Y, verts)`
+### `polygon_mask(X, Y, verts)` / `polygon_mask(..., "coverage", K)`
 Polygon mask via even-odd ray casting (PNPOLY). `verts` is an `N×2` matrix where each row is `[x, y]`; the polygon is implicitly closed (an edge connects vertex `N-1` back to vertex `0`). Returns an `ny×nx` real-valued matrix with `1.0` inside and `0.0` outside.
 ```
 [X, Y] = meshgrid(linspace(0, 1, 50), linspace(0, 1, 50))
 T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
 ```
 Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
+
+#### Fractional coverage: `"coverage", K`
+All three masks accept a trailing `"coverage", K` (name case-insensitive). The result is then an area-fraction (α) map, not a 0/1 mask. Each entry is the fraction of that cell's `K×K` sub-samples inside the shape, in `[0, 1]`. Without the option the masks are binary and unchanged.
+```
+x = (-30:30) * 0.05;  [X, Y] = meshgrid(x, x);
+A = disk_mask(X, Y, 0, 0, 1, "coverage", 8);    # α-map
+eps_r = 1 + (4 - 1) * A;                         # conformal (area-weighted) permittivity
+area = sum(sum(A)) * 0.05^2                      # π + 1.1e-3 (binary: π − 1.9e-2)
+```
+- **Cells.** `X` and `Y` must be a meshgrid pair: `X` constant down each column, `Y` constant along each row, at least two strictly increasing or decreasing nodes per axis. Coverage errors on any other `X`/`Y`. The binary form still takes arbitrary point coordinates. Cell `(i, j)` is **centred on its node** `(X(i,j), Y(i,j))`, the same point the binary mask tests. Its width along an axis is the mean of the two neighbouring spacings (one spacing at the first and last node). On a uniform grid the cells tile exactly, and the outer cells reach half a spacing past the outermost nodes. On a non-uniform grid neighbouring cells overlap or leave a gap of a quarter of the change in spacing.
+- **Sub-samples.** Sub-sample `s` of `K` sits at `(2s+1−K)/(2K)` cell widths from the node along each axis. Each one goes through the binary test (`rect_mask` inclusive, `disk_mask` closed, `polygon_mask` even-odd). So `K = 1` returns the binary mask bit for bit, and an odd `K` includes the node. A cell wholly inside is exactly `1` and one wholly outside is exactly `0`. A shape symmetric about the grid centre gives an α-map with the same symmetry.
+- **Accuracy.** `|sum(α)·hx·hy − area| ≤ perimeter·h/K` (one sub-row per boundary cell). The measured error is much smaller. For the unit disk centred on that grid (`h = 0.05`), the error is `−1.9e-2` at `K = 1` (binary), `2.8e-4` at `K = 4`, `1.1e-3` at `K = 8`, and `−3.0e-5` at `K = 16`. The bound is `0.31/K`.
+- **K** must be an integer from 1 to 1024. `0`, a negative or fractional value, `NaN`, `Inf`, a string, or a vector is an error.
+- **Cost.** The result is real-stored. On a 3001×3001 grid, `disk_mask` takes ~0.06 s at any `K`, because whole-cell tests skip the `K×K` loop away from the edge. `rect_mask` is separable. `polygon_mask` (64 vertices) takes 0.14 s at `K = 16` using scanline crossings. Rows run in parallel. The counts are exactly those of a brute-force `K×K` loop.
 
 ### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(..., "order", 2)` / `gradient(F)` / `gradient(F, dx, dy)`
 1-D gradient of a vector (or a `1×N` / `N×1` matrix), and 2-D gradient of a matrix.

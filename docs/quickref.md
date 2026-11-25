@@ -167,6 +167,7 @@ Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, wi
 | Function | Description |
 |---|---|
 | `rect_mask(X, Y, x0, y0, w, h)` | Axis-aligned rectangle mask, inclusive on all four sides |
+| `rect_mask(..., "coverage", K)` / `disk_mask(..., "coverage", K)` / `polygon_mask(..., "coverage", K)` | Area-fraction map in `[0, 1]` from K×K sub-samples per meshgrid cell (cell centred on its node; `K = 1` is the binary mask) |
 | `disk_mask(X, Y, xc, yc, r)` | Closed-disk mask `(X-xc)² + (Y-yc)² ≤ r²` |
 | `polygon_mask(X, Y, verts)` | Polygon mask via even-odd ray casting; `verts` is N×2 |
 

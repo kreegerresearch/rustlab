@@ -453,7 +453,7 @@ pub fn polygon_coverage(
             }
             cross.sort_unstable_by(f64::total_cmp);
             // Crossings strictly right of `t`: the toggles PNPOLY applies.
-            let right_of = |t: f64| cross.len() - cross.partition_point(|&c| !(t < c));
+            let right_of = |t: f64| cross.len() - cross.partition_point(|&c| c <= t);
             for (j, cnt) in counts.iter_mut().enumerate() {
                 let (lo, hi) = span[j];
                 let g = right_of(lo);
