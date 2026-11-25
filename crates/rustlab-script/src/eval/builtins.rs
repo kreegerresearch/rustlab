@@ -240,7 +240,7 @@ impl BuiltinRegistry {
         r.register("length", builtin_len); // alias for len
         r.register("numel", builtin_numel);
         r.register("isempty", builtin_isempty);
-        r.register("size", builtin_size);
+        r.register_nargout("size", builtin_size);
         r.register("ndims", builtin_ndims);
         r.register("table", builtin_table);
         r.register("height", builtin_height);
@@ -4261,168 +4261,119 @@ fn length_of_dims(dims: &[usize]) -> f64 {
     }
 }
 
+/// The MATLAB dimensions of `v`, shared by `size`, `numel`, `length`,
+/// `ndims`, and `isempty`; `None` for values that have no size.
+///
+/// A string (either quote style) is a char row: `1×N` with `N` characters,
+/// and the empty string is `0×0` like MATLAB `''`. A cell of strings is
+/// `1×N`, and `{}` is `0×0`. A 1-D vector is a row, so a zero-length one
+/// (`[]`, `1:0`) is `1×0`. Structs and function handles are `1×1`.
+fn value_dims(v: &Value) -> Option<Vec<usize>> {
+    let dims = match v {
+        Value::Tensor3(t) => t.shape().to_vec(),
+        Value::Vector(v) => vec![1, Shared::len(v)],
+        Value::Matrix(m) => Shared::shape(m).to_vec(),
+        Value::IntArray { rows, cols, .. } => vec![*rows, *cols],
+        Value::Logical(a) => vec![a.rows(), a.cols()],
+        Value::SparseVector(sv) => vec![1, sv.len],
+        Value::SparseMatrix(sm) => vec![sm.rows, sm.cols],
+        Value::Table(t) => vec![t.height(), t.width()],
+        Value::Str(s) => match s.chars().count() {
+            0 => vec![0, 0],
+            n => vec![1, n],
+        },
+        Value::StringArray(v) if v.is_empty() => vec![0, 0],
+        Value::StringArray(v) => vec![1, v.len()],
+        Value::Scalar(_)
+        | Value::Complex(_)
+        | Value::Bool(_)
+        | Value::Int { .. }
+        | Value::Struct(_)
+        | Value::Lambda { .. }
+        | Value::FuncHandle(_) => vec![1, 1],
+        _ => return None,
+    };
+    Some(dims)
+}
+
+fn no_size(name: &str, v: &Value) -> ScriptError {
+    ScriptError::type_err(format!("{name}: unsupported type {}", v.type_name()))
+}
+
 fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("len", &args, 1)?;
-    match &args[0] {
-        Value::Vector(v) => Ok(Value::Scalar(Shared::len(v) as f64)),
-        // Octave/matlab convention: length(M) = max(size(M)), and 0 when M
-        // is empty (a 4×0 matrix has length 0, not 4). Use numel(M) for
-        // total element count and size(M) for full shape information.
-        Value::Matrix(m) => Ok(Value::Scalar(length_of_dims(Shared::shape(m)))),
-        Value::IntArray { rows, cols, .. } => Ok(Value::Scalar(length_of_dims(&[*rows, *cols]))),
-        Value::Logical(a) => Ok(Value::Scalar(length_of_dims(&[a.rows(), a.cols()]))),
-        Value::Tensor3(t) => Ok(Value::Scalar(length_of_dims(t.shape()))),
-        // Scalar / complex / bool are all 1-element values; matlab's
-        // length() on a scalar returns 1, not an error. Removes the
-        // need for `length([x])` boxing in generic code that handles
-        // both scalars and vectors uniformly.
-        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) | Value::Int { .. } => {
-            Ok(Value::Scalar(1.0))
-        }
-        Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
-        Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
-        Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
-        Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
-        Value::SparseVector(sv) => Ok(Value::Scalar(sv.len as f64)),
-        Value::SparseMatrix(sm) => Ok(Value::Scalar(length_of_dims(&[sm.rows, sm.cols]))),
-        other => Err(ScriptError::type_err(format!(
-            "len: unsupported type {}",
-            other
-        ))),
+    if let Value::Tuple(t) = &args[0] {
+        return Ok(Value::Scalar(t.len() as f64));
     }
+    // Octave/matlab convention: length(M) = max(size(M)), and 0 when M
+    // is empty (a 4×0 matrix has length 0, not 4).
+    let dims = value_dims(&args[0]).ok_or_else(|| no_size("len", &args[0]))?;
+    Ok(Value::Scalar(length_of_dims(&dims)))
 }
 
 fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("numel", &args, 1)?;
-    let n = match &args[0] {
-        Value::Vector(v) => Shared::len(v),
-        Value::Matrix(m) => Shared::len(m),
-        Value::Tensor3(t) => t.shape().iter().product::<usize>(),
-        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
-        Value::IntArray { data, .. } => data.len(),
-        Value::Bool(_) => 1,
-        Value::Logical(a) => a.len(),
-        Value::StringArray(v) => v.len(),
-        Value::Table(t) => t.height() * t.width(),
-        Value::SparseVector(sv) => sv.len,
-        Value::SparseMatrix(sm) => sm.rows * sm.cols,
-        other => {
-            return Err(ScriptError::type_err(format!(
-                "numel: unsupported type {}",
-                other
-            )))
-        }
-    };
-    Ok(Value::Scalar(n as f64))
+    let dims = value_dims(&args[0]).ok_or_else(|| no_size("numel", &args[0]))?;
+    Ok(Value::Scalar(dims.iter().product::<usize>() as f64))
 }
 
-/// `isempty(x)`: true when any dimension of `x` is 0 (`numel(x) == 0`), or
-/// `x` is the empty string. Values without a size (struct, function handle,
-/// …) are 1×1, so false.
+/// `isempty(x)`: true when any dimension of `x` is 0 (`numel(x) == 0`).
+/// Values without a size (FIR state, audio handles, …) are not empty.
 fn builtin_isempty(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("isempty", &args, 1)?;
     let empty = match &args[0] {
-        Value::Str(s) => s.is_empty(),
         Value::Tuple(t) => t.is_empty(),
-        v => match builtin_numel(vec![v.clone()]) {
-            Ok(Value::Scalar(n)) => n == 0.0,
-            _ => false,
-        },
+        v => value_dims(v).is_some_and(|d| d.contains(&0)),
     };
     Ok(Value::Bool(empty))
 }
 
-fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// `size(x)`, `size(x, dim)`, and `[d1, …, dk] = size(x)` (MATLAB rules:
+/// a `dim` past the last dimension is 1; with fewer outputs than
+/// dimensions the last output is the product of the rest, with more the
+/// extra outputs are 1).
+fn builtin_size(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("size", &args, 1, 2)?;
-    // Tensor3 carries 3 dimensions; everything else is treated as (rows, cols).
-    if let Value::Tensor3(t) = &args[0] {
-        let s = t.shape();
-        let (m, n, p) = (s[0], s[1], s[2]);
-        if args.len() == 2 {
-            let dim = arg_usize(&args[1])?;
-            return match dim {
-                1 => Ok(Value::Scalar(m as f64)),
-                2 => Ok(Value::Scalar(n as f64)),
-                3 => Ok(Value::Scalar(p as f64)),
-                _ => Err(ScriptError::type_err(format!(
-                    "size: dim must be 1, 2, or 3 for tensor3, got {}",
-                    dim
-                ))),
-            };
-        }
-        return Ok(Value::Vector(
-            Array1::from_vec(vec![
-                Complex::new(m as f64, 0.0),
-                Complex::new(n as f64, 0.0),
-                Complex::new(p as f64, 0.0),
-            ])
-            .into(),
-        ));
-    }
-    let (nrows, ncols) = match &args[0] {
-        Value::Vector(v) => (1usize, Shared::len(v)),
-        Value::Matrix(m) => (Shared::shape(m)[0], Shared::shape(m)[1]),
-        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => (1, 1),
-        Value::IntArray { rows, cols, .. } => (*rows, *cols),
-        Value::Logical(a) => (a.rows(), a.cols()),
-        Value::Bool(_) => (1, 1),
-        Value::SparseVector(sv) => (1, sv.len),
-        Value::SparseMatrix(sm) => (sm.rows, sm.cols),
-        Value::StringArray(v) => (1, v.len()),
-        Value::Table(t) => (t.height(), t.width()),
-        other => {
-            return Err(ScriptError::type_err(format!(
-                "size: unsupported type {}",
-                other.type_name()
-            )))
-        }
-    };
+    let dims = value_dims(&args[0]).ok_or_else(|| no_size("size", &args[0]))?;
     if args.len() == 2 {
-        let dim = arg_usize(&args[1])?;
-        match dim {
-            1 => Ok(Value::Scalar(nrows as f64)),
-            2 => Ok(Value::Scalar(ncols as f64)),
-            _ => Err(ScriptError::type_err(format!(
-                "size: dim must be 1 or 2, got {}",
-                dim
-            ))),
+        if nargout > 1 {
+            return Err(ScriptError::type_err(
+                "size: size(x, dim) returns one output".to_string(),
+            ));
         }
-    } else {
-        Ok(Value::Vector(
-            Array1::from_vec(vec![
-                Complex::new(nrows as f64, 0.0),
-                Complex::new(ncols as f64, 0.0),
-            ])
-            .into(),
-        ))
+        let d = args[1].to_scalar().map_err(ScriptError::type_err)?;
+        if !(d >= 1.0 && d.fract() == 0.0 && d.is_finite()) {
+            return Err(ScriptError::type_err(format!(
+                "size: dim must be a positive integer, got {d}"
+            )));
+        }
+        let k = d as usize;
+        return Ok(Value::Scalar(dims.get(k - 1).copied().unwrap_or(1) as f64));
     }
+    if nargout > 1 {
+        let outs = (0..nargout)
+            .map(|k| {
+                let d = if k + 1 == nargout {
+                    dims.iter().skip(k).product::<usize>()
+                } else {
+                    dims.get(k).copied().unwrap_or(1)
+                };
+                Value::Scalar(d as f64)
+            })
+            .collect();
+        return Ok(Value::Tuple(outs));
+    }
+    Ok(Value::Vector(
+        Array1::from_iter(dims.iter().map(|&d| Complex::new(d as f64, 0.0))).into(),
+    ))
 }
 
 /// ndims(A) — number of dimensions. Scalars/vectors/matrices report 2 (Octave
 /// convention: even a scalar has ndims=2, conceptually 1×1). Tensor3 reports 3.
 fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("ndims", &args, 1)?;
-    let n = match &args[0] {
-        Value::Tensor3(_) => 3,
-        Value::Scalar(_)
-        | Value::Complex(_)
-        | Value::Vector(_)
-        | Value::Matrix(_)
-        | Value::SparseVector(_)
-        | Value::SparseMatrix(_)
-        | Value::StringArray(_)
-        | Value::Bool(_)
-        | Value::Logical(_)
-        | Value::Str(_)
-        | Value::Table(_) => 2,
-        other => {
-            return Err(ScriptError::type_err(format!(
-                "ndims: unsupported type {}",
-                other.type_name()
-            )))
-        }
-    };
-    Ok(Value::Scalar(n as f64))
+    let dims = value_dims(&args[0]).ok_or_else(|| no_size("ndims", &args[0]))?;
+    Ok(Value::Scalar(dims.len() as f64))
 }
 
 fn builtin_table(mut args: Vec<Value>) -> Result<Value, ScriptError> {

@@ -139,10 +139,10 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Scalar, n×n, or m×n integers. A row is `randi(imax, 1, n)` |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
-| `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. An array with a zero dimension (`zeros(4, 0)`, sparse `S(:, [])`) has length 0. Use `numel` for total element count. |
-| `size(v)` | `[rows, cols]` as a Vector |
-| `numel(v)` | Total element count (dense or sparse) |
-| `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`) or `x` is `""`; e.g. `isempty(S(:, []))` |
+| `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. An array with a zero dimension (`zeros(4, 0)`, sparse `S(:, [])`, `{}`, `""`) has length 0. A string counts characters. Use `numel` for total element count. |
+| `size(v)` / `size(v, dim)` / `[r, c, ...] = size(v)` | `[rows, cols]` as a Vector. `{}` and `""` / `''` are `[0, 0]`; a string is `[1, N]` (N characters); a struct or function handle `[1, 1]`; `[]` and `1:0` `[1, 0]`. A `dim` past the last dimension is 1. Several outputs: the last is the product of the remaining dims, extra outputs are 1 |
+| `numel(v)` | Total element count, `prod(size(v))` (dense, sparse, string, cell, struct, function handle) |
+| `isempty(x)` | True when any dimension is 0 (`numel(x) == 0`), including `""` and `{}`; e.g. `isempty(S(:, []))` |
 | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk. `reshape(x, N, 1)` is an `N×1` column; `reshape(x, 1, N)` a row |
 | `[I, J] = ind2sub(sz, IND)` / `[I, J, K] = ind2sub(sz, IND)` | 1-based column-major linear index → subscripts. `sz` is a size vector (rows first), rank ≤ 3. One output merges every dimension and is `IND`. Fewer outputs fold trailing sizes into the last subscript; extra outputs are 1. The result has the shape of `IND`. An index outside `1:prod(sz)` is an error (MATLAB `ind2sub` does not range-check) |
@@ -210,7 +210,7 @@ A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages.
 | `cat(3, A, B, ...)` | Concatenate matrices along the page axis (`cat(1,...)` rows, `cat(2,...)` cols) |
 | `permute(A, [d1, d2, d3])` | Reorder axes; `[d1, d2, d3]` is a permutation of `[1, 2, 3]` |
 | `squeeze(A)` | Drop singleton dims → Matrix / Vector / Scalar; non-Tensor3 inputs pass through |
-| `size(A)` / `size(A, 3)` | `[m, n, p]`; `size(A, 3)` is valid only for Tensor3 |
+| `size(A)` / `size(A, 3)` | `[m, n, p]`; `size(A, 3)` is 1 for a 2-D value |
 | `ndims(A)` | `3` for Tensor3, `2` otherwise (Octave convention) |
 | `A(:, :, k)` | Page slice — drops trailing singleton, returns Matrix(m, n) |
 | `T > 0`, `T == U`, `!T`, `and(P, Q)` | Element-wise with a scalar or a same-size Tensor3; result is a 0/1 Tensor3 (no rank-3 logical, so mask with `.*` or `T(find(M))`) |

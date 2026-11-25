@@ -890,36 +890,72 @@ For the degenerate single-element case, rustlab follows the Octave / MATLAB conv
 
 For `n = 0`, returns an empty vector.
 
+### Size of strings, cells, structs, and empty values
+
+`size`, `numel`, `length`, `ndims`, and `isempty` share one rule for the shape of a value, so they always agree: `numel` is the product of `size`, `isempty` is `numel == 0`, `length` is 0 when empty and otherwise the largest entry of `size`, and `ndims` is the number of entries of `size`.
+
+| Value | `size` | MATLAB |
+|---|---|---|
+| `{}` | `[0, 0]` | same |
+| `{"a", "b"}` | `[1, 2]` | same |
+| `''` and `""` | `[0, 0]` | `''` is `[0 0]`; the string scalar `""` is `[1 1]` |
+| `'hello'` and `"hello"` | `[1, 5]` | `'hello'` is `[1 5]`; `"hello"` is `[1 1]` |
+| `[]`, `1:0` | `[1, 0]` | `[]` is `[0 0]`; `1:0` is `[1 0]` |
+| struct, `@sin`, `@(x) x` | `[1, 1]` | same |
+
+rustlab has one string type for both quote styles, and it behaves as a MATLAB char row vector: `s(3)` is the third character and `length("abc")` is 3. So every string is `1×N` with `N` characters (not bytes: `length("héllo")` is 5), and the empty string is `0×0` like MATLAB `''`. There is no string scalar, so `size("")` is `[0, 0]`, not MATLAB's `[1 1]`. `{...}` holds strings only and is a `1×N` cell; `{}` is `0×0`.
+
+A zero-length numeric vector is a 1-D vector, and a vector is a row, so `[]` and `1:0` are both `1×0`. Use `zeros(0, 0)` for a `0×0` matrix.
+
 ### `len(v)` / `length(v)`
 Number of elements in a vector, or characters in a string. A matrix returns its largest dimension, `max(size(M))`.
 
-An array with any dimension of 0 has length 0, as in MATLAB (`length(X)` is 0 when `isempty(X)`, else `max(size(X))`). This holds for dense, complex, logical, integer, `Tensor3`, and sparse arrays.
+An array with any dimension of 0 has length 0, as in MATLAB (`length(X)` is 0 when `isempty(X)`, else `max(size(X))`). This holds for dense, complex, logical, integer, `Tensor3`, sparse, table, string, and cell values.
 ```
 length(zeros(3, 7))   # → 7
 length(zeros(4, 0))   # → 0, not 4
 S = speye(4);
 length(S(:, []))      # → 0 (4×0 sparse)
+length("héllo")       # → 5 (characters)
+length({})            # → 0
 ```
 
-A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+A sparse matrix returns `max(rows, cols)`, like a dense one. For scalars / complex / bool / struct / function handle / `Tensor3`, `length` returns `1` / `1` / `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
 
 ### `numel(x)`
-Total number of elements: `rows × cols` for matrices (dense or sparse), `1` for scalars. An empty sparse selection such as `S(:, [])` has `numel` 0.
+Total number of elements: the product of `size(x)`. `rows × cols` for matrices (dense or sparse), `1` for scalars, structs, and function handles, the character count for a string, and the element count for a cell. An empty sparse selection such as `S(:, [])` has `numel` 0.
+```
+numel("hello")   # → 5
+numel({})        # → 0
+```
 
 ### `isempty(x)`
-True when `x` has no elements: any dimension is 0 (`numel(x) == 0`), or `x` is the empty string `""`. Works on dense, sparse, logical, integer, string-array, and table values. A scalar, struct, or function handle is never empty.
+True when `x` has no elements: any dimension is 0 (`numel(x) == 0`). That includes the empty string (`""` or `''`) and the empty cell `{}`. Works on dense, sparse, logical, integer, string, cell, and table values. A scalar, struct, or function handle is never empty.
 ```
 S = speye(4);
 isempty(S(:, []))   # → true  (4×0 sparse)
 isempty(zeros(3, 0))  # → true
 isempty(S)          # → false
+isempty({})         # → true
 ```
 
-### `size(x)`
-Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.
+### `size(x)` / `size(x, dim)` / `[r, c, ...] = size(x)`
+`size(x)` returns `[rows, cols]` (`[m, n, p]` for a `Tensor3`). Vectors return `[1, n]`. See the table above for strings, cells, structs, and empty values.
+
+`size(x, dim)` returns one dimension. A `dim` past the last dimension returns 1 (`size(zeros(2, 3), 3)` is 1). `dim` must be a positive integer.
+
+With several outputs, each output is one dimension. Fewer outputs than dimensions: the last output is the product of the remaining dimensions. More outputs: the extra ones are 1.
+```
+[r, c] = size(zeros(2, 3))          # r = 2, c = 3
+[r, c, p] = size(zeros(2, 3))       # p = 1
+[r, c] = size(zeros3(2, 3, 4))      # r = 2, c = 12
+[r, c] = size("")                   # r = 0, c = 0
+size({})                            # → [0, 0]
+size("hello")                       # → [1, 5]
+```
 
 ### `ndims(x)`
-Number of dimensions: `1` for scalars, `2` for vectors and matrices, `3` for `Tensor3` values.
+Number of dimensions: `2` for scalars, vectors, matrices, strings, cells, structs, and function handles (MATLAB: everything is at least 2-D), `3` for `Tensor3` values.
 
 ### `logspace(a, b, n)`
 `n` logarithmically spaced points from `10^a` to `10^b` (inclusive).
