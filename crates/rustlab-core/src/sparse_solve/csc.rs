@@ -217,8 +217,9 @@ impl<T: SparseScalar> SparseCsc<T> {
             let lo = self.col_ptr[j];
             let hi = self.col_ptr[j + 1];
             if hi - lo > 1 && self.row_idx[lo..hi].windows(2).any(|w| w[0] > w[1]) {
-                let mut combined: Vec<(usize, T)> =
-                    (lo..hi).map(|p| (self.row_idx[p], self.values[p])).collect();
+                let mut combined: Vec<(usize, T)> = (lo..hi)
+                    .map(|p| (self.row_idx[p], self.values[p]))
+                    .collect();
                 combined.sort_by_key(|&(r, _)| r);
                 for (k, (r, v)) in combined.into_iter().enumerate() {
                     self.row_idx[lo + k] = r;

@@ -26,26 +26,26 @@
 
 use thiserror::Error;
 
-pub mod csc;
-pub mod ordering;
-pub mod elimination_tree;
 pub mod cholesky;
-pub mod lu;
-pub mod singleton;
+pub mod csc;
+pub mod elimination_tree;
 pub mod ichol;
+pub mod lu;
+pub mod ordering;
 pub mod pcg;
+pub mod singleton;
 pub mod triangular;
 
-pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use cholesky::{symbolic_col_counts, PartialChol, SparseChol};
+pub use csc::{FromComplex, SparseCsc, SparseScalar};
+pub use ichol::{ichol, IcholOptions, IcholType};
 pub use lu::SparseLU;
 pub use ordering::{
     AmdOrdering, ColCountOrdering, IdentityOrdering, NestedDissectionOrdering, OrderingMethod,
     Permutation, SpdAutoOrdering,
 };
-pub use singleton::{ReducedChol, RowSingletonSplit};
-pub use ichol::{ichol, IcholOptions, IcholType};
 pub use pcg::{pcg, MatrixPcg, PcgOperators, PcgOutcome};
+pub use singleton::{ReducedChol, RowSingletonSplit};
 pub use triangular::TriangularSolve;
 
 #[cfg(test)]
@@ -70,7 +70,9 @@ pub enum SparseSolveError {
     NotSquare { rows: usize, cols: usize },
 
     /// Pivot dropped below the singularity threshold during factorization.
-    #[error("matrix is singular at column {col} (pivot {pivot:.3e} below threshold {threshold:.3e})")]
+    #[error(
+        "matrix is singular at column {col} (pivot {pivot:.3e} below threshold {threshold:.3e})"
+    )]
     Singular {
         col: usize,
         pivot: f64,

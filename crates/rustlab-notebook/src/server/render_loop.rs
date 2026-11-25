@@ -48,6 +48,7 @@ use rustlab_plot::ThemeColors;
 use tokio::sync::mpsc;
 
 use super::diff::{self, Broadcast};
+use super::fileset::WatchSet;
 use super::http::{Notebook, ServerState};
 use super::ws;
 
@@ -137,6 +138,46 @@ pub fn spawn(
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
 ) -> Result<(RecommendedWatcher, tokio::task::JoinHandle<()>)> {
+    let set = if is_dir {
+        WatchSet::Dir(watch_root.to_path_buf())
+    } else {
+        WatchSet::Single(watch_root.to_path_buf())
+    };
+    spawn_set(&set, theme, state)
+}
+
+/// Folders to watch for `set`. A directory is watched recursively (new
+/// and nested notebooks). One file, and each folder that holds a file of
+/// a set, is watched non-recursively, so atomic-rename editor saves fire
+/// without watching the whole common ancestor (which can be `~`).
+fn watch_targets(set: &WatchSet) -> Vec<(PathBuf, RecursiveMode)> {
+    let parent = |p: &Path| {
+        p.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    match set {
+        WatchSet::Dir(root) => vec![(root.clone(), RecursiveMode::Recursive)],
+        WatchSet::Single(file) => vec![(parent(file), RecursiveMode::NonRecursive)],
+        WatchSet::Files { files, .. } => {
+            let mut out: Vec<(PathBuf, RecursiveMode)> = Vec::new();
+            for file in files {
+                let dir = parent(file);
+                if !out.iter().any(|(d, _)| *d == dir) {
+                    out.push((dir, RecursiveMode::NonRecursive));
+                }
+            }
+            out
+        }
+    }
+}
+
+/// [`spawn`] for any [`WatchSet`], including a file set.
+pub fn spawn_set(
+    set: &WatchSet,
+    theme: &'static ThemeColors,
+    state: Arc<ServerState>,
+) -> Result<(RecommendedWatcher, tokio::task::JoinHandle<()>)> {
     // Map every notebook's source path → slug so the bridge can route a
     // changed file to the right notebook. Key by canonical path when we
     // can resolve it, falling back to the stored path.
@@ -146,27 +187,18 @@ pub fn spawn(
         by_path.insert(key, slug.clone());
     }
 
-    // What to watch, and how. Dir mode: the whole tree (catches new
-    // files and nested notebooks). File mode: the parent dir
-    // non-recursively, so atomic-rename editor saves still fire.
-    let (watch_target, mode) = if is_dir {
-        (watch_root.to_path_buf(), RecursiveMode::Recursive)
-    } else {
-        let parent = watch_root
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        (parent, RecursiveMode::NonRecursive)
-    };
+    let targets = watch_targets(set);
 
     let (raw_tx, raw_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
         let _ = raw_tx.send(res);
     })
     .context("creating notify watcher")?;
-    watcher
-        .watch(&watch_target, mode)
-        .with_context(|| format!("watching {}", watch_target.display()))?;
+    for (target, mode) in &targets {
+        watcher
+            .watch(target, *mode)
+            .with_context(|| format!("watching {}", target.display()))?;
+    }
 
     // A checkout or commit updates `.git` and may not touch the notebook
     // file. Watch the git dir when diff is enabled so `?diff=` reloads.
@@ -178,7 +210,7 @@ pub fn spawn(
             if let Some(start) = nb.source_path.parent() {
                 for dir in crate::gitdiff::git_watch_paths(start) {
                     let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
-                    if !canon.starts_with(&watch_target) {
+                    if !targets.iter().any(|(t, _)| canon.starts_with(t)) {
                         let _ = watcher.watch(&canon, RecursiveMode::Recursive);
                     }
                     git_dirs.push(canon);

@@ -89,15 +89,19 @@ enum CliFormat {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Watch a notebook (interactive server) or directory (re-render on save)
+    /// Watch notebooks (interactive server) or a directory (re-render on save)
     #[command(long_about = "Watch a notebook source and react to saves.\n\n\
             Two modes — picked by what you pass:\n\n  \
-            Interactive server (a .md file or a directory, no --obsidian/--output):\n    \
+            Interactive server (a .md file, a directory, or several files; no --obsidian/--output):\n    \
             Spins up a local web server on http://127.0.0.1:8042 (auto-bumps\n    \
             up to +10 if busy), opens your browser, and live-reloads the\n    \
             page on every save via a WebSocket push. A single .md serves one\n    \
             notebook; a directory serves every .md under it behind an index\n    \
-            page (one URL per notebook). KaTeX + Plotly assets are embedded\n    \
+            page (one URL per notebook). Several files (.md notebooks and\n    \
+            .rlab scripts) are served together under their common folder,\n    \
+            in command-line order; the browser opens the first one. A .rlab\n    \
+            script is a read-only page that runs the script as one cell.\n    \
+            Directories cannot be mixed with files. KaTeX + Plotly assets are embedded\n    \
             in the binary so the page works fully offline. Small edits ship\n    \
             as block-level partial diffs and preserve scroll position;\n    \
             structural edits fall back to a full refresh. Every code block\n    \
@@ -113,6 +117,8 @@ enum Command {
             Examples:\n  \
             rustlab-notebook watch analysis.md                             # interactive server (one notebook)\n  \
             rustlab-notebook watch notebooks/                              # interactive server (whole directory + index)\n  \
+            rustlab-notebook watch intro.md ch2/filters.md demo.rlab       # interactive server (these files, common folder)\n  \
+            rustlab-notebook watch 'course/**/*.md' 'labs/*.rlab'         # quoted patterns, expanded by rustlab-notebook\n  \
             rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
             rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
             rustlab-notebook watch analysis.md --editable                  # edit the .md in the browser (writes back)\n  \
@@ -120,11 +126,15 @@ enum Command {
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
-            A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.")]
+            A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.\n\n\
+            Several files are browsed the same way, as a tree rooted at their common folder: /n/ch2/filters for ch2/filters.md, /n/demo.rlab for a script. Only the listed files are served. Each notebook's file I/O is jailed to its own folder (--jail-root widens it). A missing path, a directory among files, or another file type is an error.\n\n\
+            A quoted path with *, ?, or [...] is a pattern (** matches any number of folders). Its .md and .rlab matches, sorted by path, take its place in the list; other files and folders are skipped. Wildcards skip hidden names; ** also skips target, node_modules, and symlinked folders. A pattern with no matches is an error. Patterns your shell already expanded work the same way.")]
     Watch {
-        /// Notebook .md file (interactive server mode) or directory of .md
-        /// files (with --obsidian / --output).
-        input: PathBuf,
+        /// A notebook .md file, a directory of notebooks, or several .md /
+        /// .rlab files (interactive server). The re-render-on-save mode
+        /// (--obsidian / --output) takes one directory.
+        #[arg(required = true, value_name = "PATH")]
+        input: Vec<PathBuf>,
         /// Output directory (default: same as input). Setting --output or
         /// --obsidian switches off the interactive server and runs the
         /// existing re-render-on-save flow instead.
@@ -172,8 +182,8 @@ enum Command {
         editable: bool,
         /// Widen the path jail for notebook file I/O (`load`, `save`,
         /// `savefig`, `saveanim`, `run`, embeds). Default: the watched
-        /// directory, or the notebook's own directory for a single file.
-        /// Paths that resolve outside the jail fail with
+        /// directory, or each notebook's own directory for one or several
+        /// files. Paths that resolve outside the jail fail with
         /// "path escapes notebook directory".
         #[arg(long, value_name = "DIR")]
         jail_root: Option<PathBuf>,
@@ -677,6 +687,24 @@ fn main() {
             no_cache,
         } => {
             apply_cache_policy(cache, no_cache, &settings);
+            let inputs = input;
+            let input = inputs[0].clone();
+            let has_pattern = inputs.iter().any(|p| {
+                rustlab_notebook::server::fileset::has_glob_meta(&p.to_string_lossy())
+                    && !p.exists()
+            });
+            if has_pattern && (obsidian || output.is_some()) {
+                eprintln!(
+                    "error: --obsidian / --output re-render one directory; a glob pattern needs the interactive server (drop --obsidian / --output, or pass the directory)"
+                );
+                std::process::exit(2);
+            }
+            if inputs.len() > 1 && (obsidian || output.is_some()) {
+                eprintln!(
+                    "error: --obsidian / --output re-render one directory; several paths need the interactive server (drop --obsidian / --output)"
+                );
+                std::process::exit(2);
+            }
             let colors = resolve_theme_or_exit(
                 &input,
                 theme,
@@ -687,19 +715,23 @@ fn main() {
             );
             // Explicit --jail-root: install on this thread for the re-render
             // loop; the interactive server threads it through ServerOpts.
-            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
+            let _jail = cli_jail_guard(jail_root.as_ref(), &inputs);
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
             // the interactive server: a single .md file serves one
             // notebook; a directory serves every notebook under it behind
-            // an index page. Any other combination falls through to the
-            // existing two-dir / obsidian render loop.
+            // an index page; several files are served together under
+            // their common folder. Any other combination falls through to
+            // the existing two-dir / obsidian render loop.
             // Per dev/plans/notebook_interactive_server.md locked-in #1.
             if !obsidian && output.is_none() {
-                if !input.exists() {
-                    eprintln!("error: {} does not exist", input.display());
-                    std::process::exit(2);
-                }
+                let set = match rustlab_notebook::server::fileset::resolve_watch_inputs(&inputs) {
+                    Ok(set) => set,
+                    Err(e) => {
+                        eprintln!("error: {e:#}");
+                        std::process::exit(2);
+                    }
+                };
                 if attachments_dir.is_some() || no_iframe {
                     eprintln!(
                         "warning: --attachments-dir / --no-iframe only apply with --obsidian; ignored"
@@ -718,7 +750,7 @@ fn main() {
                     diff,
                     git_diff: git_on,
                 };
-                if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
+                if let Err(e) = rustlab_notebook::server::start_set(set, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
                     std::process::exit(1);
                 }
@@ -818,7 +850,7 @@ fn main() {
             // Explicit --jail-root applies to every render path below
             // (single file, directory, JSON); directory renders otherwise
             // default to the collection root inside cmd_render_dir.
-            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
+            let _jail = cli_jail_guard(jail_root.as_ref(), std::slice::from_ref(&input));
 
             // JSON has stdout-only IO semantics (no output path, optional)
             // stdin) so it diverges from the file-based render pipeline
@@ -1117,7 +1149,7 @@ fn apply_process_defaults(settings: &UserSettings) {
 /// paths (`savefig("x.svg")`) would be rejected.
 fn cli_jail_guard(
     dir: Option<&PathBuf>,
-    input: &std::path::Path,
+    inputs: &[PathBuf],
 ) -> Option<rustlab_notebook::execute::JailRootGuard> {
     let dir = dir?;
     let root = match std::fs::canonicalize(dir) {
@@ -1131,14 +1163,16 @@ fn cli_jail_guard(
             std::process::exit(2);
         }
     };
-    if let Ok(ci) = std::fs::canonicalize(input) {
-        if !ci.starts_with(&root) {
-            eprintln!(
-                "warning: --jail-root {} does not contain {}; notebook-relative paths \
-                 (savefig, load, …) will be rejected — pass an ancestor of the notebooks",
-                root.display(),
-                ci.display()
-            );
+    for input in inputs {
+        if let Ok(ci) = std::fs::canonicalize(input) {
+            if !ci.starts_with(&root) {
+                eprintln!(
+                    "warning: --jail-root {} does not contain {}; notebook-relative paths \
+                     (savefig, load, …) will be rejected — pass an ancestor of the notebooks",
+                    root.display(),
+                    ci.display()
+                );
+            }
         }
     }
     Some(rustlab_notebook::execute::JailRootGuard::new(Some(root)))

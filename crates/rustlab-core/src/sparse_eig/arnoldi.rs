@@ -9,9 +9,9 @@
 //! Modified Gram-Schmidt with twice-is-enough reorthogonalization —
 //! same robustness story as Lanczos.
 
-use crate::Sum0;
 use crate::sparse_eig::SparseEigError;
 use crate::types::C64;
+use crate::Sum0;
 use ndarray::Array2;
 use num_complex::Complex;
 
@@ -33,12 +33,7 @@ impl Arnoldi {
         }
     }
 
-    pub fn run<F>(
-        &mut self,
-        matvec: F,
-        max_dim: usize,
-        tol: f64,
-    ) -> Result<(), SparseEigError>
+    pub fn run<F>(&mut self, matvec: F, max_dim: usize, tol: f64) -> Result<(), SparseEigError>
     where
         F: Fn(&[C64]) -> Vec<C64>,
     {

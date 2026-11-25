@@ -66,8 +66,7 @@ fn search(query: &str) -> Result<()> {
     let matches: Vec<&HelpEntry> = HELP
         .iter()
         .filter(|e| {
-            e.name.to_ascii_lowercase().contains(&q)
-                || e.brief.to_ascii_lowercase().contains(&q)
+            e.name.to_ascii_lowercase().contains(&q) || e.brief.to_ascii_lowercase().contains(&q)
         })
         .collect();
 
@@ -84,11 +83,7 @@ fn search(query: &str) -> Result<()> {
     );
     println!();
     for e in matches {
-        println!(
-            "    {:<24}  {}",
-            crate::color::cyan(e.name),
-            e.brief
-        );
+        println!("    {:<24}  {}", crate::color::cyan(e.name), e.brief);
     }
     println!();
     Ok(())

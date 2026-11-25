@@ -26,8 +26,8 @@ struct TwoPortAtF {
     s12: C64,
     s21: C64,
     s22: C64,
-    delta: C64,        // S11·S22 − S12·S21
-    s12s21_mag: f64,   // |S12·S21|
+    delta: C64,      // S11·S22 − S12·S21
+    s12s21_mag: f64, // |S12·S21|
 }
 
 fn slice_2port(s: &Array3<C64>, k: usize) -> TwoPortAtF {
@@ -369,11 +369,9 @@ pub fn gain_circles(s: &Array3<C64>, gain_db: f64) -> CirclesAtFreqs {
             radii.push(f64::NAN);
             continue;
         }
-        let centre =
-            c(gp, 0.0) * (t.s22 - t.delta * t.s11.conj()).conj() / denom;
-        let inside = 1.0
-            - 2.0 * k_vec[kk] * gp * t.s12s21_mag
-            + gp * gp * t.s12s21_mag * t.s12s21_mag;
+        let centre = c(gp, 0.0) * (t.s22 - t.delta * t.s11.conj()).conj() / denom;
+        let inside =
+            1.0 - 2.0 * k_vec[kk] * gp * t.s12s21_mag + gp * gp * t.s12s21_mag * t.s12s21_mag;
         // At gain = MAG the discriminant is exactly zero in exact arithmetic;
         // f64 rounding makes it tiny-negative. Clamp at zero so the limiting
         // case collapses to a single point (radius 0) instead of NaN. For
@@ -547,8 +545,16 @@ mod tests {
         assert!(k[0] > 1.0, "toy amp not unconditionally stable: K={}", k[0]);
         let gms = gamma_ms(&s);
         let gml = gamma_ml(&s);
-        assert!(gms[0].norm() < 1.0, "Γms outside unit disk: |Γms|={}", gms[0].norm());
-        assert!(gml[0].norm() < 1.0, "Γml outside unit disk: |Γml|={}", gml[0].norm());
+        assert!(
+            gms[0].norm() < 1.0,
+            "Γms outside unit disk: |Γms|={}",
+            gms[0].norm()
+        );
+        assert!(
+            gml[0].norm() < 1.0,
+            "Γml outside unit disk: |Γml|={}",
+            gml[0].norm()
+        );
     }
 
     #[test]

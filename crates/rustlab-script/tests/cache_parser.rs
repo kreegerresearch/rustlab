@@ -9,7 +9,11 @@ use rustlab_script::parser::parse;
 
 fn parse_one(src: &str) -> CacheStmt {
     let stmts = parse(tokenize(src).expect("tokenize")).expect("parse");
-    assert_eq!(stmts.len(), 1, "expected exactly one top-level stmt: {stmts:?}");
+    assert_eq!(
+        stmts.len(),
+        1,
+        "expected exactly one top-level stmt: {stmts:?}"
+    );
     match &stmts[0].kind {
         StmtKind::Cache(c) => c.clone(),
         other => panic!("expected StmtKind::Cache, got {other:?}"),
@@ -129,7 +133,10 @@ fn add_function_comma_list() {
     let c = parse_one("cache add function f1, f2, f3\n");
     match c {
         CacheStmt::AddFunctions { names } => {
-            assert_eq!(names, vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]);
+            assert_eq!(
+                names,
+                vec!["f1".to_string(), "f2".to_string(), "f3".to_string()]
+            );
         }
         _ => panic!("expected AddFunctions"),
     }

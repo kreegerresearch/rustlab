@@ -105,7 +105,15 @@ impl<T: SparseScalar> SparseLU<T> {
             // ---- 1. Symbolic phase: find the reachable pattern of
             // L(:, k) ∪ U(:, k) via DFS on the assembled L. ----
             let top = lu_reach(
-                &l_cols, a, col, &pinv, &mut xi, &mut marker, &mut next_p, &mut path_top, k,
+                &l_cols,
+                a,
+                col,
+                &pinv,
+                &mut xi,
+                &mut marker,
+                &mut next_p,
+                &mut path_top,
+                k,
             );
 
             // Clear x at the touched indices.
@@ -223,8 +231,7 @@ impl<T: SparseScalar> SparseLU<T> {
         for (old, &new) in pinv.iter().enumerate() {
             if new == usize::MAX {
                 return Err(SparseSolveError::Internal(
-                    "LU factorization left a row unpivoted (matrix likely singular)"
-                        .to_string(),
+                    "LU factorization left a row unpivoted (matrix likely singular)".to_string(),
                 ));
             }
             p_new_to_old[new] = old;
@@ -244,13 +251,7 @@ impl<T: SparseScalar> SparseLU<T> {
         let l = pack_csc(n, &l_cols);
         let u = pack_csc(n, &u_cols);
 
-        Ok(SparseLU {
-            l,
-            u,
-            p,
-            q,
-            n,
-        })
+        Ok(SparseLU { l, u, p, q, n })
     }
 
     /// Solve `A x = b` via `(P A Q) (Q^T x) = P b`, then unpermute.
@@ -586,8 +587,7 @@ mod tests {
                 let k = j * ny + i;
                 let xi = (i + 1) as f64 / (ny + 1) as f64;
                 let xj = (j + 1) as f64 / (nx + 1) as f64;
-                v_exact[k] =
-                    (std::f64::consts::PI * xi).sin() * (std::f64::consts::PI * xj).sin();
+                v_exact[k] = (std::f64::consts::PI * xi).sin() * (std::f64::consts::PI * xj).sin();
             }
         }
         let rhs = a.spmv(&v_exact);
@@ -609,6 +609,9 @@ mod tests {
         let a = rcsc(3, 3, &[(0, 0, 1.0), (1, 1, 1.0), (2, 2, 1.0)]);
         let lu = SparseLU::factor(&a, &IdentityOrdering, 0.1).unwrap();
         let res = lu.solve(&[1.0, 2.0]);
-        assert!(matches!(res, Err(SparseSolveError::DimensionMismatch { .. })));
+        assert!(matches!(
+            res,
+            Err(SparseSolveError::DimensionMismatch { .. })
+        ));
     }
 }

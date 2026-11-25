@@ -12,11 +12,11 @@
 //! Parks & McClellan, "Chebyshev Approximation for Nonrecursive Digital Filters
 //! with Linear Phase", *IEEE Trans. Circuit Theory*, 1972.
 
-use rustlab_core::Sum0;
 use super::design::FirFilter;
 use crate::error::DspError;
 use ndarray::Array1;
 use num_complex::Complex;
+use rustlab_core::Sum0;
 use std::f64::consts::PI;
 
 // ── Tuning constants ─────────────────────────────────────────────────────────

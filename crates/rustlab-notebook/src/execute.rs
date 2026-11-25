@@ -242,7 +242,13 @@ pub fn execute_notebook_scoped(
     widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
     force_from: Option<usize>,
 ) -> Option<ExecutionOutcome> {
-    execute_core(blocks, Some(cache), Some(cancel), widget_overrides, force_from)
+    execute_core(
+        blocks,
+        Some(cache),
+        Some(cancel),
+        widget_overrides,
+        force_from,
+    )
 }
 
 /// Unified notebook execution. Walks the block list once, serving cached
@@ -392,7 +398,11 @@ fn execute_core(
                     refresh(&mut ev);
                     cached_blocks += 1;
                 } else {
-                    let MermaidDirectives { hidden, details, caption } = directives.clone();
+                    let MermaidDirectives {
+                        hidden,
+                        details,
+                        caption,
+                    } = directives.clone();
                     let output = Rendered::Mermaid {
                         source: source.clone(),
                         hidden,
@@ -412,7 +422,11 @@ fn execute_core(
                 }
                 exec_idx += 1;
             }
-            Block::Callout { kind, title, content } => {
+            Block::Callout {
+                kind,
+                title,
+                content,
+            } => {
                 rendered.push(Rendered::Callout {
                     kind: *kind,
                     title: title.clone(),
@@ -593,7 +607,11 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                 rendered.push(output);
             }
             Block::Mermaid { source, directives } => {
-                let MermaidDirectives { hidden, details, caption } = directives.clone();
+                let MermaidDirectives {
+                    hidden,
+                    details,
+                    caption,
+                } = directives.clone();
                 rendered.push(Rendered::Mermaid {
                     source: source.clone(),
                     hidden,
@@ -739,8 +757,8 @@ fn consume_interp(
 
     // Math-wrap when followed by a single `$` (not `$$` or `${...}`) and we
     // aren't already inside an open math span.
-    let trailing_dollar = chars.get(next) == Some(&'$')
-        && !matches!(chars.get(next + 1), Some('$' | '{'));
+    let trailing_dollar =
+        chars.get(next) == Some(&'$') && !matches!(chars.get(next + 1), Some('$' | '{'));
     let math_wrap = !in_math && trailing_dollar;
 
     let (expr_str, fmt_spec) = split_expr_format(&inner);
@@ -963,10 +981,7 @@ mod tests {
         // `is now $\geq ${v}$ — no more` (lesson 05). The `\geq` requires the
         // value to stay inside the math span; trailing `$` closes it.
         let mut ev = make_ev("v = 0.333;");
-        let result = interpolate_markdown(
-            r"is now $\geq ${v:%.3f}$ — no more",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"is now $\geq ${v:%.3f}$ — no more", &mut ev);
         assert_eq!(result, r"is now $\geq 0.333$ — no more");
     }
 
@@ -975,10 +990,8 @@ mod tests {
         // `$H(a) = ${a}$ bits, $H(b) = ${b}$ bits` (lesson 05). Each
         // `$...${expr}$` is its own balanced math span.
         let mut ev = make_ev("a = 0.0; b = 1.0;");
-        let result = interpolate_markdown(
-            "$H(a) = ${a:%.3f}$ bits, $H(b) = ${b:%.3f}$ bits",
-            &mut ev,
-        );
+        let result =
+            interpolate_markdown("$H(a) = ${a:%.3f}$ bits, $H(b) = ${b:%.3f}$ bits", &mut ev);
         assert_eq!(result, "$H(a) = 0.000$ bits, $H(b) = 1.000$ bits");
     }
 
@@ -987,10 +1000,7 @@ mod tests {
         // `$3 \cdot ${a} \cdot ${b} = ${c}$` (lesson 08, post-fix). All
         // substitutions stay inside one math span — no extra `$` per value.
         let mut ev = make_ev("a = 6; b = 4; c = 72;");
-        let result = interpolate_markdown(
-            r"$3 \cdot ${a} \cdot ${b} = ${c}$",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"$3 \cdot ${a} \cdot ${b} = ${c}$", &mut ev);
         assert_eq!(result, r"$3 \cdot 6 \cdot 4 = 72$");
     }
 
@@ -1057,7 +1067,7 @@ mod tests {
             r"$\geq ${v:%.3f}$ — text",
             "$H(a) = ${a}$ bits, $H(b) = ${b}$ bits",
             r"$3 \cdot ${a} \cdot ${b} = ${c}$",
-            "${a}, ${b}, ${c}.",        // plain-text list, no `$`
+            "${a}, ${b}, ${c}.", // plain-text list, no `$`
             "no templates here",
             r"$X = ${v}$. Next $Y = ${b}$.",
             "${a}$ and ${b}$",
@@ -1100,10 +1110,7 @@ mod tests {
         // `: $\max| ... | = ${v:%.2e}$. Next sentence.` — value lives inside
         // an open math span and the trailing `$` closes it before a period.
         let mut ev = make_ev("v = 0.01;");
-        let result = interpolate_markdown(
-            r"diff: $\max|x| = ${v:%.2e}$. Next.",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"diff: $\max|x| = ${v:%.2e}$. Next.", &mut ev);
         assert_eq!(result, r"diff: $\max|x| = 1.00e-02$. Next.");
     }
 
@@ -1132,10 +1139,18 @@ mod tests {
         }];
         let rendered = execute_notebook(&blocks);
         match &rendered[0] {
-            Rendered::Code { text_output, error, .. } => {
+            Rendered::Code {
+                text_output, error, ..
+            } => {
                 assert!(error.is_none(), "{error:?}");
-                assert!(text_output.contains("18446744073709551615"), "{text_output}");
-                assert!(!text_output.contains("18446744073709552000"), "{text_output}");
+                assert!(
+                    text_output.contains("18446744073709551615"),
+                    "{text_output}"
+                );
+                assert!(
+                    !text_output.contains("18446744073709552000"),
+                    "{text_output}"
+                );
                 assert!(
                     text_output.contains("(int32)") && text_output.contains("  1  2  3  -4"),
                     "{text_output}"
@@ -1347,7 +1362,10 @@ mod tests {
         let result = execute_notebook_cancellable(&blocks, cancel, None);
         h.join().unwrap();
         assert!(result.is_none(), "infinite loop should have been cancelled");
-        assert!(start.elapsed() < std::time::Duration::from_secs(5), "took too long");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "took too long"
+        );
     }
 
     /// Drive the scoped (server) path with a cache and an optional
@@ -1361,8 +1379,7 @@ mod tests {
         use std::sync::Arc;
         let blocks = crate::parse::parse_notebook(source);
         let never = Arc::new(AtomicBool::new(false));
-        execute_notebook_scoped(&blocks, cache, never, None, force_from)
-            .expect("not cancelled")
+        execute_notebook_scoped(&blocks, cache, never, None, force_from).expect("not cancelled")
     }
 
     /// Overwrite every cached code output with a sentinel so a replayed
@@ -1386,8 +1403,7 @@ mod tests {
             .collect()
     }
 
-    const FORCE_SRC: &str =
-        "```rustlab\nprint(10)\n```\n\n```rustlab\nprint(20)\n```\n";
+    const FORCE_SRC: &str = "```rustlab\nprint(10)\n```\n\n```rustlab\nprint(20)\n```\n";
 
     /// `force_from: Some(k)` re-executes block k and the tail even when
     /// nothing changed; blocks before k still replay from cache.
@@ -1418,7 +1434,9 @@ mod tests {
         let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(0));
         assert_eq!(outcome.cached_blocks, 0, "everything re-executes");
         assert!(
-            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| !o.contains("SENTINEL")),
             "no cached output may survive a force-from-0"
         );
     }
@@ -1432,9 +1450,14 @@ mod tests {
         tamper_cache(&mut cache);
 
         let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(99));
-        assert_eq!(outcome.cached_blocks, 2, "full hit — force index past the end");
+        assert_eq!(
+            outcome.cached_blocks, 2,
+            "full hit — force index past the end"
+        );
         assert!(
-            code_outputs(&outcome).iter().all(|o| o == "SENTINEL_TAMPERED"),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| o == "SENTINEL_TAMPERED"),
             "every block must replay from cache"
         );
     }
@@ -1451,7 +1474,9 @@ mod tests {
         let outcome = drive_scoped(FORCE_SRC, &mut cache, None);
         assert_eq!(outcome.cached_blocks, 2);
         assert!(
-            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| !o.contains("SENTINEL")),
             "forced run must have replaced the tampered entries"
         );
     }

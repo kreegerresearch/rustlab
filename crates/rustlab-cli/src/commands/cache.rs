@@ -163,8 +163,7 @@ fn cmd_prune(args: PruneArgs) -> Result<()> {
     let mut notes: Vec<String> = Vec::new();
 
     if let Some(s) = args.older_than.as_deref() {
-        let secs = parse_duration_secs(s)
-            .with_context(|| format!("--older-than {s}"))?;
+        let secs = parse_duration_secs(s).with_context(|| format!("--older-than {s}"))?;
         let n = store.prune_older_than(secs)?;
         total_removed += n;
         notes.push(format!("{n} older than {secs}s"));

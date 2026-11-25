@@ -200,10 +200,12 @@ pub(crate) fn builtin_chol_sparse(args: &[Value], nargout: usize) -> Result<Valu
     for a in &args[1..] {
         let s = match a {
             Value::Str(s) => s.as_str(),
-            other => return Err(ScriptError::type_err(format!(
+            other => {
+                return Err(ScriptError::type_err(format!(
                 "chol: options are strings (\"upper\", \"lower\", \"vector\", \"matrix\"), got {}",
                 other.type_name()
-            ))),
+            )))
+            }
         };
         match s.to_ascii_lowercase().as_str() {
             "upper" => tri = Triangle::Upper,

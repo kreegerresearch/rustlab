@@ -64,7 +64,10 @@ fn flag_interrupts_an_empty_body_infinite_loop() {
         "expected Cancelled, got {result:?}"
     );
     // Should stop promptly after the flag flips, not spin indefinitely.
-    assert!(elapsed < Duration::from_secs(5), "loop took too long: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "loop took too long: {elapsed:?}"
+    );
 }
 
 #[test]

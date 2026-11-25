@@ -4,11 +4,13 @@
 //! notebooks keyed by URL-safe slug, so `watch <dir>` can serve a whole
 //! directory behind a generated index page. Single-file `watch <file>`
 //! is just a one-entry set (DRY — same routing, same render loop).
+//! `watch a.md ch2/b.md` (several files) routes exactly like a directory
+//! rooted at their common ancestor whose listing is those files.
 //!
 //! | Path | Handler |
 //! |---|---|
-//! | `GET /` | single: redirect to the one notebook; directory: the index listing |
-//! | `GET /n/{*path}` | directory: `/n/<relative path without .md>`; single-file: `/n/<slug>`. An old `/n/<stem>` redirects only when that stem names one notebook. A path ending in `/ws` with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
+//! | `GET /` | single: redirect to the one notebook; directory or file set: the index listing |
+//! | `GET /n/{*path}` | directory or file set: `/n/<relative path without .md>` (a `.rlab` keeps its extension); single-file: `/n/<slug>`. An old `/n/<stem>` redirects only when that stem names one notebook. A path ending in `/ws` with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
 //! | `GET /raw/{*slug}` | raw `.md` source from disk (drives the split-view source pane). `slug` may contain `/` |
 //! | `POST /save/{*slug}` | write edited source back to disk — **only mounted when `--editable`** |
 //! | `GET /assets/{path}` | embedded KaTeX/Plotly/CodeMirror bundle from [`super::assets`] |
@@ -427,6 +429,13 @@ fn resolve_watch_page(state: &ServerState, path: &str) -> PageHit {
     if let Some(slug) = state.link_slugs.get(&key) {
         return PageHit::Serve(slug.clone());
     }
+    // A listed `.rlab` script keeps its extension in the URL
+    // (`/n/demo.rlab`), so it cannot collide with `demo.md`.
+    if super::fileset::is_script(std::path::Path::new(&decoded)) {
+        if let Some(slug) = state.link_slugs.get(&decoded) {
+            return PageHit::Serve(slug.clone());
+        }
+    }
     // Legacy `/n/<stem>`. An exact path already won, so a root
     // `intro.md` is served above and is not part of this search.
     // `/n/<stem>-N` is not an alias: it 404s unless a file is named that.
@@ -548,12 +557,9 @@ async fn git_changes(State(state): State<Arc<ServerState>>, req: Request) -> Res
     }
     let nb = slug.as_deref().and_then(|s| state.notebook(s));
     let body = match nb {
-        _ if !state.git_enabled => crate::gitdiff::changes_json_if(
-            false,
-            std::path::Path::new("."),
-            None,
-            false,
-        ),
+        _ if !state.git_enabled => {
+            crate::gitdiff::changes_json_if(false, std::path::Path::new("."), None, false)
+        }
         None => serde_json::json!({ "error": "notebook not found" }).to_string(),
         Some(nb) => {
             let comments_on = cm.unwrap_or(state.comments_on);
@@ -630,7 +636,7 @@ pub(super) async fn serve_notebook_path(
                 let html = nb.html.read().await.clone();
                 let parsed = crate::gitdiff::parse_query(query);
                 let cli = crate::gitdiff::diff_default();
-                let html = if state.git_enabled {
+                let html = if state.git_enabled && !super::fileset::is_script(&nb.source_path) {
                     if let Some(compare) = crate::gitdiff::resolve_compare(&parsed, cli.as_deref())
                     {
                         let comments_on = parsed.cm.unwrap_or(state.comments_on);

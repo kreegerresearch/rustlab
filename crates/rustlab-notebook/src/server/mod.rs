@@ -19,6 +19,9 @@ pub mod browser;
 pub mod cell;
 pub mod diff;
 pub mod drawer;
+pub mod fileset;
+#[cfg(test)]
+mod fileset_tests;
 pub mod http;
 pub mod page;
 pub mod render_loop;
@@ -91,24 +94,26 @@ pub(super) struct PageCtx<'a> {
 /// runtime serves the page, accepts WebSocket connections, and
 /// (Phase 2) drives the render coordinator that re-renders on save.
 pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Result<()> {
-    let canonical_input =
-        std::fs::canonicalize(input).with_context(|| format!("resolving {}", input.display()))?;
-    let is_dir = canonical_input.is_dir();
+    let set = fileset::resolve_watch_inputs(&[input.to_path_buf()])?;
+    start_set(set, theme, opts)
+}
 
+/// [`start`] for an already-resolved input: one file, one directory, or
+/// a file set (`watch a.md ch2/b.md demo.rlab`).
+pub fn start_set(
+    set: fileset::WatchSet,
+    theme: &'static ThemeColors,
+    opts: ServerOpts,
+) -> Result<()> {
     // ── 1+2. Discover + render every notebook, build server state ──
     let csp_nonce = auth::generate_csp_nonce();
-    // Jail: explicit --jail-root, else the collection root (a directory
-    // is one trust unit), else each notebook's own directory.
-    let jail_root = match opts.jail_root.clone() {
-        Some(p) => Some(
-            std::fs::canonicalize(&p)
-                .with_context(|| format!("resolving --jail-root {}", p.display()))?,
+    let jail_root = fileset::default_jail_root(&set, opts.jail_root.as_deref())?;
+    match &jail_root {
+        Some(root) => eprintln!("[watch] notebook file I/O jailed to {}", root.display()),
+        None if matches!(set, fileset::WatchSet::Files { .. }) => eprintln!(
+            "[watch] notebook file I/O jailed to each notebook's own directory (--jail-root widens it)"
         ),
-        None if is_dir => Some(canonical_input.clone()),
-        None => None,
-    };
-    if let Some(root) = &jail_root {
-        eprintln!("[watch] notebook file I/O jailed to {}", root.display());
+        None => {}
     }
     if opts.git_diff {
         eprintln!(
@@ -120,9 +125,8 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             "[watch] --diff is ignored until git diff is enabled (--git-diff or [notebook] git_diff = true)"
         );
     }
-    let state = build_state(
-        &canonical_input,
-        is_dir,
+    let state = build_set_state(
+        &set,
         theme,
         opts.editable,
         opts.annotate || opts.editable,
@@ -147,14 +151,15 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 
         // ── 4. Log + open browser ─────────────────────────────────
         log_bind(&url, opts.port);
-        if is_dir {
+        if let Some(root) = set.collection_root() {
             eprintln!(
                 "[watch] serving {} notebook{} from {}",
                 state.order.len(),
                 if state.order.len() == 1 { "" } else { "s" },
-                canonical_input.display(),
+                root.display(),
             );
         }
+        let open_url = format!("http://{addr}{}", fileset::initial_path(&set, &state));
         if opts.editable {
             eprintln!(
                 "[watch] --editable: in-browser edits write back to source .md \
@@ -169,14 +174,14 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
         }
 
         if browser::should_auto_open_browser(opts.no_browser) {
-            if let Err(e) = browser::open_browser(&url) {
+            if let Err(e) = browser::open_browser(&open_url) {
                 eprintln!("[watch] could not open browser automatically: {e}");
-                eprintln!("[watch] open {url} manually");
+                eprintln!("[watch] open {open_url} manually");
             }
         }
 
         // ── 5. Spawn fs watcher + render coordinator ──────────────
-        let (_watcher, _coord) = render_loop::spawn(&canonical_input, is_dir, theme, state.clone())
+        let (_watcher, _coord) = render_loop::spawn_set(&set, theme, state.clone())
             .context("spawning render coordinator")?;
 
         // ── 6. Serve until Ctrl-C ─────────────────────────────────
@@ -194,6 +199,7 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 /// under a directory), render each once with a unique slug, and assemble
 /// the [`http::ServerState`]. Extracted from [`start`] so directory-mode
 /// wiring can be unit-tested without binding a socket.
+#[cfg(test)]
 fn build_state(
     canonical_input: &Path,
     is_dir: bool,
@@ -205,7 +211,50 @@ fn build_state(
     jail_root: Option<PathBuf>,
     git_enabled: bool,
 ) -> Result<Arc<http::ServerState>> {
-    let sources: Vec<PathBuf> = if is_dir {
+    let set = if is_dir {
+        fileset::WatchSet::Dir(canonical_input.to_path_buf())
+    } else {
+        fileset::WatchSet::Single(canonical_input.to_path_buf())
+    };
+    build_set_state(
+        &set,
+        theme,
+        editable,
+        annotate,
+        comments_on,
+        csp_nonce,
+        jail_root,
+        git_enabled,
+    )
+}
+
+/// [`build_state`] for any [`fileset::WatchSet`]. A file set is built
+/// like a directory whose listing is the named files in command-line
+/// order: identities are paths relative to the common ancestor, the
+/// drawer shows that tree, and `/` lists the files. There is no
+/// `index.md` body; a named `index.md` is an ordinary page.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_set_state(
+    set: &fileset::WatchSet,
+    theme: &'static ThemeColors,
+    editable: bool,
+    annotate: bool,
+    comments_on: bool,
+    csp_nonce: String,
+    jail_root: Option<PathBuf>,
+    git_enabled: bool,
+) -> Result<Arc<http::ServerState>> {
+    // `is_dir` below means "a collection" (directory or file set): the
+    // collection-relative identities, the drawer tree, and the index.
+    let is_dir = set.collection_root().is_some();
+    let walked_dir = matches!(set, fileset::WatchSet::Dir(_));
+    let canonical_input: &Path = match set {
+        fileset::WatchSet::Single(p) | fileset::WatchSet::Dir(p) => p,
+        fileset::WatchSet::Files { root, .. } => root,
+    };
+    let sources: Vec<PathBuf> = if let fileset::WatchSet::Files { files, .. } = set {
+        files.clone()
+    } else if is_dir {
         // Same listing rule as the static build: partials are transcluded,
         // not browsed, so serving them as top-level pages would show a
         // collection the built output does not have.
@@ -265,8 +314,17 @@ fn build_state(
                 continue;
             }
         };
-        let title = crate::extract_title(&source, &path.to_path_buf());
-        let (fm, _) = crate::parse::extract_frontmatter(&source);
+        let script = fileset::is_script(path);
+        let title = if script {
+            script_title(path)
+        } else {
+            crate::extract_title(&source, &path.to_path_buf())
+        };
+        let fm = if script {
+            Default::default()
+        } else {
+            crate::parse::extract_frontmatter(&source).0
+        };
         // Sort on the path relative to the collection root, not the bare
         // filename: this walk is recursive, so `ch1/09-end.md` and
         // `ch2/01-start.md` must stay in chapter order. Keying on the
@@ -338,13 +396,16 @@ fn build_state(
 
     // Same ordering as the static build, so `watch` cannot show a different
     // sequence — or different prev/next links — than what gets shipped.
+    // A file set keeps the command-line order: the user chose it.
     let mut idxs: Vec<usize> = (0..entries.len()).collect();
-    idxs.sort_by(|&a, &b| {
-        crate::compare_notebook_order(
-            (sort_keys[a].0, &sort_keys[a].1),
-            (sort_keys[b].0, &sort_keys[b].1),
-        )
-    });
+    if walked_dir {
+        idxs.sort_by(|&a, &b| {
+            crate::compare_notebook_order(
+                (sort_keys[a].0, &sort_keys[a].1),
+                (sort_keys[b].0, &sort_keys[b].1),
+            )
+        });
+    }
     // Keep each entry's rel path alongside it through the reorder — pass 2
     // needs the notebook's directory to resolve its relative links.
     let (entries, rels): (Vec<(String, PathBuf, String)>, Vec<String>) = idxs
@@ -365,7 +426,7 @@ fn build_state(
     // and a `[home](index.md)` body link resolved to a page missing the
     // very content it named. Resolved before the notebook pass so the
     // file-browser label matches the index page title.
-    let index_md_path = is_dir
+    let index_md_path = walked_dir
         .then(|| canonical_input.join("index.md"))
         .filter(|p| p.is_file());
     let (index_body, index_md_title) = index_md_path
@@ -734,6 +795,16 @@ pub(super) fn render_for_server_cancellable(
 ) -> Result<Option<ServerRender>> {
     use crate::{embed, execute, parse, render};
 
+    // A `.rlab` script is a read-only page: never written back (cell
+    // edit, annotate), and not compared as Markdown by git diff.
+    let script = crate::server::fileset::is_script(input);
+    let editable = editable && !script;
+    let page = PageCtx {
+        annotate: page.annotate && !script,
+        git_diff: page.git_diff && !script,
+        ..page
+    };
+
     // Path jail for this render (thread-local; the render runs on a
     // spawn_blocking thread, so it must be installed here, not in start()).
     let _jail = execute::JailRootGuard::new(page.jail_root.map(Path::to_path_buf));
@@ -760,10 +831,15 @@ pub(super) fn render_for_server_cancellable(
     // so the page hash and `data-src-*` offsets stay on `raw`. Hashing
     // the stripped text made every comment on a rendered file answer
     // 409 ("This notebook changed") and shifted deletes off the real spans.
-    let source = crate::strip_render_artifacts(&raw);
+    let source = if script {
+        raw.clone()
+    } else {
+        crate::strip_render_artifacts(&raw)
+    };
     // Frontmatter `theme:`. A bad name keeps the server's theme so the
     // page still renders; the reason goes to the terminal.
     let theme: &'static ThemeColors = match crate::theme_select::for_source(theme, &source) {
+        _ if script => theme,
         Ok(t) => t,
         Err(e) => {
             eprintln!("warning: {}: {e}; using the default theme", input.display());
@@ -785,9 +861,15 @@ pub(super) fn render_for_server_cancellable(
         }
     }
 
-    let title = crate::extract_title(&source, &input.to_path_buf());
-    let expanded = embed::expand_embeds(&source, &host_dir, &host_dir);
-    let blocks = parse::parse_notebook(&expanded);
+    let (title, blocks) = if script {
+        let title = script_title(input);
+        let blocks = script_blocks(&title, &source);
+        (title, blocks)
+    } else {
+        let title = crate::extract_title(&source, &input.to_path_buf());
+        let expanded = embed::expand_embeds(&source, &host_dir, &host_dir);
+        (title, parse::parse_notebook(&expanded))
+    };
     // Widget declarations for WS validation + carry-over reconciliation.
     let widget_decls: Vec<crate::widget::WidgetDecl> = blocks
         .iter()
@@ -829,7 +911,11 @@ pub(super) fn render_for_server_cancellable(
     // Same resolution as batch HTML: frontmatter, else rc, else open.
     // A remembered reader toggle in the page script still wins on live
     // updates for cells they have opened or closed.
-    let frontmatter = parse::extract_frontmatter(&source).0.code_open;
+    let frontmatter = if script {
+        None
+    } else {
+        parse::extract_frontmatter(&source).0.code_open
+    };
     let notebook_open =
         render::resolve_source_open(None, frontmatter, Some(render::rc_source_open()));
     let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
@@ -872,6 +958,35 @@ pub(super) fn render_for_server_cancellable(
     let cell_edit = editable && !embed::has_markdown_embeds(&source);
     let html = cell::inject_cell_client_nonced(&html, theme, cell_edit, page.nonce);
     Ok(Some(ServerRender { html, widget_decls }))
+}
+
+/// Page title of a `.rlab` script: its file name. A script's leading `#`
+/// line is a comment, not a heading, so it is not used.
+fn script_title(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "script".to_string())
+}
+
+/// A script page: an H1 with the file name, then the whole script as one
+/// code cell. Built as blocks, not as Markdown text, so nothing in the
+/// script (a stray fence, frontmatter, `%%`) is parsed as Markdown.
+fn script_blocks(title: &str, source: &str) -> Vec<crate::parse::Block> {
+    let mut heading = String::from("# ");
+    for c in title.chars() {
+        if c.is_ascii_punctuation() {
+            heading.push('\\');
+        }
+        heading.push(c);
+    }
+    heading.push('\n');
+    vec![
+        crate::parse::Block::Markdown(heading),
+        crate::parse::Block::Code {
+            source: source.trim_end_matches(['\n', '\r']).to_string(),
+            directives: Default::default(),
+        },
+    ]
 }
 
 /// Bind 127.0.0.1 on either the explicit user port (fail loud) or

@@ -37,7 +37,10 @@ fn docs_name_prints_detail() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Detail block contains the brief + a sample of the body content.
     assert!(stdout.contains("Eigenvalues"), "expected eig brief text");
-    assert!(stdout.contains("[V, D] = eig"), "expected eig usage example");
+    assert!(
+        stdout.contains("[V, D] = eig"),
+        "expected eig usage example"
+    );
 }
 
 #[test]
@@ -50,10 +53,19 @@ fn docs_toolbox_lists_just_that_toolbox() {
         .expect("docs dsp runs");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("fir_lowpass"), "dsp toolbox should include fir_lowpass");
-    assert!(stdout.contains("butterworth_lowpass"), "dsp toolbox should include butterworth_lowpass");
+    assert!(
+        stdout.contains("fir_lowpass"),
+        "dsp toolbox should include fir_lowpass"
+    );
+    assert!(
+        stdout.contains("butterworth_lowpass"),
+        "dsp toolbox should include butterworth_lowpass"
+    );
     // Should NOT include entries from unrelated toolboxes.
-    assert!(!stdout.contains("imagesc"), "dsp toolbox should not contain plot entries");
+    assert!(
+        !stdout.contains("imagesc"),
+        "dsp toolbox should not contain plot entries"
+    );
 }
 
 #[test]
@@ -99,7 +111,11 @@ fn docs_json_is_valid_and_includes_known_entries() {
         .args(["docs", "--json"])
         .output()
         .expect("docs --json runs");
-    assert!(out.status.success(), "docs --json exited with {}", out.status);
+    assert!(
+        out.status.success(),
+        "docs --json exited with {}",
+        out.status
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("--json output must be valid JSON");
@@ -118,7 +134,8 @@ fn docs_json_is_valid_and_includes_known_entries() {
     }
     // Spot-check a known builtin is present.
     assert!(
-        arr.iter().any(|e| e.get("name").and_then(|n| n.as_str()) == Some("eig")),
+        arr.iter()
+            .any(|e| e.get("name").and_then(|n| n.as_str()) == Some("eig")),
         "JSON dump must contain 'eig' entry"
     );
 }

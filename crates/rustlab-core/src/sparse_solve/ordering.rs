@@ -86,7 +86,10 @@ impl Permutation {
 
     /// Apply a symmetric permutation `P A P^T` to a CSC matrix.
     pub fn permute_symmetric<T: SparseScalar>(&self, a: &SparseCsc<T>) -> SparseCsc<T> {
-        assert!(a.is_square(), "symmetric permutation requires square matrix");
+        assert!(
+            a.is_square(),
+            "symmetric permutation requires square matrix"
+        );
         assert_eq!(a.nrows(), self.perm.len());
 
         let n = a.nrows();
@@ -214,11 +217,7 @@ impl OrderingMethod for AmdOrdering {
             // Step 3: form the union of pivot's adjacent alive nodes.
             // This is the "clique" the elimination would create in the
             // factor's pattern.
-            let neighbours: Vec<usize> = adj[pivot]
-                .iter()
-                .copied()
-                .filter(|&i| alive[i])
-                .collect();
+            let neighbours: Vec<usize> = adj[pivot].iter().copied().filter(|&i| alive[i]).collect();
 
             // Step 4: update each neighbour's adjacency list. Replace
             // the pivot in their adjacency with the (rest of the) clique.
@@ -532,8 +531,8 @@ fn nested_dissection(g: &SymGraph) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sparse_solve::csc::SparseCsc;
     use crate::sparse_solve::cholesky::SparseChol;
+    use crate::sparse_solve::csc::SparseCsc;
 
     fn rcsc(rows: usize, cols: usize, coo: &[(usize, usize, f64)]) -> SparseCsc<f64> {
         let mut sorted: Vec<_> = coo.iter().copied().collect();

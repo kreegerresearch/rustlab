@@ -1,6 +1,6 @@
 pub(crate) mod builtin_cancel;
-pub mod decomposition;
 pub mod builtins;
+pub mod decomposition;
 pub(crate) mod elementwise;
 pub mod fast_hash;
 pub(crate) mod fdtd;
@@ -1112,8 +1112,8 @@ impl Evaluator {
             }
         };
         if !matches!(self.env.get(name), Some(Value::Logical(_))) {
-            let empty =
-                LogicalArray::filled(0, 0, false).map_err(|e| ScriptError::runtime(e.to_string()))?;
+            let empty = LogicalArray::filled(0, 0, false)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
             self.set_env(name, Value::Logical(empty));
         }
         let echo = !suppress && self.echo_enabled();
@@ -3800,8 +3800,7 @@ impl Evaluator {
                     let Some(Value::SparseMatrix(sm)) = self.env.get(name) else {
                         unreachable!("checked above; evaluating b cannot rebind a name")
                     };
-                    return builtins::sparse_square_mldivide(sm, &r)
-                        .map_err(ScriptError::type_err);
+                    return builtins::sparse_square_mldivide(sm, &r).map_err(ScriptError::type_err);
                 }
             }
         }
@@ -4942,11 +4941,7 @@ impl LogicalRhs {
             Value::Bool(b) => LogicalRhs::Fill(*b),
             Value::Scalar(x) => LogicalRhs::Fill(Self::flag(*x, 0.0)?),
             Value::Complex(c) => LogicalRhs::Fill(Self::flag(c.re, c.im)?),
-            Value::Logical(a) => data(
-                a.column_major_bytes(),
-                a.rows(),
-                a.cols(),
-            ),
+            Value::Logical(a) => data(a.column_major_bytes(), a.rows(), a.cols()),
             Value::Vector(v) => data(
                 v.iter()
                     .map(|c| Self::flag(c.re, c.im).map(u8::from))
@@ -4986,11 +4981,13 @@ impl LogicalRhs {
 
     fn check_count(&self, n: usize) -> Result<(), ScriptError> {
         match self {
-            LogicalRhs::Data { flags, .. } if flags.len() != n => Err(ScriptError::runtime(format!(
-                "index assignment: dimension mismatch, {} values for {} positions",
-                flags.len(),
-                n
-            ))),
+            LogicalRhs::Data { flags, .. } if flags.len() != n => {
+                Err(ScriptError::runtime(format!(
+                    "index assignment: dimension mismatch, {} values for {} positions",
+                    flags.len(),
+                    n
+                )))
+            }
             _ => Ok(()),
         }
     }

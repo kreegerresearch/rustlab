@@ -279,8 +279,9 @@ fn rewrite_link_dest_to(
                         .map(str::to_string)
                 },
             )?;
-            if *index_at_root && resolved == "index.md" {
-                // The index page's body, hoisted to the server root.
+            if *index_at_root && resolved == "index.md" && !slugs.contains_key("index.md") {
+                // The index page's body, hoisted to the server root. A
+                // file set that names index.md serves it as a page.
                 return Some(format!("/{fragment}"));
             }
             if *index_at_root {
@@ -6172,6 +6173,29 @@ w = 4
         );
         // Invalid escapes pass through to the (failing) literal lookup.
         assert_eq!(rewrite_link_dest("bad%2.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_file_set_serves_a_listed_index_md_as_a_page() {
+        // `watch index.md ch2/a.md` names index.md on the command line, so
+        // it is a notebook at /n/index, not the listing body at `/`.
+        let mode = LinkMode::Server {
+            slugs: [
+                ("index.md".to_string(), "index".to_string()),
+                ("ch2/a.md".to_string(), "ch2/a".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            current_rel_dir: "ch2".to_string(),
+            index_at_root: true,
+        };
+        assert_eq!(
+            rewrite_link_dest("../index.md#top", &mode).as_deref(),
+            Some("/n/index#top")
+        );
+        // Directory mode never lists index.md, so it still maps to `/`.
+        let dir = server_mode(&[("ch2/a.md", "ch2/a")], "ch2");
+        assert_eq!(rewrite_link_dest("../index.md", &dir).as_deref(), Some("/"));
     }
 
     #[test]

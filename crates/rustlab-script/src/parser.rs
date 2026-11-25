@@ -813,10 +813,7 @@ impl Parser {
     fn parse_cache_enable(&mut self, line: usize) -> Result<Stmt, ScriptError> {
         let path = self.parse_optional_cache_path()?;
         let _ = self.consume_stmt_end()?;
-        Ok(Stmt::new(
-            StmtKind::Cache(CacheStmt::Enable { path }),
-            line,
-        ))
+        Ok(Stmt::new(StmtKind::Cache(CacheStmt::Enable { path }), line))
     }
 
     /// Parse `cache add file <path>` / `cache add function <name>[, …]`.
@@ -917,8 +914,8 @@ impl Parser {
             if self.peek_is_kwarg("older") {
                 self.advance(); // ident
                 self.advance(); // =
-                // `older=` accepts either a quoted duration string or
-                // a bareword (Number+Ident pair like 30 + d).
+                                // `older=` accepts either a quoted duration string or
+                                // a bareword (Number+Ident pair like 30 + d).
                 older = Some(self.parse_cache_duration_value("older")?);
                 continue;
             }

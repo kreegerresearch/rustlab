@@ -150,15 +150,14 @@ pub(crate) fn draw_subplots(
             // shape. Decade labels are a file/HTML concern; the coarse
             // terminal grid keeps log-unit ticks. Plotly is not on this path.
             let log_owned;
-            let sp: &crate::figure::SubplotState =
-                if sp.x_scale == crate::figure::AxisScale::Log
-                    || sp.y_scale == crate::figure::AxisScale::Log
-                {
-                    log_owned = sp.log_scaled_view();
-                    &log_owned
-                } else {
-                    sp
-                };
+            let sp: &crate::figure::SubplotState = if sp.x_scale == crate::figure::AxisScale::Log
+                || sp.y_scale == crate::figure::AxisScale::Log
+            {
+                log_owned = sp.log_scaled_view();
+                &log_owned
+            } else {
+                sp
+            };
 
             // Axis bounds shared with the file backend.
             let Some((mut x_min, mut x_max, mut y_min, mut y_max)) =

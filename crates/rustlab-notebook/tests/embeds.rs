@@ -67,11 +67,7 @@ fn embed_full_file_renders_inlined() {
 #[test]
 fn embedded_rustlab_block_shares_evaluator_state() {
     let dir = TempDir::new().unwrap();
-    write(
-        dir.path(),
-        "setup.md",
-        "```rustlab\nFs = 48000\n```\n",
-    );
+    write(dir.path(), "setup.md", "```rustlab\nFs = 48000\n```\n");
     let host = "![[setup]]\n\nNow we use it:\n\n```rustlab\ndisp(2 * Fs)\n```\n";
     let html = render_to_html(host, dir.path());
     // The disp output of `2 * Fs` should appear; rustlab prints integers
@@ -102,7 +98,11 @@ fn unresolved_embed_renders_caution_callout() {
     // Caution callouts render with a class containing "caution" (case
     // depends on the renderer; tolerate both).
     let lower = html.to_lowercase();
-    assert!(lower.contains("caution"), "expected caution callout: {}", html);
+    assert!(
+        lower.contains("caution"),
+        "expected caution callout: {}",
+        html
+    );
     assert!(html.contains("target not found: ghost"));
 }
 
@@ -111,7 +111,11 @@ fn block_id_marker_stripped_from_host_render() {
     let dir = TempDir::new().unwrap();
     let host = "intro paragraph with marker. ^my-id\n\nfollowing.\n";
     let md = render_to_markdown(host, dir.path());
-    assert!(!md.contains("^my-id"), "host render should strip ^my-id: {}", md);
+    assert!(
+        !md.contains("^my-id"),
+        "host render should strip ^my-id: {}",
+        md
+    );
     assert!(md.contains("intro paragraph with marker."));
 }
 
@@ -159,9 +163,18 @@ fn embed_html_escapes_special_chars_in_prose() {
     );
     let host = "Quote: ![[snippet]]\n";
     let html = render_to_html(host, dir.path());
-    assert!(html.contains("1 &lt; 2"), "html should escape <; got: {html}");
-    assert!(html.contains("3 &gt; 1"), "html should escape >; got: {html}");
-    assert!(html.contains("&amp;&amp;"), "html should escape &; got: {html}");
+    assert!(
+        html.contains("1 &lt; 2"),
+        "html should escape <; got: {html}"
+    );
+    assert!(
+        html.contains("3 &gt; 1"),
+        "html should escape >; got: {html}"
+    );
+    assert!(
+        html.contains("&amp;&amp;"),
+        "html should escape &; got: {html}"
+    );
 }
 
 #[test]

@@ -256,7 +256,16 @@ The root is:
 |---|---|
 | `render <file.md>` / `watch <file.md>` | the notebook's own directory |
 | `render <dir>` / `watch <dir>` | the collection root, so nested notebooks can share `../data/` |
+| `watch a.md ch2/b.md demo.rlab` (several files) | each file's own directory, not their common ancestor |
 | `--jail-root <DIR>` on `render` or `watch` | that directory (must exist and contain the notebooks) |
+
+Several files on `watch` are browsed under their common ancestor, but that
+folder is only a naming root. It can be much wider than any folder the
+user meant to expose (`~/a/x.md ~/b/y.md` share the home directory), so
+each notebook keeps the single-file jail. Only the named files are in the
+server map: a URL that names any other file under the ancestor is a 404,
+and the ancestor is not watched recursively. A `.rlab` file in the list is
+read-only: the write routes below refuse it because it is not `.md`.
 
 Relative paths always resolve against the notebook's own directory (the
 process cwd at execute time, captured once), not the jail root, and
@@ -284,8 +293,8 @@ swap of the directory entry after the check cannot retarget the write
 onto another file. A `.md` name that points at an SVG, or at a file
 outside the jail, is refused and the target is left untouched. The route
 cannot create `eval.svg` or any other non-`.md` path: the slug selects a
-notebook already in the server map. In a directory watch the slug is the
-collection-relative path with `.md` stripped and may contain `/`. It is
+notebook already in the server map. In a directory or multi-file watch the
+slug is the collection-relative path with `.md` stripped and may contain `/`. It is
 only a map key. A `..`, `.`, empty, `\`, or NUL segment is rejected
 before lookup, and the slug is never joined onto the collection root.
 

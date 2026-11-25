@@ -179,9 +179,7 @@ pub fn parse_widget(toml_src: &str) -> Result<WidgetDecl, String> {
             ));
         }
         (_, Some(_)) => {
-            return Err(format!(
-                "{kind} '{name}': `run` is only valid on a slider"
-            ));
+            return Err(format!("{kind} '{name}': `run` is only valid on a slider"));
         }
     };
 
@@ -320,10 +318,7 @@ mod tests {
     fn slider_step_is_optional() {
         let decl =
             parse_widget("name = \"g\"\ntype = \"slider\"\nmin = 0\nmax = 5\ndefault = 2").unwrap();
-        assert!(matches!(
-            decl.kind,
-            WidgetKind::Slider { step: None, .. }
-        ));
+        assert!(matches!(decl.kind, WidgetKind::Slider { step: None, .. }));
     }
 
     #[test]
@@ -334,28 +329,29 @@ mod tests {
 
     #[test]
     fn missing_required_key_errors() {
-        let err = parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\ndefault = 0").unwrap_err();
+        let err =
+            parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\ndefault = 0").unwrap_err();
         assert!(err.contains("`max`"), "got: {err}");
     }
 
     #[test]
     fn min_must_be_below_max() {
-        let err =
-            parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 5\nmax = 1\ndefault = 2").unwrap_err();
+        let err = parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 5\nmax = 1\ndefault = 2")
+            .unwrap_err();
         assert!(err.contains("less than"), "got: {err}");
     }
 
     #[test]
     fn default_out_of_range_errors() {
-        let err =
-            parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 9").unwrap_err();
+        let err = parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 9")
+            .unwrap_err();
         assert!(err.contains("within"), "got: {err}");
     }
 
     #[test]
     fn unknown_type_errors() {
-        let err =
-            parse_widget("name = \"w\"\ntype = \"dial\"\nmin = 0\nmax = 1\ndefault = 0").unwrap_err();
+        let err = parse_widget("name = \"w\"\ntype = \"dial\"\nmin = 0\nmax = 1\ndefault = 0")
+            .unwrap_err();
         assert!(err.contains("unknown type"), "got: {err}");
     }
 
@@ -367,8 +363,8 @@ mod tests {
 
     #[test]
     fn slider_coerce_clamps_to_range() {
-        let decl =
-            parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 10\ndefault = 5").unwrap();
+        let decl = parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 10\ndefault = 5")
+            .unwrap();
         assert_eq!(
             decl.coerce(&WidgetValue::Number(20.0)),
             Some(WidgetValue::Number(10.0))
@@ -425,8 +421,7 @@ mod tests {
 
     #[test]
     fn number_coerce_clamps_only_present_bounds() {
-        let decl =
-            parse_widget("name = \"n\"\ntype = \"number\"\nmin = 1\ndefault = 4").unwrap();
+        let decl = parse_widget("name = \"n\"\ntype = \"number\"\nmin = 1\ndefault = 4").unwrap();
         assert_eq!(
             decl.coerce(&WidgetValue::Number(0.0)),
             Some(WidgetValue::Number(1.0))
@@ -439,9 +434,8 @@ mod tests {
 
     #[test]
     fn number_default_out_of_range_errors() {
-        let err =
-            parse_widget("name = \"n\"\ntype = \"number\"\nmin = 1\nmax = 10\ndefault = 50")
-                .unwrap_err();
+        let err = parse_widget("name = \"n\"\ntype = \"number\"\nmin = 1\nmax = 10\ndefault = 50")
+            .unwrap_err();
         assert!(err.contains("above"), "got: {err}");
     }
 
