@@ -6,6 +6,19 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.92
+
+### Breaking / behavior changes
+- **Negative zero displays as `0`**, as in MATLAB's value display. Before, `x = -0` printed `x = -0`, `disp(-0)` and `print(-0)` printed `-0`, `[-0, 1]` printed `-0.000000  1.000000`, and `conj(1 + 0j)` printed `1+-0j`. Now:
+  - Auto-display, `disp`, `print`, vector / matrix / tensor3 cells, sparse entries, both parts of a complex value (`1+0j`, `0+1j`), struct fields, table cells, the REPL `whos` preview, `format long`, `format commas`, and notebook output and `${x}` interpolation print `0`.
+  - The stored value keeps its sign: `1 / -0` and `x = -0; 1 / x` are still `-Inf`.
+  - `format hex` still shows the stored bits (`8000000000000000`), as MATLAB's does.
+  - printf-style formats are unchanged and follow C and MATLAB: `sprintf("%g", -0)` is `-0`, `%f` is `-0.000000`, `%e` is `-0.000000e+00`, `%d` / `%i` / `%u` are `0`. `${x:%g}` in a notebook is `-0`. Use `x + 0` to clear the sign.
+  - Only an exact zero changes. A tiny negative such as `-1e-17` still prints `-0.000000` in a vector, as MATLAB prints `-0.0000`.
+  - *Migration:* output that matched a literal `-0` or `-0.000000` from value display now reads `0` / `0.000000`. Use `sprintf` with an explicit format to keep the sign.
+- **Plot tick labels that round to zero read `0.0`**, not `-0.0`. plotters places the zero tick of an axis like `-0.3 … 0.3` at about `-2.8e-17`, which printed `-0.0` on SVG, PNG, PDF, and GIF axes (line plots, and imagesc / contour axes). The terminal axis labels its midpoint `0` when it is within `1e-12` of the span (it printed `5.55e-17`), and terminal labels such as `-0.00` read `0.00`. The live viewer's colorbar end labels read `0.0` instead of `-0.0`. The SVG colorbar already did this. HTML (Plotly) ticks already read `0`.
+- REPL `whos` preview of a complex vector with a negative imaginary part prints `1.0000-2.0000j` instead of `1.0000+-2.0000j`.
+
 ## 0.3.91
 
 ### Performance

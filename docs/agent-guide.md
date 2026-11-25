@@ -318,7 +318,7 @@ saveanim("wave.gif", 30)           # .gif or .html (Plotly with play/slider)
 
 ### Formatted text
 
-`fprintf("fmt", args...)` / `sprintf(...)` with `%d %i %u %o %x %X %f %e %E %g %G %c %s`, flags `- +` space `0 # ,`, and `*` width / `.*` precision; `print(...)` and `disp(x)` for quick output; `commas(x)` for thousands separators. Non-finite values print as `Inf`, `-Inf`, and `NaN`. A vector is an error (no array recycling).
+`fprintf("fmt", args...)` / `sprintf(...)` with `%d %i %u %o %x %X %f %e %E %g %G %c %s`, flags `- +` space `0 # ,`, and `*` width / `.*` precision; `print(...)` and `disp(x)` for quick output; `commas(x)` for thousands separators. Non-finite values print as `Inf`, `-Inf`, and `NaN`. A vector is an error (no array recycling). A negative zero displays as `0` (`x = -0`, `disp`, `print`, matrices, complex parts, plot ticks) but keeps its sign in `%g` / `%f` / `%e` (`sprintf("%g", -0)` is `-0`, as in MATLAB); write `x + 0` to clear it. See [Negative zero](functions.md#negative-zero).
 
 ---
 
