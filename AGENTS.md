@@ -1360,12 +1360,12 @@ primary     = NUMBER | STRING | IDENT
 | `randi` | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Integer scalar, n×n, or m×n. A row is `randi(imax, 1, n)` |
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
-| `len` | `len(v)` | Number of elements |
-| `length` | `length(v)` | Alias for `len`. Scalar / complex / bool return `1`; matrix returns `max(size(M))`; Tensor3 returns the longest axis. The `length(scalar)` form was added in 0.3.4 (previously errored) so generic helpers can call `length(x)` without `length([x])` boxing. Any zero dimension gives 0 (MATLAB; `length(zeros(4, 0))` and a 4×0 sparse are 0), since 0.3.81. |
-| `numel` | `numel(x)` | Total elements (rows×cols for dense or sparse matrices, m·n·p for tensor3) |
-| `isempty` | `isempty(x)` | `true` when any dimension is 0 (`numel(x) == 0`) or `x` is `""`. `S(:, [])` / `S([], :)` are empty sparse m×0 / 0×n |
-| `size` | `size(x)` / `size(x, dim)` | `[rows, cols]` or `[m, n, p]` (tensor3) as a Vector; `size(x, 3)` valid only for tensor3 |
-| `ndims` | `ndims(x)` | 3 for tensor3, 2 otherwise (Octave convention) |
+| `len` | `len(v)` | Number of elements; characters (not bytes) in a string |
+| `length` | `length(v)` | Alias for `len`. Scalar / complex / bool return `1`; matrix returns `max(size(M))`; Tensor3 returns the longest axis. The `length(scalar)` form was added in 0.3.4 (previously errored) so generic helpers can call `length(x)` without `length([x])` boxing. Any zero dimension gives 0 (MATLAB; `length(zeros(4, 0))` and a 4×0 sparse are 0), since 0.3.81. `length({})`, `length("")`, and an empty table are 0 since 0.3.90. |
+| `numel` | `numel(x)` | `prod(size(x))`: rows×cols for dense or sparse matrices, m·n·p for tensor3, characters of a string, elements of a cell, 1 for a struct or function handle |
+| `isempty` | `isempty(x)` | `true` when any dimension is 0 (`numel(x) == 0`), including `""` and `{}`. `S(:, [])` / `S([], :)` are empty sparse m×0 / 0×n |
+| `size` | `size(x)` / `size(x, dim)` / `[r, c, ...] = size(x)` | `[rows, cols]` or `[m, n, p]` (tensor3) as a Vector. One rule (`value_dims` in `builtins.rs`) shared with `numel` / `length` / `ndims` / `isempty`: a string (either quote) is a char row `[1, N]` (N characters), the empty string `[0, 0]` (MATLAB `''`; there is no `1×1` string scalar); `{}` is `[0, 0]`, `{…}` `[1, N]`; struct and function handle `[1, 1]`; `[]` and `1:0` `[1, 0]` (1-D vector). A `dim` past the last dimension is 1; `dim` must be a positive integer. Several outputs: last is the product of the remaining dims, extras are 1 |
+| `ndims` | `ndims(x)` | 3 for tensor3, 2 for every other value with a size (Octave convention) |
 | `zeros3` | `zeros3(m, n, p)` / `zeros3([m, n, p])` | Rank-3 complex zero tensor |
 | `ones3` | `ones3(m, n, p)` | Rank-3 complex ones tensor |
 | `rand3` | `rand3(m, n, p)` | Rank-3 tensor, U[0, 1) samples |

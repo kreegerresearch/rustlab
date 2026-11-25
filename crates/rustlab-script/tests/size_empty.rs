@@ -175,8 +175,7 @@ fn multi_output_size_folds_and_pads_like_matlab() {
 
 #[test]
 fn empty_table_has_length_0() {
-    let (size, numel, length, ndims, empty) =
-        shape_of("T = table(zeros(0, 1), zeros(0, 1));", "T");
+    let (size, numel, length, ndims, empty) = shape_of("T = table(zeros(0, 1), zeros(0, 1));", "T");
     assert_eq!(size, [0.0, 2.0]);
     assert_eq!((numel, length, ndims, empty), (0.0, 0.0, 2.0, true));
 }

@@ -6,6 +6,20 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.90
+
+### Added
+- **`[r, c, ...] = size(x)`**: one output per dimension, as in MATLAB. With fewer outputs than dimensions the last output is the product of the remaining dimensions (`[r, c] = size(zeros3(2, 3, 4))` gives `c = 12`); extra outputs are 1. Before, any multi-output `size` call was an error.
+- **`size`, `numel`, `length`, and `ndims` on strings, structs, and function handles**: a string is a char row (`size("hello")` is `[1, 5]`, `numel` 5); a struct, `@sin`, or a lambda is `1×1`. Before, these were `unsupported type` errors.
+
+### Breaking / behavior changes
+- **`size({})` is `[0, 0]`** (was `[1, 0]`), matching MATLAB. A non-empty `{...}` is still `[1, N]`. `numel`, `length`, `isempty`, and `ndims` of `{}` are unchanged (0, 0, true, 2). *Migration:* code that read `size({}, 1)` as 1 now gets 0.
+- **The empty string is `0×0`**: `size("")` and `size('')` are `[0, 0]` (before, an error), `numel` and `length` 0, `isempty` true. rustlab has one string type for both quote styles and it acts as a MATLAB char row, so `""` follows MATLAB `''` (`[0 0]`), not MATLAB's string scalar `""` (`[1 1]`).
+- **`length` and `numel` of a string count characters, not bytes**: `length("héllo")` is 5 (was 6), matching `s(k)` indexing, which is by character. ASCII strings are unchanged.
+- **`length` of an empty table is 0**: a table with 0 rows and 2 variables had `length` 2; it is now 0, like every other empty value.
+- **`size(x, dim)` past the last dimension returns 1** (`size(zeros(2, 3), 3)` is 1; `size(zeros3(2, 3, 4), 4)` is 1), matching MATLAB. Before, it was an error. A `dim` that is not a positive integer (`0`, `-1`, `1.5`) is an error; before, `1.5` was silently truncated to 1. *Migration:* none for valid code; replace a fractional `dim` with an integer.
+- Not changed: `size([])` stays `[1, 0]`. `[]` is a zero-length 1-D vector, the same value as `1:0` (`[1 0]` in MATLAB), and making it a `0×0` matrix changes `for`, `sort`, `interp1`, `xcorr`, `diag`, and other builtins that take `[]`. Use `zeros(0, 0)` for a `0×0` matrix.
+
 ## 0.3.89
 
 ### Added
