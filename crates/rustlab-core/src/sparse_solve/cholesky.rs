@@ -12,8 +12,9 @@
 //! Hermitian symmetry requires.
 
 use crate::sparse_solve::csc::{SparseCsc, SparseScalar};
-use crate::sparse_solve::elimination_tree::column_elimination_tree;
+use crate::sparse_solve::elimination_tree::{column_elimination_tree, post_order};
 use crate::sparse_solve::ordering::{OrderingMethod, Permutation};
+use crate::sparse_solve::supernodal;
 use crate::sparse_solve::SparseSolveError;
 use std::borrow::Cow;
 
@@ -31,13 +32,108 @@ pub enum CholKernel {
 /// Cholesky factor of a Hermitian-positive-definite sparse matrix.
 #[derive(Debug)]
 pub struct SparseChol<T: SparseScalar> {
-    /// Lower-triangular factor in CSC. `L * L^H` reproduces `P A P^T`.
-    /// The first entry of each column is the (real-positive) diagonal.
-    l: SparseCsc<T>,
+    /// `L` with `L * L^H = P A P^T`.
+    storage: Storage<T>,
     /// Symmetric permutation applied at factor time.
     perm: Permutation,
     /// Cached for shape checks.
     n: usize,
+    /// Structural `nnz(L)` (the symbolic count).
+    nnz: usize,
+}
+
+#[derive(Debug)]
+enum Storage<T: SparseScalar> {
+    /// CSC, the (real-positive) diagonal first in each column.
+    Simplicial(SparseCsc<T>),
+    /// Dense supernode panels.
+    Supernodal(supernodal::Factor<T>),
+}
+
+/// `Auto` takes the supernodal kernel when the simplicial factor would
+/// need at least this many flops (`Σ nnz(L(:, j))²`); below it the dense
+/// blocks are too small to pay for their bookkeeping.
+const SUPERNODAL_MIN_FLOPS: f64 = 2.0e6;
+
+/// `Auto` also needs supernodes of at least this many columns on average.
+const SUPERNODAL_MIN_WIDTH: f64 = 4.0;
+
+/// Ordering, postorder, permuted matrix, elimination tree, and column
+/// counts: everything both kernels share.
+struct Prepared<T: SparseScalar> {
+    perm: Permutation,
+    c: SparseCsc<T>,
+    parent: Vec<Option<usize>>,
+    col_count: Vec<usize>,
+    spd_tol: f64,
+}
+
+impl<T: SparseScalar> Prepared<T> {
+    fn new<O: OrderingMethod>(a: &SparseCsc<T>, ord: &O) -> Result<Self, SparseSolveError> {
+        if !a.is_square() {
+            return Err(SparseSolveError::NotSquare {
+                rows: a.nrows(),
+                cols: a.ncols(),
+            });
+        }
+        let mut perm = ord.order(a);
+        let mut c = perm.permute_symmetric(a);
+        let mut parent = column_elimination_tree(&c);
+        // Supernodes are runs of consecutive columns, so relabel the
+        // elimination tree in postorder (same fill, same tree) unless the
+        // ordering is fixed (the natural order of a one-output `chol`).
+        if ord.postorder_allowed() {
+            let post = post_order(&parent);
+            if post.iter().enumerate().any(|(i, &q)| i != q) {
+                let composed: Vec<usize> = post.iter().map(|&q| perm.perm()[q]).collect();
+                perm = Permutation::from_perm(composed);
+                c = perm.permute_symmetric(a);
+                parent = column_elimination_tree(&c);
+            }
+        }
+        let col_count = compute_col_counts(&c, &parent);
+        // Positive pivot test is relative to the largest entry. An absolute
+        // floor of 1e-12 treated `1e-16 * I` as indefinite.
+        let n = c.ncols();
+        let scale = c.values.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let spd_tol = f64::EPSILON * (n as f64).max(1.0) * scale;
+        Ok(Prepared {
+            perm,
+            c,
+            parent,
+            col_count,
+            spd_tol,
+        })
+    }
+
+    fn nnz(&self) -> usize {
+        self.col_count.iter().sum()
+    }
+
+    /// The symbolic analysis when the supernodal kernel should run.
+    fn supernodal_plan(&self, kernel: CholKernel) -> Option<(SparseCsc<T>, supernodal::Symbolic)> {
+        let n = self.c.ncols();
+        match kernel {
+            CholKernel::Simplicial => return None,
+            CholKernel::Auto => {
+                let flops: f64 = self
+                    .col_count
+                    .iter()
+                    .map(|&k| (k as f64) * (k as f64))
+                    .sum();
+                if flops < SUPERNODAL_MIN_FLOPS {
+                    return None;
+                }
+            }
+            CholKernel::Supernodal => {}
+        }
+        let lower = supernodal::lower_from_upper(&self.c);
+        let sym = supernodal::analyze(&lower, &self.parent, &self.col_count);
+        if kernel == CholKernel::Auto && (n as f64) < SUPERNODAL_MIN_WIDTH * sym.nsuper() as f64 {
+            return None;
+        }
+        Some((lower, sym))
+    }
 }
 
 /// Cholesky that runs past a failed pivot, for MATLAB's
@@ -99,18 +195,22 @@ impl<T: SparseScalar> SparseChol<T> {
     pub fn factor_with<O: OrderingMethod>(
         a: &SparseCsc<T>,
         ord: &O,
-        _kernel: CholKernel,
+        kernel: CholKernel,
     ) -> Result<Self, SparseSolveError> {
-        if !a.is_square() {
-            return Err(SparseSolveError::NotSquare {
-                rows: a.nrows(),
-                cols: a.ncols(),
+        let prep = Prepared::new(a, ord)?;
+        let n = prep.c.ncols();
+        let nnz = prep.nnz();
+        if let Some((lower, sym)) = prep.supernodal_plan(kernel) {
+            let f = supernodal::Factor::factor(sym, &lower, prep.spd_tol)
+                .map_err(|col| SparseSolveError::NotSpd { col })?;
+            return Ok(SparseChol {
+                storage: Storage::Supernodal(f),
+                perm: prep.perm,
+                n,
+                nnz,
             });
         }
-        let n = a.ncols();
-        let perm = ord.order(a);
-        let c = perm.permute_symmetric(a);
-        let num = up_looking::<T, false>(&c);
+        let num = up_looking::<T, false>(&prep.c, &prep.parent, &prep.col_count, prep.spd_tol);
         if let Some(col) = num.failed {
             return Err(SparseSolveError::NotSpd { col });
         }
@@ -121,15 +221,16 @@ impl<T: SparseScalar> SparseChol<T> {
             "symbolic count disagrees with numeric writes"
         );
         Ok(SparseChol {
-            l: SparseCsc {
+            storage: Storage::Simplicial(SparseCsc {
                 rows: n,
                 cols: n,
                 col_ptr: num.col_ptr,
                 row_idx: num.row_idx,
                 values: num.values,
-            },
-            perm,
+            }),
+            perm: prep.perm,
             n,
+            nnz,
         })
     }
 
@@ -146,22 +247,26 @@ impl<T: SparseScalar> SparseChol<T> {
         Self::factor_flagged_with(a, ord, CholKernel::Auto)
     }
 
-    /// [`SparseChol::factor_flagged`] with an explicit kernel choice.
+    /// [`SparseChol::factor_flagged`] with an explicit kernel choice. The
+    /// supernodal kernel stops at a failed pivot, so a failure is redone by
+    /// the simplicial kernel, which keeps going past it.
     pub fn factor_flagged_with<O: OrderingMethod>(
         a: &SparseCsc<T>,
         ord: &O,
-        _kernel: CholKernel,
+        kernel: CholKernel,
     ) -> Result<PartialChol<T>, SparseSolveError> {
-        if !a.is_square() {
-            return Err(SparseSolveError::NotSquare {
-                rows: a.nrows(),
-                cols: a.ncols(),
-            });
+        let prep = Prepared::new(a, ord)?;
+        let n = prep.c.ncols();
+        if let Some((lower, sym)) = prep.supernodal_plan(kernel) {
+            if let Ok(f) = supernodal::Factor::factor(sym, &lower, prep.spd_tol) {
+                return Ok(PartialChol {
+                    l: f.to_csc(),
+                    perm: prep.perm,
+                    failed: None,
+                });
+            }
         }
-        let n = a.ncols();
-        let perm = ord.order(a);
-        let c = perm.permute_symmetric(a);
-        let mut num = up_looking::<T, true>(&c);
+        let mut num = up_looking::<T, true>(&prep.c, &prep.parent, &prep.col_count, prep.spd_tol);
         let q = num.failed.unwrap_or(n);
         num.col_ptr.truncate(q + 1);
         let nnz = num.col_ptr[q];
@@ -176,7 +281,7 @@ impl<T: SparseScalar> SparseChol<T> {
                 row_idx: num.row_idx,
                 values: num.values,
             },
-            perm,
+            perm: prep.perm,
             failed: num.failed,
         })
     }
@@ -191,19 +296,32 @@ impl<T: SparseScalar> SparseChol<T> {
             });
         }
         let b_perm = self.perm.permute_vec(b);
-        let y = forward_solve_lower(&self.l, &b_perm);
-        let z = backward_solve_lower_transpose(&self.l, &y);
+        let z = match &self.storage {
+            Storage::Simplicial(l) => {
+                let y = forward_solve_lower(l, &b_perm);
+                backward_solve_lower_transpose(l, &y)
+            }
+            Storage::Supernodal(f) => {
+                let mut y = b_perm;
+                f.solve_in_place(&mut y);
+                y
+            }
+        };
         Ok(self.perm.unpermute_vec(&z))
     }
 
-    /// Number of non-zeros in the factor.
+    /// Structural number of non-zeros in the factor.
     pub fn nnz(&self) -> usize {
-        self.l.nnz()
+        self.nnz
     }
 
-    /// The factor as CSC (mostly useful for tests / introspection).
+    /// The factor as CSC (mostly useful for tests / introspection). The
+    /// supernodal factor is converted on each call.
     pub fn factor_csc(&self) -> Cow<'_, SparseCsc<T>> {
-        Cow::Borrowed(&self.l)
+        match &self.storage {
+            Storage::Simplicial(l) => Cow::Borrowed(l),
+            Storage::Supernodal(f) => Cow::Owned(f.to_csc()),
+        }
     }
 
     /// Order of the factored matrix.
@@ -213,7 +331,10 @@ impl<T: SparseScalar> SparseChol<T> {
 
     /// The kernel that produced this factor.
     pub fn kernel(&self) -> CholKernel {
-        CholKernel::Simplicial
+        match self.storage {
+            Storage::Simplicial(_) => CholKernel::Simplicial,
+            Storage::Supernodal(_) => CholKernel::Supernodal,
+        }
     }
 
     /// The symmetric permutation: `L * L^H = A(p, p)` with `p = perm().perm()`.
@@ -227,9 +348,13 @@ impl<T: SparseScalar> SparseChol<T> {
 /// unless `KEEP_GOING`: then rows past that column are still reduced
 /// against the columns before it, which is all of `L(:, 0..q)`. A const
 /// parameter so the ordinary factor's inner loop has no extra test.
-fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(c: &SparseCsc<T>) -> Numeric<T> {
+fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(
+    c: &SparseCsc<T>,
+    parent: &[Option<usize>],
+    col_count: &[usize],
+    spd_tol: f64,
+) -> Numeric<T> {
     let n = c.ncols();
-    let parent = column_elimination_tree(c);
 
     // Phase 6 of `dev/plans/em_performance.md`: replace the per-column
     // `Vec<Vec<(usize, T)>>` accumulator (one heap allocation per
@@ -237,9 +362,6 @@ fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(c: &SparseCsc<T>) -> Nume
     // an up-front symbolic counts pass. The numeric pass writes
     // directly into preallocated `Lp / Li / Lx` arrays, with one
     // per-column write cursor.
-
-    // ── Symbolic pass — exact column counts of L ───────────────────
-    let col_count = compute_col_counts(c, &parent);
 
     // Prefix-sum to col_ptr. Allocate Li/Lx exactly once.
     let mut col_ptr = vec![0usize; n + 1];
@@ -256,15 +378,6 @@ fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(c: &SparseCsc<T>) -> Nume
     let mut next: Vec<usize> = (0..n).map(|j| col_ptr[j] + 1).collect();
 
     // ── Numeric pass — same algorithm, flat-array writes ───────────
-    // Positive pivot test is relative to the largest entry. An absolute
-    // floor of 1e-12 treated `1e-16 * I` as indefinite.
-    let mut scale = 0.0_f64;
-    for j in 0..n {
-        for (_, val) in c.col_iter(j) {
-            scale = scale.max(val.abs());
-        }
-    }
-    let spd_tol = f64::EPSILON * (n as f64).max(1.0) * scale;
     let mut x: Vec<T> = vec![T::zero(); n];
     let mut mark: Vec<usize> = vec![usize::MAX; n];
     let mut s: Vec<usize> = vec![0usize; n];
@@ -274,7 +387,7 @@ fn up_looking<T: SparseScalar, const KEEP_GOING: bool>(c: &SparseCsc<T>) -> Nume
 
     for k in 0..n {
         // Pattern of row k of L (columns j < k where L(k, j) != 0).
-        let top = ereach(c, k, &parent, &mut s, &mut mark);
+        let top = ereach(c, k, parent, &mut s, &mut mark);
 
         // Initialize x with row k of A (upper-triangle of CSC, conjed
         // by Hermitian symmetry to get the row).

@@ -13,10 +13,14 @@ num-complex.workspace = true
 ndarray.workspace     = true
 thiserror.workspace   = true
 blake3.workspace      = true
+# Dense panel products and subtree threads in the supernodal Cholesky
+# (sparse_solve/supernodal.rs). Both are pure Rust and already in the tree
+# through ndarray and rustlab-script.
+matrixmultiply.workspace = true
+rayon.workspace       = true
 
 [dev-dependencies]
 proptest.workspace = true
-rayon.workspace    = true
 
 [dependencies.ndarray-linalg]
 version  = "0.17"

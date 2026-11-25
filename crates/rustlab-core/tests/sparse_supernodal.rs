@@ -60,7 +60,9 @@ fn lap2(n: usize) -> SparseCsc<f64> {
 fn random_spd(n: usize, per_col: usize, seed: u64) -> SparseCsc<f64> {
     let mut s = seed;
     let mut next = || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (s >> 33) as usize
     };
     let mut dense = vec![0.0; n * n];
@@ -134,7 +136,12 @@ fn assert_same_factor<T: SparseScalar>(sim: &SparseChol<T>, sup: &SparseChol<T>,
 
 fn rel_residual<T: SparseScalar>(a: &SparseCsc<T>, x: &[T], b: &[T]) -> f64 {
     let r = a.spmv(x);
-    let num: f64 = r.iter().zip(b).map(|(p, q)| (*p - *q).abs2()).sum::<f64>().sqrt();
+    let num: f64 = r
+        .iter()
+        .zip(b)
+        .map(|(p, q)| (*p - *q).abs2())
+        .sum::<f64>()
+        .sqrt();
     let den: f64 = b.iter().map(|q| q.abs2()).sum::<f64>().sqrt();
     num / den
 }
@@ -143,7 +150,10 @@ fn rhs(n: usize) -> Vec<f64> {
     (0..n).map(|i| 1.0 + (i % 7) as f64 / 3.0).collect()
 }
 
-fn both<T: SparseScalar, O: OrderingMethod>(a: &SparseCsc<T>, ord: &O) -> (SparseChol<T>, SparseChol<T>) {
+fn both<T: SparseScalar, O: OrderingMethod>(
+    a: &SparseCsc<T>,
+    ord: &O,
+) -> (SparseChol<T>, SparseChol<T>) {
     let sim = SparseChol::factor_with(a, ord, CholKernel::Simplicial).unwrap();
     let sup = SparseChol::factor_with(a, ord, CholKernel::Supernodal).unwrap();
     assert_eq!(sim.kernel(), CholKernel::Simplicial);
@@ -160,7 +170,11 @@ fn matches_simplicial_on_3d_poisson_nested_dissection() {
     let x = sup.solve(&b).unwrap();
     assert!(rel_residual(&a, &x, &b) < 1e-13);
     let xs = sim.solve(&b).unwrap();
-    let d: f64 = x.iter().zip(&xs).map(|(p, q)| (p - q).abs()).fold(0.0, f64::max);
+    let d: f64 = x
+        .iter()
+        .zip(&xs)
+        .map(|(p, q)| (p - q).abs())
+        .fold(0.0, f64::max);
     assert!(d <= 1e-12 * max_abs(&xs), "solutions differ by {d}");
 }
 
@@ -222,8 +236,10 @@ fn indefinite_reports_the_same_column() {
 #[test]
 fn flagged_failure_matches_simplicial_exactly() {
     let a = lap3(10, 10, 10, -5.5);
-    let sim = SparseChol::factor_flagged_with(&a, &IdentityOrdering, CholKernel::Simplicial).unwrap();
-    let sup = SparseChol::factor_flagged_with(&a, &IdentityOrdering, CholKernel::Supernodal).unwrap();
+    let sim =
+        SparseChol::factor_flagged_with(&a, &IdentityOrdering, CholKernel::Simplicial).unwrap();
+    let sup =
+        SparseChol::factor_flagged_with(&a, &IdentityOrdering, CholKernel::Supernodal).unwrap();
     assert!(sim.failed().is_some());
     assert_eq!(sim.failed(), sup.failed());
     assert_eq!(sim.l().col_ptr, sup.l().col_ptr);
@@ -246,10 +262,14 @@ fn flagged_success_equals_factor() {
 
 #[test]
 fn same_bits_for_every_thread_count() {
+    rustlab_core::sparse_solve::set_parallel_min_flops(0.0);
     let a = lap3(18, 18, 18, 0.0);
     let b = rhs(a.ncols());
     let run = |threads: usize| {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
         pool.install(|| {
             let c = SparseChol::factor_with(&a, &SpdAutoOrdering, CholKernel::Supernodal).unwrap();
             (c.factor_csc().into_owned().values, c.solve(&b).unwrap())

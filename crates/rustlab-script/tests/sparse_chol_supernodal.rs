@@ -36,7 +36,12 @@ fn scalar(ev: &Evaluator, name: &str) -> f64 {
 const GRID: &str = "n = 16; N = n ^ 3; S = -1 * laplacian_3d(n, n, n);
      b = ones(N, 1); b(1:3:N) = 2;
      function m = maxabs(K)
-       v = nonzeros(K); m = 0;
+       if issparse(K)
+         v = nonzeros(K);
+       else
+         v = K(:);
+       end
+       m = 0;
        if numel(v) > 0
          m = max(abs(v));
        end
@@ -45,7 +50,12 @@ const GRID: &str = "n = 16; N = n ^ 3; S = -1 * laplacian_3d(n, n, n);
 /// `S - 5.5 I` on 16³: symmetric and indefinite.
 const INDEFINITE: &str = "n = 16; N = n ^ 3; S = -1 * laplacian_3d(n, n, n) - 5.5 * speye(n ^ 3);
      function m = maxabs(K)
-       v = nonzeros(K); m = 0;
+       if issparse(K)
+         v = nonzeros(K);
+       else
+         v = K(:);
+       end
+       m = 0;
        if numel(v) > 0
          m = max(abs(v));
        end
@@ -68,7 +78,7 @@ fn backslash_residual() {
 fn backslash_on_a_pinned_operator() {
     let ev = eval(
         "n = 14; N = n ^ 3; A = -1 * laplacian_3d(n, n, n); b = zeros(N, 1);
-         mask = zeros(n, n, n); mask(1, :, :) = 1; mask(n, :, :) = 1;
+         mask = zeros3(n, n, n); mask(1, :, :) = 1; mask(n, :, :) = 1;
          [A2, b2] = pin_dirichlet(A, b, mask, 1);
          x = A2 \\ b2; r = norm(A2 * x - b2) / norm(b2);",
     );

@@ -3948,6 +3948,7 @@ name = "rustlab-core"
 version = "0.3.103"
 dependencies = [
  "blake3",
+ "matrixmultiply",
  "ndarray",
  "ndarray-linalg",
  "num-complex",
