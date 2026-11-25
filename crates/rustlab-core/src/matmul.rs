@@ -19,6 +19,7 @@
 //! `Inf·0 = NaN` there, while the real product is `Inf` with a zero
 //! imaginary part.
 
+mod slots;
 mod sme;
 
 use crate::error::CoreError;
@@ -288,6 +289,48 @@ mod tests {
         let one = Array2::from_elem((1, 1), C64::new(1.0, 0.0));
         let c = matmul(&inf.view(), &one.view()).unwrap();
         assert_eq!(c[[0, 0]], C64::new(f64::INFINITY, 0.0));
+    }
+
+    #[test]
+    fn sme_slot_cap_round_trips() {
+        let before = sme_slots();
+        set_sme_slots(3);
+        assert_eq!(sme_slots(), 3);
+        set_sme_slots(0);
+        assert_eq!(sme_slots(), 0);
+        set_sme_slots(before);
+        let (s0, n0) = sme_route_counts();
+        let _ = matmul_real(&Array2::<f64>::eye(64).view(), &Array2::<f64>::eye(64).view());
+        let (s1, n1) = sme_route_counts();
+        if sme::available() {
+            assert!(s1 + n1 > s0 + n0, "an SME-sized product is counted");
+        } else {
+            assert_eq!((s1, n1), (s0, n0), "no SME, no routing");
+        }
+    }
+
+    /// Real-stored and complex-stored products stay bit-identical while
+    /// other threads saturate the SME slots.
+    #[test]
+    fn real_and_complex_storage_agree_under_contention() {
+        let a = filled(129, 128, 51, false);
+        let b = filled(128, 512, 52, false);
+        let (ar, br) = (a.mapv(|z| z.re), b.mapv(|z| z.re));
+        let want = matmul_real(&ar.view(), &br.view()).unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..5 {
+                        let c = matmul(&a.view(), &b.view()).unwrap();
+                        let r = matmul_real(&ar.view(), &br.view()).unwrap();
+                        for ((p, q), w) in c.iter().zip(r.iter()).zip(want.iter()) {
+                            assert_eq!(p.re.to_bits(), w.to_bits());
+                            assert_eq!(q.to_bits(), w.to_bits());
+                        }
+                    }
+                });
+            }
+        });
     }
 
     #[test]

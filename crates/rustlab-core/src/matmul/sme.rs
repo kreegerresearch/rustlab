@@ -485,6 +485,87 @@ mod tests {
         assert_eq!(gemm(&a.view(), &b.view()).dim(), (0, 2));
     }
 
+    /// The NEON kernel that takes a product when no SME slot is free must
+    /// round exactly like the matrix unit: zero, then one fused
+    /// multiply-add per k. Runs on any aarch64 CPU (no SME needed).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_route_matches_the_fused_k_order_bit_for_bit() {
+        let dims = [1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 129];
+        for &m in &dims {
+            for &n in &dims {
+                for &k in &[1, 2, 8, 33, 128] {
+                    let a = filled(m, k, (m * 1000 + k) as u64);
+                    let b = filled(k, n, (n * 1000 + k + 7) as u64);
+                    assert_bits(
+                        &gemm_routed(&a.view(), &b.view(), Route::Neon),
+                        &fma_reference(&a.view(), &b.view()),
+                        &format!("neon {m}x{k}x{n}"),
+                    );
+                }
+            }
+        }
+        let at = filled(40, 37, 1);
+        let bt = filled(23, 40, 2);
+        assert_bits(
+            &gemm_routed(&at.t(), &bt.t(), Route::Neon),
+            &fma_reference(&at.t(), &bt.t()),
+            "neon A' * B'",
+        );
+        let a = filled(129, 128, 11);
+        let b = filled(128, 512, 12);
+        assert_bits(
+            &gemm_routed(&a.view(), &b.view(), Route::Neon),
+            &fma_reference(&a.view(), &b.view()),
+            "neon 129x128x512",
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_route_reads_complex_storage() {
+        let a = filled(20, 9, 13).mapv(|x| C64::new(x, 0.0));
+        let b = filled(9, 18, 14).mapv(|x| C64::new(x, -0.0));
+        let want = fma_reference(&a.mapv(|z| z.re).view(), &b.mapv(|z| z.re).view());
+        let got = product_routed(Src::of_c64(&a.view()), Src::of_c64(&b.view()), Route::Neon, |c, np| {
+            unpack(c, np, 20, 18, |x| x)
+        })
+        .expect("real parts only");
+        assert_bits(&Array2::from_shape_vec((20, 18), got).unwrap(), &want, "neon c64");
+        let mut bad = b.clone();
+        bad[[2, 3]] = C64::new(1.0, 0.5);
+        assert!(product_routed(Src::of_c64(&a.view()), Src::of_c64(&bad.view()), Route::Neon, |_, _| ()).is_none());
+    }
+
+    /// With one slot and eight threads most products overflow to NEON; every
+    /// result must still equal the single-thread SME product bit for bit.
+    #[test]
+    fn capped_concurrent_calls_agree() {
+        if !available() {
+            return;
+        }
+        let a = filled(129, 128, 9);
+        let b = filled(128, 512, 10);
+        let want = gemm_routed(&a.view(), &b.view(), Route::Sme);
+        let slots = Slots::new(1);
+        std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..10)
+                            .map(|_| gemm_with_slots(&a.view(), &b.view(), &slots))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            for h in hs {
+                for c in h.join().unwrap() {
+                    assert_bits(&c, &want, "capped thread");
+                }
+            }
+        });
+    }
+
     #[test]
     fn concurrent_calls_agree() {
         if !available() {
