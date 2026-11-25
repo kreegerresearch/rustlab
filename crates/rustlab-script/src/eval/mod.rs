@@ -1244,6 +1244,14 @@ impl Evaluator {
                     unreachable!()
                 };
                 let dst = Shared::make_mut_real(m)?.as_slice_mut()?;
+                // One column: a strided store per row, not a one-element
+                // slice copy per row.
+                if let [c] = cols[..] {
+                    for (k, &r) in rows.iter().enumerate() {
+                        dst[r * nc + c] = src.at(k);
+                    }
+                    return Some(());
+                }
                 let run = Value::run_of(&cols);
                 let mut k = 0;
                 for &r in &rows {
@@ -3556,7 +3564,7 @@ impl Evaluator {
         if Self::is_line_io(name) {
             return self.dispatch_line_io(name, vals);
         }
-        if IMPURE_BUILTINS.contains(&name) {
+        if parmap::in_parallel_context() && IMPURE_BUILTINS.contains(&name) {
             parmap::require_pure_context(name)?;
         }
 
@@ -3566,7 +3574,10 @@ impl Evaluator {
         // per-builtin arms. The allowlist covers builtins that must see the raw
         // integer (casts / introspection) or that intentionally preserve the
         // integer class (abs / real / imag / conj / transpose).
-        let vals: Vec<Value> = if INT_AWARE_BUILTINS.contains(&name) {
+        let has_int = vals
+            .iter()
+            .any(|v| matches!(v, Value::Int { .. } | Value::IntArray { .. }));
+        let vals: Vec<Value> = if !has_int || INT_AWARE_BUILTINS.contains(&name) {
             vals
         } else {
             vals.into_iter().map(Value::widen_int).collect()

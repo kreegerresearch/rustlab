@@ -100,10 +100,29 @@ impl<'a> Elems<'a> {
     /// `src` at the positions [`Elems::list`] gives, without building the
     /// position list; `None` where `list` is an error.
     pub(crate) fn gather(self, src: &[f64]) -> Option<Vec<f64>> {
+        // `x` is a valid 1-based position exactly when it is a positive
+        // integer: `as usize` maps NaN, negatives, and fractions to a value
+        // that does not convert back to `x`, or to 0.
+        #[inline]
+        fn at(src: &[f64], x: f64) -> Option<f64> {
+            let i = x as usize;
+            if i == 0 || i as f64 != x {
+                return None;
+            }
+            src.get(i - 1).copied()
+        }
         let mut out = Vec::with_capacity(self.len());
-        for k in 0..self.len() {
-            let i = Value::one_based_to_zero_pub(self.get(k).0).ok()?;
-            out.push(*src.get(i)?);
+        match self {
+            Elems::Re(d) => {
+                for &x in d {
+                    out.push(at(src, x)?);
+                }
+            }
+            Elems::C(d) => {
+                for z in d {
+                    out.push(at(src, z.re)?);
+                }
+            }
         }
         Some(out)
     }

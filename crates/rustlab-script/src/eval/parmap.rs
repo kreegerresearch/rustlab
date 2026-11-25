@@ -113,6 +113,11 @@ impl Drop for WorkerScope {
 /// ```text
 /// parmap: cannot clf from a parallel lambda — the lambda must be pure
 /// ```
+/// Whether this thread is running a `parmap` task.
+pub fn in_parallel_context() -> bool {
+    PARALLEL_CONTEXT.with(|c| c.get())
+}
+
 pub fn require_pure_context(builtin_name: &str) -> Result<(), ScriptError> {
     PARALLEL_CONTEXT.with(|c| {
         if c.get() {
