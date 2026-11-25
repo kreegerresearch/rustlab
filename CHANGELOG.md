@@ -6,6 +6,28 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.91
+
+### Performance
+- **Faster interpreted loops, measured on the Viterbi decoder.** The `viterbi` decoder in `comm/viterbi_fec` is script code, not a builtin, so its cost is the interpreter's cost per statement. Release build, 4 cores, rate 1/2 K = 7 (171, 133), Eb/N0 = 3 dB, whole-frame traceback (`perf/viterbi_perf.sh`):
+
+  | bits | decision | 0.3.89 decode | 0.3.91 decode | peak RSS (both) |
+  |---|---|---|---|---|
+  | 10,000 | soft / hard | 0.073 / 0.067 s | 0.043 / 0.042 s | 24 MB |
+  | 100,000 | soft / hard | 0.77 / 0.76 s | 0.45 / 0.43 s | 163 MB |
+  | 1,000,000 | soft / hard | 7.56 / 7.58 s | 4.69 / 4.60 s | 1.55 GB |
+
+  Decoded bits are identical (`crates/rustlab-script/tests/viterbi_decoder.rs` checks them against a Rust reference and against checksums recorded with 0.3.89). The `comm/viterbi_fec` render goes from 2.9 s to 2.6 s, with byte-identical output. Peak memory is the script's own 64 × L branch-metric and decision arrays and does not change.
+  - A `Value` is 80 bytes instead of 272. The `StateSpace` matrices are boxed; every return, temporary, and argument copied the full size.
+  - An index whose subscripts are only literals, `:`, operators, ranges, and existing variables no longer binds and removes `end` (a key allocation and two variable-table updates per index).
+  - `M(i, j)` and `M(:, j)` of a real matrix read the element or column directly. A position list (`v(P)`, `pm(P0)`) is gathered in one pass. A one-column write (`D(:, t) = …`) stores each row directly instead of copying a one-element slice per row.
+  - Same-shape real matrices (`a + b` with two `n×1` columns) are combined in one loop instead of one broadcast row per element.
+  - A builtin call no longer scans the integer-aware and impure name lists when no argument is an integer and the call is not inside `parmap`.
+- **`perf/viterbi_perf.sh`** times decodes of 1e4, 1e5, and 1e6 bits (soft and hard), reports wall time and peak RSS, and fails if a decoded checksum changes. `perf/bench_viterbi.rlab` (1e4 soft bits) joins `make perf`.
+
+### Breaking / behavior changes
+- **`end` after a nested index in the same subscript is the outer array's `end`.** `v(b(1) + end - 1)` and `v(b(1) + end) = x` used to fail with `undefined variable 'end'`, because the inner `b(1)` removed the outer binding. They now index `v` as in MATLAB. *Migration:* none; these forms were errors before.
+
 ## 0.3.90
 
 ### Added
