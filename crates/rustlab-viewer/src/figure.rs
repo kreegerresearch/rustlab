@@ -748,22 +748,36 @@ fn draw_colorbar(
     painter.text(
         Pos2::new(label_x, grad_top),
         egui::Align2::LEFT_TOP,
-        format!("{:.1}", vmax),
+        colorbar_label(vmax),
         font_id.clone(),
         text_color,
     );
     painter.text(
         Pos2::new(label_x, grad_bottom),
         egui::Align2::LEFT_BOTTOM,
-        format!("{:.1}", vmin),
+        colorbar_label(vmin),
         font_id,
         text_color,
     );
 }
 
+/// Colorbar end label, one decimal.
+fn colorbar_label(v: f64) -> String {
+    format!("{:.1}", v)
+}
+
 #[cfg(test)]
 mod layout_tests {
-    use super::{panel_content_size, step_expanded};
+    use super::{colorbar_label, panel_content_size, step_expanded};
+
+    #[test]
+    fn colorbar_label_that_rounds_to_zero_is_unsigned() {
+        assert_eq!(colorbar_label(-0.0), "0.0");
+        assert_eq!(colorbar_label(-0.04), "0.0");
+        assert_eq!(colorbar_label(0.0), "0.0");
+        assert_eq!(colorbar_label(-0.05), "-0.1");
+        assert_eq!(colorbar_label(-100.0), "-100.0");
+    }
 
     #[test]
     fn expand_toggles_one_panel_and_esc_clears_it() {

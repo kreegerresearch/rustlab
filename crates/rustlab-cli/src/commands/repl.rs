@@ -3007,3 +3007,18 @@ mod line_io_tests {
         assert!(history_enabled_from(Some(true), Some("0")));
     }
 }
+
+#[cfg(test)]
+mod whos_preview_tests {
+    use super::whos_preview;
+    use rustlab_script::Value;
+
+    #[test]
+    fn negative_zero_previews_as_zero() {
+        assert_eq!(whos_preview(&Value::Scalar(-0.0)), "0");
+        let z = num_complex::Complex::new(1.0, -0.0);
+        assert_eq!(whos_preview(&Value::Complex(z)), "1+0j");
+        let v = ndarray::Array1::from_vec(vec![num_complex::Complex::new(-0.0, 0.0)]);
+        assert_eq!(whos_preview(&Value::Vector(v.into())), "[0.0000]");
+    }
+}
