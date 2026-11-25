@@ -6,8 +6,12 @@
 //! get a slot runs on the NEON kernel instead (`neon.rs`), which reads the
 //! same packed panels and rounds the same way, so the route never changes a
 //! result bit.
+//!
+//! Only SME-sized products on an SME machine consult the slots, so on x86
+//! and on Arm without SME nothing here runs.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 /// A counter of SME kernels in flight with an optional cap.
 pub(crate) struct Slots {
@@ -28,17 +32,83 @@ impl Slots {
     }
 
     pub(crate) fn cap(&self) -> usize {
-        todo!()
+        self.cap.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn set_cap(&self, _cap: usize) {
-        todo!()
+    pub(crate) fn set_cap(&self, cap: usize) {
+        self.cap.store(cap, Ordering::Relaxed);
+    }
+
+    /// A slot past the cap, for products too large to overflow to NEON.
+    pub(crate) fn acquire_anyway(&self) -> SlotGuard<'_> {
+        self.busy.fetch_add(1, Ordering::AcqRel);
+        SlotGuard(self)
     }
 
     /// A slot when fewer than `cap` are taken (always, when there is no cap).
     pub(crate) fn try_acquire(&self) -> Option<SlotGuard<'_>> {
-        todo!()
+        let cap = self.cap();
+        if cap == 0 {
+            self.busy.fetch_add(1, Ordering::AcqRel);
+            return Some(SlotGuard(self));
+        }
+        let mut cur = self.busy.load(Ordering::Acquire);
+        loop {
+            if cur >= cap {
+                return None;
+            }
+            match self
+                .busy
+                .compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Some(SlotGuard(self)),
+                Err(now) => cur = now,
+            }
+        }
     }
+}
+
+/// The process-wide slots. The cap comes from `RUSTLAB_SME_SLOTS` (0 = no
+/// cap) or, when that is unset or not a count, [`default_cap`] (the number
+/// of performance clusters on macOS, else 2). Read on first use.
+pub(crate) fn global() -> &'static Slots {
+    static SLOTS: OnceLock<Slots> = OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let env = std::env::var("RUSTLAB_SME_SLOTS").ok();
+        Slots::new(parse_count(env.as_deref()).unwrap_or_else(default_cap))
+    })
+}
+
+/// Products with more multiply-adds than this always take the SME kernel,
+/// even past the cap: on NEON a large product takes long enough (≈ 5 ms at
+/// 512³ on one M4 core) that the last one to finish sets the wall time.
+/// `RUSTLAB_SME_OVERFLOW_MACS` overrides it (0 = never overflow).
+pub(crate) fn overflow_max_macs() -> &'static AtomicUsize {
+    static MAX: OnceLock<AtomicUsize> = OnceLock::new();
+    MAX.get_or_init(|| {
+        let env = std::env::var("RUSTLAB_SME_OVERFLOW_MACS").ok();
+        AtomicUsize::new(parse_count(env.as_deref()).unwrap_or(DEFAULT_OVERFLOW_MACS))
+    })
+}
+
+/// 2²⁴ ≈ 16.8 M multiply-adds: twice the 129 × 128 × 512 products of a
+/// transformer layer, about 0.7 ms on one NEON core.
+const DEFAULT_OVERFLOW_MACS: usize = 1 << 24;
+
+/// Products that ran on each kernel since the process started.
+pub(crate) static SME_RUNS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static NEON_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// A non-negative integer, ignoring surrounding spaces.
+pub(crate) fn parse_count(v: Option<&str>) -> Option<usize> {
+    v?.trim().parse().ok()
+}
+
+/// One SME unit per performance cluster: `hw.perflevel0.physicalcpu` over
+/// `hw.perflevel0.cpusperl2` (each cluster shares one L2). 2 when that
+/// cannot be read.
+fn default_cap() -> usize {
+    super::sme::perf_clusters().unwrap_or(2).max(1)
 }
 
 impl Drop for SlotGuard<'_> {
@@ -113,8 +183,4 @@ mod tests {
         assert_eq!(parse_count(Some("-1")), None);
         assert_eq!(parse_count(None), None);
     }
-}
-
-pub(crate) fn parse_count(_v: Option<&str>) -> Option<usize> {
-    todo!()
 }

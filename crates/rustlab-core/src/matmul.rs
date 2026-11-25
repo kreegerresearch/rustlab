@@ -13,12 +13,20 @@
 //! straight from the complex storage. Each element is then a fused
 //! multiply-add chain in k order. `RUSTLAB_NO_SME=1` turns that path off.
 //!
+//! The matrix unit is shared by every core of a cluster, so at most
+//! [`sme_slots`] products run on it at once (`RUSTLAB_SME_SLOTS`; default
+//! one per performance cluster). A product that finds every slot taken runs
+//! on a NEON kernel with the same rounding instead, unless it has more than
+//! [`sme_overflow_macs`] multiply-adds (`RUSTLAB_SME_OVERFLOW_MACS`). The
+//! route never changes a result bit.
+//!
 //! The real path sums in a different order from the complex kernel, so
 //! results can differ in the last digits. It also differs where the complex
 //! kernel manufactured NaN: `(Inf + 0i)·(1 + 0i)` has imaginary part
 //! `Inf·0 = NaN` there, while the real product is `Inf` with a zero
 //! imaginary part.
 
+mod neon;
 mod slots;
 mod sme;
 
@@ -105,6 +113,45 @@ const SME_MIN_MACS: usize = 1 << 14;
 /// Whether a real `m × k` by `k × n` product runs on the SME kernel.
 fn use_sme(m: usize, k: usize, n: usize) -> bool {
     m.saturating_mul(k).saturating_mul(n) >= SME_MIN_MACS && sme::available()
+}
+
+/// Whether real products of at least 16,384 multiply-adds use
+/// the SME kernel in this process.
+pub fn sme_available() -> bool {
+    sme::available()
+}
+
+/// How many SME products may run at once; 0 means no cap. Starts from
+/// `RUSTLAB_SME_SLOTS`, else the number of performance clusters (macOS),
+/// else 2.
+pub fn sme_slots() -> usize {
+    slots::global().cap()
+}
+
+/// Set the cap on concurrent SME products (0 = no cap) for this process.
+pub fn set_sme_slots(cap: usize) {
+    slots::global().set_cap(cap);
+}
+
+/// Products with more multiply-adds than this run on SME even when every
+/// slot is taken. Starts from `RUSTLAB_SME_OVERFLOW_MACS`, else 2²⁴.
+pub fn sme_overflow_macs() -> usize {
+    slots::overflow_max_macs().load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set [`sme_overflow_macs`] for this process (0 = never overflow).
+pub fn set_sme_overflow_macs(macs: usize) {
+    slots::overflow_max_macs().store(macs, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Products run on the SME kernel and on its NEON overflow since the
+/// process started, as `(sme, neon)`. Both stay 0 without SME.
+pub fn sme_route_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        slots::SME_RUNS.load(Relaxed),
+        slots::NEON_RUNS.load(Relaxed),
+    )
 }
 
 /// The real parts of `a` when every imaginary part is zero (the same test
@@ -300,7 +347,10 @@ mod tests {
         assert_eq!(sme_slots(), 0);
         set_sme_slots(before);
         let (s0, n0) = sme_route_counts();
-        let _ = matmul_real(&Array2::<f64>::eye(64).view(), &Array2::<f64>::eye(64).view());
+        let _ = matmul_real(
+            &Array2::<f64>::eye(64).view(),
+            &Array2::<f64>::eye(64).view(),
+        );
         let (s1, n1) = sme_route_counts();
         if sme::available() {
             assert!(s1 + n1 > s0 + n0, "an SME-sized product is counted");
