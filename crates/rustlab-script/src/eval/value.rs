@@ -1300,9 +1300,14 @@ impl Value {
                         let source_matrix = match self {
                             Value::Matrix(m) => Shared::shape(m)[0] != 1,
                             Value::Logical(a) => a.rows() != 1,
+                            Value::Tensor3(_) => true,
                             _ => false,
                         };
-                        source_matrix && is_column_shape(idx)
+                        // A same-shape mask on a tensor selects a column,
+                        // as `M(M > 0)` does on a matrix.
+                        let tensor_mask =
+                            matches!((self, idx), (Value::Tensor3(_), Value::Tensor3(_)));
+                        tensor_mask || source_matrix && is_column_shape(idx)
                     }
                 }
             }
@@ -1311,6 +1316,10 @@ impl Value {
                     Value::Matrix(m) => (Shared::shape(m)[0], Shared::shape(m)[1]),
                     Value::Logical(a) => (a.rows(), a.cols()),
                     Value::SparseMatrix(sm) => (sm.rows, sm.cols),
+                    Value::Tensor3(t) => {
+                        let s = Shared::shape(t);
+                        (s[0], s[1] * s[2])
+                    }
                     _ => return false,
                 };
                 count(c, cols) == Some(1) && count(r, rows).is_some_and(|n| n != 1)
@@ -1652,6 +1661,29 @@ impl Value {
                             idx_v.iter().map(|c| pick(c.re)).collect();
                         Ok(Value::Vector(Array1::from_vec(picks?).into()))
                     }
+                    // A same-shape 0/1 tensor (`T(T > 0)`; there is no rank-3
+                    // logical) is a mask. Any other tensor of subscripts is
+                    // its column-major list.
+                    Value::Tensor3(idx_t) => {
+                        let is_mask = idx_t.shape() == t.shape()
+                            && idx_t
+                                .iter()
+                                .all(|c| c.im.abs() <= 1e-12 && (c.re == 0.0 || c.re == 1.0));
+                        let folded = Value::Matrix(Self::tensor3_folded(t).into());
+                        if is_mask {
+                            folded.index_1d(Value::Matrix(Self::tensor3_folded(idx_t).into()))
+                        } else {
+                            let flat: Vec<C64> =
+                                Self::tensor3_folded(idx_t).t().iter().copied().collect();
+                            folded.index_1d(Value::Vector(Array1::from_vec(flat).into()))
+                        }
+                    }
+                    // Logical masks and row / column subscript lists: the
+                    // matrix rules on the `m × (n·p)` view, which has the
+                    // same column-major order.
+                    Value::Logical(_) | Value::Matrix(_) => {
+                        Value::Matrix(Self::tensor3_folded(t).into()).index_1d(idx)
+                    }
                     other => Err(format!(
                         "tensor single-index with {} not supported; use T(i,j,k), T(linear), T(I), or T(:)",
                         other.type_name()
@@ -1867,6 +1899,16 @@ impl Value {
     }
 
     fn index_2d(&self, row_idx: Value, col_idx: Value) -> Result<Value, String> {
+        if let Value::Tensor3(t) = self {
+            let (m, n, p) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+            let rows = Self::resolve_index_dim(&row_idx, m)?;
+            let cols = Self::resolve_index_dim(&col_idx, n * p)?;
+            if rows.len() == 1 && cols.len() == 1 {
+                let c = cols[0];
+                return Ok(Self::from_c64(t[[rows[0], c % n, c / n]]));
+            }
+            return Value::Matrix(Self::tensor3_folded(t).into()).index_2d(row_idx, col_idx);
+        }
         match self {
             Value::Matrix(m) => {
                 let rows = Self::resolve_index_dim(&row_idx, m.nrows())?;
@@ -1972,6 +2014,14 @@ impl Value {
                 other.type_name()
             )),
         }
+    }
+
+    /// A `(m, n, p)` tensor as the `m × (n·p)` matrix with column `k·n + j`:
+    /// MATLAB's view for two subscripts, and the same column-major order as
+    /// `T(:)`.
+    fn tensor3_folded(t: &ndarray::Array3<C64>) -> Array2<C64> {
+        let (m, n, p) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+        Array2::from_shape_fn((m, n * p), |(i, c)| t[[i, c % n, c / n]])
     }
 
     /// 1-based indexing into a Tensor3: `A(i, j, k)`.

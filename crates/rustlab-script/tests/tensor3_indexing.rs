@@ -132,9 +132,15 @@ fn ranges_on_several_axes_stay_tensor3() {
 
 #[test]
 fn two_singletons_give_a_row_except_the_column_fibre() {
-    assert_eq!(read("T(1, 2, :)"), Shape::Vector(vec![3.0, 9.0, 15.0, 21.0]));
+    assert_eq!(
+        read("T(1, 2, :)"),
+        Shape::Vector(vec![3.0, 9.0, 15.0, 21.0])
+    );
     assert_eq!(read("T(1, :, 3)"), Shape::Vector(vec![13.0, 15.0, 17.0]));
-    assert_eq!(read("T(1, :, end-1)"), Shape::Vector(vec![13.0, 15.0, 17.0]));
+    assert_eq!(
+        read("T(1, :, end-1)"),
+        Shape::Vector(vec![13.0, 15.0, 17.0])
+    );
     assert_eq!(read("T(:, 2, 3)"), Shape::Matrix(2, 1, vec![15.0, 16.0]));
     assert_eq!(read("T(:, end, 1)"), Shape::Matrix(2, 1, vec![5.0, 6.0]));
     // squeeze of a row vector is that row (MATLAB's squeeze of 1×1×p is p×1).
@@ -255,7 +261,12 @@ fn assign_second_axis_and_page_slices() {
 
 #[test]
 fn assign_fibre_from_row_or_column() {
-    let want = with(&[(1, 2, 1, 1.0), (1, 2, 2, 2.0), (1, 2, 3, 3.0), (1, 2, 4, 4.0)]);
+    let want = with(&[
+        (1, 2, 1, 1.0),
+        (1, 2, 2, 2.0),
+        (1, 2, 3, 3.0),
+        (1, 2, 4, 4.0),
+    ]);
     assert_eq!(write("U(1, 2, :) = [1, 2, 3, 4]"), want);
     assert_eq!(write("U(1, 2, :) = [1; 2; 3; 4]"), want);
     let col = with(&[(1, 2, 3, 7.0), (2, 2, 3, 8.0)]);
