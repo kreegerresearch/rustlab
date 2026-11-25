@@ -16,6 +16,7 @@ blake3.workspace      = true
 
 [dev-dependencies]
 proptest.workspace = true
+rayon.workspace    = true
 
 [dependencies.ndarray-linalg]
 version  = "0.17"

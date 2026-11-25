@@ -15,6 +15,18 @@ use crate::sparse_solve::csc::{SparseCsc, SparseScalar};
 use crate::sparse_solve::elimination_tree::column_elimination_tree;
 use crate::sparse_solve::ordering::{OrderingMethod, Permutation};
 use crate::sparse_solve::SparseSolveError;
+use std::borrow::Cow;
+
+/// Which numeric kernel factors the matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CholKernel {
+    /// Pick from the symbolic analysis.
+    Auto,
+    /// Up-looking, one column at a time.
+    Simplicial,
+    /// Multifrontal with dense supernode panels.
+    Supernodal,
+}
 
 /// Cholesky factor of a Hermitian-positive-definite sparse matrix.
 #[derive(Debug)]
@@ -80,6 +92,15 @@ impl<T: SparseScalar> SparseChol<T> {
     /// `SparseSolveError::NotSpd` when a diagonal pivot turns negative or
     /// non-real during elimination.
     pub fn factor<O: OrderingMethod>(a: &SparseCsc<T>, ord: &O) -> Result<Self, SparseSolveError> {
+        Self::factor_with(a, ord, CholKernel::Auto)
+    }
+
+    /// [`SparseChol::factor`] with an explicit kernel choice.
+    pub fn factor_with<O: OrderingMethod>(
+        a: &SparseCsc<T>,
+        ord: &O,
+        _kernel: CholKernel,
+    ) -> Result<Self, SparseSolveError> {
         if !a.is_square() {
             return Err(SparseSolveError::NotSquare {
                 rows: a.nrows(),
@@ -121,6 +142,15 @@ impl<T: SparseScalar> SparseChol<T> {
     pub fn factor_flagged<O: OrderingMethod>(
         a: &SparseCsc<T>,
         ord: &O,
+    ) -> Result<PartialChol<T>, SparseSolveError> {
+        Self::factor_flagged_with(a, ord, CholKernel::Auto)
+    }
+
+    /// [`SparseChol::factor_flagged`] with an explicit kernel choice.
+    pub fn factor_flagged_with<O: OrderingMethod>(
+        a: &SparseCsc<T>,
+        ord: &O,
+        _kernel: CholKernel,
     ) -> Result<PartialChol<T>, SparseSolveError> {
         if !a.is_square() {
             return Err(SparseSolveError::NotSquare {
@@ -171,9 +201,19 @@ impl<T: SparseScalar> SparseChol<T> {
         self.l.nnz()
     }
 
-    /// Read-only access to the factor (mostly useful for tests / introspection).
-    pub fn factor_csc(&self) -> &SparseCsc<T> {
-        &self.l
+    /// The factor as CSC (mostly useful for tests / introspection).
+    pub fn factor_csc(&self) -> Cow<'_, SparseCsc<T>> {
+        Cow::Borrowed(&self.l)
+    }
+
+    /// Order of the factored matrix.
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    /// The kernel that produced this factor.
+    pub fn kernel(&self) -> CholKernel {
+        CholKernel::Simplicial
     }
 
     /// The symmetric permutation: `L * L^H = A(p, p)` with `p = perm().perm()`.

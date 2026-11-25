@@ -36,7 +36,7 @@ pub mod pcg;
 pub mod singleton;
 pub mod triangular;
 
-pub use cholesky::{symbolic_col_counts, PartialChol, SparseChol};
+pub use cholesky::{symbolic_col_counts, CholKernel, PartialChol, SparseChol};
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use ichol::{ichol, IcholOptions, IcholType};
 pub use lu::SparseLU;

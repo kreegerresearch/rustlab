@@ -3952,6 +3952,7 @@ dependencies = [
  "ndarray-linalg",
  "num-complex",
  "proptest",
+ "rayon",
  "thiserror 2.0.21",
 ]
 
