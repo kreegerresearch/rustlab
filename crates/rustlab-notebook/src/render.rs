@@ -7648,7 +7648,15 @@ w = 4
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", mocha, None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            mocha,
+            None,
+            &LinkMode::single_file(),
+        );
         let start = html.find("<figure class=\"mermaid\">").unwrap();
         let end = start + html[start..].find("</figure>").unwrap();
         let fig = html[start..end].to_ascii_lowercase();

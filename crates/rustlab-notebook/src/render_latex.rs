@@ -2633,11 +2633,24 @@ mod tests {
             caption: None,
         }];
         let mocha = Theme::Mocha.colors();
-        render_latex("T", &blocks, &dir, "plots/test", mocha, &crate::render::LinkMode::single_file());
+        render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            mocha,
+            &crate::render::LinkMode::single_file(),
+        );
         let svg = std::fs::read_to_string(dir.join("diagram-1.svg")).unwrap();
         let latte = Theme::Latte.colors();
-        assert!(svg.contains(&format!("fill=\"{}\"", latte.bg_secondary)), "{svg}");
-        assert!(!svg.contains(&format!("fill=\"{}\"", mocha.bg_secondary)), "{svg}");
+        assert!(
+            svg.contains(&format!("fill=\"{}\"", latte.bg_secondary)),
+            "{svg}"
+        );
+        assert!(
+            !svg.contains(&format!("fill=\"{}\"", mocha.bg_secondary)),
+            "{svg}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
