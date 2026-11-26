@@ -2325,7 +2325,7 @@ pub fn generate_index_html(
     padding: 3rem {space_4};
   }}
   /* A block body with an auto-margin column, not a flex row: a nav or
-     footer a host adds beside <main> stacks above or below it. */
+     footer a host adds beside the main column stacks above or below it. */
   main {{
     max-width: 720px;
     margin: 0 auto;
