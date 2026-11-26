@@ -70,6 +70,9 @@ pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;
 pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuard};
+/// The global allocator the `rustlab` binaries install: `System` plus a
+/// per-thread cache of large blocks inside `parmap` tasks.
+pub use rustlab_core::worker_alloc::WorkerCacheAlloc;
 
 /// Parse a `.rlab` source file into a statement list. Thin convenience
 /// over `read_to_string` + `lexer::tokenize` + `parser::parse`; mirrors

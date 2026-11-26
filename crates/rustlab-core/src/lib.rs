@@ -12,6 +12,7 @@ pub mod subscript;
 pub mod sum0;
 pub mod traits;
 pub mod types;
+pub mod worker_alloc;
 
 pub use error::CoreError;
 pub use fingerprint::Fingerprint;

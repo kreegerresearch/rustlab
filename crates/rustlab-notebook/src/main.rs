@@ -7,6 +7,9 @@ use rustlab_plot::{
 use rustlab_script::{set_default_number_format, NumberFormat};
 use std::path::PathBuf;
 
+#[global_allocator]
+static ALLOC: rustlab_script::WorkerCacheAlloc = rustlab_script::WorkerCacheAlloc;
+
 #[derive(Parser)]
 #[command(
     name = "rustlab-notebook",

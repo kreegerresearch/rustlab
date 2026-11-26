@@ -120,6 +120,15 @@ pub(crate) fn may_split() -> bool {
             .get_or_init(|| std::env::var_os("RUSTLAB_PARMAP_NESTED").is_some_and(|v| v == "1"))
 }
 
+/// Whether `parmap` tasks cache large blocks per thread
+/// (`rustlab_core::worker_alloc`). `RUSTLAB_NO_WORKER_CACHE=1` turns it
+/// off, for measuring. Only has an effect in a binary that installs
+/// `WorkerCacheAlloc`.
+fn worker_cache_enabled() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*OFF.get_or_init(|| std::env::var_os("RUSTLAB_NO_WORKER_CACHE").is_some_and(|v| v == "1"))
+}
+
 /// Returns `Err(...)` if the current thread is inside a `parmap` worker
 /// task (i.e. running a parallel-lambda body); otherwise returns `Ok(())`.
 ///
@@ -242,6 +251,10 @@ impl ParmapBackend for LocalRayonBackend {
                 // if invoked during the lambda body. The guard restores
                 // the flag when it drops at end-of-task scope.
                 let _guard = ParallelContextGuard::enter();
+                // Large blocks freed in the task are kept on this thread for
+                // the next allocation of the same size (`worker_alloc`).
+                let _cache =
+                    worker_cache_enabled().then(rustlab_core::worker_alloc::TaskCache::enter);
                 let r = worker.call_callable(callable.clone(), vec![x]);
                 (r, worker.take_profile_stats())
             })
