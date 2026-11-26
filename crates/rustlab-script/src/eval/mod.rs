@@ -471,6 +471,11 @@ impl Evaluator {
         // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
         // bind `end` per axis. A single index binds `end` to the
         // element count. Anything else (no container yet) binds 0.
+        if indices.len() == 2 && matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_))) {
+            return Err(ScriptError::runtime(format!(
+                "index assignment: '{name}' is a tensor3; use one (linear) or three subscripts"
+            )));
+        }
         let idx_vals: Vec<Value> = if self.subscripts_are_plain(indices) {
             indices
                 .iter()
@@ -495,11 +500,6 @@ impl Evaluator {
             self.env.remove("end");
             vec![iv, jv, kv]
         } else if indices.len() == 2 {
-            if matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_))) {
-                return Err(ScriptError::runtime(format!(
-                    "index assignment: '{name}' is a tensor3; use one (linear) or three subscripts"
-                )));
-            }
             let dims = match self.env.get(name.as_str()) {
                 Some(Value::Matrix(m)) => {
                     let s = Shared::shape(m);
