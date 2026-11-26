@@ -1925,7 +1925,13 @@ above the repository root is never read. It accepts only:
 theme = "course"          # any theme name
 theme_dir = "styles/themes"   # optional; default themes/
 jail_root = "."           # optional; see "Path jail" below
+file_browser = false      # optional; drop the collection file browser
 ```
+
+`file_browser = false` removes the file browser from directory HTML (every
+notebook page and `index.html`) and from the `notebook watch` drawer, like
+`--no-file-browser`. `--file-browser` / `--no-file-browser` on the command
+line override it. See [Page navigation](#page-navigation).
 
 Other keys warn and are ignored. A name that cannot be resolved is an
 error that names the file that set it. In `notebook watch` a bad
@@ -2417,7 +2423,7 @@ parent directory to enable cross-notebook navigation.
 
 Every notebook page carries two navigations. The top bar moves between notebooks. The sidebar moves within one.
 
-- The **sidebar** is an in-page TOC built from the H1/H2/H3 headings, in document order. It is omitted when a notebook has no headings, and when a single HTML file is rendered with `--no-toc`. Either way the content column uses the full width (`body.no-toc`).
+- The **sidebar** is an in-page TOC built from the H1/H2/H3 headings, in document order. It is omitted when a notebook has no headings, and when the page is rendered with `--no-toc` (one HTML file, or every page of a directory). Either way the content column uses the full width (`body.no-toc`).
 - The **topbar** is `← Previous`, the parent link, and `Next →`, alongside the current page title. A directory render labels that parent link Index and points it at `index.html`. A single HTML file has no parent link unless you pass `--index`:
 
   ```sh
@@ -2425,7 +2431,7 @@ Every notebook page carries two navigations. The top bar moves between notebooks
     --index /notebooks/ Notebooks
   ```
 
-  The first value is the href. The optional second value is the label (default Index). The same link is repeated in the footer. `--index` and `--no-toc` apply only to one HTML notebook. A directory, or any other format, exits with an error and writes nothing. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected the same way. `--no-comments` is the existing flag; HTML comments stay on unless you pass it. A static HTML page shows comments read-only. `notebook watch --annotate` is what can edit them.
+  The first value is the href. The optional second value is the label (default Index). The same link is repeated in the footer. `--index` applies only to one HTML notebook; a directory exits with an error and writes nothing. `--no-toc` applies to one notebook or to a directory. Either flag with a format other than HTML exits with an error. A `javascript:`, `data:`, `vbscript:`, or `blob:` href is rejected the same way. `--no-comments` is the existing flag; HTML comments stay on unless you pass it. A static HTML page shows comments read-only. `notebook watch --annotate` is what can edit them.
 
 A **Previous · parent · Next** bar is also appended at the foot of a page that has those links, which is useful after a long read.
 
@@ -2444,6 +2450,25 @@ frontmatter `order` then path, with `README.md` first among unordered
 files in its folder. Single-file `render` has no file browser. LaTeX and
 PDF do not.
 
+For a site that supplies its own navigation, drop both columns:
+
+```sh
+rustlab-notebook render course/ -o site/ --no-toc --no-file-browser
+```
+
+`--no-file-browser` removes the browser from every notebook page and from
+`index.html`; `rustlab.toml` `[notebook] file_browser = false` does the
+same, and `--file-browser` turns it back on for one run. `--no-toc` removes
+the heading sidebar from every notebook page. With both, each page has the
+body classes and margins of a single `--no-toc` page: one centred column
+(`<body class="no-toc">`). The top bar and the Previous · Index · Next bar
+at the foot of each page stay. Both flags are HTML only.
+
+The index page styles only its own markup: the card look is on
+`ul.rl-index-list > li > a`, and the heading and footer rules are
+`main > h1` and `main > footer`, so a link or list a host adds keeps its own
+style. Notebook pages scope their footer the same way.
+
 `notebook watch` uses the same tree and the same outline, but they do
 not reserve a column. **Contents** (or `\`) opens one drawer that slides
 over the page. Escape, a click outside the drawer, or choosing a file or
@@ -2452,7 +2477,11 @@ On a wide window the open drawer does not cover headings or a plot's
 title and axis labels: those shift clear of the panel. Under 768px the
 open drawer covers the page until it is dismissed. A single-file watch
 has the outline and no file tree. The comment margin is unchanged.
-`?contents=open` starts the page with the drawer open.
+`?contents=open` starts the page with the drawer open. `watch
+--no-file-browser` (or `[notebook] file_browser = false`) leaves the tree
+out of the drawer and the index page, and `watch --no-toc` leaves the
+outline out. With both there is nothing to show, so there is no Contents
+button; the top bar and the Previous · Index · Next bar stay.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same
 chrome, minus the file browser and, unless `--index` is set, the

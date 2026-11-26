@@ -6,6 +6,26 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.101
+
+### Added
+- **`rustlab-notebook render DIR --no-toc`** drops the heading sidebar from every notebook page of a directory render. Before, `--no-toc` was refused for a directory ("--index and --no-toc apply to a single notebook, not a directory"). `--index` is still single-file only.
+- **`--no-file-browser` / `--file-browser`** on `render` (directory HTML) and `watch`, and **`[notebook] file_browser = false`** in `rustlab.toml`. Off removes the collection file browser from every notebook page and from `index.html`. The command-line flag wins over `rustlab.toml`; the default is on. Both flags are HTML only (`-f latex` / `pdf` / `markdown` with either flag exits 2); on a single file they warn and do nothing.
+- With `--no-toc --no-file-browser`, each page of a collection has the same body classes and margins as a single `render --no-toc` page (`<body class="no-toc">`, one centred column). The top bar and the Previous · Index · Next bar (`nav.page-nav`) stay:
+
+  ```sh
+  rustlab-notebook render course -o site --no-toc --no-file-browser
+  ```
+- `watch --no-file-browser` and `watch --no-toc` leave that part out of the Contents drawer (`--no-file-browser` also drops the tree from the served index). With both there is no drawer and no Contents button; prev/next stay. The drawer is unchanged when neither is set.
+
+### Breaking / behavior changes
+- **The collection `index.html` styles only its own markup.** The card rule was an unscoped `a { display: block; padding…; background…; border… }`, so any link a host page or template added to the index became a full-width card; `ul`, `li`, `h1`, and `footer` were unscoped too. The rules are now `ul.rl-index-list > li > a` (the listing `<ul>` carries `class="rl-index-list"`), `ul.rl-index-list` / `> li`, `main > h1`, and `main > footer`. The listing looks the same.
+  - Bullet and numbered lists in the `index.md` body (`.intro`) now show their markers and an indent. Before, the unscoped `ul { list-style: none }` removed them.
+  - Links in the `index.md` body keep the same colours; the rule that undid the card look on them is gone.
+  - The index `<body>` is a normal block with `main` centred by `margin: 0 auto`, not a centred flex row, so a nav or footer a host adds beside `<main>` stacks above or below it instead of becoming a side column. The listing is in the same place.
+  - *Migration:* CSS that targeted the index listing by `main ul a` or `li a` still matches. A host stylesheet that relied on the index card rule reaching its own links needs its own rule.
+- **Notebook pages scope their footer rule** to `main > footer` (was `footer`), so a `<footer>` a host wraps around the page keeps its own style. The page footer looks the same.
+
 ## 0.3.100
 
 ### Breaking / behavior changes
