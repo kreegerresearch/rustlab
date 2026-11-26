@@ -12246,10 +12246,10 @@ fn tf_to_ss(num: &[f64], den: &[f64]) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     Ok(Value::StateSpace {
-        a: a_mat,
-        b: b_mat,
-        c: c_mat,
-        d: d_mat,
+        a: Box::new(a_mat),
+        b: Box::new(b_mat),
+        c: Box::new(c_mat),
+        d: Box::new(d_mat),
     })
 }
 
@@ -12271,7 +12271,12 @@ fn builtin_ss(args: Vec<Value>) -> Result<Value, ScriptError> {
             let c = to_cmatrix_arg_row(&args[2], "ss", "C")?;
             let d = to_cmatrix_arg(&args[3], "ss", "D")?;
             let (a, b, c, d) = validate_abcd_shapes("ss", a, b, c, d)?;
-            Ok(Value::StateSpace { a, b, c, d })
+            Ok(Value::StateSpace {
+                a: Box::new(a),
+                b: Box::new(b),
+                c: Box::new(c),
+                d: Box::new(d),
+            })
         }
         n => Err(ScriptError::runtime(format!(
             "ss: expected 1 (tf) or 4 (A,B,C,D) arguments, got {}",
@@ -12869,7 +12874,7 @@ fn builtin_step(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     // Convert TF → SS
     let (a_c, b_c, c_c, d_c) = match tf_to_ss(&num, &den).map_err(|e| ScriptError::runtime(e))? {
-        Value::StateSpace { a, b, c, d } => (a, b, c, d),
+        Value::StateSpace { a, b, c, d } => (*a, *b, *c, *d),
         _ => unreachable!(),
     };
     let a = to_real_mat(&a_c);
@@ -12975,7 +12980,7 @@ fn builtin_lqr(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     // Extract A, B from state-space system
     let (a_mat, b_mat) = match &args[0] {
-        Value::StateSpace { a, b, .. } => (a.clone(), b.clone()),
+        Value::StateSpace { a, b, .. } => ((**a).clone(), (**b).clone()),
         other => {
             return Err(ScriptError::type_err(format!(
                 "lqr: first argument must be a state-space system, got {}",

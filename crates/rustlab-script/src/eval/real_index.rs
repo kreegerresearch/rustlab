@@ -86,15 +86,45 @@ impl<'a> Elems<'a> {
     /// The real parts as 0-based positions below `dim_len`, or the first
     /// entry that is not one.
     pub(crate) fn list(self, dim_len: usize) -> Result<Vec<usize>, f64> {
-        (0..self.len())
-            .map(|k| {
-                let re = self.get(k).0;
-                match Value::one_based_to_zero_pub(re) {
-                    Ok(i) if i < dim_len => Ok(i),
-                    _ => Err(re),
+        let mut out = Vec::with_capacity(self.len());
+        for k in 0..self.len() {
+            let re = self.get(k).0;
+            match Value::one_based_to_zero_pub(re) {
+                Ok(i) if i < dim_len => out.push(i),
+                _ => return Err(re),
+            }
+        }
+        Ok(out)
+    }
+
+    /// `src` at the positions [`Elems::list`] gives, without building the
+    /// position list; `None` where `list` is an error.
+    pub(crate) fn gather(self, src: &[f64]) -> Option<Vec<f64>> {
+        // `x` is a valid 1-based position exactly when it is a positive
+        // integer: `as usize` maps NaN, negatives, and fractions to a value
+        // that does not convert back to `x`, or to 0.
+        #[inline]
+        fn at(src: &[f64], x: f64) -> Option<f64> {
+            let i = x as usize;
+            if i == 0 || i as f64 != x {
+                return None;
+            }
+            src.get(i - 1).copied()
+        }
+        let mut out = Vec::with_capacity(self.len());
+        match self {
+            Elems::Re(d) => {
+                for &x in d {
+                    out.push(at(src, x)?);
                 }
-            })
-            .collect()
+            }
+            Elems::C(d) => {
+                for z in d {
+                    out.push(at(src, z.re)?);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Positions in a dimension of `dim_len`: a run, a mask, or a list, in
@@ -192,11 +222,10 @@ impl Value {
                             return Some(Value::real_vector(Array1::from(d[s..s + n].to_vec())));
                         }
                     }
-                    let p = match e.mask(d.len()) {
-                        Some(p) => p,
-                        None => e.list(d.len()).ok()?,
-                    };
-                    Some(Value::real_vector(p.iter().map(|&k| d[k]).collect()))
+                    match e.mask(d.len()) {
+                        Some(p) => Some(Value::real_vector(p.iter().map(|&k| d[k]).collect())),
+                        None => Some(Value::real_vector(Array1::from_vec(e.gather(d)?))),
+                    }
                 };
                 match i {
                     Value::All => Some(Value::Vector(v.clone())),
@@ -247,6 +276,15 @@ impl Value {
                 let (nr, nc) = (s[0], s[1]);
                 let total = nr * nc;
                 let at = |p: usize| d[(p % nr) * nc + p / nr];
+                // A row or a column stores its elements in column-major
+                // order already, so a position list reads storage directly.
+                let list_read = |e: Elems| -> Option<Value> {
+                    if nr == 1 || nc == 1 {
+                        return Some(Value::real_vector(Array1::from_vec(e.gather(d)?)));
+                    }
+                    let p = e.list(total).ok()?;
+                    Some(Value::real_vector(p.iter().map(|&k| at(k)).collect()))
+                };
                 let p = match i {
                     Value::Scalar(k) => {
                         let p = Value::one_based_to_zero_pub(*k).ok()?;
@@ -270,7 +308,7 @@ impl Value {
                         let e = Elems::of_vector(iv)?;
                         match e.mask(total) {
                             Some(p) => p,
-                            None => e.list(total).ok()?,
+                            None => return list_read(e),
                         }
                     }
                     Value::Matrix(im) => {
@@ -292,7 +330,7 @@ impl Value {
                             }
                             p
                         } else if is[0] == 1 || is[1] == 1 {
-                            e.list(total).ok()?
+                            return list_read(e);
                         } else {
                             return None;
                         }

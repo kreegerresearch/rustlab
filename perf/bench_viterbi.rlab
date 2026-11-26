@@ -1,0 +1,4 @@
+# Viterbi decode, rate 1/2 K = 7, 10,000 soft bits (see viterbi_core.rlab).
+N = 10000;
+HARD = 0;
+run viterbi_core.rlab

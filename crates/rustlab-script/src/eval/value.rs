@@ -218,11 +218,13 @@ pub enum Value {
         den: Vec<f64>,
     },
     /// Continuous-time state-space model: ẋ = Ax + Bu, y = Cx + Du.
+    /// Boxed: four inline matrices made every `Value` 272 bytes, and each
+    /// move of a value copies its full size.
     StateSpace {
-        a: CMatrix,
-        b: CMatrix,
-        c: CMatrix,
-        d: CMatrix,
+        a: Box<CMatrix>,
+        b: Box<CMatrix>,
+        c: Box<CMatrix>,
+        d: Box<CMatrix>,
     },
     /// Anonymous function: `@(params) expr`. `captured_env` is the
     /// creation-time snapshot of the body's free variables (plus the
@@ -1212,6 +1214,9 @@ impl Value {
                 other => other,
             })
             .collect();
+        if let Some(v) = self.real_element_or_column(&indices) {
+            return Ok(v);
+        }
         if let Value::Table(t) = self {
             return t.select(&indices);
         }
@@ -1228,6 +1233,38 @@ impl Value {
             return self.index_ref_dispatch(indices).map(Value::into_column);
         }
         self.index_ref_dispatch(indices)
+    }
+
+    /// `M(i, j)` and `M(:, j)` of a real-stored matrix with valid in-range
+    /// scalar subscripts: the same values and shapes as the general path
+    /// (a scalar; an `n×1` real column when `n > 1`), without building
+    /// position lists. `None` sends everything else, including every error,
+    /// down that path.
+    fn real_element_or_column(&self, indices: &[Value]) -> Option<Value> {
+        let Value::Matrix(m) = self else {
+            return None;
+        };
+        let d = Shared::real_slice(m)?;
+        let s = Shared::shape(m);
+        let (nr, nc) = (s[0], s[1]);
+        let col = |x: &Value| match x {
+            Value::Scalar(c) => Self::one_based_to_zero(*c).ok().filter(|&c| c < nc),
+            _ => None,
+        };
+        match indices {
+            [Value::Scalar(r), c] => {
+                let r = Self::one_based_to_zero(*r).ok().filter(|&r| r < nr)?;
+                Some(Value::Scalar(d[r * nc + col(c)?]))
+            }
+            [Value::All, c] if nr > 1 => {
+                let c = col(c)?;
+                let out: Vec<f64> = (0..nr).map(|r| d[r * nc + c]).collect();
+                Some(Value::real_matrix(
+                    Array2::from_shape_vec((nr, 1), out).ok()?,
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Whether MATLAB returns a column for this read: `x(:)`, a non-scalar
@@ -4753,5 +4790,17 @@ mod int_value_tests {
     #[test]
     fn int_display_carries_class() {
         assert_eq!(format!("{}", int32(5)), "5  (int32)");
+    }
+
+    /// Every return, temporary, and argument moves a whole `Value`, so its
+    /// size is a per-operation cost of the interpreter. Box a large new
+    /// variant's payload instead of storing it inline.
+    #[test]
+    fn value_stays_small() {
+        assert!(
+            std::mem::size_of::<Value>() <= 80,
+            "Value is {} bytes",
+            std::mem::size_of::<Value>()
+        );
     }
 }

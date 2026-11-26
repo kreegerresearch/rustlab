@@ -1,0 +1,80 @@
+# Viterbi decoder benchmark: rate 1/2, K = 7, generators 171, 133 (octal).
+#
+# The decoder is the script-level `viterbi` of examples/notebooks/comm/viterbi_fec.md
+# (rustlab has no Viterbi builtin), copied verbatim so the benchmark measures
+# what the notebook runs.  The caller sets N (message bits) and HARD
+# (0 = soft, 1 = hard) and then runs this file; see perf/bench_viterbi.rlab
+# and perf/viterbi_perf.sh (full sweep with wall time and peak RSS).
+
+G = [1 1 1 1 0 0 1; 1 0 1 1 0 1 1];    # 171, 133 octal, current input first
+
+function c = conv_encode(u, G)
+  x = [u, zeros(1, 6)];
+  L = length(x);
+  n = size(G, 1);
+  c = zeros(n, L);
+  for j = 1:n
+    v = convolve(x, G(j, :));
+    c(j, :) = mod(v(1:L), 2);
+  end
+end
+
+function [P0, P1, C0, C1] = trellis(G)
+  n = size(G, 1);
+  P0 = zeros(1, 64); P1 = zeros(1, 64);
+  C0 = zeros(64, n); C1 = zeros(64, n);
+  for ns = 0:63
+    u = floor(ns / 32);
+    for b = 0:1
+      s = mod(ns, 32) * 2 + b;
+      reg = [u, mod(floor(s ./ [32, 16, 8, 4, 2, 1]), 2)];
+      sym = 1 - 2 * mod(G * reg', 2);
+      if b == 0
+        P0(ns + 1) = s + 1;
+        C0(ns + 1, :) = sym';
+      else
+        P1(ns + 1) = s + 1;
+        C1(ns + 1, :) = sym';
+      end
+    end
+  end
+end
+
+function u = viterbi(Y, P0, P1, C0, C1)
+  L = size(Y, 2);
+  pm = -1e9 * ones(1, 64);
+  pm(1) = 0;
+  B0 = C0 * Y;
+  B1 = C1 * Y;
+  D = zeros(64, L);
+  for t = 1:L
+    a = pm(P0) + B0(:, t);
+    b = pm(P1) + B1(:, t);
+    D(:, t) = b > a;
+    pm = max(a, b);
+  end
+  s = 0;
+  u = zeros(1, L);
+  for t = L:-1:1
+    u(t) = floor(s / 32);
+    s = mod(s, 32) * 2 + D(s + 1, t);
+  end
+  u = u(1:L-6);
+end
+
+[P0, P1, C0, C1] = trellis(G);
+seed(42);
+u = randi([0, 1], 1, N);
+x = 1 - 2 * conv_encode(u, G);
+sigma = sqrt(1 / (2 * 0.5 * 10^(3 / 10)));   # Eb/N0 = 3 dB at rate 1/2
+Y = x + sigma * randn(size(x, 1), size(x, 2));
+if HARD
+  Y = sign(Y);
+end
+tic;
+uh = viterbi(Y, P0, P1, C0, C1);
+t_dec = toc;
+errors = sum(uh != u);
+# A checksum of the decoded bits pins the exact output, not just the count.
+chk = mod(sum(uh .* mod((1:N) * 7919, 1000003)), 1000003);
+fprintf("N=%d hard=%d decode=%.3f s errors=%d checksum=%d\n", N, HARD, t_dec, errors, chk);

@@ -332,6 +332,14 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
             let out = with_rop!(op, f => zip(v, d, f));
             Some(Value::real_vector(Array1::from_vec(out)))
         }
+        // Same shape: one flat loop. `broadcast` would walk it a row at a
+        // time, which for an n×1 column is one element per row.
+        (R::Mat(x, xr, xc), R::Mat(y, yr, yc)) if (xr, xc) == (yr, yc) && is_column_elem(op) => {
+            let out = with_rop!(op, f => zip(x, y, f));
+            Some(Value::real_matrix(
+                Array2::from_shape_vec((xr, xc), out).ok()?,
+            ))
+        }
         _ => {
             let (x, xr, xc) = a.grid()?;
             let (y, yr, yc) = b.grid()?;
