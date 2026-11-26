@@ -1094,16 +1094,16 @@ mod tests {
 
     #[test]
     fn drivers_run_on_the_task_thread_inside_a_full_parmap() {
-        use crate::eval::parmap::{split_inside_tasks, TaskSplitGuard};
+        use crate::eval::parmap::{split_inside_tasks, TaskSplit, TaskSplitGuard};
         let outside = driver_calls();
         assert!(outside.iter().all(|&c| c > 1), "split outside: {outside:?}");
-        {
-            let _task = TaskSplitGuard::enter(true);
-            assert_eq!(driver_calls(), outside);
-        }
-        let _task = TaskSplitGuard::enter(false);
+        // 3 unfinished tasks on 4 threads: whole. The tail of 2: split.
+        let split = TaskSplit::new(3, 4);
+        let _task = TaskSplitGuard::enter(split.clone());
         assert_eq!(driver_calls(), [1, 1, 1, 1]);
-        // Split only with at least two pool threads per task.
+        split.finish_one();
+        assert_eq!(driver_calls(), outside);
+        // Split only with at least two pool threads per unfinished task.
         assert!(split_inside_tasks(1, 4) && split_inside_tasks(2, 4));
         assert!(!split_inside_tasks(3, 4) && !split_inside_tasks(8, 4));
         assert!(split_inside_tasks(7, 14) && !split_inside_tasks(8, 14));

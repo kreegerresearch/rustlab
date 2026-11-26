@@ -104,63 +104,101 @@ impl Drop for WorkerScope {
     }
 }
 
-thread_local! {
-    /// Inside a `parmap` task: whether its kernels may split. `None`
-    /// outside a task.
-    static TASK_SPLIT: Cell<Option<bool>> = const { Cell::new(None) };
+/// The tasks of one `parmap` call that have not finished, and the pool
+/// size, shared by its tasks.
+#[derive(Clone)]
+pub(crate) struct TaskSplit {
+    unfinished: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    threads: usize,
 }
 
-/// Sets [`TASK_SPLIT`] for one task and restores the previous value.
+impl TaskSplit {
+    pub(crate) fn new(tasks: usize, threads: usize) -> Self {
+        Self {
+            unfinished: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(tasks)),
+            threads,
+        }
+    }
+
+    /// One task finished.
+    pub(crate) fn finish_one(&self) {
+        self.unfinished
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn allows_split(&self) -> bool {
+        split_inside_tasks(
+            self.unfinished.load(std::sync::atomic::Ordering::Relaxed),
+            self.threads,
+        )
+    }
+}
+
+thread_local! {
+    /// The `parmap` call whose task this thread is running, if any.
+    static TASK_SPLIT: std::cell::RefCell<Option<TaskSplit>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs a task's [`TaskSplit`] for its duration and restores the
+/// previous one (nested `parmap`).
 pub(crate) struct TaskSplitGuard {
-    previous: Option<bool>,
+    previous: Option<TaskSplit>,
 }
 
 impl TaskSplitGuard {
-    pub(crate) fn enter(allowed: bool) -> Self {
+    pub(crate) fn enter(split: TaskSplit) -> Self {
         Self {
-            previous: TASK_SPLIT.with(|c| c.replace(Some(allowed))),
+            previous: TASK_SPLIT.with(|c| c.replace(Some(split))),
         }
     }
 }
 
 impl Drop for TaskSplitGuard {
     fn drop(&mut self) {
-        TASK_SPLIT.with(|c| c.set(self.previous));
+        let previous = self.previous.take();
+        TASK_SPLIT.with(|c| *c.borrow_mut() = previous);
     }
 }
 
-/// Whether the kernels of `tasks` concurrent `parmap` tasks may split onto
-/// a pool of `threads`: only when each task has at least two threads.
+/// Whether a task's kernels may split onto the pool while `unfinished`
+/// tasks of its `parmap` call remain on `threads` pool threads: only when
+/// there are at least two threads per remaining task.
 ///
 /// With fewer, the tasks already occupy the pool, and a task that splits
 /// its arrays waits on chunks other tasks' threads stole (`gelu` on
 /// 129 × 512 ran 2.2× slower per worker under `parmap` × 8 on a 14-core
 /// M4 Max). With spare threads, splitting is what lets one or two large
-/// tasks use them (`parmap` over one gradient window ran 15% slower
-/// serial on 4 cores).
-pub(crate) fn split_inside_tasks(tasks: usize, threads: usize) -> bool {
-    2 * tasks <= threads
+/// tasks, or the last tasks of a call, use them (`parmap` over one
+/// gradient window ran 15% slower serial on 4 cores).
+pub(crate) fn split_inside_tasks(unfinished: usize, threads: usize) -> bool {
+    2 * unfinished <= threads
 }
 
 /// Whether a chunked kernel may hand chunks to other rayon threads: always
-/// outside a `parmap` task, and inside one as [`split_inside_tasks`]
-/// decided for its call. Every chunked kernel computes each element or
+/// outside a `parmap` task, and inside one by [`split_inside_tasks`] at
+/// the time of the call. Every chunked kernel computes each element or
 /// partial sum the same way whole or split, so this never changes a
 /// result. `RUSTLAB_PARMAP_NESTED=1` always splits, for measuring.
 pub(crate) fn may_split() -> bool {
     static NESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    TASK_SPLIT.with(Cell::get).unwrap_or(true)
+    TASK_SPLIT.with(|c| c.borrow().as_ref().is_none_or(TaskSplit::allows_split))
         || *NESTED
             .get_or_init(|| std::env::var_os("RUSTLAB_PARMAP_NESTED").is_some_and(|v| v == "1"))
 }
 
 /// Whether `parmap` tasks cache large blocks per thread
 /// (`rustlab_core::worker_alloc`). `RUSTLAB_NO_WORKER_CACHE=1` turns it
-/// off, for measuring. Only has an effect in a binary that installs
+/// off and `RUSTLAB_WORKER_CACHE_ZEROED=1` also serves `zeros` from it,
+/// both for measuring. Only has an effect in a binary that installs
 /// `WorkerCacheAlloc`.
 fn worker_cache_enabled() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    !*OFF.get_or_init(|| std::env::var_os("RUSTLAB_NO_WORKER_CACHE").is_some_and(|v| v == "1"))
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let set = |name: &str| std::env::var_os(name).is_some_and(|v| v == "1");
+        rustlab_core::worker_alloc::set_cache_zeroed(set("RUSTLAB_WORKER_CACHE_ZEROED"));
+        !set("RUSTLAB_NO_WORKER_CACHE")
+    })
 }
 
 /// Returns `Err(...)` if the current thread is inside a `parmap` worker
@@ -270,7 +308,7 @@ impl ParmapBackend for LocalRayonBackend {
         // Captured on the calling thread. Workers install these per task.
         let jail = crate::path_jail::path_jail();
         let plot = rustlab_plot::plot_context();
-        let split = split_inside_tasks(xs.len(), rayon::current_num_threads());
+        let split = TaskSplit::new(xs.len(), rayon::current_num_threads());
         let results: Vec<(Result<Value, ScriptError>, HashMap<String, FnStats>)> = xs
             .into_par_iter()
             .enumerate()
@@ -286,12 +324,13 @@ impl ParmapBackend for LocalRayonBackend {
                 // if invoked during the lambda body. The guard restores
                 // the flag when it drops at end-of-task scope.
                 let _guard = ParallelContextGuard::enter();
-                let _split = TaskSplitGuard::enter(split);
+                let _split = TaskSplitGuard::enter(split.clone());
                 // Large blocks freed in the task are kept on this thread for
                 // the next allocation of the same size (`worker_alloc`).
                 let _cache =
                     worker_cache_enabled().then(rustlab_core::worker_alloc::TaskCache::enter);
                 let r = worker.call_callable(callable.clone(), vec![x]);
+                split.finish_one();
                 (r, worker.take_profile_stats())
             })
             .collect();

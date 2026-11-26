@@ -3,17 +3,18 @@
 //!
 //! Every block still comes from [`System`]. While a thread holds a
 //! [`TaskCache`] guard, a freed block of at least [`MIN_BLOCK`] bytes is
-//! kept on that thread instead of returned, and a later request with the
-//! same size and alignment gets it back. Outside a guard the allocator is
-//! `System` unchanged, so one-thread scripts allocate exactly as before.
+//! kept on that thread instead of returned, and a later uninitialised
+//! request with the same size and alignment gets it back (elementwise
+//! results, copies, products). Zeroed requests go to `System` unless
+//! [`set_cache_zeroed`] is on. Outside a guard the allocator is `System`
+//! unchanged, so one-thread scripts allocate exactly as before.
 //!
-//! Why: 8 `parmap` workers that each allocate a window's arrays (about
-//! 18 MB of `zeros` in 20 blocks) contend in the system allocator and the
-//! kernel. On Linux glibc moves those sizes onto the `brk` heap after the
-//! first free, so every window grows and trims the heap again (924 `brk`
-//! calls and 134,029 page faults per 100 windows), and `calloc` zeroes the
-//! recycled memory as well. Reusing a block costs one `memset` for a zeroed
-//! request and nothing for an uninitialised one, with no lock and no fault.
+//! Why: 8 `parmap` workers that each produce large arrays contend in the
+//! system allocator and the kernel. On Linux glibc moves 64 KB – 4 MB
+//! blocks onto the `brk` heap after the first free, so every window can
+//! grow and trim the heap again (one window's `zeros` in a loop: 924 `brk`
+//! calls and 134,029 page faults per 100 windows). A reused block needs no
+//! lock, no system call, and no fresh pages.
 //!
 //! Matching is exact (`size` and `align`), so a block is always returned to
 //! `System` with the layout it was allocated with, on whichever thread
@@ -27,6 +28,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Smallest block the cache keeps. Smaller blocks stay in the system
 /// allocator's own per-thread caches.
@@ -91,6 +93,17 @@ impl Drop for TaskCache {
     }
 }
 
+static CACHE_ZEROED: AtomicBool = AtomicBool::new(false);
+
+/// Also serve zeroed requests (`zeros`, `calloc`) from the cache, with a
+/// `memset`. Off by default: the system allocator often hands a zeroed
+/// request fresh pages that need no `memset`, and on a 4-core x86 VM
+/// serving them from the cache made a one-task `parmap` gradient 8%
+/// slower. On for measuring where page faults contend instead.
+pub fn set_cache_zeroed(on: bool) {
+    CACHE_ZEROED.store(on, Ordering::Relaxed);
+}
+
 /// Blocks and bytes this thread's cache holds now.
 pub fn cached_on_this_thread() -> (usize, usize) {
     CACHE
@@ -151,6 +164,18 @@ fn put(ptr: *mut u8, layout: Layout) -> bool {
         .unwrap_or(false)
 }
 
+/// A zeroed block: from the cache (then cleared) when `from_cache` and a
+/// block of this layout is there, else from `System`.
+unsafe fn alloc_zeroed_with(layout: Layout, from_cache: bool) -> *mut u8 {
+    match from_cache.then(|| take(layout)).flatten() {
+        Some(p) => {
+            unsafe { p.write_bytes(0, layout.size()) };
+            p
+        }
+        None => unsafe { System.alloc_zeroed(layout) },
+    }
+}
+
 /// [`System`] plus the per-thread block cache. Install it in a binary:
 ///
 /// ```ignore
@@ -173,13 +198,7 @@ unsafe impl GlobalAlloc for WorkerCacheAlloc {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        match take(layout) {
-            Some(p) => {
-                unsafe { p.write_bytes(0, layout.size()) };
-                p
-            }
-            None => unsafe { System.alloc_zeroed(layout) },
-        }
+        unsafe { alloc_zeroed_with(layout, CACHE_ZEROED.load(Ordering::Relaxed)) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -247,7 +266,11 @@ mod tests {
             let p = A.alloc(l);
             p.write_bytes(0xAB, l.size());
             A.dealloc(p, l);
-            let q = A.alloc_zeroed(l);
+            // By default a zeroed request leaves the cached block alone.
+            let z = alloc_zeroed_with(l, false);
+            assert_eq!(cached_on_this_thread(), (1, l.size()));
+            System.dealloc(z, l);
+            let q = alloc_zeroed_with(l, true);
             assert_eq!(q, p);
             let s = std::slice::from_raw_parts(q, l.size());
             assert!(s.iter().all(|&b| b == 0));
