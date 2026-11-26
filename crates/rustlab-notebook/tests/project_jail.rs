@@ -196,7 +196,11 @@ fn nested_repo(git_file: bool) -> (TempDir, TempDir) {
     std::fs::write(repo.join("lib/helper.rlab"), "shared_value = 4242;\n").unwrap();
     std::fs::write(repo.join("lessons/x.md"), NOTEBOOK).unwrap();
     if git_file {
-        std::fs::write(repo.join(".git"), "gitdir: /elsewhere/.git/worktrees/repo\n").unwrap();
+        std::fs::write(
+            repo.join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/repo\n",
+        )
+        .unwrap();
     } else {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
     }

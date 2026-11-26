@@ -30,7 +30,9 @@
 #                          or the command passes --cache)
 #
 # Project config: rustlab-notebook also reads rustlab.toml from the
-# nearest ancestor of the notebook (the walk stops at $HOME). It accepts
+# nearest ancestor of the notebook. The walk stops at the first directory
+# holding a .git entry (dir or file) and at $HOME; that directory is
+# checked, nothing above it. It accepts
 # only [notebook] theme, theme_dir, and jail_root, and beats this file.
 # Notebook theme precedence, high → low:
 #   --theme / --theme-file  >  frontmatter `theme:`  >  rustlab.toml

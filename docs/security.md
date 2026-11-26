@@ -257,7 +257,7 @@ The root is:
 | `render <file.md>` / `watch <file.md>` | the notebook's own directory |
 | `render <dir>` / `watch <dir>` | the collection root, so nested notebooks can share `../data/` |
 | `watch a.md ch2/b.md demo.rlab` (several files) | each file's own directory, not their common ancestor |
-| `rustlab.toml` `[notebook] jail_root = "REL"` (nearest file walking up from the notebook) | `REL` under that file's directory (see below) |
+| `rustlab.toml` `[notebook] jail_root = "REL"` (nearest file walking up from the notebook, never above the first directory with a `.git` entry or `$HOME`) | `REL` under that file's directory (see below) |
 | `--jail-root <DIR>` on `render` or `watch` | that directory (must exist and contain the notebooks); overrides `rustlab.toml` |
 
 A jail root from `rustlab.toml` is confined to the directory that holds

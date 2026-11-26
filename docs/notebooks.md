@@ -1848,7 +1848,11 @@ First match wins:
 
 `rustlab.toml` is found by walking up from the notebook's directory (the
 input directory for a directory render, the served path for `watch`) to
-the first directory that has one, stopping at `$HOME`. It accepts only:
+the first directory that has one. The walk stops at the first directory
+with a `.git` entry (a directory, or a file as in a worktree or
+submodule) and at `$HOME`: that directory is checked, nothing above it
+is. With neither, it goes up to the filesystem root. A `rustlab.toml`
+above the repository root is never read. It accepts only:
 
 ```toml
 # rustlab.toml at the project root
@@ -2008,8 +2012,9 @@ rustlab-notebook watch lessons/
 
 - The file is the one the theme lookup uses: the nearest `rustlab.toml`
   walking up from the notebook's directory (the input directory for a
-  directory render; each named file for `watch a.md b.md`), checking
-  `$HOME` itself but not its parents, else up to the filesystem root.
+  directory render; each named file for `watch a.md b.md`). The walk
+  stops at the repository root or `$HOME`, as described under
+  [Choosing a theme](#choosing-a-theme).
 - `jail_root` is relative to the directory that holds `rustlab.toml`.
   It must be an existing directory whose real path (symlinks followed) is
   that directory or below it. `..` that climbs out, an absolute path, an
