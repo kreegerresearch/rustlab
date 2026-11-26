@@ -460,6 +460,7 @@ pub(super) fn schedule_render(
                     &rels,
                     idx,
                     state.single,
+                    state.chrome.no_toc,
                     super::collection_browser(&state, Some(&slug)),
                 )
             });
@@ -724,6 +725,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         (state, nb)
     }

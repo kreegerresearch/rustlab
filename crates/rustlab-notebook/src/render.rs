@@ -1510,7 +1510,7 @@ document.addEventListener('click', (e) => {{
     width: 100%;
     height: 100%;
   }}
-  footer {{
+  main > footer {{
     color: {footer_text};
     font-size: 0.8rem;
     margin-top: 3rem;

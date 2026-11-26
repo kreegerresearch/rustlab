@@ -200,6 +200,8 @@ pub struct ServerState {
     /// `watch --git-diff` or `[notebook] git_diff`. When false the server
     /// never spawns git, including for `?diff=` and `GET /git/refs`.
     pub git_enabled: bool,
+    /// Drawer parts hidden by `--no-file-browser` / `--no-toc`.
+    pub chrome: crate::CollectionChrome,
 }
 
 impl ServerState {
@@ -1126,6 +1128,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         })
     }
 
@@ -1264,6 +1267,7 @@ mod tests {
             annotate,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         (state, src)
     }
@@ -1767,6 +1771,7 @@ mod tests {
             annotate: true,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         })
     }
 
@@ -1868,6 +1873,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let app = router(editable_state.clone());
         let res = app
@@ -1920,6 +1926,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let app = router(editable_state);
         let res = app
@@ -1969,6 +1976,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let app = router(editable_state);
         let res = app
@@ -2072,6 +2080,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let app = router(state);
         let res = app
@@ -2337,6 +2346,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         (state, src)
     }
@@ -2435,6 +2445,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let res = post_save(&state, "# not an svg\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -2477,6 +2488,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: false,
+            chrome: Default::default(),
         });
         let res = post_save(&state, "# pwn\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -2656,6 +2668,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: true,
+            chrome: Default::default(),
         });
         let app = router(state);
         let res = app
@@ -2737,6 +2750,7 @@ mod tests {
             annotate: false,
             comments_on: true,
             git_enabled: true,
+            chrome: Default::default(),
         });
         let app = router(state);
         let res = app
