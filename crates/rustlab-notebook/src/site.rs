@@ -691,6 +691,7 @@ mod tests {
         let link_mode = LinkMode::Static {
             known: None,
             current_rel_dir: "ch2/sub".into(),
+            titles: Default::default(),
         };
         let mut chrome = kreeger();
         chrome.stylesheets.push("css/local.css".into());
