@@ -19,8 +19,9 @@
 # Precedence (high → low):
 #   1. Explicit CLI flags   (e.g. rustlab-notebook -t light, rustlab run --plot none)
 #   2. In-script / REPL commands   (format commas, set_default_axis("xy"), viewer on)
-#   3. This file
-#   4. Built-in defaults
+#   3. Project rustlab.toml (rustlab-notebook only; see below)
+#   4. This file
+#   5. Built-in defaults
 #
 # Not this file:
 #   ~/.rustlab_history     — REPL command history (readline)
@@ -30,10 +31,14 @@
 #
 # Project config: rustlab-notebook also reads rustlab.toml from the
 # nearest ancestor of the notebook (the walk stops at $HOME). It accepts
-# only [notebook] theme and [notebook] theme_dir, and beats this file.
+# only [notebook] theme, theme_dir, and jail_root, and beats this file.
 # Notebook theme precedence, high → low:
 #   --theme / --theme-file  >  frontmatter `theme:`  >  rustlab.toml
 #   >  this file ([notebook] theme, then [plot] theme)  >  mocha
+# Notebook file-I/O jail, high → low:
+#   --jail-root  >  rustlab.toml [notebook] jail_root (relative, must stay
+#   inside the directory holding rustlab.toml)  >  the notebook's directory
+# This file has no jail key.
 # startup.rlab is out of scope.
 
 [display]

@@ -257,7 +257,20 @@ The root is:
 | `render <file.md>` / `watch <file.md>` | the notebook's own directory |
 | `render <dir>` / `watch <dir>` | the collection root, so nested notebooks can share `../data/` |
 | `watch a.md ch2/b.md demo.rlab` (several files) | each file's own directory, not their common ancestor |
-| `--jail-root <DIR>` on `render` or `watch` | that directory (must exist and contain the notebooks) |
+| `rustlab.toml` `[notebook] jail_root = "REL"` (nearest file walking up from the notebook) | `REL` under that file's directory (see below) |
+| `--jail-root <DIR>` on `render` or `watch` | that directory (must exist and contain the notebooks); overrides `rustlab.toml` |
+
+A jail root from `rustlab.toml` is confined to the directory that holds
+that file. The value must be relative; it is joined to that directory and
+canonicalised (symlinks followed), and the result must be an existing
+directory at or below the canonical project directory. `..` that climbs
+out, an absolute path, an empty value, and a symlink whose target is
+outside are refused with an error naming the file and the key, and
+nothing is rendered or served. The resolved root must also contain every
+input notebook, and the files of one `watch` must agree on it. Only the
+explicit `--jail-root` flag can put the jail outside the project
+directory. A notebook does not choose its own jail: frontmatter has no jail
+key, and `~/.rustlabrc` has none either.
 
 Several files on `watch` are browsed under their common ancestor, but that
 folder is only a naming root. It can be much wider than any folder the
@@ -270,8 +283,9 @@ read-only: the write routes below refuse it because it is not `.md`.
 Relative paths always resolve against the notebook's own directory (the
 process cwd at execute time, captured once), not the jail root, and
 `sub/../file` is allowed when the result stays inside. Absolute paths
-outside the root are rejected; widen with `--jail-root` rather than
-disabling the jail.
+outside the root are rejected; widen with `--jail-root` (or a
+`rustlab.toml` `jail_root` inside the project) rather than disabling the
+jail.
 
 `parmap` workers are rayon threads. They do not see the calling thread's
 jail on their own, so each task installs that jail (and the caller's plot

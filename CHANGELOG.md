@@ -6,6 +6,23 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.98
+
+### Added
+- **`rustlab.toml` can set the notebook file-I/O jail.** `jail_root` under `[notebook]` is a directory relative to the `rustlab.toml` that sets it, so a project whose lessons share code in a sibling folder no longer needs `--jail-root .` on every call:
+
+  ```toml
+  # rustlab.toml at the repository root, next to lib/ and lessons/
+  [notebook]
+  jail_root = "."
+  ```
+
+  `rustlab-notebook render lessons/x.md` and `rustlab-notebook watch lessons/` can then `run "../lib/x.rlab"`. The file is found the same way as for `[notebook] theme`: the nearest `rustlab.toml` walking up from the notebook's directory, checking `$HOME` itself but not its parents. Order: `--jail-root` > `rustlab.toml` > the built-in default (the notebook's directory, or the rendered / watched directory). `watch` prints the jail and the file it came from.
+- *Security:* the value must be relative and must resolve (symlinks followed) to an existing directory at or below the directory holding `rustlab.toml`. `..` that climbs out, an absolute path, an empty value, and a symlink whose target is outside stop the command with exit 2 and an error naming the file and `notebook.jail_root`; nothing is rendered or served. The jail must contain every input, and the files of one `watch` must agree on it. Only `--jail-root` can widen past the project directory. `~/.rustlabrc` has no jail key. The watch server's origin checks, loopback binding, and per-request jail checks are unchanged.
+
+### Breaking / behavior changes
+- A `rustlab.toml` that already had a `[notebook] jail_root` key (an unknown key before, warned and ignored) now sets the jail, or stops the command if the value is invalid. *Migration:* remove the key, or make it a relative directory inside the project.
+
 ## 0.3.97
 
 ### Performance
