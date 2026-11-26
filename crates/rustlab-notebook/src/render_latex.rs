@@ -635,7 +635,7 @@ fn markdown_to_latex_in(
     opts.insert(Options::ENABLE_MATH);
     // Same single-tilde demotion as the HTML target: `~word~` stays literal
     // prose; only `~~word~~` becomes strikethrough.
-    let events = parse_single_tilde_safe(&md, opts);
+    let events = crate::render::retitle_links(parse_single_tilde_safe(&md, opts), link, "pdf");
 
     let mut out = String::new();
     let mut table_cell_idx: usize = 0;
@@ -1691,6 +1691,7 @@ mod tests {
         let dir_mode = crate::render::LinkMode::Static {
             known: Some(known),
             current_rel_dir: String::new(),
+            titles: Default::default(),
         };
         let out = markdown_to_latex("[p](_setup.md) [g](nope.md) [h](index.md)", &dir_mode);
         assert!(
@@ -1704,6 +1705,38 @@ mod tests {
         );
         let out = markdown_to_latex("[i](01-intro.md)", &dir_mode);
         assert!(out.contains("\\href{01-intro.pdf}"), "{out}");
+    }
+
+    #[test]
+    fn md_to_latex_link_text_is_the_escaped_target_title() {
+        let mode = crate::render::LinkMode::Static {
+            known: Some(
+                ["01-intro.md".to_string(), "02-next.md".to_string()]
+                    .into_iter()
+                    .collect(),
+            ),
+            current_rel_dir: String::new(),
+            titles: std::sync::Arc::new(
+                [(
+                    "01-intro.md".to_string(),
+                    "Costs & 50% off_x #1".to_string(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        for src in ["[[01-intro]]", "[01-intro](01-intro.md)", "[](01-intro.md)"] {
+            let out = markdown_to_latex(src, &mode);
+            assert!(
+                out.contains("\\href{01-intro.pdf}{Costs \\& 50\\% off\\_x \\#1}"),
+                "{src} → {out}"
+            );
+        }
+        let out = markdown_to_latex("[[01-intro|Lesson 1]]", &mode);
+        assert!(out.contains("\\href{01-intro.pdf}{Lesson 1}"), "{out}");
+        // Untitled sibling keeps its file name.
+        let out = markdown_to_latex("[[02-next]]", &mode);
+        assert!(out.contains("\\href{02-next.pdf}{02-next}"), "{out}");
     }
 
     #[test]

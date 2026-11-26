@@ -342,6 +342,7 @@ fn render_one_with_tracking(
     let link = crate::render::LinkMode::Static {
         known: None,
         current_rel_dir: crate::rel_dir_of(&rel),
+        titles: Default::default(),
     };
     let summary = crate::cmd_render_cached(
         src.to_path_buf(),

@@ -77,6 +77,7 @@ fn build_state() -> (
         theme,
         index_title: "smoke".to_string(),
         link_slugs: HashMap::new(),
+        link_titles: Default::default(),
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),

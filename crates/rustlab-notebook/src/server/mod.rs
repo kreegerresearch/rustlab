@@ -302,6 +302,10 @@ pub(super) fn build_set_state(
     // Collected alongside each entry purely to sort by, then dropped: the
     // frontmatter `order:` and the filename the static renderer sorts on.
     let mut sort_keys: Vec<(Option<i64>, String)> = Vec::with_capacity(sources.len());
+    // Titles of the listed notebooks, keyed like `link_slugs`, for
+    // unlabelled cross-notebook link text. Read from the sources above,
+    // never from a link target.
+    let mut link_titles: HashMap<String, String> = HashMap::new();
     for path in &sources {
         // Warn-and-skip, matching cmd_render_dir: one unreadable file
         // (an editor's stale lock, a permissions hiccup) must not refuse
@@ -377,6 +381,11 @@ pub(super) fn build_set_state(
                 path.display()
             );
         }
+        if !script {
+            if let Some(t) = crate::notebook_title(&source) {
+                link_titles.insert(rel.clone(), t);
+            }
+        }
         sort_keys.push((fm.order, rel));
         entries.push((slug, path.clone(), title));
     }
@@ -429,6 +438,14 @@ pub(super) fn build_set_state(
     let index_md_path = walked_dir
         .then(|| canonical_input.join("index.md"))
         .filter(|p| p.is_file());
+    if let Some(t) = index_md_path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|src| crate::notebook_title(&src))
+    {
+        link_titles.entry("index.md".to_string()).or_insert(t);
+    }
+    let link_titles: crate::render::LinkTitles = Arc::new(link_titles);
     let (index_body, index_md_title) = index_md_path
         .as_ref()
         .and_then(|p| {
@@ -436,6 +453,7 @@ pub(super) fn build_set_state(
                 slugs: link_slugs.clone(),
                 current_rel_dir: String::new(),
                 index_at_root: true,
+                titles: link_titles.clone(),
             };
             crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
         })
@@ -465,6 +483,7 @@ pub(super) fn build_set_state(
             slugs: link_slugs.clone(),
             current_rel_dir: crate::rel_dir_of(&rels[idx]),
             index_at_root: is_dir,
+            titles: link_titles.clone(),
         };
         let render = render_for_server(
             path,
@@ -517,6 +536,7 @@ pub(super) fn build_set_state(
         theme,
         index_title,
         link_slugs,
+        link_titles,
         index_body: tokio::sync::RwLock::new(index_body),
         index_md_path,
         render_tx: std::sync::OnceLock::new(),
@@ -1708,6 +1728,7 @@ mod tests {
                 slugs,
                 current_rel_dir,
                 index_at_root,
+                ..
             } => {
                 assert_eq!(current_rel_dir, "ch1");
                 assert_eq!(slugs, state.link_slugs);

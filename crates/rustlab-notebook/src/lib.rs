@@ -1136,10 +1136,29 @@ pub fn cmd_render_dir(
         }
         Some(set)
     };
+    // Unlabelled links to these targets show the target's title. Built from
+    // the notebooks this build already read; no link target is opened.
+    let titles: render::LinkTitles = {
+        let mut map: std::collections::HashMap<String, String> = pending
+            .iter()
+            .filter_map(|p| notebook_title(&p.source).map(|t| (p.rel_md.clone(), t)))
+            .collect();
+        if emit_nav {
+            let index_md_title = index_md_path
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| notebook_title(&s));
+            if let Some(t) = index_title.clone().or(index_md_title) {
+                map.insert("index.md".to_string(), t);
+            }
+        }
+        std::sync::Arc::new(map)
+    };
     // Root-level link mode, used for the index page's own body.
     let link_mode = render::LinkMode::Static {
         known: known.clone(),
         current_rel_dir: String::new(),
+        titles: titles.clone(),
     };
 
     // Index title is also the file-browser label, so resolve it before
@@ -1208,6 +1227,7 @@ pub fn cmd_render_dir(
         let page_link_mode = render::LinkMode::Static {
             known: known.clone(),
             current_rel_dir: page_dir,
+            titles: titles.clone(),
         };
 
         let p = &pending[i];
@@ -2149,17 +2169,56 @@ fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-pub fn extract_title(source: &str, path: &PathBuf) -> String {
-    // Frontmatter `title:` wins over the H1 fallback.
+/// The title a notebook gives itself: frontmatter `title:`, else the first
+/// `# ` heading outside a code fence, without a trailing `{#id}`. `None`
+/// when it has neither. Index entries, page nav, and cross-notebook link
+/// text all use this.
+pub fn notebook_title(source: &str) -> Option<String> {
     let (fm, body) = parse::extract_frontmatter(source);
     if let Some(t) = fm.title {
-        return t;
+        return Some(t);
     }
+    // `#` starts a rustlab comment, so a fenced cell can hold `# setup`.
+    let mut fence: Option<(char, usize)> = None;
     for line in body.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") && !trimmed.starts_with("## ") {
-            return trimmed[2..].trim().to_string();
+        if let Some(c) = trimmed.chars().next().filter(|c| *c == '`' || *c == '~') {
+            let run = trimmed.chars().take_while(|x| *x == c).count();
+            if run >= 3 {
+                match fence {
+                    None => {
+                        fence = Some((c, run));
+                        continue;
+                    }
+                    Some((fc, fl)) if fc == c && run >= fl && trimmed[run..].trim().is_empty() => {
+                        fence = None;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
         }
+        if fence.is_some() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let mut title = rest.trim();
+            if title.ends_with('}') {
+                if let Some(at) = title.rfind(" {#") {
+                    title = title[..at].trim_end();
+                }
+            }
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_title(source: &str, path: &PathBuf) -> String {
+    if let Some(t) = notebook_title(source) {
+        return t;
     }
     path.file_stem()
         .unwrap_or_default()
@@ -2718,6 +2777,7 @@ mod tests {
         let link = render::LinkMode::Static {
             known: None,
             current_rel_dir: "ch1/sec".into(),
+            titles: Default::default(),
         };
         assert_eq!(
             html_asset_root_for(Path::new("/tmp/out/ch1/sec/a.html"), &link),
@@ -4325,6 +4385,100 @@ More.\n";
         assert!(!std::fs::read_to_string(&dst)
             .unwrap()
             .contains(GENERATED_HEADER));
+    }
+
+    #[test]
+    fn notebook_title_is_frontmatter_or_first_h1_else_none() {
+        assert_eq!(
+            notebook_title("---\ntitle: \"Front\"\n---\n# H1\n").as_deref(),
+            Some("Front")
+        );
+        assert_eq!(
+            notebook_title("intro\n\n# Lesson 01: Tokens\n").as_deref(),
+            Some("Lesson 01: Tokens")
+        );
+        assert_eq!(notebook_title("## Only an H2\n"), None);
+        assert_eq!(notebook_title("no heading\n"), None);
+        // A `#` comment inside a code fence is not a heading.
+        assert_eq!(
+            notebook_title("```rustlab\n# setup\nx = 1;\n```\n\n# Real Title\n").as_deref(),
+            Some("Real Title")
+        );
+        // An explicit heading id is not part of the title.
+        assert_eq!(
+            notebook_title("# Intro {#start}\n").as_deref(),
+            Some("Intro")
+        );
+    }
+
+    #[test]
+    fn directory_render_links_show_target_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ch2")).unwrap();
+        std::fs::write(
+            root.join("01-tokens.md"),
+            "# Lesson 01: Tokens & <Encoding>\n\nNext: [[02-untitled]], [[ch2/03-deep]], \
+             [[ch2/03-deep|Lesson 3]], [[_partial]].\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("02-untitled.md"), "No heading.\n").unwrap();
+        std::fs::write(
+            root.join("ch2").join("03-deep.md"),
+            "---\ntitle: Deep Dive\n---\n\nBack to [01-tokens](../01-tokens.md).\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("_partial.md"), "# Partial Title\n").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("directory render");
+        let first = std::fs::read_to_string(out.path().join("01-tokens.html")).unwrap();
+        assert!(
+            first.contains("<a href=\"02-untitled.html\">02-untitled</a>"),
+            "{first}"
+        );
+        assert!(
+            first.contains("<a href=\"ch2/03-deep.html\">Deep Dive</a>"),
+            "{first}"
+        );
+        assert!(
+            first.contains("<a href=\"ch2/03-deep.html\">Lesson 3</a>"),
+            "{first}"
+        );
+        // A partial is not a rendered notebook: left as written, not retitled.
+        assert!(
+            first.contains("<a href=\"_partial.md\">_partial</a>"),
+            "{first}"
+        );
+        let deep = std::fs::read_to_string(out.path().join("ch2/03-deep.html")).unwrap();
+        assert!(
+            deep.contains(
+                "<a href=\"../01-tokens.html\">Lesson 01: Tokens &amp; &lt;Encoding&gt;</a>"
+            ),
+            "{deep}"
+        );
+
+        let tex_out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(tex_out.path().to_path_buf()),
+            Format::Latex,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("latex directory render");
+        let deep_tex = std::fs::read_to_string(tex_out.path().join("ch2/03-deep.tex")).unwrap();
+        assert!(
+            deep_tex.contains("\\href{../01-tokens.pdf}{Lesson 01: Tokens \\& <Encoding>}"),
+            "{deep_tex}"
+        );
     }
 
     #[test]

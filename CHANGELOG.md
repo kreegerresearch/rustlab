@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.99
+
+### Breaking / behavior changes
+- **Notebook links show the target notebook's title.** In `rustlab-notebook render` (HTML, LaTeX, PDF) and `watch` (directory and several files), a link to another notebook with no label of its own now reads as that notebook's title instead of its file name. `[[01-tokens-and-encoding]]` rendered as `01-tokens-and-encoding`; it now renders as `Lesson 01: Tokens & Text Encoding`. The title is the frontmatter `title:`, else the first `# ` heading; a notebook with neither keeps its file name.
+  - Counts as no label: `[[slug]]`, `[[slug.md]]`, and markdown links whose text is empty or names only the target (`[slug](slug.md)`, `[slug.md](slug.md)`, `[filters](ch2/filters.md)`). `[[slug#Section]]` reads `Title § Section`.
+  - Kept as written: `[[slug|label]]`, `[label](slug.md)`, and link text with markup (`` [`slug.md`](slug.md) ``).
+  - Titles come only from notebooks the renderer already lists (the directory, or the files `watch` serves). No link target is read from disk. Single-file `render` / `watch`, unresolved links, Markdown output, and JSON output are unchanged.
+  - Titles are escaped for HTML and LaTeX.
+  - *Migration:* to keep a file name as the visible text, give it as an explicit label that differs from the file name (for example `[[01-tokens|01 tokens]]`) or format it as code.
+- **Notebook titles ignore `#` lines inside code fences and a trailing `{#id}`.** A notebook whose first `# ` line was a rustlab comment inside a fenced cell (`# setup`) was titled `setup` on the index page, in the file browser, and in previous / next links; it now uses its first real H1. `# Intro {#start}` is titled `Intro`, not `Intro {#start}`.
+
 ## 0.3.98
 
 ### Added

@@ -58,6 +58,7 @@ fn single_state_with(
         theme: Theme::Dark.colors(),
         index_title: slug.to_string(),
         link_slugs: HashMap::new(),
+        link_titles: Default::default(),
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
@@ -1070,6 +1071,7 @@ async fn directory_link_navigation_opens_target_websocket() {
         slugs: slugs.clone(),
         current_rel_dir: String::new(),
         index_at_root: true,
+        titles: Default::default(),
     };
     let plot_dir = TempDir::new().unwrap();
     let html_a = render_linked(&a_path, "a", plot_dir.path(), theme, &link);
@@ -1098,6 +1100,7 @@ async fn directory_link_navigation_opens_target_websocket() {
         theme,
         index_title: "notes".into(),
         link_slugs: slugs,
+        link_titles: Default::default(),
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
@@ -1203,6 +1206,7 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         slugs: slugs.clone(),
         current_rel_dir: String::new(),
         index_at_root: false,
+        titles: Default::default(),
     };
     let plot_dir = TempDir::new().unwrap();
     let html = render_linked(&a_path, "a", plot_dir.path(), theme, &link);
@@ -1224,6 +1228,7 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         theme,
         index_title: "A".into(),
         link_slugs: slugs,
+        link_titles: Default::default(),
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
