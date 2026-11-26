@@ -3983,7 +3983,19 @@ fn matrix_cell(m: &Shared<CMatrix>, r: usize, c: usize) -> (f64, f64) {
     }
 }
 
+/// The value shown for `x`: an exact `-0.0` displays as `0`, as in MATLAB's
+/// value display. Only display paths call this; the stored value keeps its
+/// sign (`1 / -0` is `-Inf`), and printf-style formats print C's `-0`.
+pub fn display_zero(x: f64) -> f64 {
+    if x == 0.0 {
+        0.0
+    } else {
+        x
+    }
+}
+
 fn write_cell(f: &mut fmt::Formatter<'_>, re: f64, im: f64) -> fmt::Result {
+    let (re, im) = (display_zero(re), display_zero(im));
     if im.abs() < 1e-12 {
         write!(f, "{re:.6}")
     } else if im >= 0.0 {
@@ -3998,7 +4010,7 @@ impl fmt::Display for Value {
         const MAX_ELEMS: usize = 8;
 
         match self {
-            Value::Scalar(n) => write!(f, "{}", n),
+            Value::Scalar(n) => write!(f, "{}", display_zero(*n)),
             // Class-annotated so an integer is distinguishable from a double
             // in REPL/`disp` output (both would otherwise print bare digits).
             Value::Int { data, class, .. } => write!(f, "{}  ({})", data, class.name()),
@@ -4037,10 +4049,11 @@ impl fmt::Display for Value {
                 }
             }
             Value::Complex(c) => {
-                if c.im >= 0.0 {
-                    write!(f, "{}+{}j", c.re, c.im)
+                let (re, im) = (display_zero(c.re), display_zero(c.im));
+                if im >= 0.0 {
+                    write!(f, "{}+{}j", re, im)
                 } else {
-                    write!(f, "{}{}j", c.re, c.im)
+                    write!(f, "{}{}j", re, im)
                 }
             }
             Value::Vector(v) => {
@@ -4122,13 +4135,7 @@ impl fmt::Display for Value {
                                 write!(f, ", ")?;
                             }
                             let c = t[[r, c_idx, k]];
-                            if c.im.abs() < 1e-12 {
-                                write!(f, "{:.6}", c.re)?;
-                            } else if c.im >= 0.0 {
-                                write!(f, "{:.6}+{:.6}j", c.re, c.im)?;
-                            } else {
-                                write!(f, "{:.6}{:.6}j", c.re, c.im)?;
-                            }
+                            write_cell(f, c.re, c.im)?;
                         }
                         if n > MAX_ELEMS {
                             write!(f, ", ...")?;
@@ -4288,6 +4295,7 @@ impl fmt::Display for Value {
                 write!(f, "sparse [1×{}, nnz={}]", sv.len, sv.nnz())?;
                 let show = sv.entries.len().min(MAX_ELEMS);
                 for &(i, v) in sv.entries.iter().take(show) {
+                    let v = C64::new(display_zero(v.re), display_zero(v.im));
                     if v.im.abs() < 1e-12 {
                         write!(f, "  ({})->{:.6}", i + 1, v.re)?;
                     } else if v.im >= 0.0 {
@@ -4305,6 +4313,7 @@ impl fmt::Display for Value {
                 write!(f, "sparse [{}×{}, nnz={}]", sm.rows, sm.cols, sm.nnz())?;
                 let show = sm.entries.len().min(MAX_ELEMS);
                 for &(r, c, v) in sm.entries.iter().take(show) {
+                    let v = C64::new(display_zero(v.re), display_zero(v.im));
                     if v.im.abs() < 1e-12 {
                         write!(f, "\n  ({},{})->{:.6}", r + 1, c + 1, v.re)?;
                     } else if v.im >= 0.0 {
@@ -4532,6 +4541,11 @@ impl Value {
         // ── per-format scalar helpers ──────────────────────────────────────
 
         fn fmt_scalar(n: f64, nf: NumberFormat) -> String {
+            let n = if nf == NumberFormat::Hex {
+                n
+            } else {
+                display_zero(n)
+            };
             match nf {
                 NumberFormat::Short => format!("{}", n),
                 NumberFormat::Long => format!("{:.15}", n),
@@ -4541,6 +4555,11 @@ impl Value {
         }
 
         fn fmt_scalar_prec(n: f64, nf: NumberFormat) -> String {
+            let n = if nf == NumberFormat::Hex {
+                n
+            } else {
+                display_zero(n)
+            };
             match nf {
                 NumberFormat::Short => format!("{:.6}", n),
                 NumberFormat::Long => format!("{:.15}", n),
@@ -4556,6 +4575,7 @@ impl Value {
                 }
                 return format!("{}+{}j", fmt_scalar(c.re, nf), fmt_scalar(c.im, nf));
             }
+            let c = &C64::new(display_zero(c.re), display_zero(c.im));
             if c.im >= 0.0 {
                 format!("{}+{}j", fmt_scalar(c.re, nf), fmt_scalar(c.im, nf))
             } else {
@@ -4570,6 +4590,7 @@ impl Value {
                 }
                 return format!("{}+{}j", fmt_scalar(c.re, nf), fmt_scalar(c.im, nf));
             }
+            let c = &C64::new(display_zero(c.re), display_zero(c.im));
             if c.im.abs() < 1e-12 {
                 fmt_scalar_prec(c.re, nf)
             } else if c.im >= 0.0 {

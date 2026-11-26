@@ -130,7 +130,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-6c68094e.svg)
+![plot 5](plots/amplifier_analysis/plot-5-387441c9.svg)
 
 <!-- rustlab:output-end -->
 

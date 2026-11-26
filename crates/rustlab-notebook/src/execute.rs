@@ -890,6 +890,13 @@ mod tests {
     }
 
     #[test]
+    fn interp_negative_zero() {
+        let mut ev = make_ev("z = -0; c = conj(1 + 0j);");
+        let result = interpolate_markdown("${z} ${c} ${z:%g} ${z:%.1f}", &mut ev);
+        assert_eq!(result, "0 1+0j -0 -0.0");
+    }
+
+    #[test]
     fn interp_escape() {
         let mut ev = make_ev("");
         let result = interpolate_markdown("Price: \\${100}", &mut ev);

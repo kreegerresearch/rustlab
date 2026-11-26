@@ -1684,6 +1684,8 @@ where
             .y_desc(sp.ylabel.as_str())
             .x_labels(tick_budget(pw, x_tick_w))
             .y_labels(tick_budget(ph, y_tick_w))
+            .x_label_formatter(&|v| format_linear_tick(*v))
+            .y_label_formatter(&|v| format_linear_tick(*v))
             .draw()
             .map_err(err)?;
     }
@@ -1987,13 +1989,7 @@ fn format_cbar_value(v: f64, range: f64) -> String {
     } else {
         format!("{:.3}", v)
     };
-    // A value that rounds to zero must not print as "-0.000". The sign is
-    // floating-point drift, and on a symmetric colour scale a signed zero
-    // reads as a real negative bin sitting next to the positive one.
-    match s.strip_prefix('-') {
-        Some(rest) if rest.parse::<f64>() == Ok(0.0) => rest.to_string(),
-        _ => s,
-    }
+    crate::unsigned_zero_label(s)
 }
 
 fn render_quiver_to_backend<DB>(
@@ -2221,10 +2217,14 @@ impl plotters::coord::ranged1d::Ranged for AxisTicks {
     }
 }
 
-/// Format a linear-axis tick exactly as plotters' default `f64` formatter, so
-/// switching every axis to [`AxisTicks`] does not change linear tick labels.
+/// Format a linear-axis tick as plotters' default `f64` formatter does, except
+/// that a value that rounds to zero reads `0.0` rather than `-0.0`.
 fn format_linear_tick(v: f64) -> String {
-    <plotters::coord::types::RangedCoordf64 as plotters::coord::ranged1d::ValueFormatter<f64>>::format(&v)
+    crate::unsigned_zero_label(
+        <plotters::coord::types::RangedCoordf64 as plotters::coord::ranged1d::ValueFormatter<
+            f64,
+        >>::format(&v),
+    )
 }
 
 fn bounds(xs: &[f64]) -> (f64, f64) {
@@ -2356,6 +2356,95 @@ mod tests {
         // Genuine negatives keep their sign.
         assert_eq!(format_cbar_value(-0.354, 1.414), "-0.354");
         assert_eq!(format_cbar_value(-0.707, 1.414), "-0.707");
+    }
+
+    #[test]
+    fn linear_tick_that_rounds_to_zero_is_unsigned() {
+        // plotters' key points on -0.3..0.3 include -2.78e-17, which its
+        // default formatter prints as "-0.0".
+        assert_eq!(format_linear_tick(-2.7755575615628914e-17), "0.0");
+        assert_eq!(format_linear_tick(-1e-17), "0.0");
+        assert_eq!(format_linear_tick(-0.0), "0.0");
+        assert_eq!(format_linear_tick(-1e-6), "0.0");
+        assert_eq!(format_linear_tick(0.0), "0.0");
+        assert_eq!(format_linear_tick(-0.1), "-0.1");
+        assert_eq!(format_linear_tick(-2.5), "-2.5");
+    }
+
+    /// Every `<text>` body in an SVG, trimmed.
+    fn svg_text_bodies(svg: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some(p) = svg[i..].find("<text") {
+            let start = i + p;
+            let Some(open_end) = svg[start..].find('>').map(|e| start + e) else {
+                break;
+            };
+            let Some(close) = svg[open_end..].find("</text>").map(|e| open_end + e) else {
+                break;
+            };
+            out.push(svg[open_end + 1..close].trim().to_string());
+            i = close + "</text>".len();
+        }
+        out
+    }
+
+    fn assert_no_signed_zero_label(svg: &str) {
+        let bodies = svg_text_bodies(svg);
+        assert!(
+            bodies.iter().any(|b| b == "0.0"),
+            "expected a 0.0 tick, got {bodies:?}"
+        );
+        for b in &bodies {
+            let signed_zero = b
+                .strip_prefix('-')
+                .is_some_and(|rest| rest.parse::<f64>() == Ok(0.0));
+            assert!(!signed_zero, "signed zero label {b:?} in {bodies:?}");
+        }
+    }
+
+    #[test]
+    fn line_plot_axis_ticks_never_read_negative_zero() {
+        let path = tmp_path("_negzero_line.svg");
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        let x: Vec<f64> = (0..=60).map(|i| -0.3 + i as f64 * 0.01).collect();
+        let y = x.clone();
+        push_xy_line(x, y, "", "", None, LineStyle::Solid);
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let _ = std::fs::remove_file(&path);
+        assert_no_signed_zero_label(&svg);
+    }
+
+    #[test]
+    fn heatmap_axis_ticks_never_read_negative_zero() {
+        let path = tmp_path("_negzero_heatmap.svg");
+        let n = 20;
+        let z: Vec<Vec<f64>> = (0..n)
+            .map(|r| (0..n).map(|c| (r + c) as f64).collect())
+            .collect();
+        let xs: Vec<f64> = (0..n)
+            .map(|i| -0.3 + 0.6 * i as f64 / (n - 1) as f64)
+            .collect();
+        let ys = xs.clone();
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.contours.push(crate::figure::ContourData {
+                x: xs,
+                y: ys,
+                z,
+                colorscale: "viridis".to_string(),
+                filled: true,
+                line_color: None,
+                levels: vec![5.0, 10.0, 20.0, 30.0],
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let _ = std::fs::remove_file(&path);
+        assert_no_signed_zero_label(&svg);
     }
 
     // PL3 — NaN cells render transparent and a stray Inf doesn't collapse the

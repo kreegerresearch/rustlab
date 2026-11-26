@@ -4213,14 +4213,14 @@ Still rejected (with a clear error): per-port `[Reference]` lists, `[Mixed-Mode-
 ## Language
 
 ### `print(a [, b, ...])`
-Print one or more values to stdout, space-separated.
+Print one or more values to stdout, space-separated. A negative zero prints as `0` (see [Negative zero](#negative-zero)).
 ```
 print(x)
 print("mean:", mean(v), "std:", std(v))
 ```
 
 ### `disp(x)`
-Display a value followed by a newline. Similar to `print` but always appends a newline and takes exactly one argument. An integer prints with its class and every digit — it is not rounded through `double` (`disp(uint64(0xFFFFFFFFFFFFFFFF))` is `18446744073709551615  (uint64)`).
+Display a value followed by a newline. Similar to `print` but always appends a newline and takes exactly one argument. `disp(-0)` is `0`, as in MATLAB (see [Negative zero](#negative-zero)). An integer prints with its class and every digit — it is not rounded through `double` (`disp(uint64(0xFFFFFFFFFFFFFFFF))` is `18446744073709551615  (uint64)`).
 ```
 disp("Hello, world!")
 disp(A)
@@ -4293,6 +4293,7 @@ fprintf("%+8.2f\n", 1.5)                    % → "   +1.50"
 fprintf("%g\n", 1.23456789e7)               % → 1.23457e+07
 ```
 - Does not append a trailing newline unless `\n` is included in the format string.
+- A negative zero keeps its sign in `%g`, `%f`, and `%e`, as in C and MATLAB: `fprintf("%g\n", -0)` prints `-0`. `%d`, `%i`, and `%u` print `0`. Add zero (`x + 0`) to clear the sign. See [Negative zero](#negative-zero).
 
 ### `sprintf(fmt, args...)`
 Same format specifiers, flags, and escapes as `fprintf`, but returns the formatted string instead of printing it.
@@ -4331,6 +4332,30 @@ x                   % → 1234567
 The session starts in `short`, unless `[display] format` is set in the
 user rc file (see [User settings (`~/.rustlabrc`)](#user-settings-rustlabrc)
 below). An in-script or REPL `format` command always wins over the rc.
+
+### Negative zero
+
+IEEE doubles have a `-0`. rustlab stores it and computes with it, as MATLAB does: `1 / -0` is `-Inf`, `x = -0; 1 / x` is `-Inf`, and `-0 == 0` is true.
+
+How it prints depends on the formatter. Value display follows MATLAB's command-window display, which never shows the sign of a zero. printf-style formats follow C, as MATLAB's do.
+
+| Output | `-0` prints as | MATLAB |
+|---|---|---|
+| Auto-display `x = -0`, `disp(-0)`, `print(-0)` | `0` | `x = 0`, `0` |
+| Vector / matrix / tensor3 cell, sparse entry | `0.000000` | `0` |
+| Complex part: `conj(1 + 0j)` (imag `-0`), `-(0 - 1j)` (real `-0`) | `1+0j`, `0+1j` | no `-0` shown |
+| Struct field, table cell, REPL `whos` preview, notebook output, `${x}` interpolation | `0` | `0` |
+| `format long`, `format commas` | `0.000000000000000`, `0` | `0` |
+| `format hex` | `8000000000000000` (the stored bits) | `8000000000000000` |
+| `sprintf` / `fprintf` `%g`, `%f`, `%e`; `${x:%g}` | `-0`, `-0.000000`, `-0.000000e+00` | same (C conversion) |
+| `sprintf` / `fprintf` `%d`, `%i`, `%u` | `0` | not confirmed |
+| Plot tick and colorbar labels (SVG, PNG, PDF, GIF, terminal, viewer) | `0.0` / `0` | `0` |
+
+Only an exact zero loses its sign in value display. A tiny negative number is not zero: `[-1e-17, 1]` prints `-0.000000  1.000000`, as MATLAB prints `-0.0000`.
+
+Plot labels go further: any tick or colorbar value that rounds to zero at the label's precision reads `0`. Tick positions are computed by repeated addition, so the zero tick of a `-0.3 … 0.3` axis is about `-2.8e-17`, which used to print `-0.0`. The terminal axis labels its midpoint `0` when it is within `1e-12` of the axis span. Plotly (HTML output) already labels such ticks `0`.
+
+To print an unsigned zero with `sprintf`, add zero first: `sprintf("%g", x + 0)`.
 
 ### User settings (`~/.rustlabrc`)
 Optional **declarative TOML** file for user-global defaults. It is **not**

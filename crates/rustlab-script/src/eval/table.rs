@@ -625,6 +625,10 @@ fn cell_text(col: &TableColumn, row: usize) -> (String, bool) {
 }
 
 fn format_number(c: C64) -> String {
+    let c = C64::new(
+        super::value::display_zero(c.re),
+        super::value::display_zero(c.im),
+    );
     if c.im.abs() < 1e-12 {
         sanitize_sentinel(&format!("{}", c.re))
     } else if c.im >= 0.0 {

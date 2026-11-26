@@ -82,6 +82,17 @@ use rustlab_core::{CMatrix, RMatrix, RVector};
 
 /// Sync the current figure to its non-terminal output (HTML file or viewer).
 /// Called after FIGURE state mutations that don't go through render_figure_terminal().
+/// A tick or colorbar label for a value that rounds to zero reads `0`, not
+/// `-0.0`: the sign is floating-point drift (plotters' key points on
+/// `-0.3..0.3` include `-2.8e-17`) or a stored `-0`, and a signed zero next
+/// to the positive ticks reads as a negative bin.
+pub(crate) fn unsigned_zero_label(s: String) -> String {
+    match s.strip_prefix('-') {
+        Some(rest) if rest.parse::<f64>() == Ok(0.0) => rest.to_string(),
+        _ => s,
+    }
+}
+
 pub fn sync_figure_outputs() {
     match current_figure_output() {
         FigureOutput::Html(_) => sync_html_file(),

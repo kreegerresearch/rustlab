@@ -23,7 +23,7 @@ pub(crate) fn fmt_g(v: f64) -> String {
         return "0".to_string();
     }
     let abs = v.abs();
-    if abs < 0.001 || abs >= 10000.0 {
+    let s = if abs < 0.001 || abs >= 10000.0 {
         format!("{:.2e}", v)
     } else if abs >= 100.0 {
         format!("{:.0}", v)
@@ -31,7 +31,19 @@ pub(crate) fn fmt_g(v: f64) -> String {
         format!("{:.1}", v)
     } else {
         format!("{:.2}", v)
+    };
+    crate::unsigned_zero_label(s)
+}
+
+/// Terminal axis labels: the two bounds and the midpoint. A midpoint within
+/// rounding error of zero (`(-0.7 + 0.7000000000000001) / 2` is `5.6e-17`)
+/// is labelled `0`.
+pub(crate) fn axis_tick_labels(lo: f64, hi: f64) -> [String; 3] {
+    let mut mid = (lo + hi) / 2.0;
+    if mid.abs() <= (hi - lo).abs() * 1e-12 {
+        mid = 0.0;
     }
+    [fmt_g(lo), fmt_g(mid), fmt_g(hi)]
 }
 
 fn wait_for_key() -> Result<(), PlotError> {
@@ -394,20 +406,16 @@ pub(crate) fn draw_subplots(
                 "y"
             };
 
-            let x_mid = (x_min + x_max) / 2.0;
-            let y_mid = (y_min + y_max) / 2.0;
-
-            let x_labels_vec = if let Some(labels) = &sp.x_labels {
+            let x_labels_vec: Vec<ratatui::text::Span> = if let Some(labels) = &sp.x_labels {
                 labels
                     .iter()
                     .map(|l| ratatui::text::Span::raw(l.clone()))
                     .collect()
             } else {
-                vec![
-                    ratatui::text::Span::raw(fmt_g(x_min)),
-                    ratatui::text::Span::raw(fmt_g(x_mid)),
-                    ratatui::text::Span::raw(fmt_g(x_max)),
-                ]
+                axis_tick_labels(x_min, x_max)
+                    .into_iter()
+                    .map(ratatui::text::Span::raw)
+                    .collect()
             };
             let chart = Chart::new(datasets)
                 .block(Block::default().borders(Borders::ALL).title(title))
@@ -418,14 +426,12 @@ pub(crate) fn draw_subplots(
                         .labels(x_labels_vec),
                 )
                 .y_axis(
-                    Axis::default()
-                        .title(ylabel)
-                        .bounds([y_min, y_max])
-                        .labels(vec![
-                            ratatui::text::Span::raw(fmt_g(y_min)),
-                            ratatui::text::Span::raw(fmt_g(y_mid)),
-                            ratatui::text::Span::raw(fmt_g(y_max)),
-                        ]),
+                    Axis::default().title(ylabel).bounds([y_min, y_max]).labels(
+                        axis_tick_labels(y_min, y_max)
+                            .into_iter()
+                            .map(ratatui::text::Span::raw)
+                            .collect::<Vec<_>>(),
+                    ),
                 );
 
             f.render_widget(chart, cell);
@@ -1234,6 +1240,27 @@ mod tests {
     #[test]
     fn pi() {
         assert_eq!(fmt_g(std::f64::consts::PI), "3.14");
+    }
+    #[test]
+    fn values_that_round_to_zero_are_unsigned() {
+        assert_eq!(fmt_g(-0.0), "0");
+        // -0.001 is printed with two decimals.
+        assert_eq!(fmt_g(-0.001), "0.00");
+        assert_eq!(fmt_g(-0.004), "0.00");
+        assert_eq!(fmt_g(-0.005), "-0.01");
+    }
+    #[test]
+    fn midpoint_label_of_a_symmetric_axis_reads_zero() {
+        // (-0.7 + 0.7000000000000001) / 2 is 5.55e-17, not 0.
+        let hi = 0.7000000000000001;
+        assert_eq!(
+            super::axis_tick_labels(-0.7, hi),
+            ["-0.70".to_string(), "0".to_string(), "0.70".to_string()]
+        );
+        let lo = -0.30000000000000004;
+        assert_eq!(super::axis_tick_labels(lo, 0.3)[1], "0");
+        // A genuinely small midpoint of a small range is kept.
+        assert_eq!(super::axis_tick_labels(0.0, 2e-6)[1], "1.00e-6");
     }
 
     #[test]

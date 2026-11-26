@@ -275,7 +275,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "layernorm", brief: "Layer normalisation  (x − mean) / std",
         detail: "layernorm(v)               — vector: zero mean, unit variance\nlayernorm(v, eps)          — vector with custom epsilon (default 1e-5)\nlayernorm(M)               — matrix: per-row by default (ML convention,\n                              rows = samples, cols = features)\nlayernorm(M, dim)          — dim=2 per-row (default), dim=1 per-column\nlayernorm(M, dim, eps)     — full form\n\n  Uses population variance (divides by N, not N-1).\n  1-D-shaped matrices (1×N or N×1) are treated as vectors regardless\n  of dim, matching how sum/mean handle the same shapes.\n\n  Note: layernorm's per-row default diverges from sum/mean/std (which\n  default to dim=1). The ML convention dominates here." },
     HelpEntry { name: "print", brief: "Print values to stdout",
-        detail: "print(a, b, ...)  — prints space-separated values followed by newline\n  Integers print with their class and every digit (not rounded through double)." },
+        detail: "print(a, b, ...)  — prints space-separated values followed by newline\n  A negative zero prints as 0 (print(-0) is 0).\n  Integers print with their class and every digit (not rounded through double)." },
     HelpEntry { name: "plot",  brief: "Plot a vector in the terminal",
         detail: "plot(v)  or  plot(v, \"title\")  — opens a ratatui terminal chart; press any key to close\n  plot(v, \"title\", \"color\")  — color: r, g, b, c, m, y, k, w\n  plot(x1, y1, x2, y2, ...)  — one series per (x, y) pair\n  plot(x, y, \"r--\")  or  plot(x1, y1, \"r--\", x2, y2, \"bo\")  — line spec after a pair\n    colour letter, style (- -- : -.), marker (o .). : and -. draw dashed.\n    A spec that is not a line spec, with more data after it, is an error.\n    A dangling x (plot(x1, y1, x2)) is an error. plot(y1, y2) is one pair.\n  plot(labels, y)  or  plot(labels, y, \"title\")  — categorical x-axis\n    labels is a string array, e.g. {\"Mon\",\"Tue\",\"Wed\"}; one label per y point.\n\nExample:\n  plot({\"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\"}, [12, 19, 14, 22, 18], \"Daily\")\n  plot(t, y1, \"r\", t, y2, \"b--\")" },
     HelpEntry { name: "stem",  brief: "Stem plot of a vector",
@@ -404,7 +404,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "tail(T)     — last 8 rows (or the whole table if it is shorter)\n  tail(T, n)  — last n rows, as a table" },
     // Output
     HelpEntry { name: "disp", brief: "Display a value (always prints newline)",
-        detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n.\n  Integers print with their class and every digit (not rounded\n  through double). uint64 max is 18446744073709551615  (uint64)." },
+        detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n.\n  disp(-0) is 0, as in MATLAB; the stored value keeps its sign.\n  Integers print with their class and every digit (not rounded\n  through double). uint64 max is 18446744073709551615  (uint64)." },
     HelpEntry { name: "input", brief: "Read one line from stdin",
         detail: "input(prompt)        — one pure expression (literals, variables, math)\n  input(prompt, \"s\")  — the line as a string; never executed\n  input()             — same, with an empty prompt\n\n  A blank line is \"\". End of stdin is a clean exit (exit 0).\n  Assignments, function definitions, and file or system calls are\n  rejected in expression mode. Untrusted text (a pipe, a file, a\n  model reply) belongs in the \"s\" form or in fgetl(stdin).\n\n  Not available in a notebook, in notebook watch, or inside parmap.\n  The line is not added to REPL history.\n\nExample:\n  name = input(\"name: \", \"s\")\n  k = input(\"k = \")     % user types  2*pi" },
     HelpEntry { name: "fgetl", brief: "Read one line from stdin, or -1 at EOF",
@@ -420,9 +420,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "stdin", brief: "Standard-input handle for fgetl",
         detail: "stdin\n\n  The handle fgetl reads. clear restores it. It is not a file id\n  and not a numeric constant. fgetl(stdin) reads one line." },
     HelpEntry { name: "fprintf", brief: "Formatted print (C-style)",
-        detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %u %o %x %X %f %e %E %g %G %c %s %%\n  Flags:      - + <space> 0 # , (comma inserts thousands separators)\n  * width and .* precision consume the next argument.\n  Precision:  %s max chars, %d min digits, %g significant digits.\n  Escapes:    \\n \\t \\r \\b \\f \\\\\n  Non-finite: Inf, -Inf, NaN.\n  One scalar or string per specifier (no array recycling).\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
+        detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %u %o %x %X %f %e %E %g %G %c %s %%\n  Flags:      - + <space> 0 # , (comma inserts thousands separators)\n  * width and .* precision consume the next argument.\n  Precision:  %s max chars, %d min digits, %g significant digits.\n  Escapes:    \\n \\t \\r \\b \\f \\\\\n  Non-finite: Inf, -Inf, NaN.\n  Negative zero keeps its sign in %g %f %e (\"-0\", as in C and MATLAB);\n  %d %i %u print 0. Use x + 0 to clear the sign.\n  One scalar or string per specifier (no array recycling).\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
     HelpEntry { name: "sprintf", brief: "Formatted string (C-style, returns string)",
-        detail: "sprintf(fmt, arg1, arg2, ...)\n  Same format specifiers, flags, and escapes as fprintf, but returns the string.\n  s = sprintf(\"%,.2f\", 1234567.89)  →  \"1,234,567.89\"\n  s = sprintf(\"%+.2f\", 1.5)  →  \"+1.50\"" },
+        detail: "sprintf(fmt, arg1, arg2, ...)\n  Same format specifiers, flags, and escapes as fprintf, but returns the string.\n  sprintf(\"%g\", -0) is \"-0\" (C and MATLAB); sprintf(\"%g\", -0 + 0) is \"0\".\n  s = sprintf(\"%,.2f\", 1234567.89)  →  \"1,234,567.89\"\n  s = sprintf(\"%+.2f\", 1.5)  →  \"+1.50\"" },
     HelpEntry { name: "commas", brief: "Format number with thousands separators",
         detail: "commas(x)  — format number with comma separators, returns string\n  commas(1234567)       →  \"1,234,567\"\n  commas(1234567.89)    →  \"1,234,567.89\"\n  commas(1234567.89, 2) →  \"1,234,567.89\"  (with precision)\n  commas(1234567, 0)    →  \"1,234,567\"" },
     // Formatting
@@ -995,9 +995,9 @@ fn whos_size(v: &rustlab_script::Value) -> String {
 }
 
 fn whos_preview(v: &rustlab_script::Value) -> String {
-    use rustlab_script::Value;
+    use rustlab_script::{display_zero, Value};
     match v {
-        Value::Scalar(n) => format!("{n}"),
+        Value::Scalar(n) => format!("{}", display_zero(*n)),
         Value::Int { data, .. } => format!("{data}"),
         Value::IntArray {
             data, rows, cols, ..
@@ -1011,10 +1011,11 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
             }
         }
         Value::Complex(c) => {
-            if c.im >= 0.0 {
-                format!("{}+{}j", c.re, c.im)
+            let (re, im) = (display_zero(c.re), display_zero(c.im));
+            if im >= 0.0 {
+                format!("{re}+{im}j")
             } else {
-                format!("{}{}j", c.re, c.im)
+                format!("{re}{im}j")
             }
         }
         Value::Bool(b) => format!("{b}"),
@@ -1046,10 +1047,13 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
                 .iter()
                 .take(3)
                 .map(|c| {
-                    if c.im == 0.0 {
-                        format!("{:.4}", c.re)
+                    let (re, im) = (display_zero(c.re), display_zero(c.im));
+                    if im == 0.0 {
+                        format!("{re:.4}")
+                    } else if im > 0.0 {
+                        format!("{re:.4}+{im:.4}j")
                     } else {
-                        format!("{:.4}+{:.4}j", c.re, c.im)
+                        format!("{re:.4}{im:.4}j")
                     }
                 })
                 .collect();
@@ -3005,5 +3009,20 @@ mod line_io_tests {
         assert!(!history_enabled_from(Some(true), Some("yes")));
         assert!(!history_enabled_from(Some(true), Some("on")));
         assert!(history_enabled_from(Some(true), Some("0")));
+    }
+}
+
+#[cfg(test)]
+mod whos_preview_tests {
+    use super::whos_preview;
+    use rustlab_script::Value;
+
+    #[test]
+    fn negative_zero_previews_as_zero() {
+        assert_eq!(whos_preview(&Value::Scalar(-0.0)), "0");
+        let z = num_complex::Complex::new(1.0, -0.0);
+        assert_eq!(whos_preview(&Value::Complex(z)), "1+0j");
+        let v = ndarray::Array1::from_vec(vec![num_complex::Complex::new(-0.0, 0.0)]);
+        assert_eq!(whos_preview(&Value::Vector(v.into())), "[0.0000]");
     }
 }
