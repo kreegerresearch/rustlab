@@ -43,6 +43,14 @@ use std::mem::MaybeUninit;
 pub(crate) const PAR_MIN_LEN: usize = 1 << 17;
 pub(crate) const PAR_CHUNK: usize = 1 << 14;
 
+/// True when `n` elements are worth splitting into rayon chunks here: at
+/// least `min_len`, and not inside a `parmap` task
+/// ([`super::parmap::may_split`]).
+#[inline]
+pub(crate) fn split(n: usize, min_len: usize) -> bool {
+    n >= min_len && super::parmap::may_split()
+}
+
 /// A binary-operator operand: borrowed from the workspace, or an owned
 /// temporary that may be reused for the result.
 pub(crate) enum Operand<'a> {
@@ -463,7 +471,7 @@ impl RandChunk<'_> {
 
 /// Run `k` over `xs`: whole, or in parallel chunks when long.
 fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
-    if xs.len() < PAR_MIN_LEN {
+    if !split(xs.len(), PAR_MIN_LEN) {
         return k(0, xs);
     }
     xs.par_chunks_mut(PAR_CHUNK)
@@ -493,7 +501,7 @@ fn drive_new_sized(
         return (out, NO_FLAGS);
     }
     let dst = &mut out.spare_capacity_mut()[..n];
-    let flags = if n < min_len {
+    let flags = if !split(n, min_len) {
         finish_seq(dst, 0, k)
     } else {
         dst.par_chunks_mut(chunk)
@@ -541,7 +549,7 @@ fn drive_new_rand(n: usize, k: &RandChunkFn<'_>) -> Vec<C64> {
             chunk.len()
         );
     };
-    if n < PAR_MIN_LEN {
+    if !split(n, PAR_MIN_LEN) {
         run(dst, 0);
     } else {
         dst.par_chunks_mut(PAR_CHUNK)
@@ -760,7 +768,7 @@ fn drive_counted(
             c.len()
         );
     };
-    if n < PAR_MIN_LEN {
+    if !split(n, PAR_MIN_LEN) {
         run(dst, 0);
     } else {
         dst.par_chunks_mut(PAR_CHUNK)
@@ -971,7 +979,7 @@ const SUM_CHUNK: usize = 4096;
 /// differently from a left-to-right sum once there are more than two
 /// elements.
 pub(crate) fn sum_c64(xs: &[C64]) -> C64 {
-    let partials: Vec<C64> = if xs.len() >= PAR_MIN_LEN {
+    let partials: Vec<C64> = if split(xs.len(), PAR_MIN_LEN) {
         xs.par_chunks(SUM_CHUNK).map(sum_chunk).collect()
     } else {
         xs.chunks(SUM_CHUNK).map(sum_chunk).collect()
@@ -988,7 +996,7 @@ pub(crate) fn sum_c64(xs: &[C64]) -> C64 {
 /// `i mod 8` (the even word lanes of `sum_chunk`), and the lanes combine in
 /// the same pairs.
 pub(crate) fn sum_f64(xs: &[f64]) -> f64 {
-    let partials: Vec<f64> = if xs.len() >= PAR_MIN_LEN {
+    let partials: Vec<f64> = if split(xs.len(), PAR_MIN_LEN) {
         xs.par_chunks(SUM_CHUNK).map(sum_chunk_f64).collect()
     } else {
         xs.chunks(SUM_CHUNK).map(sum_chunk_f64).collect()
@@ -1051,6 +1059,46 @@ fn sum_chunk(xs: &[C64]) -> C64 {
 mod tests {
     use super::*;
     use ndarray::{Array1, Array2};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Kernel invocations of each chunked driver for one long array: one
+    /// per chunk normally, exactly one inside a `parmap` task.
+    fn driver_calls() -> [usize; 4] {
+        let n = PAR_MIN_LEN * 2 + 5;
+        let src = vec![C64::new(0.5, 0.0); n];
+        let srcf = vec![0.5f64; n];
+        let calls = [(); 4].map(|_| AtomicUsize::new(0));
+        let mut xs = src.clone();
+        drive(&mut xs, &|_, _| {
+            calls[0].fetch_add(1, Ordering::Relaxed);
+            NO_FLAGS
+        });
+        drive_new_sized(n, PAR_MAP_MIN_LEN, PAR_MAP_CHUNK, &|o, c| {
+            calls[1].fetch_add(1, Ordering::Relaxed);
+            c.fill_map(&src[o..], &mut |x| x);
+            NO_FLAGS
+        });
+        super::super::real_ops::fill_f64(n, PAR_MIN_LEN, PAR_CHUNK, &|o, d| {
+            calls[2].fetch_add(1, Ordering::Relaxed);
+            for (s, &x) in d.iter_mut().zip(&srcf[o..]) {
+                s.write(x);
+            }
+            d.len()
+        });
+        let mut ys = srcf.clone();
+        super::super::real_ops::map_in_place_for_test(&mut ys, &|_| {
+            calls[3].fetch_add(1, Ordering::Relaxed);
+        });
+        calls.map(|c| c.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn drivers_run_on_the_task_thread_inside_parmap() {
+        let outside = driver_calls();
+        assert!(outside.iter().all(|&c| c > 1), "split outside: {outside:?}");
+        let _task = crate::eval::parmap::ParallelContextGuard::enter();
+        assert_eq!(driver_calls(), [1, 1, 1, 1]);
+    }
 
     fn vec_of(xs: &[(f64, f64)]) -> Value {
         Value::Vector(Array1::from_iter(xs.iter().map(|&(r, i)| C64::new(r, i))).into())

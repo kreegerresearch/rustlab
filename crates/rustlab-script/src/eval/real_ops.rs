@@ -19,7 +19,7 @@
 //! `PAR_MIN_LEN` elements, like `elementwise.rs`. Results do not depend on
 //! the split.
 
-use super::elementwise::{Operand, PAR_CHUNK, PAR_MIN_LEN};
+use super::elementwise::{split, Operand, PAR_CHUNK, PAR_MIN_LEN};
 use super::shared::Shared;
 use super::value::Value;
 use crate::ast::BinOp;
@@ -214,12 +214,18 @@ fn real_data(v: &Value) -> Option<&[f64]> {
 /// `k(offset, chunk)` over `xs`: whole below `min_len`, else in parallel
 /// chunks of `chunk` elements.
 fn drive_f64(xs: &mut [f64], min_len: usize, chunk: usize, k: &(dyn Fn(usize, &mut [f64]) + Sync)) {
-    if xs.len() < min_len {
+    if !split(xs.len(), min_len) {
         return k(0, xs);
     }
     xs.par_chunks_mut(chunk)
         .enumerate()
         .for_each(|(i, c)| k(i * chunk, c));
+}
+
+/// [`drive_f64`] at the `update` sizes, calling `tick` once per kernel call.
+#[cfg(test)]
+pub(crate) fn map_in_place_for_test(xs: &mut [f64], tick: &(dyn Fn(usize) + Sync)) {
+    drive_f64(xs, PAR_MIN_LEN, PAR_CHUNK, &|o, _| tick(o));
 }
 
 /// A new length-`n` buffer, each chunk filled once by `k`, which returns
@@ -241,7 +247,7 @@ pub(crate) fn fill_f64(
         let got = k(o, c);
         assert_eq!(got, want, "real kernel filled {got} of {want} slots");
     };
-    if n < min_len {
+    if !split(n, min_len) {
         run(0, dst);
     } else {
         dst.par_chunks_mut(chunk)
@@ -475,7 +481,7 @@ pub(crate) fn transpose_f64(src: &[f64], rows: usize, cols: usize) -> Vec<f64> {
     let dst = &mut out.spare_capacity_mut()[..n];
     let check =
         |got: usize, want: usize| assert_eq!(got, want, "transpose filled {got} of {want} slots");
-    if n < PAR_MIN_LEN {
+    if !split(n, PAR_MIN_LEN) {
         for (b, d) in dst.chunks_mut(TILE * rows).enumerate() {
             let want = d.len();
             check(block(b * TILE, d), want);
@@ -641,14 +647,14 @@ fn compare(op: BinOp, a: R, b: R) -> Option<Value> {
             .map(Value::Logical)
     };
     let map_flags = |src: &[f64], f: &(dyn Fn(f64) -> bool + Sync)| -> Vec<bool> {
-        if src.len() < PAR_MIN_LEN {
+        if !split(src.len(), PAR_MIN_LEN) {
             src.iter().map(|&x| f(x)).collect()
         } else {
             src.par_iter().map(|&x| f(x)).collect()
         }
     };
     let zip_flags = |x: &[f64], y: &[f64]| -> Vec<bool> {
-        if x.len() < PAR_MIN_LEN {
+        if !split(x.len(), PAR_MIN_LEN) {
             x.iter().zip(y).map(|(&p, &q)| cmp(p, q)).collect()
         } else {
             x.par_iter()

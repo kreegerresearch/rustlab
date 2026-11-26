@@ -3396,7 +3396,7 @@ fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
                             }
                         }
                     };
-                    if d.len() >= super::elementwise::PAR_MIN_LEN {
+                    if super::elementwise::split(d.len(), super::elementwise::PAR_MIN_LEN) {
                         use rayon::prelude::*;
                         let chunk = super::elementwise::PAR_CHUNK;
                         acc.par_chunks_mut(chunk)

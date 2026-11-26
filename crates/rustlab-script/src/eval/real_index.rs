@@ -152,7 +152,10 @@ impl Value {
                     return Some(Value::real_vector(rows.iter().map(|&r| at(r, c)).collect()));
                 }
                 let n = rows.len() * cols.len();
-                if let (true, Some((c0, w))) = (n >= super::elementwise::PAR_MIN_LEN, col_run) {
+                if let (true, Some((c0, w))) = (
+                    super::elementwise::split(n, super::elementwise::PAR_MIN_LEN),
+                    col_run,
+                ) {
                     // A large block (`M(:, a:b)`): row segments copied in
                     // parallel.
                     use rayon::prelude::*;

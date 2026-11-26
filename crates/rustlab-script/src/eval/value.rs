@@ -3829,7 +3829,7 @@ impl Value {
         let dst = &mut out.spare_capacity_mut()[..total];
         let check =
             |n: usize, want: usize| assert_eq!(n, want, "concatenation filled {n} of {want} slots");
-        if total >= super::elementwise::PAR_MIN_LEN {
+        if super::elementwise::split(total, super::elementwise::PAR_MIN_LEN) {
             use rayon::prelude::*;
             let chunk = super::elementwise::PAR_CHUNK;
             dst.par_chunks_mut(chunk).enumerate().for_each(|(i, d)| {

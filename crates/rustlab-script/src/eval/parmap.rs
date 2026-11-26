@@ -58,12 +58,12 @@ thread_local! {
 /// Guard that sets `PARALLEL_CONTEXT = true` for its lifetime and restores
 /// the previous value on drop. Used by the rayon worker tasks to mark the
 /// span where the user's lambda is running.
-struct ParallelContextGuard {
+pub(crate) struct ParallelContextGuard {
     previous: bool,
 }
 
 impl ParallelContextGuard {
-    fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         let previous = PARALLEL_CONTEXT.with(|c| c.replace(true));
         Self { previous }
     }
@@ -102,6 +102,22 @@ impl Drop for WorkerScope {
     fn drop(&mut self) {
         rustlab_plot::set_plot_context(self.plot_prev);
     }
+}
+
+/// Whether a chunked kernel may hand chunks to other rayon threads.
+///
+/// False inside a `parmap` task: the tasks already occupy the pool, and a
+/// task that splits its arrays made every task wait on chunks that other
+/// tasks' threads had stolen (`gelu` on 129 × 512 ran 2.2× slower per
+/// worker under `parmap` × 8 on a 14-core M4 Max). Every chunked kernel
+/// computes each element or partial sum the same way whole or split, so
+/// this never changes a result. `RUSTLAB_PARMAP_NESTED=1` restores the
+/// split, for measuring.
+pub(crate) fn may_split() -> bool {
+    static NESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !PARALLEL_CONTEXT.with(Cell::get)
+        || *NESTED
+            .get_or_init(|| std::env::var_os("RUSTLAB_PARMAP_NESTED").is_some_and(|v| v == "1"))
 }
 
 /// Returns `Err(...)` if the current thread is inside a `parmap` worker
