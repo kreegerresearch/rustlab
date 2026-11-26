@@ -1848,13 +1848,18 @@ First match wins:
 
 `rustlab.toml` is found by walking up from the notebook's directory (the
 input directory for a directory render, the served path for `watch`) to
-the first directory that has one, stopping at `$HOME`. It accepts only:
+the first directory that has one. The walk stops at the first directory
+with a `.git` entry (a directory, or a file as in a worktree or
+submodule) and at `$HOME`: that directory is checked, nothing above it
+is. With neither, it goes up to the filesystem root. A `rustlab.toml`
+above the repository root is never read. It accepts only:
 
 ```toml
 # rustlab.toml at the project root
 [notebook]
 theme = "course"          # any theme name
 theme_dir = "styles/themes"   # optional; default themes/
+jail_root = "."           # optional; see "Path jail" below
 ```
 
 Other keys warn and are ignored. A name that cannot be resolved is an
@@ -1989,6 +1994,44 @@ root that does not contain them rejects their own relative paths).
 Relative paths still resolve
 against the notebook's own directory; `sub/../file` is fine when it stays
 inside. See `docs/security.md`.
+
+**Setting the jail in `rustlab.toml`.** A project whose notebooks share
+code in a sibling folder can set the jail once instead of passing
+`--jail-root` on every call:
+
+```toml
+# rustlab.toml at the repository root, next to lib/ and lessons/
+[notebook]
+jail_root = "."
+```
+
+```sh
+rustlab-notebook render lessons/x.md     # lessons/x.md may now `run "../lib/gpt.rlab"`
+rustlab-notebook watch lessons/
+```
+
+- The file is the one the theme lookup uses: the nearest `rustlab.toml`
+  walking up from the notebook's directory (the input directory for a
+  directory render; each named file for `watch a.md b.md`). The walk
+  stops at the repository root or `$HOME`, as described under
+  [Choosing a theme](#choosing-a-theme).
+- `jail_root` is relative to the directory that holds `rustlab.toml`.
+  It must be an existing directory whose real path (symlinks followed) is
+  that directory or below it. `..` that climbs out, an absolute path, an
+  empty string, and a symlink that leads out are errors (exit 2, nothing
+  rendered) that name the file and the key; there is no fallback to a
+  wider or narrower jail.
+- The jail must contain every notebook being rendered or watched;
+  otherwise the command stops with an error.
+- When `watch` is given several files whose `rustlab.toml` files set
+  different jails, or where only some set one, it stops and asks for
+  `--jail-root`.
+- Order: `--jail-root` > `rustlab.toml` `[notebook] jail_root` > the
+  built-in default (the notebook's directory, or the rendered or watched
+  directory). Only `--jail-root` can reach outside the project directory.
+  `~/.rustlabrc` has no jail key.
+- `watch` reads `rustlab.toml` once at start. It prints the jail and the
+  file it came from; restart the server after changing it.
 
 ### LaTeX (`--format latex`)
 

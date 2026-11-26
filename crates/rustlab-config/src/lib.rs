@@ -12,8 +12,9 @@
 //! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
 //!
 //! A project may also carry `rustlab.toml` (see [`find_project_config`] and
-//! [`load_project`]). It accepts only `[notebook] theme` and
-//! `[notebook] theme_dir`; other keys warn. `startup.rlab` is out of scope.
+//! [`load_project`]). It accepts only `[notebook] theme`,
+//! `[notebook] theme_dir`, and `[notebook] jail_root`; other keys warn.
+//! `startup.rlab` is out of scope.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -337,7 +338,9 @@ pub const PROJECT_CONFIG: &str = "rustlab.toml";
 
 /// Nearest `rustlab.toml`, walking up from `start` (a file's directory or
 /// a directory). Stops at the first match or the filesystem root, and
-/// does not go above `home`: `home` itself is checked, its parents are not.
+/// does not go above `home` or the first directory with a `.git` entry
+/// (a directory, or a file as in a worktree or submodule): that directory
+/// itself is checked, its parents are not.
 pub fn find_project_config(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
     let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
@@ -347,7 +350,7 @@ pub fn find_project_config(start: &Path, home: Option<&Path>) -> Option<PathBuf>
         if candidate.is_file() {
             return Some(candidate);
         }
-        if home.as_deref() == Some(d) {
+        if home.as_deref() == Some(d) || d.join(".git").symlink_metadata().is_ok() {
             return None;
         }
         dir = d.parent();
@@ -366,6 +369,10 @@ pub struct ProjectConfig {
     pub notebook_theme: Option<String>,
     /// `[notebook] theme_dir`, resolved against `root`. Must stay inside it.
     pub theme_dir: Option<PathBuf>,
+    /// `[notebook] jail_root`: the notebook file-I/O jail, canonical. An
+    /// existing directory at or below the canonical `root`; see
+    /// [`project_jail_dir`].
+    pub jail_root: Option<PathBuf>,
     /// Dotted keys this schema does not know. Callers warn once each.
     pub unknown_keys: Vec<String>,
 }
@@ -409,6 +416,7 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
         root: root.clone(),
         notebook_theme: None,
         theme_dir: None,
+        jail_root: None,
         unknown_keys: Vec::new(),
     };
     for (key, val) in table {
@@ -431,6 +439,13 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
                             format!("\"{s}\" leaves the project root {}", root.display()),
                         )
                     })?);
+                }
+                "jail_root" => {
+                    let s = expect_string(v, path, "notebook.jail_root")?;
+                    out.jail_root = Some(
+                        project_jail_dir(&root, s)
+                            .map_err(|m| ConfigError::invalid(path, "notebook.jail_root", m))?,
+                    );
                 }
                 other => out.unknown_keys.push(format!("notebook.{other}")),
             }
@@ -474,6 +489,73 @@ fn project_relative_dir(root: &Path, rel: &str) -> Option<PathBuf> {
         return Some(canon);
     }
     Some(joined)
+}
+
+/// Resolve a `[notebook] jail_root` value against the directory holding
+/// `rustlab.toml`. The value must be relative and must name an existing
+/// directory whose canonical path is that directory or below it, so `..`,
+/// an absolute path, and a symlink that leads out are all refused. Returns
+/// the canonical path. A project file can only narrow to its own tree;
+/// widening past it takes the `--jail-root` flag.
+pub fn project_jail_dir(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let canon_root = std::fs::canonicalize(root).map_err(|e| {
+        format!(
+            "cannot resolve the project directory {}: {e}",
+            root.display()
+        )
+    })?;
+    if rel.is_empty() {
+        return Err(format!(
+            "expected a directory relative to {} (\".\" is the project directory)",
+            canon_root.display()
+        ));
+    }
+    let rel_path = Path::new(rel);
+    if rel_path.has_root() || rel_path.is_absolute() {
+        return Err(format!(
+            "\"{rel}\" must be relative to the project directory {}",
+            canon_root.display()
+        ));
+    }
+    let escapes = || {
+        format!(
+            "\"{rel}\" escapes the project directory {}",
+            canon_root.display()
+        )
+    };
+    let mut depth = 0usize;
+    for c in rel_path.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => depth = depth.checked_sub(1).ok_or_else(escapes)?,
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "\"{rel}\" must be relative to the project directory {}",
+                    canon_root.display()
+                ))
+            }
+        }
+    }
+    // Joined as written so the OS resolves `link/..` the way a later
+    // open would; the canonical prefix check below is the authority.
+    let canon = std::fs::canonicalize(canon_root.join(rel_path)).map_err(|e| {
+        format!(
+            "\"{rel}\" is not a directory under {}: {e}",
+            canon_root.display()
+        )
+    })?;
+    if !canon.starts_with(&canon_root) {
+        return Err(escapes());
+    }
+    if !canon.is_dir() {
+        return Err(format!(
+            "\"{rel}\" is not a directory ({})",
+            canon.display()
+        ));
+    }
+    Ok(canon)
 }
 
 /// Locations consulted by [`load`].
@@ -1456,6 +1538,130 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("leaves the project root"), "{err}");
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_config_walk_stops_at_the_git_root() {
+        let root = tempdir("git-stop");
+        let repo = root.join("repo");
+        let inner = repo.join("lessons/unit1");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(root.join(PROJECT_CONFIG), "").unwrap();
+        // No .git anywhere: the walk reaches the outer file as before.
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(root.join(PROJECT_CONFIG))
+        );
+        // A .git directory marks the repository root: nothing above it.
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        assert_eq!(find_project_config(&inner, None), None);
+        assert!(load_project(&inner, None).unwrap().is_none());
+        // The .git root itself is still checked.
+        std::fs::write(repo.join(PROJECT_CONFIG), "").unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(repo.join(PROJECT_CONFIG))
+        );
+        // Starting at the .git root finds its own file.
+        assert_eq!(
+            find_project_config(&repo, None),
+            Some(repo.join(PROJECT_CONFIG))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_config_walk_stops_at_a_git_file() {
+        // Worktrees and submodules have a `.git` file, not a directory.
+        let root = tempdir("git-file");
+        let sub = root.join("sub");
+        let inner = sub.join("notes");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(root.join(PROJECT_CONFIG), "").unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        assert_eq!(find_project_config(&inner, None), None);
+        std::fs::write(sub.join(PROJECT_CONFIG), "").unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(sub.join(PROJECT_CONFIG))
+        );
+        // A nearer .git wins over an outer one.
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(sub.join(PROJECT_CONFIG))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn jail_err(root: &Path, value: &str) -> String {
+        parse_project_toml(
+            &format!("[notebook]\njail_root = \"{value}\"\n"),
+            &root.join(PROJECT_CONFIG),
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    #[test]
+    fn project_jail_root_resolves_inside_the_toml_directory() {
+        let root = tempdir("jail-ok");
+        std::fs::create_dir_all(root.join("lib/deep")).unwrap();
+        let path = root.join(PROJECT_CONFIG);
+        let p = parse_project_toml("[notebook]\njail_root = \".\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, Some(root.clone()));
+        assert!(p.unknown_keys.is_empty());
+        let p = parse_project_toml("[notebook]\njail_root = \"lib/./deep/..\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, Some(root.join("lib")));
+        let p = parse_project_toml("[notebook]\ntheme = \"latte\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, None);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("lib/deep"), root.join("inner")).unwrap();
+            let p = parse_project_toml("[notebook]\njail_root = \"inner\"\n", &path).unwrap();
+            assert_eq!(p.jail_root, Some(root.join("lib/deep")));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_jail_root_refuses_to_escape() {
+        let root = tempdir("jail-escape");
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        for escape in ["..", "../", "../x", "lib/../..", "lib/../../x"] {
+            let err = jail_err(&root, escape);
+            assert!(err.contains("notebook.jail_root"), "{escape}: {err}");
+            assert!(err.contains("escapes"), "{escape}: {err}");
+        }
+        let abs_inside = root.join("lib").display().to_string();
+        for abs in ["/", "/etc", abs_inside.as_str()] {
+            let err = jail_err(&root, abs);
+            assert!(err.contains("notebook.jail_root"), "{abs}: {err}");
+            assert!(err.contains("must be relative"), "{abs}: {err}");
+        }
+        let err = jail_err(&root, "");
+        assert!(err.contains("notebook.jail_root"), "{err}");
+        let err = jail_err(&root, "missing");
+        assert!(err.contains("not a directory"), "{err}");
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        let err = jail_err(&root, "file.txt");
+        assert!(err.contains("not a directory"), "{err}");
+        let err = parse_project_toml("[notebook]\njail_root = 1\n", &root.join(PROJECT_CONFIG))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected a string"), "{err}");
+        #[cfg(unix)]
+        {
+            let outside = tempdir("jail-outside");
+            std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+            std::os::unix::fs::symlink(root.parent().unwrap(), root.join("lib/up")).unwrap();
+            for via_link in ["link", "link/.", "lib/up"] {
+                let err = jail_err(&root, via_link);
+                assert!(err.contains("escapes"), "{via_link}: {err}");
+            }
             let _ = std::fs::remove_dir_all(&outside);
         }
         let _ = std::fs::remove_dir_all(&root);

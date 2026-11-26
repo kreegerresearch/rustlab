@@ -181,7 +181,8 @@ enum Command {
         #[arg(long)]
         editable: bool,
         /// Widen the path jail for notebook file I/O (`load`, `save`,
-        /// `savefig`, `saveanim`, `run`, embeds). Default: the watched
+        /// `savefig`, `saveanim`, `run`, embeds). Overrides `rustlab.toml`
+        /// `[notebook] jail_root`. Default: that key, else the watched
         /// directory, or each notebook's own directory for one or several
         /// files. Paths that resolve outside the jail fail with
         /// "path escapes notebook directory".
@@ -386,7 +387,8 @@ enum Command {
         #[arg(long)]
         pretty: bool,
         /// Widen the path jail for notebook file I/O (`load`, `save`,
-        /// `savefig`, `saveanim`, `run`, embeds). Default: the input
+        /// `savefig`, `saveanim`, `run`, embeds). Overrides `rustlab.toml`
+        /// `[notebook] jail_root`. Default: that key, else the input
         /// directory in directory mode, or the notebook's own directory
         /// for a single file. Paths that resolve outside the jail fail
         /// with "path escapes notebook directory".
@@ -713,8 +715,20 @@ fn main() {
                 rc_path.as_deref(),
                 ContrastMode::Warn,
             );
-            // Explicit --jail-root: install on this thread for the re-render
-            // loop; the interactive server threads it through ServerOpts.
+            // --jail-root, else rustlab.toml: install on this thread for the
+            // re-render loop; the interactive server threads it through
+            // ServerOpts.
+            let jail_inputs = rustlab_notebook::server::fileset::expand_watch_args(&inputs)
+                .unwrap_or_else(|_| inputs.clone());
+            let jail = resolve_jail(jail_root, &jail_inputs);
+            if let JailSource::Project { root, toml } = &jail {
+                eprintln!(
+                    "[watch] notebook.jail_root {} from {}",
+                    root.display(),
+                    toml.display()
+                );
+            }
+            let jail_root = jail.dir().cloned();
             let _jail = cli_jail_guard(jail_root.as_ref(), &inputs);
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
@@ -847,10 +861,12 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(2);
             }
-            // Explicit --jail-root applies to every render path below
-            // (single file, directory, JSON); directory renders otherwise
-            // default to the collection root inside cmd_render_dir.
-            let _jail = cli_jail_guard(jail_root.as_ref(), std::slice::from_ref(&input));
+            // --jail-root, else rustlab.toml `[notebook] jail_root`, applies
+            // to every render path below (single file, directory, JSON);
+            // directory renders otherwise default to the collection root
+            // inside cmd_render_dir.
+            let jail = resolve_jail(jail_root, std::slice::from_ref(&project_from));
+            let _jail = cli_jail_guard(jail.dir(), std::slice::from_ref(&input));
 
             // JSON has stdout-only IO semantics (no output path, optional)
             // stdin) so it diverges from the file-based render pipeline
@@ -1147,6 +1163,87 @@ fn apply_process_defaults(settings: &UserSettings) {
 /// to the default jail and confuse the user later). Warns when `input`
 /// is not inside the root, because then even the notebooks' own relative
 /// paths (`savefig("x.svg")`) would be rejected.
+/// Where the notebook file-I/O jail comes from.
+enum JailSource {
+    /// `--jail-root DIR`, as typed. May widen anywhere.
+    Cli(PathBuf),
+    /// `[notebook] jail_root` from `rustlab.toml`: canonical, already
+    /// confined to that file's directory, and containing every input.
+    Project { root: PathBuf, toml: PathBuf },
+    /// Neither: the notebook's directory, or the rendered/watched folder.
+    Default,
+}
+
+impl JailSource {
+    fn dir(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Cli(d) | Self::Project { root: d, .. } => Some(d),
+            Self::Default => None,
+        }
+    }
+}
+
+/// `--jail-root` wins over `rustlab.toml` `[notebook] jail_root`, which
+/// wins over the built-in default. Every input is looked up on its own;
+/// inputs whose projects disagree (or where only some set a jail) are an
+/// error rather than a silent widening, and the project jail must contain
+/// every input. Exits 2 on error.
+fn resolve_jail(cli: Option<PathBuf>, inputs: &[PathBuf]) -> JailSource {
+    if let Some(dir) = cli {
+        return JailSource::Cli(dir);
+    }
+    match project_jail(inputs) {
+        Ok(Some((root, toml))) => JailSource::Project { root, toml },
+        Ok(None) => JailSource::Default,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn project_jail(inputs: &[PathBuf]) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut found: Option<Option<(PathBuf, PathBuf)>> = None;
+    for input in inputs {
+        let project =
+            rustlab_config::load_project(&theme_select::project_start(input), home.as_deref())
+                .map_err(|e| e.to_string())?;
+        let this = project.and_then(|p| p.jail_root.map(|j| (j, p.path)));
+        match &found {
+            None => found = Some(this),
+            Some(prev) if prev.as_ref().map(|p| &p.0) == this.as_ref().map(|t| &t.0) => {}
+            Some(prev) => {
+                let describe = |j: &Option<(PathBuf, PathBuf)>| match j {
+                    Some((root, toml)) => format!("{} (from {})", root.display(), toml.display()),
+                    None => "the default".to_string(),
+                };
+                return Err(format!(
+                    "notebook.jail_root: the inputs have different jails ({} and {}); pass --jail-root to choose one",
+                    describe(prev),
+                    describe(&this)
+                ));
+            }
+        }
+    }
+    let Some(Some((root, toml))) = found else {
+        return Ok(None);
+    };
+    for input in inputs {
+        if let Ok(ci) = std::fs::canonicalize(input) {
+            if !ci.starts_with(&root) {
+                return Err(format!(
+                    "{}: notebook.jail_root {} does not contain {}",
+                    toml.display(),
+                    root.display(),
+                    ci.display()
+                ));
+            }
+        }
+    }
+    Ok(Some((root, toml)))
+}
+
 fn cli_jail_guard(
     dir: Option<&PathBuf>,
     inputs: &[PathBuf],
