@@ -2801,5 +2801,5 @@ See `examples/notebooks/` for working examples:
 - **template_interpolation.md** — embedding computed values with `${expr}` and format specs
 - **string_arrays.md** — string arrays, categorical bar charts, `iscell()`
 - **multi_notebook.md** — directory rendering and cross-notebook links
-- **comm/viterbi_fec.md** — convolutional encoder and soft-decision Viterbi decoder; BER vs. Eb/N0 for rates 1/3–3/4 over AWGN, coding gain, hard vs. soft decisions
+- **comm/viterbi_fec.md** — convolutional encoder and soft-decision Viterbi decoder (written in script, then the `poly2trellis` / `vitdec` builtins); BER vs. Eb/N0 for rates 1/3–3/4 over AWGN, coding gain, hard vs. soft decisions
 - **persistent_cache_demo.md** — `cache enable`, hit-vs-miss timing, file load, status / clear

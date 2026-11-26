@@ -227,7 +227,7 @@ impl Preds {
         for &ns in &t.next {
             count[ns] += 1;
         }
-        if count.iter().any(|&c| c == 0) {
+        if count.contains(&0) {
             return Err(bad("every state needs a predecessor"));
         }
         if count.iter().any(|&c| c > 256) {
@@ -362,7 +362,7 @@ pub fn vitdec(
 ) -> Result<Vec<u8>, DspError> {
     t.validate()?;
     let n = t.n;
-    if code.len() % n != 0 {
+    if !code.len().is_multiple_of(n) {
         return Err(bad(format!(
             "the code length {} must be a multiple of {n}, the output bits per step",
             code.len()

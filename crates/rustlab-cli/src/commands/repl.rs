@@ -673,6 +673,13 @@ pub const HELP: &[HelpEntry] = &[
         detail: "filtfilt(b, a, x)\n  b — numerator coefficients (FIR: filter taps)\n  a — denominator coefficients (FIR: use [1])\n  x — real input signal vector\n\nApplies the filter forward then backward so phase distortion cancels exactly.\nEffective filter order is doubled; no startup transient.\n\nExample (FIR lowpass):\n  h = fir_lowpass(63, 2000, 44100, \"hann\")\n  y = filtfilt(h, [1], x)" },
     HelpEntry { name: "firpmq", brief: "Integer-coefficient Parks-McClellan equiripple FIR",
         detail: "firpmq(n_taps, bands, desired)\nfirpmq(n_taps, bands, desired, weights)\nfirpmq(n_taps, bands, desired, weights, bits)\nfirpmq(n_taps, bands, desired, weights, bits, n_iter)\n  bands   — normalized frequency edges [0,1], 1 = Nyquist; pairs define each band\n  desired — target amplitude at each band edge (piecewise-linear)\n  weights — per-band weights (default: all 1.0)\n  bits    — coefficient word width (default: 16)\n  n_iter  — optimization iterations (default: 8)\n\nReturns integer-valued taps. For unit-gain passband, sum(h_int) is the scale\nfactor — use freqz(h_int / sum(h_int), ...) to verify.\n\nExample (lowpass): firpmq(63, [0,0.2,0.3,1], [1,1,0,0])" },
+    // Channel coding
+    HelpEntry { name: "poly2trellis", brief: "Trellis struct of a convolutional code (MATLAB)",
+        detail: "t = poly2trellis(K, codegen)\nt = poly2trellis(K, codegen, feedback)\n  K        — constraint length, or one per input (1×k)\n  codegen  — octal generators: a vector for one input, else k×n\n  feedback — octal feedback polynomial per input (recursive codes)\n\nFields: numInputSymbols, numOutputSymbols, numStates, nextStates,\noutputs (numStates × numInputSymbols; outputs written in octal).\nThe state is the register contents, newest bit most significant.\n\nExamples:\n  t = poly2trellis(7, [171 133])          % 64 states, rate 1/2\n  r = poly2trellis(5, [37 33], 37)        % recursive systematic\n  w = poly2trellis([5 4], [23 35 0; 0 5 13])" },
+    HelpEntry { name: "istrellis", brief: "Whether a struct is a valid trellis",
+        detail: "istrellis(t)\n  true when t has the poly2trellis fields with consistent sizes and\n  states and output symbols in range.\n\nExample:\n  istrellis(poly2trellis(3, [7 5]))   % true" },
+    HelpEntry { name: "vitdec", brief: "Viterbi decoder for convolutional codes (MATLAB)",
+        detail: "u = vitdec(code, trellis, tblen, opmode, dectype)\nu = vitdec(code, trellis, tblen, opmode, \"soft\", nsdec)\n  code    — n values per trellis step (output 1 first); row or column\n  tblen   — traceback depth in steps (5 to 7 constraint lengths is usual;\n            at least the block length gives one traceback over the block)\n  opmode  — \"trunc\" (start in state 0, end anywhere), \"term\" (start and end\n            in state 0), \"cont\" (output delayed by tblen, leading zeros)\n  dectype — \"hard\" (0/1 bits), \"soft\" (levels 0 … 2^nsdec-1, 0 = surest 0),\n            \"unquant\" (reals, +1 = bit 0, -1 = bit 1, 0 = erasure)\n\nReturns k bits per step with the orientation of code. Ties keep the\nlower-numbered predecessor state.\n\nExample:\n  t = poly2trellis(7, [171 133]);\n  u = vitdec(y, t, 35, \"term\", \"unquant\")" },
     // Linear algebra (additional)
     HelpEntry { name: "svd", brief: "Singular Value Decomposition  A = U·diag(σ)·V'",
         detail: "s = svd(A)               — singular values, length min(m, n), descending\n[U, s, V] = svd(A)       — full factors: U is m×m, V is n×n, s is the vector\n[U, s, V] = svd(A, \"econ\") — thin factors: U is m×k, V is n×k, k = min(m, n)\nsvd(A, 0)                — same as \"econ\" (\"economy\" is accepted too)\n\n  Real and complex matrices, including wide (more columns than rows),\n  rank-deficient, and 1×N. Non-finite entries are an error.\n  s is a vector, not an m×n diagonal matrix. diag(s) builds that diagonal.\n\n  Economy:  U * diag(s) * V'  ≈  A   for every shape.\n  Full, non-square:  U(:, 1:k) * diag(s) * V(:, 1:k)'  ≈  A.\n\nExamples:\n  s = svd(A)\n  rank_est = sum(s .> 1e-10)\n  [U, s, V] = svd(A, \"econ\")" },
@@ -1690,6 +1697,11 @@ pub static CATEGORIES: &[CategoryRow] = &[
             "firpmq",
             "window",
         ],
+    },
+    CategoryRow {
+        toolbox: "dsp",
+        subcategory: "Channel coding",
+        names: &["poly2trellis", "istrellis", "vitdec"],
     },
     CategoryRow {
         toolbox: "dsp",

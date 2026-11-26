@@ -189,7 +189,7 @@ fn viterbi_hard_decisions_are_unchanged() {
 
 /// The notebook's `decode_frames` (one whole-frame `vitdec` per frame) with
 /// punctured (rate 3/4) soft frames side by side: every frame decodes as the
-/// reference does on its own columns. Before 0.3.99 the notebook decoded
+/// reference does on its own columns. Before 0.3.103 the notebook decoded
 /// these frames with the script `viterbi_frames`; the checksum is that one.
 #[test]
 fn notebook_frame_decoder_punctured_is_unchanged() {
