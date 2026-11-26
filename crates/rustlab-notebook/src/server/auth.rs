@@ -140,14 +140,28 @@ pub fn csp_header(nonce: &str) -> String {
     csp_header_with_styles(nonce, &[])
 }
 
-/// [`csp_header`] whose `style-src` also lists `style_origins`.
+/// [`csp_header`] whose `style-src` also lists `style_origins`: the
+/// `scheme://host[:port]` of each absolute `[site] stylesheets` /
+/// `--stylesheet` URL. Only `style-src` changes. An entry that is not a
+/// plain `http(s)` origin (a path, a wildcard, a keyword, a `;`) is
+/// dropped, so it cannot widen the policy or start another directive.
+/// Fonts and images that such a stylesheet loads from its own origin
+/// stay blocked by `font-src` / `img-src 'self'`.
 pub fn csp_header_with_styles(nonce: &str, style_origins: &[String]) -> String {
-    let _ = style_origins;
+    let mut extra = String::new();
+    for origin in style_origins {
+        if rustlab_config::stylesheet_origin(origin).as_deref() == Some(origin.as_str())
+            && !extra.split(' ').any(|o| o == origin)
+        {
+            extra.push(' ');
+            extra.push_str(origin);
+        }
+    }
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}' 'strict-dynamic' 'unsafe-eval'; \
          worker-src 'self' blob:; \
-         style-src 'self' 'unsafe-inline'; \
+         style-src 'self' 'unsafe-inline'{extra}; \
          img-src 'self' data: blob:; \
          font-src 'self'; \
          connect-src 'self' ws://127.0.0.1:* ws://localhost:*; \

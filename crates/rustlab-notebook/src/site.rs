@@ -59,19 +59,76 @@ impl SiteChrome {
     /// in first-seen order. These, and nothing else, join the watch
     /// page's `style-src`.
     pub fn style_origins(&self) -> Vec<String> {
-        Vec::new()
+        let mut out: Vec<String> = Vec::new();
+        for url in &self.stylesheets {
+            if let Some(origin) = rustlab_config::stylesheet_origin(url) {
+                if !out.contains(&origin) {
+                    out.push(origin);
+                }
+            }
+        }
+        out
+    }
+
+    fn has_bar(&self) -> bool {
+        self.brand.is_some() || !self.nav.is_empty()
     }
 }
 
 /// Chrome for one command: `[site]` from `rustlab.toml`, then the CLI.
-/// Fragment files must resolve inside `jail_root`.
+/// `--stylesheet` replaces `[site] stylesheets`. Fragment files must
+/// resolve inside `jail_root` (the same root as notebook file I/O).
 pub fn resolve(
     config: Option<&SiteConfig>,
     cli: &SiteCliOpts,
     jail_root: &Path,
 ) -> Result<SiteChrome, String> {
-    let _ = (config, cli, jail_root);
-    Ok(SiteChrome::default())
+    let mut chrome = SiteChrome::default();
+    if let Some(c) = config {
+        chrome.brand = c.brand.clone();
+        chrome.nav = c.nav.clone();
+        chrome.footer = c.footer.clone();
+        chrome.stylesheets = c.stylesheets.clone();
+    }
+    if !cli.stylesheets.is_empty() {
+        if cli.stylesheets.len() > rustlab_config::site::MAX_SITE_ITEMS {
+            return Err(format!(
+                "--stylesheet given {} times; at most {}",
+                cli.stylesheets.len(),
+                rustlab_config::site::MAX_SITE_ITEMS
+            ));
+        }
+        for url in &cli.stylesheets {
+            rustlab_config::check_stylesheet_url(url)
+                .map_err(|m| format!("--stylesheet {}: {m}", url.escape_debug()))?;
+        }
+        chrome.stylesheets = cli.stylesheets.clone();
+    }
+    if let Some(p) = &cli.header_html {
+        chrome.header_html = Some(read_fragment(p, jail_root, "--header-html")?);
+    }
+    if let Some(p) = &cli.footer_html {
+        chrome.footer_html = Some(read_fragment(p, jail_root, "--footer-html")?);
+    }
+    Ok(chrome)
+}
+
+fn read_fragment(path: &Path, jail_root: &Path, flag: &str) -> Result<String, String> {
+    let resolved = rustlab_script::path_jail::check_under_root(path, jail_root)
+        .map_err(|e| format!("{flag}: {e} (jail root {})", jail_root.display()))?;
+    let meta =
+        std::fs::metadata(&resolved).map_err(|e| format!("{flag} {}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{flag} {}: not a file", path.display()));
+    }
+    if meta.len() > MAX_FRAGMENT_BYTES {
+        return Err(format!(
+            "{flag} {}: {} bytes; at most {MAX_FRAGMENT_BYTES}",
+            path.display(),
+            meta.len()
+        ));
+    }
+    std::fs::read_to_string(&resolved).map_err(|e| format!("{flag} {}: {e}", path.display()))
 }
 
 static GLOBAL: OnceLock<RwLock<Arc<SiteChrome>>> = OnceLock::new();
@@ -117,43 +174,336 @@ impl Drop for SiteGuard {
     }
 }
 
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// A relative path (not `/…`, `#…`, `?…`, or `scheme:`) is relative to the
+/// output root; a page `rel_dir` folders down climbs back to it.
+fn rebase(url: &str, rel_dir: Option<&str>) -> String {
+    let relative = !url.starts_with(['/', '#', '?']) && !url.contains("://");
+    match rel_dir {
+        Some(dir) if relative && !dir.is_empty() => crate::href_between(dir, url),
+        _ => url.to_string(),
+    }
+}
+
+fn links_html(nav: &[SiteLink], rel_dir: Option<&str>) -> String {
+    nav.iter()
+        .filter(|l| rustlab_config::check_site_href(&l.href).is_ok())
+        .map(|l| {
+            format!(
+                "<a href=\"{}\">{}</a>",
+                escape(&rebase(&l.href, rel_dir)),
+                escape(&l.label)
+            )
+        })
+        .collect()
+}
+
 /// Brand and nav for the start of the top bar. `rel_dir` is the page's
 /// directory below the output root (static directory renders), used to
 /// rebase relative hrefs. `None` leaves them as written.
+///
+/// The nav is written twice: inline for wide screens and inside a native
+/// `<details>` menu that replaces it at 768px and below. No script, so it
+/// works under the watch CSP and in static files alike. A link whose href
+/// fails [`rustlab_config::check_site_href`] is left out.
 pub(crate) fn topbar_html(chrome: &SiteChrome, rel_dir: Option<&str>) -> String {
-    let _ = (chrome, rel_dir);
-    String::new()
+    if !chrome.has_bar() {
+        return String::new();
+    }
+    let mut out = String::new();
+    if let Some(b) = chrome
+        .brand
+        .as_ref()
+        .filter(|b| rustlab_config::check_site_href(&b.href).is_ok())
+    {
+        out.push_str(&format!(
+            "<a class=\"rl-site-brand\" href=\"{}\">{}</a>",
+            escape(&rebase(&b.href, rel_dir)),
+            escape(&b.label)
+        ));
+    }
+    let links = links_html(&chrome.nav, rel_dir);
+    if !links.is_empty() {
+        out.push_str(&format!(
+            "<nav class=\"rl-site-nav\" aria-label=\"Site\">{links}</nav>\
+             <details class=\"rl-site-menu\"><summary aria-label=\"Site menu\">Menu</summary>\
+             <nav aria-label=\"Site menu\">{links}</nav></details>"
+        ));
+    }
+    if !out.is_empty() {
+        out.push_str("<span class=\"rl-site-sep\" aria-hidden=\"true\"></span>");
+    }
+    out
 }
 
 /// `<link rel="stylesheet">` lines for `<head>`, after the built-in style.
 pub(crate) fn head_links(chrome: &SiteChrome, rel_dir: Option<&str>) -> String {
-    let _ = (chrome, rel_dir);
-    String::new()
+    chrome
+        .stylesheets
+        .iter()
+        .filter(|u| rustlab_config::check_stylesheet_url(u).is_ok())
+        .map(|u| {
+            format!(
+                "<link rel=\"stylesheet\" href=\"{}\">\n",
+                escape(&rebase(u, rel_dir))
+            )
+        })
+        .collect()
 }
 
 /// The `<footer>` element, or nothing when `[site] footer = ""`.
 pub(crate) fn footer_element(chrome: &SiteChrome) -> String {
-    let _ = chrome;
-    "<footer>Generated by rustlab-notebook</footer>".to_string()
+    match chrome.footer.as_deref() {
+        None => "<footer>Generated by rustlab-notebook</footer>".to_string(),
+        Some("") => String::new(),
+        Some(text) => format!("<footer>{}</footer>", escape(text)),
+    }
 }
 
-/// Stylesheet for the brand, nav, menu, and header fragment. Empty for
-/// the default chrome.
-pub(crate) fn css(chrome: &SiteChrome, theme: &ThemeColors) -> String {
-    let _ = (chrome, theme);
-    String::new()
+/// The trusted header fragment in its positioning wrapper, for right
+/// after `<body>`.
+pub(crate) fn header_element(chrome: &SiteChrome) -> String {
+    match &chrome.header_html {
+        Some(h) => format!("<div class=\"rl-site-header\">{h}</div>\n"),
+        None => String::new(),
+    }
+}
+
+/// The trusted footer fragment, for right before `</main>`. It is inside
+/// `<main>`, so it stacks under the content on every page; the body's flex
+/// row never sees it.
+pub(crate) fn footer_fragment(chrome: &SiteChrome) -> String {
+    match &chrome.footer_html {
+        Some(f) => format!("<div class=\"rl-site-footer\">{f}</div>\n"),
+        None => String::new(),
+    }
 }
 
 /// Body classes the chrome needs (`rl-has-site-header`).
 pub(crate) fn body_classes(chrome: &SiteChrome) -> Vec<&'static str> {
-    let _ = chrome;
-    Vec::new()
+    if chrome.header_html.is_some() {
+        vec!["rl-has-site-header"]
+    } else {
+        Vec::new()
+    }
 }
 
-/// Insert the header fragment after `<body…>`, the footer fragment
-/// before `</main>`, and the stylesheet links before `</head>`.
-pub(crate) fn splice_fragments(page: &mut String, chrome: &SiteChrome, rel_dir: Option<&str>) {
-    let _ = (page, chrome, rel_dir);
+/// Stylesheet for the brand, nav, menu, and header fragment, in theme
+/// colours. Empty for the default chrome.
+///
+/// The header fragment is fixed at the top, `--rl-site-header-h` tall
+/// (default 3rem; a `--stylesheet` can set it on `:root`). `--topbar-h`
+/// grows by that height, so the top bar, sidebar, file browser, drawer,
+/// and `main` padding all move down with it.
+pub(crate) fn css(chrome: &SiteChrome, theme: &ThemeColors) -> String {
+    if chrome.is_default() {
+        return String::new();
+    }
+    let c = theme;
+    let resolved = rustlab_plot::ResolvedTheme::from_colors(c);
+    let accent_primary = c.css_var("accent-primary");
+    let accent_secondary = c.css_var("accent-secondary");
+    let bg = c.css_var("bg");
+    let bg_secondary = c.css_var("bg-secondary");
+    let border = c.css_var("border");
+    let text = c.css_var("text");
+    let border_width = resolved.border_width_css();
+    let radius = resolved.radius_css();
+    let space_1 = resolved.space_css(1);
+    let space_2 = resolved.space_css(2);
+    let mut out = String::new();
+    if chrome.has_bar() {
+        out.push_str(&format!(
+            r#"  /* ── Site brand and nav (rustlab.toml [site]) ── */
+  .topbar a.rl-site-brand {{
+    flex: 0 1 auto;
+    max-width: 40%;
+    font-weight: 700;
+    color: {accent_primary};
+  }}
+  .topbar .rl-site-nav {{
+    display: flex;
+    align-items: center;
+    gap: {space_2};
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }}
+  .topbar .rl-site-nav a {{
+    flex: 0 1 auto;
+    color: {accent_secondary};
+  }}
+  .topbar .rl-site-sep {{
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: {border_width};
+    margin: 0.55rem {space_1};
+    background: {border};
+  }}
+  .topbar .rl-site-menu {{
+    display: none;
+    position: relative;
+    flex: 0 0 auto;
+  }}
+  .rl-site-menu > summary {{
+    list-style: none;
+    cursor: pointer;
+    color: {accent_secondary};
+    border: {border_width} solid {border};
+    border-radius: {radius};
+    padding: 0.15rem 0.55rem;
+    white-space: nowrap;
+  }}
+  .rl-site-menu > summary::-webkit-details-marker {{ display: none; }}
+  .rl-site-menu > summary::after {{ content: " \25BE"; }}
+  .rl-site-menu[open] > summary {{ color: {text}; border-color: {accent_secondary}; }}
+  .rl-site-menu > nav {{
+    position: absolute;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    min-width: 12rem;
+    max-width: 80vw;
+    display: flex;
+    flex-direction: column;
+    padding: {space_1} 0;
+    background: {bg_secondary};
+    border: {border_width} solid {border};
+    border-radius: {radius};
+    z-index: 210;
+  }}
+  .topbar .rl-site-menu > nav a {{
+    padding: 0.5rem 0.9rem;
+    color: {text};
+    white-space: normal;
+  }}
+  .topbar .rl-site-menu > nav a:hover {{ background: {border}; }}
+  /* The open menu hangs below the bar; lift the bar over the file
+     browser, which overlays the page on a narrow screen. */
+  .topbar:has(.rl-site-menu[open]) {{ z-index: 190; }}
+  @media (max-width: 768px) {{
+    .topbar .rl-site-nav {{ display: none; }}
+    .topbar .rl-site-menu {{ display: block; }}
+    .topbar a.rl-site-brand {{ flex: 0 0 auto; max-width: 34%; }}
+    /* Clear the 2.4rem hamburger at 0.7rem. Previous / Next stay in the
+       page footer below the content. */
+    body:not(.no-toc) .topbar {{ padding-left: 3.5rem; }}
+    .topbar a.prev, .topbar a.next {{ display: none; }}
+    /* The page title is the H1 just below; keep the Index link instead,
+       clipped rather than painted under the Comments toggle. */
+    .topbar .crumb {{ overflow: hidden; }}
+    .topbar .rl-comments-toggle {{ flex: 0 0 auto; margin-left: 0.4rem; }}
+    .topbar .crumb .sep, .topbar .crumb .current {{ display: none; }}
+  }}
+"#
+        ));
+    }
+    if chrome.header_html.is_some() {
+        out.push_str(&format!(
+            r#"  /* ── Site header fragment (--header-html) ── */
+  :root {{ --rl-site-header-h: 3rem; }}
+  html body.rl-has-site-header {{ --topbar-h: calc(2.6rem + var(--rl-site-header-h)); }}
+  .rl-site-header {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--rl-site-header-h);
+    overflow: hidden;
+    z-index: 170;
+    background: {bg};
+    color: {text};
+  }}
+  body.rl-has-site-header .topbar {{
+    top: var(--rl-site-header-h);
+    height: calc(var(--topbar-h) - var(--rl-site-header-h));
+  }}
+  body.rl-has-site-header .nav-toggle {{ top: calc(var(--rl-site-header-h) + 0.7rem); }}
+  body.rl-has-site-header #rl-toolbar {{ top: calc(var(--rl-site-header-h) + 10px); }}
+"#
+        ));
+    }
+    out
+}
+
+/// Extra CSS for the directory index page, which has no top bar of its
+/// own: the bar's base layout, a reset of the index's card-style links
+/// inside it, and the body offset.
+pub(crate) fn index_css(chrome: &SiteChrome, theme: &ThemeColors) -> String {
+    if chrome.is_default() {
+        return String::new();
+    }
+    let c = theme;
+    let resolved = rustlab_plot::ResolvedTheme::from_colors(c);
+    let bar_h = if chrome.has_bar() { "2.6rem" } else { "0px" };
+    let header_h = if chrome.header_html.is_some() {
+        "var(--rl-site-header-h)"
+    } else {
+        "0px"
+    };
+    format!(
+        r#"  body.rl-site-index {{ --topbar-h: calc({bar_h} + {header_h}); padding-top: calc(var(--topbar-h) + 3rem); }}
+  body.rl-site-index.has-files {{ padding-top: 0; }}
+  body.rl-site-index.has-files main {{ padding-top: calc(var(--topbar-h) + 3rem); }}
+  .topbar {{
+    position: fixed;
+    top: {header_h};
+    left: 0;
+    right: 0;
+    height: 2.6rem;
+    z-index: 150;
+    background: {bg_secondary};
+    border-bottom: {border_width} solid {border};
+    padding: 0 1.2rem;
+    font-size: 0.85rem;
+    color: {text_dim};
+    display: flex;
+    align-items: center;
+    gap: {space_2};
+  }}
+  .topbar a, .topbar a:hover {{
+    display: inline;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font-size: inherit;
+    color: {accent_secondary};
+    text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }}
+  .topbar a:hover {{ text-decoration: underline; }}
+  .topbar .rl-site-menu > nav a {{ display: block; }}
+  .topbar .current {{ color: {text}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }}
+  /* The index styles every `a` as a card. Fragment links get the browser
+     default back; `:where` keeps this at the specificity of `a`, so a
+     --stylesheet rule for `a` still wins. */
+  :where(.rl-site-header, .rl-site-footer) a {{
+    display: revert;
+    padding: revert;
+    background: revert;
+    border: revert;
+    border-radius: revert;
+    font-size: revert;
+    transition: revert;
+  }}
+{site}"#,
+        bg_secondary = c.css_var("bg-secondary"),
+        border = c.css_var("border"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        accent_secondary = c.css_var("accent-secondary"),
+        border_width = resolved.border_width_css(),
+        space_2 = resolved.space_css(2),
+        site = css(chrome, theme),
+    )
 }
 
 #[cfg(test)]
@@ -245,7 +595,7 @@ mod tests {
     #[test]
     fn labels_and_hrefs_are_escaped() {
         let chrome = SiteChrome {
-            brand: Some(link("<script>alert(1)</script>", "/?a=1&b=\"2\"")),
+            brand: Some(link("<script>alert(1)</script>", "/?a=1&b=2")),
             nav: vec![link("Q&A <b>", "#q&a")],
             footer: Some("<img src=x onerror=alert(1)> & co".into()),
             ..Default::default()
@@ -253,7 +603,7 @@ mod tests {
         let html = page(chrome, None, &LinkMode::single_file());
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        assert!(html.contains("href=\"/?a=1&amp;b=&quot;2&quot;\""));
+        assert!(html.contains("href=\"/?a=1&amp;b=2\""));
         assert!(html.contains(">Q&amp;A &lt;b&gt;</a>"));
         assert!(html.contains("href=\"#q&amp;a\""));
         assert!(html.contains("<footer>&lt;img src=x onerror=alert(1)&gt; &amp; co</footer>"));
@@ -307,7 +657,7 @@ mod tests {
             .expect("stylesheet link");
         let head_end = html.find("</head>").unwrap();
         assert!(style_end < link_at && link_at < head_end);
-        assert_eq!(html.rfind("</style>").unwrap() < link_at, true);
+        assert!(html.rfind("</style>").unwrap() < link_at);
     }
 
     #[test]
@@ -331,7 +681,7 @@ mod tests {
         let main_close = html.rfind("</main>").unwrap();
         assert!(html[..main_close]
             .trim_end()
-            .ends_with("<p id=\"site-ftr\">bye</p>"));
+            .ends_with("<div class=\"rl-site-footer\"><p id=\"site-ftr\">bye</p></div>"));
         assert!(html.contains("rl-has-site-header"));
         assert!(html.contains("--rl-site-header-h"));
     }
@@ -378,6 +728,8 @@ mod tests {
             .expect("media query");
         assert!(narrow.contains(".rl-site-nav"), "{narrow}");
         assert!(narrow.contains(".rl-site-menu"), "{narrow}");
+        assert!(narrow.contains(".topbar a.prev, .topbar a.next { display: none; }"));
+        assert!(css.contains(".topbar:has(.rl-site-menu[open]) { z-index: 190; }"));
         // No script: the menu is a native disclosure.
         assert!(!bar.contains("<script"));
         assert!(!bar.contains(" on"));
@@ -507,6 +859,121 @@ mod tests {
             .contains("<link rel=\"stylesheet\" href=\"https://kreegerlabs.com/css/site.css\">"));
         assert!(html.contains("<div class=\"rl-site-header\"><div id=\"h\"></div></div>"));
         let main_close = html.rfind("</main>").unwrap();
-        assert!(html[..main_close].trim_end().ends_with("<p id=\"f\"></p>"));
+        assert!(html[..main_close]
+            .trim_end()
+            .ends_with("<div class=\"rl-site-footer\"><p id=\"f\"></p></div>"));
+        assert!(html.contains(":where(.rl-site-header, .rl-site-footer) a"));
+    }
+
+    /// `<body>` is a flex row on notebook pages (and centred on the index),
+    /// so an in-flow chrome element there would become a side column.
+    /// Every element the chrome adds before `<main>` must be
+    /// `position: fixed` and full width, and everything it adds after the
+    /// content must be inside `<main>`.
+    #[test]
+    fn chrome_stacks_above_and_below_the_content_on_both_page_kinds() {
+        let chrome = SiteChrome {
+            header_html: Some("<header id=\"hdr\"><a href=\"/\">KL</a></header>".into()),
+            footer_html: Some("<p id=\"ftr\"><a href=\"/legal\">Legal</a></p>".into()),
+            ..kreeger()
+        };
+        let notebook = page(chrome.clone(), None, &LinkMode::single_file());
+        let index = {
+            let _g = SiteGuard::new(chrome.clone());
+            crate::generate_index_html(
+                "Notebooks",
+                &[("Filters".into(), "filters.html".into())],
+                Theme::Dark.colors(),
+                "",
+                None,
+            )
+        };
+        for (kind, html) in [("notebook", &notebook), ("index", &index)] {
+            let body_open = html.find("<body").unwrap();
+            let body_open = body_open + html[body_open..].find('>').unwrap() + 1;
+            let main_open = html.find("<main>").unwrap();
+            let main_close = html.rfind("</main>").unwrap();
+            let before_main = &html[body_open..main_open];
+            for top_level in top_level_tags(before_main) {
+                assert!(
+                    matches!(
+                        top_level.as_str(),
+                        "div.rl-site-header"
+                            | "header.topbar"
+                            | "button.nav-toggle"
+                            | "nav.sidebar"
+                            | "script."
+                            | "style."
+                    ),
+                    "{kind}: in-flow element before <main>: {top_level}"
+                );
+            }
+            assert!(before_main.contains("<div class=\"rl-site-header\"><header id=\"hdr\">"));
+            assert!(before_main.contains("rl-site-brand"));
+            let inside = &html[main_open..main_close];
+            assert!(
+                inside.contains("<footer>© 2026 Kreeger Labs</footer>"),
+                "{kind}"
+            );
+            assert!(inside.contains("<p id=\"ftr\">"), "{kind}");
+            assert!(
+                inside.rfind("<footer>").unwrap() < inside.rfind("rl-site-footer").unwrap(),
+                "{kind}: footer fragment after the footer"
+            );
+            let after_main = &html[main_close..html.rfind("</body>").unwrap()];
+            assert!(
+                !after_main.contains("rl-site"),
+                "{kind}: chrome after </main>"
+            );
+            for sel in [".rl-site-header {", ".topbar {"] {
+                let rule = &html[html.find(sel).unwrap_or_else(|| panic!("{kind}: {sel}"))..];
+                let rule = &rule[..rule.find('}').unwrap()];
+                for decl in ["position: fixed", "left: 0", "right: 0"] {
+                    assert!(rule.contains(decl), "{kind}: {sel} lacks {decl}: {rule}");
+                }
+            }
+        }
+    }
+
+    /// `tag.class` of each element that starts at nesting depth 0 in
+    /// `html` (void tags and comments skipped). Enough for the renderer's
+    /// own well-formed output.
+    fn top_level_tags(html: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        let mut rest = html;
+        while let Some(lt) = rest.find('<') {
+            rest = &rest[lt + 1..];
+            let end = rest.find('>').unwrap();
+            let tag = &rest[..end];
+            rest = &rest[end + 1..];
+            if tag.starts_with('!') {
+                continue;
+            }
+            if tag.starts_with('/') {
+                depth -= 1;
+                continue;
+            }
+            let name: String = tag
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            let void = matches!(
+                name.as_str(),
+                "br" | "img" | "hr" | "input" | "meta" | "link"
+            ) || tag.ends_with('/');
+            if depth == 0 {
+                let class = tag
+                    .split("class=\"")
+                    .nth(1)
+                    .and_then(|c| c.split(['"', ' ']).next())
+                    .unwrap_or("");
+                out.push(format!("{name}.{class}"));
+            }
+            if !void {
+                depth += 1;
+            }
+        }
+        out
     }
 }
