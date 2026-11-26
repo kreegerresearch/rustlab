@@ -2733,6 +2733,12 @@ impl Evaluator {
         // into their own copies, merged back below as `parmap:<name>` rows.
         let in_bytes = Self::value_bytes(&input);
         let tracking = self.profiler.enter("parmap");
+        let tasks = elements.len() as u64;
+        let faults_before = if tracking {
+            profile::minor_page_faults()
+        } else {
+            0
+        };
 
         // Template without the caller's variables; each rayon split clones
         // it once and reuses that worker for the tasks it runs.
@@ -2758,6 +2764,8 @@ impl Evaluator {
             parmap::pack_results(out.values)
         });
         if tracking {
+            let faults = profile::minor_page_faults().saturating_sub(faults_before);
+            self.profiler.record_parmap(tasks, faults);
             let out = result.as_ref().map_or(0, Self::value_bytes);
             self.profiler.exit("parmap", in_bytes, out);
         }

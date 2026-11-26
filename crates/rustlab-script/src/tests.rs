@@ -7559,6 +7559,21 @@ mod profiling_tests {
     }
 
     #[test]
+    fn parmap_row_counts_tasks_and_page_faults() {
+        // Each task fills a fresh 32 MB array, so it touches thousands of
+        // new pages.
+        let src = "function s = fill(k)\n  Z = zeros(2000, 2000);\n  Z(:, :) = k;\n  \
+                   s = Z(1, 1);\nend\ny = parmap(@fill, 1:4);";
+        let (_, report) = run_profiled(src, None);
+        let pm = find(&report, "parmap").expect("parmap row");
+        assert_eq!(pm.parmap_tasks, 4);
+        if cfg!(unix) {
+            assert!(pm.page_faults > 4000, "faults {}", pm.page_faults);
+        }
+        assert_eq!(find(&report, "parmap:fill").unwrap().page_faults, 0);
+    }
+
+    #[test]
     fn whitelist_filters_rows_and_drops_top_level() {
         let src = "function y = f(x)\n  y = abs(x);\nend\nfor k = 1:3\n  f(k);\nend";
         let (_, report) = run_profiled(src, Some(vec!["f"]));

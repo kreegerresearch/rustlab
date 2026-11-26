@@ -46,6 +46,33 @@ pub struct FnStats {
     pub output_bytes: u64,
     /// True for rows merged from `parmap` workers (CPU time, not wall time).
     pub parallel: bool,
+    /// `parmap` row only: tasks run, summed over calls.
+    pub parmap_tasks: u64,
+    /// `parmap` row only: minor page faults of the whole process while the
+    /// calls ran (the workers are all that runs then). 0 where the OS gives
+    /// no count.
+    pub page_faults: u64,
+}
+
+/// Minor page faults of this process so far (`getrusage`), or 0 where the
+/// OS gives no count. macOS has no per-thread count, so `parmap` reads the
+/// process total around the call.
+pub fn minor_page_faults() -> u64 {
+    #[cfg(unix)]
+    {
+        let mut ru = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: `getrusage` writes the struct; on failure it stays zeroed.
+        unsafe {
+            if libc::getrusage(libc::RUSAGE_SELF, ru.as_mut_ptr()) == 0 {
+                return ru.assume_init().ru_minflt.max(0) as u64;
+            }
+        }
+        0
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
 }
 
 #[derive(Clone)]
@@ -198,6 +225,15 @@ impl Profiler {
     pub fn exit_op(&mut self, frame: OpFrame, in_bytes: u64, out_bytes: u64) {
         if let Some(name) = frame {
             self.exit(name, in_bytes, out_bytes);
+        }
+    }
+
+    /// Add a `parmap` call's task count and page faults to its row.
+    pub fn record_parmap(&mut self, tasks: u64, faults: u64) {
+        if self.enabled && self.reports("parmap") {
+            let s = self.row("parmap");
+            s.parmap_tasks += tasks;
+            s.page_faults += faults;
         }
     }
 
@@ -371,6 +407,16 @@ pub fn print_report(rows: &[(String, FnStats)]) {
         eprintln!(
             "  parmap:* rows are CPU time summed across worker threads; TOTAL excludes them."
         );
+    }
+    if let Some((_, s)) = shown.iter().find(|(n, _)| n == "parmap") {
+        if s.parmap_tasks > 0 && cfg!(unix) {
+            eprintln!(
+                "  parmap page faults: {} minor in {} tasks ({:.0} per task), whole process.",
+                s.page_faults,
+                s.parmap_tasks,
+                s.page_faults as f64 / s.parmap_tasks as f64
+            );
+        }
     }
     eprintln!();
 }

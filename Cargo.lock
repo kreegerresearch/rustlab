@@ -4025,6 +4025,7 @@ name = "rustlab-script"
 version = "0.3.90"
 dependencies = [
  "blake3",
+ "libc",
  "ndarray",
  "num-complex",
  "rand 0.8.8",
