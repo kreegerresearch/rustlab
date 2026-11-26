@@ -2336,6 +2336,34 @@ impl Evaluator {
                     let input = self.eval_expr(&args[1])?;
                     return self.eval_parmap(func_val, input);
                 }
+                if name == "parmap" && args.len() == 3 {
+                    let func_val = self.eval_expr(&args[0])?;
+                    let input = self.eval_expr(&args[1])?;
+                    match self.eval_expr(&args[2])? {
+                        Value::Str(s) if s == "sum" => {}
+                        other => {
+                            return Err(ScriptError::runtime(format!(
+                                "parmap: third argument must be the reduction \"sum\", got {}",
+                                match other {
+                                    Value::Str(s) => format!("\"{s}\""),
+                                    v => v.type_name().to_string(),
+                                }
+                            )))
+                        }
+                    }
+                    return self.eval_parsum("parmap", func_val, input);
+                }
+                if name == "parsum" {
+                    if args.len() != 2 {
+                        return Err(ScriptError::runtime(format!(
+                            "parsum: expected 2 arguments (f, xs), got {}",
+                            args.len()
+                        )));
+                    }
+                    let func_val = self.eval_expr(&args[0])?;
+                    let input = self.eval_expr(&args[1])?;
+                    return self.eval_parsum("parsum", func_val, input);
+                }
                 if name == "rk4" && args.len() == 3 {
                     let func_val = self.eval_expr(&args[0])?;
                     let x0 = self.eval_expr(&args[1])?;
@@ -2756,7 +2784,7 @@ impl Evaluator {
 
         // Validate the callable up front (clearer error than waiting for
         // the per-task error).
-        parmap::validate_callable(&func)?;
+        parmap::validate_callable("parmap", &func)?;
 
         // Extract iterable elements — same shape rules as arrayfun.
         let elements: Vec<Value> = Self::iterable_elements("parmap", &input)?;
@@ -2792,6 +2820,45 @@ impl Evaluator {
         if tracking {
             let out = result.as_ref().map_or(0, Self::value_bytes);
             self.profiler.exit("parmap", in_bytes, out);
+        }
+        result
+    }
+
+    /// `parmap(f, xs, "sum")` / `parsum(f, xs)`: the sum of `f(x)` over
+    /// `xs`, added as a fixed pairwise tree over trial indices while the
+    /// workers run (see [`parmap::sum_reduce`] for the order). Same seeds,
+    /// purity contract, jail, and plot context as `parmap(f, xs)`.
+    fn eval_parsum(
+        &mut self,
+        caller: &'static str,
+        func: Value,
+        input: Value,
+    ) -> Result<Value, ScriptError> {
+        parmap::validate_callable(caller, &func)?;
+        let elements: Vec<Value> = Self::iterable_elements(caller, &input)?;
+        let in_bytes = Self::value_bytes(&input);
+        let tracking = self.profiler.enter(caller);
+        let template = self.clone_for_parallel_lambda(&func);
+        let master_seed = rng::current_master_seed().unwrap_or_else(|| {
+            use rand::RngCore;
+            rand::rngs::OsRng.next_u64()
+        });
+        let result = parmap::sum_reduce(
+            caller,
+            &move || template.clone(),
+            func,
+            elements,
+            master_seed,
+        )
+        .map(|out| {
+            for worker_stats in out.profiles {
+                self.profiler.merge_parallel(worker_stats);
+            }
+            out.value
+        });
+        if tracking {
+            let out = result.as_ref().map_or(0, Self::value_bytes);
+            self.profiler.exit(caller, in_bytes, out);
         }
         result
     }

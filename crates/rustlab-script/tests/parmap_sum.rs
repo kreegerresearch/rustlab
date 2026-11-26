@@ -33,15 +33,11 @@ fn bits(v: &Value) -> (Vec<usize>, Vec<(u64, u64)>) {
         Value::Complex(c) => (vec![], vec![(c.re.to_bits(), c.im.to_bits())]),
         Value::Vector(a) => (
             vec![a.len()],
-            a.iter()
-                .map(|c| (c.re.to_bits(), c.im.to_bits()))
-                .collect(),
+            a.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect(),
         ),
         Value::Matrix(m) => (
             m.shape().to_vec(),
-            m.iter()
-                .map(|c| (c.re.to_bits(), c.im.to_bits()))
-                .collect(),
+            m.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect(),
         ),
         other => panic!("unexpected {}", other.type_name()),
     }
@@ -177,6 +173,29 @@ fn deterministic_across_runs_and_worker_counts() {
     }
 }
 
+/// A task that runs on the calling thread (here: the script runs inside a
+/// rayon pool) must not replace the caller's `seed(N)` state.
+#[test]
+fn caller_rng_is_unchanged_inside_a_pool() {
+    let expected = {
+        let ev = run("seed(5); x = rand();");
+        bits(get(&ev, "x"))
+    };
+    for threads in [1, 2, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        for src in [
+            "seed(5); p = parmap(@(k) rand(), 1:8); x = rand();",
+            "seed(5); p = parsum(@(k) rand(), 1:8); x = rand();",
+        ] {
+            let got = pool.install(|| bits(get(&run(src), "x")));
+            assert_eq!(got, expected, "{threads} threads: {src}");
+        }
+    }
+}
+
 #[test]
 fn vector_length_mismatch_errors() {
     let err = run_err("y = parsum(@(k) ones(1, k + 1)(1, :), 1:3);");
@@ -206,7 +225,10 @@ fn scalar_then_vector_mismatch_errors() {
 #[test]
 fn unsupported_result_type_errors() {
     let err = run_err("y = parsum(@(k) \"text\", 1:2);");
-    assert!(err.contains("parsum") && err.contains("trial 1"), "msg: {err}");
+    assert!(
+        err.contains("parsum") && err.contains("trial 1"),
+        "msg: {err}"
+    );
 }
 
 #[test]
@@ -227,7 +249,10 @@ fn first_failing_trial_is_reported() {
         "function r = g(k)\n if k >= 3\n error(sprintf(\"bad %d\", k));\n end\n r = k;\nend\n\
          y = parsum(@g, 1:8);",
     );
-    assert!(err.contains("trial 3") && err.contains("bad 3"), "msg: {err}");
+    assert!(
+        err.contains("trial 3") && err.contains("bad 3"),
+        "msg: {err}"
+    );
 }
 
 #[test]

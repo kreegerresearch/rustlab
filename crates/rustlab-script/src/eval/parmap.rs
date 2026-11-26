@@ -104,6 +104,27 @@ impl Drop for WorkerScope {
     }
 }
 
+/// Seeds this thread's RNG for one task and puts back the thread's previous
+/// RNG and master seed when dropped. A task can run on the calling thread
+/// (a nested `parmap`, or a script run inside a rayon pool); without the
+/// restore, it would replace the caller's `seed(N)` state.
+struct TaskRng(crate::eval::rng::RngSnapshot);
+
+impl TaskRng {
+    fn enter(master_seed: u64, idx: usize) -> Self {
+        use crate::eval::rng;
+        let prev = rng::capture();
+        rng::seed_rng(rng::derive_task_seed(master_seed, idx));
+        Self(prev)
+    }
+}
+
+impl Drop for TaskRng {
+    fn drop(&mut self) {
+        crate::eval::rng::restore(&self.0);
+    }
+}
+
 /// Returns `Err(...)` if the current thread is inside a `parmap` worker
 /// task (i.e. running a parallel-lambda body); otherwise returns `Ok(())`.
 ///
@@ -130,14 +151,13 @@ pub fn require_pure_context(builtin_name: &str) -> Result<(), ScriptError> {
     })
 }
 
-/// Validate that a `Value` is a callable accepted by `parmap` (lambda or
-/// function handle). Returns the validated value or a `parmap`-specific
-/// error message.
-pub fn validate_callable(v: &Value) -> Result<(), ScriptError> {
+/// Validate that a `Value` is a callable accepted by `parmap` / `parsum`
+/// (lambda or function handle). `caller` names the function in the error.
+pub fn validate_callable(caller: &str, v: &Value) -> Result<(), ScriptError> {
     match v {
         Value::Lambda { .. } | Value::FuncHandle(_) => Ok(()),
         other => Err(ScriptError::type_err(format!(
-            "parmap: first argument must be a lambda or function handle, got {}",
+            "{caller}: first argument must be a lambda or function handle, got {}",
             other.type_name()
         ))),
     }
@@ -192,8 +212,6 @@ impl ParmapBackend for LocalRayonBackend {
         xs: Vec<Value>,
         master_seed: u64,
     ) -> Result<ParmapOutput, ScriptError> {
-        use crate::eval::rng;
-
         // `map_init` builds one worker Evaluator per rayon split and reuses
         // it for every task in that split. Reuse is safe: a lambda call
         // swaps its captured env in and restores the worker's env after,
@@ -209,10 +227,9 @@ impl ParmapBackend for LocalRayonBackend {
         // calling the lambda. That gives Monte Carlo determinism — the
         // same `seed(N); parmap(...)` produces bit-identical results
         // across runs — without disturbing the calling thread's master
-        // RNG. After parmap completes, the calling thread's RNG state is
-        // exactly what it was before; worker threads' RNGs are left in
-        // whatever state the last task left them, which is fine because
-        // each task re-seeds at entry.
+        // RNG. Each task restores the thread's previous RNG when it ends,
+        // so the calling thread's state is unchanged even when a task runs
+        // on it (nested `parmap`, or a script run inside a rayon pool).
         // Captured on the calling thread. Workers install these per task.
         let jail = crate::path_jail::path_jail();
         let plot = rustlab_plot::plot_context();
@@ -224,8 +241,8 @@ impl ParmapBackend for LocalRayonBackend {
                 // task only. Nested `parmap` re-captures whatever this
                 // task installed.
                 let _scope = WorkerScope::enter(jail.clone(), plot);
-                // Install per-task RNG seed.
-                rng::seed_rng(rng::derive_task_seed(master_seed, idx));
+                // Per-task RNG seed; the thread's own RNG comes back after.
+                let _rng = TaskRng::enter(master_seed, idx);
                 // Mark this thread as inside a parmap worker — impure
                 // builtins (clf, fprintf, savefig, etc.) will hard-error
                 // if invoked during the lambda body. The guard restores
@@ -261,6 +278,262 @@ impl ParmapBackend for LocalRayonBackend {
             values: out,
             profiles,
         })
+    }
+}
+
+// ─── Reducing parmap: `parmap(f, xs, "sum")` / `parsum(f, xs)` ─────────────
+//
+// The trials are summed as a fixed binary tree over trial indices:
+//
+//     S(lo, hi) = S(lo, mid) + S(mid, hi),   mid = lo + ceil((hi - lo) / 2)
+//
+// with the earlier trials on the left and a single trial as a leaf. For
+// B = 8 that is ((r1 + r2) + (r3 + r4)) + ((r5 + r6) + (r7 + r8)); for
+// B = 5 it is ((r1 + r2) + r3) + (r4 + r5). The tree depends only on B, so
+// every element of the result has the same bits whatever the thread count
+// or the order in which workers finish. Threads change only which subtrees
+// run at the same time: subtrees of at most `grain` trials run serially on
+// one worker Evaluator, larger ones split with `rayon::join`. A node is
+// added as soon as both children are done and the children are dropped, so
+// the B results are never held together. Each add is in place into a
+// child's buffer when that buffer is not shared; long arrays add in
+// parallel chunks, which does not change any element's bits.
+
+/// What [`sum_reduce`] returns: the sum, plus the profiler rows each task
+/// recorded (in trial order, empty unless profiling is on).
+pub struct ParsumOutput {
+    pub value: Value,
+    pub profiles: Vec<HashMap<String, FnStats>>,
+}
+
+/// Elements per parallel chunk when adding two long arrays.
+const SUM_CHUNK: usize = 1 << 15;
+
+struct SumCtx<'a> {
+    caller: &'a str,
+    factory: &'a (dyn Fn() -> Evaluator + Send + Sync),
+    callable: &'a Value,
+    xs: &'a [Value],
+    master_seed: u64,
+    jail: Option<crate::path_jail::PathJail>,
+    plot: rustlab_plot::PlotContext,
+    grain: usize,
+    profiles: std::sync::Mutex<Vec<(usize, HashMap<String, FnStats>)>>,
+}
+
+/// A subtree's sum and the index of its first trial (for error messages).
+struct Partial {
+    first: usize,
+    value: Value,
+}
+
+/// Sum `callable(x)` over `xs` in the fixed tree order described above.
+/// Per-task RNG seeds, the path jail, the plot context, and the pure-lambda
+/// contract are the same as [`LocalRayonBackend::run`]. When several
+/// trials fail, the error of the earliest one is returned. No trials sum
+/// to the scalar 0.
+pub fn sum_reduce(
+    caller: &str,
+    worker_factory: &(dyn Fn() -> Evaluator + Send + Sync),
+    callable: Value,
+    xs: Vec<Value>,
+    master_seed: u64,
+) -> Result<ParsumOutput, ScriptError> {
+    let n = xs.len();
+    if n == 0 {
+        return Ok(ParsumOutput {
+            value: Value::Scalar(0.0),
+            profiles: Vec::new(),
+        });
+    }
+    let threads = rayon::current_num_threads().max(1);
+    let ctx = SumCtx {
+        caller,
+        factory: worker_factory,
+        callable: &callable,
+        xs: &xs,
+        master_seed,
+        jail: crate::path_jail::path_jail(),
+        plot: rustlab_plot::plot_context(),
+        grain: n.div_ceil(4 * threads).max(1),
+        profiles: std::sync::Mutex::new(Vec::new()),
+    };
+    let result = sum_tree(&ctx, 0, n);
+    let mut profiles = ctx.profiles.into_inner().unwrap_or_else(|e| e.into_inner());
+    profiles.sort_by_key(|(idx, _)| *idx);
+    let value = result?.value;
+    Ok(ParsumOutput {
+        value,
+        profiles: profiles.into_iter().map(|(_, s)| s).collect(),
+    })
+}
+
+fn split(lo: usize, hi: usize) -> usize {
+    lo + (hi - lo).div_ceil(2)
+}
+
+fn sum_tree(ctx: &SumCtx, lo: usize, hi: usize) -> Result<Partial, ScriptError> {
+    if hi - lo <= ctx.grain {
+        let mut worker = (ctx.factory)();
+        return sum_serial(ctx, &mut worker, lo, hi);
+    }
+    let mid = split(lo, hi);
+    let (left, right) = rayon::join(|| sum_tree(ctx, lo, mid), || sum_tree(ctx, mid, hi));
+    add_partials(ctx.caller, left?, right?)
+}
+
+fn sum_serial(
+    ctx: &SumCtx,
+    worker: &mut Evaluator,
+    lo: usize,
+    hi: usize,
+) -> Result<Partial, ScriptError> {
+    if hi - lo == 1 {
+        return sum_leaf(ctx, worker, lo);
+    }
+    let mid = split(lo, hi);
+    let left = sum_serial(ctx, worker, lo, mid)?;
+    let right = sum_serial(ctx, worker, mid, hi)?;
+    add_partials(ctx.caller, left, right)
+}
+
+fn sum_leaf(ctx: &SumCtx, worker: &mut Evaluator, idx: usize) -> Result<Partial, ScriptError> {
+    let r = {
+        let _scope = WorkerScope::enter(ctx.jail.clone(), ctx.plot);
+        let _rng = TaskRng::enter(ctx.master_seed, idx);
+        let _guard = ParallelContextGuard::enter();
+        worker.call_callable(ctx.callable.clone(), vec![ctx.xs[idx].clone()])
+    };
+    let stats = worker.take_profile_stats();
+    if !stats.is_empty() {
+        if let Ok(mut p) = ctx.profiles.lock() {
+            p.push((idx, stats));
+        }
+    }
+    let value = r.map_err(|e| {
+        ScriptError::runtime(format!(
+            "{}: trial {} of {} errored: {}",
+            ctx.caller,
+            idx + 1,
+            ctx.xs.len(),
+            e
+        ))
+    })?;
+    let value = match value {
+        Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+        v @ (Value::Scalar(_)
+        | Value::Complex(_)
+        | Value::Vector(_)
+        | Value::Matrix(_)
+        | Value::Tensor3(_)) => v,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{}: trial {} returned {}; a summed trial must return a scalar, \
+                 vector, or matrix",
+                ctx.caller,
+                idx + 1,
+                other.type_name()
+            )))
+        }
+    };
+    Ok(Partial { first: idx, value })
+}
+
+fn describe(v: &Value) -> String {
+    match v {
+        Value::Vector(a) => format!("vector of length {}", Shared::len(a)),
+        Value::Matrix(m) => {
+            let s = Shared::shape(m);
+            format!("matrix of shape {}×{}", s[0], s[1])
+        }
+        Value::Tensor3(t) => {
+            let s = Shared::shape(t);
+            format!("tensor3 of shape {}×{}×{}", s[0], s[1], s[2])
+        }
+        _ => "a scalar".to_string(),
+    }
+}
+
+/// `left + right`, element by element. `left` holds the earlier trials.
+fn add_partials(caller: &str, left: Partial, right: Partial) -> Result<Partial, ScriptError> {
+    use num_complex::Complex;
+    let first = left.first;
+    let mismatch = |l: &Value, r: &Value| {
+        ScriptError::type_err(format!(
+            "{caller}: trial {} returned {} but trial {} returned {}; \
+             all trials must return the same shape",
+            right.first + 1,
+            describe(r),
+            left.first + 1,
+            describe(l),
+        ))
+    };
+    let value = match (left.value, right.value) {
+        (Value::Scalar(a), Value::Scalar(b)) => Value::Scalar(a + b),
+        (
+            a @ (Value::Scalar(_) | Value::Complex(_)),
+            b @ (Value::Scalar(_) | Value::Complex(_)),
+        ) => {
+            let c = |v: Value| match v {
+                Value::Scalar(x) => Complex::new(x, 0.0),
+                Value::Complex(z) => z,
+                _ => unreachable!("matched above"),
+            };
+            Value::Complex(c(a) + c(b))
+        }
+        (Value::Vector(a), Value::Vector(b)) if Shared::shape(&a) == Shared::shape(&b) => {
+            Value::Vector(add_shared(a, b))
+        }
+        (Value::Matrix(a), Value::Matrix(b)) if Shared::shape(&a) == Shared::shape(&b) => {
+            Value::Matrix(add_shared(a, b))
+        }
+        (Value::Tensor3(a), Value::Tensor3(b)) if Shared::shape(&a) == Shared::shape(&b) => {
+            Value::Tensor3(add_shared(a, b))
+        }
+        (l, r) => return Err(mismatch(&l, &r)),
+    };
+    Ok(Partial { first, value })
+}
+
+/// Same-shape add. The result is written into whichever operand's buffer
+/// is not shared (IEEE addition commutes, so the bits do not depend on
+/// which), real-stored when both operands are.
+fn add_shared<D: ndarray::Dimension>(
+    a: Shared<ndarray::Array<num_complex::Complex<f64>, D>>,
+    b: Shared<ndarray::Array<num_complex::Complex<f64>, D>>,
+) -> Shared<ndarray::Array<num_complex::Complex<f64>, D>> {
+    let (mut acc, other) = if !Shared::is_unique(&a) && Shared::is_unique(&b) {
+        (b, a)
+    } else {
+        (a, b)
+    };
+    if Shared::is_real(&acc) && Shared::is_real(&other) {
+        let src = Shared::as_real(&other).expect("checked real");
+        let dst = Shared::make_mut_real(&mut acc).expect("checked real");
+        add_into(dst, src);
+    } else {
+        let dst = Shared::make_mut(&mut acc);
+        add_into(dst, &other);
+    }
+    acc
+}
+
+fn add_into<T, D>(dst: &mut ndarray::Array<T, D>, src: &ndarray::Array<T, D>)
+where
+    T: Copy + Send + Sync + std::ops::AddAssign,
+    D: ndarray::Dimension,
+{
+    if let (Some(s), true) = (src.as_slice(), dst.is_standard_layout()) {
+        let d = dst.as_slice_mut().expect("standard layout");
+        if d.len() >= crate::eval::elementwise::PAR_MIN_LEN {
+            d.par_chunks_mut(SUM_CHUNK)
+                .zip(s.par_chunks(SUM_CHUNK))
+                .for_each(|(d, s)| d.iter_mut().zip(s).for_each(|(x, y)| *x += *y));
+        } else {
+            d.iter_mut().zip(s).for_each(|(x, y)| *x += *y);
+        }
+    } else {
+        dst.zip_mut_with(src, |x, y| *x += *y);
     }
 }
 
@@ -642,7 +915,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_callable() {
-        let err = validate_callable(&Value::Scalar(42.0)).unwrap_err();
+        let err = validate_callable("parmap", &Value::Scalar(42.0)).unwrap_err();
         assert!(err.to_string().contains("lambda or function handle"));
     }
 
