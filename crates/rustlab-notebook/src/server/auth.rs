@@ -137,6 +137,12 @@ pub const USER_FILE_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; 
 /// bundle creates no `blob:` stylesheet on the scattergl / surface path.
 /// A maplibre request for unpkg CSS stays blocked. See `docs/security.md`.
 pub fn csp_header(nonce: &str) -> String {
+    csp_header_with_styles(nonce, &[])
+}
+
+/// [`csp_header`] whose `style-src` also lists `style_origins`.
+pub fn csp_header_with_styles(nonce: &str, style_origins: &[String]) -> String {
+    let _ = style_origins;
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}' 'strict-dynamic' 'unsafe-eval'; \
@@ -253,6 +259,60 @@ mod tests {
         assert!(page.contains("nonce-abc"));
         assert!(!page.contains("sandbox"));
         assert_ne!(page, USER_FILE_CSP);
+    }
+
+    /// `[site] stylesheets` / `--stylesheet` add their origins to
+    /// `style-src` and nowhere else; every other directive is unchanged.
+    #[test]
+    fn csp_style_src_lists_exactly_the_stylesheet_origins() {
+        let base = csp_header("abc");
+        let origins = vec![
+            "https://kreegerlabs.com".to_string(),
+            "http://localhost:4000".to_string(),
+        ];
+        let csp = csp_header_with_styles("abc", &origins);
+        let directive = |policy: &str, name: &str| -> String {
+            policy
+                .split(';')
+                .map(str::trim)
+                .find(|d| d.split_whitespace().next() == Some(name))
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(
+            directive(&csp, "style-src"),
+            "style-src 'self' 'unsafe-inline' https://kreegerlabs.com http://localhost:4000"
+        );
+        for name in [
+            "default-src",
+            "script-src",
+            "worker-src",
+            "img-src",
+            "font-src",
+            "connect-src",
+            "object-src",
+            "base-uri",
+            "form-action",
+            "frame-ancestors",
+        ] {
+            assert_eq!(directive(&csp, name), directive(&base, name), "{name}");
+        }
+        assert!(!csp.contains("https:;") && !csp.contains(" * "), "{csp}");
+        assert_eq!(csp_header_with_styles("abc", &[]), base);
+    }
+
+    /// An origin that is not a plain `scheme://host[:port]` cannot add a
+    /// directive or widen the policy.
+    #[test]
+    fn csp_drops_origins_that_are_not_plain_origins() {
+        let bad = vec![
+            "https://a.example; script-src *".to_string(),
+            "*".to_string(),
+            "https:".to_string(),
+            "'unsafe-eval'".to_string(),
+            "https://a.example/path".to_string(),
+        ];
+        assert_eq!(csp_header_with_styles("abc", &bad), csp_header("abc"));
     }
 
     #[test]

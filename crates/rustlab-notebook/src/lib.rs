@@ -18,6 +18,7 @@ pub mod render_json;
 pub mod render_latex;
 pub mod render_markdown;
 pub mod server;
+pub mod site;
 mod srcdiff;
 pub mod theme_file;
 #[cfg(test)]

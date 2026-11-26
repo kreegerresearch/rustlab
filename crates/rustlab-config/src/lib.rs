@@ -12,9 +12,15 @@
 //! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
 //!
 //! A project may also carry `rustlab.toml` (see [`find_project_config`] and
-//! [`load_project`]). It accepts only `[notebook] theme`,
-//! `[notebook] theme_dir`, `[notebook] jail_root`, and
-//! `[notebook] file_browser`; other keys warn. `startup.rlab` is out of scope.
+//! [`load_project`]). It accepts `[notebook] theme`, `[notebook] theme_dir`,
+//! `[notebook] jail_root`, `[notebook] file_browser`, and `[site]` (see
+//! [`site`]); other keys warn. `startup.rlab` is out of scope.
+
+pub mod site;
+
+pub use site::{
+    check_site_href, check_site_text, check_stylesheet_url, stylesheet_origin, SiteConfig, SiteLink,
+};
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -324,7 +330,7 @@ pub enum ConfigError {
 }
 
 impl ConfigError {
-    fn invalid(path: &Path, key: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(path: &Path, key: &str, message: impl Into<String>) -> Self {
         Self::Invalid {
             path: path.to_path_buf(),
             key: key.to_string(),
@@ -376,6 +382,8 @@ pub struct ProjectConfig {
     /// `[notebook] file_browser`. `Some(false)` drops the collection file
     /// browser from directory HTML and watch. CLI flags override it.
     pub file_browser: Option<bool>,
+    /// `[site]`: brand, nav, footer, and stylesheets for HTML pages.
+    pub site: SiteConfig,
     /// Dotted keys this schema does not know. Callers warn once each.
     pub unknown_keys: Vec<String>,
 }
@@ -421,9 +429,14 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
         theme_dir: None,
         jail_root: None,
         file_browser: None,
+        site: SiteConfig::default(),
         unknown_keys: Vec::new(),
     };
     for (key, val) in table {
+        if key == "site" {
+            out.site = site::parse_site_table(&val, path, &mut out.unknown_keys)?;
+            continue;
+        }
         if key != "notebook" {
             out.unknown_keys.push(key);
             continue;
@@ -694,7 +707,7 @@ pub fn parse_toml(
     })
 }
 
-fn expect_table<'a>(
+pub(crate) fn expect_table<'a>(
     val: &'a TomlValue,
     path: &Path,
     section: &str,
@@ -931,7 +944,11 @@ fn parse_cache_section(
     Ok(())
 }
 
-fn expect_string<'a>(val: &'a TomlValue, path: &Path, key: &str) -> Result<&'a str, ConfigError> {
+pub(crate) fn expect_string<'a>(
+    val: &'a TomlValue,
+    path: &Path,
+    key: &str,
+) -> Result<&'a str, ConfigError> {
     match val {
         TomlValue::String(s) => Ok(s),
         other => Err(ConfigError::invalid(
@@ -971,7 +988,7 @@ fn expect_usize(val: &TomlValue, path: &Path, key: &str) -> Result<usize, Config
     }
 }
 
-fn type_name(val: &TomlValue) -> &'static str {
+pub(crate) fn type_name(val: &TomlValue) -> &'static str {
     match val {
         TomlValue::String(_) => "string",
         TomlValue::Integer(_) => "integer",
