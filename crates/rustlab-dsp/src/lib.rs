@@ -35,7 +35,10 @@ pub use laplacian::{
     laplacian_1d, laplacian_2d_bc, laplacian_3d, laplacian_eps_2d, laplacian_eps_3d,
     laplacian_eps_3d_real, BoundaryCondition,
 };
-pub use rasterize::{disk_mask, polygon_mask, rect_mask};
+pub use rasterize::{
+    disk_coverage, disk_mask, polygon_coverage, polygon_mask, rect_coverage, rect_mask,
+    MAX_COVERAGE_K,
+};
 pub use stft::stft;
 pub use upfirdn::upfirdn;
 pub use vector_calc::{

@@ -1497,11 +1497,59 @@ fn mask_xy<'a>(name: &str, args: &'a [Value]) -> Result<(&'a CMatrix, &'a CMatri
     Ok((x, y))
 }
 
+/// The optional trailing `"coverage", K` of a mask builder whose positional
+/// arguments are `args[..base]`. `None` keeps the binary mask.
+fn mask_coverage_opt(
+    name: &str,
+    args: &[Value],
+    base: usize,
+) -> Result<Option<usize>, ScriptError> {
+    if args.len() <= base {
+        check_args(name, args, base)?;
+        return Ok(None);
+    }
+    if args.len() != base + 2 {
+        return Err(ScriptError::type_err(format!(
+            "{name}: expected {base} arguments, or {} with \"coverage\", K; got {}",
+            base + 2,
+            args.len()
+        )));
+    }
+    match &args[base] {
+        Value::Str(s) if s.eq_ignore_ascii_case("coverage") => {}
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: argument {} must be the option name \"coverage\", got {}",
+                base + 1,
+                match other {
+                    Value::Str(s) => format!("\"{s}\""),
+                    v => v.type_name().to_string(),
+                }
+            )))
+        }
+    }
+    let max = rustlab_dsp::MAX_COVERAGE_K;
+    let bad = |got: String| {
+        ScriptError::type_err(format!(
+            "{name}: \"coverage\" K must be an integer in 1..{max}, got {got}"
+        ))
+    };
+    let k = match &args[base + 1] {
+        Value::Str(s) => return Err(bad(format!("\"{s}\""))),
+        v => v.to_scalar().map_err(|_| bad(v.type_name().to_string()))?,
+    };
+    if !(k.is_finite() && k.fract() == 0.0 && k >= 1.0 && k <= max as f64) {
+        return Err(bad(format!("{k}")));
+    }
+    Ok(Some(k as usize))
+}
+
 /// `rect_mask(X, Y, x0, y0, w, h)` — axis-aligned rectangle mask, inclusive
 /// on all four sides. Returns a real-valued matrix the same shape as X/Y
-/// with `1.0` inside the rectangle and `0.0` outside.
+/// with `1.0` inside the rectangle and `0.0` outside. A trailing
+/// `"coverage", K` returns each cell's covered fraction instead.
 fn builtin_rect_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("rect_mask", &args, 6)?;
+    let coverage = mask_coverage_opt("rect_mask", &args, 6)?;
     let (x, y) = mask_xy("rect_mask", &args)?;
     let x0 = args[2]
         .to_scalar()
@@ -1515,6 +1563,11 @@ fn builtin_rect_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
     let h = args[5]
         .to_scalar()
         .map_err(|e| ScriptError::type_err(format!("rect_mask: h: {e}")))?;
+    if let Some(k) = coverage {
+        let m = rustlab_dsp::rect_coverage(x, y, x0, y0, w, h, k)
+            .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        return Ok(Value::real_matrix(m));
+    }
     let m = rustlab_dsp::rect_mask(x, y, x0, y0, w, h)
         .map_err(|e| ScriptError::type_err(e.to_string()))?;
     Ok(Value::Matrix(m.into()))
@@ -1522,8 +1575,9 @@ fn builtin_rect_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// `disk_mask(X, Y, xc, yc, r)` — closed-disk mask. Returns a real-valued
 /// matrix the same shape as X/Y with `1.0` inside the disk and `0.0` outside.
+/// A trailing `"coverage", K` returns each cell's covered fraction instead.
 fn builtin_disk_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("disk_mask", &args, 5)?;
+    let coverage = mask_coverage_opt("disk_mask", &args, 5)?;
     let (x, y) = mask_xy("disk_mask", &args)?;
     let xc = args[2]
         .to_scalar()
@@ -1534,6 +1588,11 @@ fn builtin_disk_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
     let r = args[4]
         .to_scalar()
         .map_err(|e| ScriptError::type_err(format!("disk_mask: r: {e}")))?;
+    if let Some(k) = coverage {
+        let m = rustlab_dsp::disk_coverage(x, y, xc, yc, r, k)
+            .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        return Ok(Value::real_matrix(m));
+    }
     let m = rustlab_dsp::disk_mask(x, y, xc, yc, r)
         .map_err(|e| ScriptError::type_err(e.to_string()))?;
     Ok(Value::Matrix(m.into()))
@@ -1543,9 +1602,10 @@ fn builtin_disk_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `verts` is an N×2 matrix where each row is `[x, y]`. Returns a
 /// real-valued matrix the same shape as X/Y with `1.0` inside the polygon
 /// and `0.0` outside. Polygons with fewer than 3 vertices, or with all
-/// vertices collinear, return an all-zero mask.
+/// vertices collinear, return an all-zero mask. A trailing `"coverage", K`
+/// returns each cell's covered fraction instead.
 fn builtin_polygon_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("polygon_mask", &args, 3)?;
+    let coverage = mask_coverage_opt("polygon_mask", &args, 3)?;
     let (x, y) = mask_xy("polygon_mask", &args)?;
     let verts = match &args[2] {
         Value::Matrix(m) => m,
@@ -1556,6 +1616,11 @@ fn builtin_polygon_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
             )));
         }
     };
+    if let Some(k) = coverage {
+        let m = rustlab_dsp::polygon_coverage(x, y, verts, k)
+            .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        return Ok(Value::real_matrix(m));
+    }
     let m =
         rustlab_dsp::polygon_mask(x, y, verts).map_err(|e| ScriptError::type_err(e.to_string()))?;
     Ok(Value::Matrix(m.into()))

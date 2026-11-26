@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.94
+
+### Added
+- **Fractional-coverage masks**: `rect_mask`, `disk_mask`, and `polygon_mask` take a trailing `"coverage", K` and return an area-fraction (α) map. Each entry is the fraction of that meshgrid cell's `K×K` sub-samples inside the shape, in `[0, 1]`. This replaces the hand-written `K×K` sub-grid loop for conformal / area-weighted material maps (`eps = 1 + (eps_r − 1) * A`). It requires `X` and `Y` to be a meshgrid pair, errors otherwise, and uses real storage.
+  - Each cell is centred on its node, the point the binary mask tests. Its width is the mean of the neighbouring spacings (one spacing at the ends), so on a uniform grid the cells tile exactly. Every sub-sample goes through the binary test, so `K = 1` is the binary mask bit for bit. A whole-inside cell is exactly 1 and a whole-outside cell exactly 0.
+  - Area error ≤ perimeter·h/K. Measured on the unit disk at `h = 0.05`: `−1.9e-2` binary, `2.8e-4` at `K = 4`, `−3.0e-5` at `K = 16`.
+  - `K` is an integer from 1 to 1024. The option name is case-insensitive.
+  - 3001×3001 grid: `disk_mask` takes ~0.06 s at any `K` (it skips whole cells; the binary mask takes 0.10 s). A 64-vertex `polygon_mask` takes 0.14 s at `K = 16` (binary: 0.74 s). Rows run in parallel. The counts equal a brute-force `K×K` loop.
+  - Without the option the masks are binary and unchanged. A wrong argument count now names the `"coverage", K` form.
 ## 0.3.93
 
 ### Added
