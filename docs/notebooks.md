@@ -1309,12 +1309,35 @@ GitHub, Obsidian, and other Mermaid-aware viewers render the diagram
 client-side from the same source.
 
 **HTML output is static SVG**, not interactive. Mermaid.js's click /
-zoom / pan are not available — pixel-identical to the LaTeX/PDF render
-in exchange for offline rendering.
+zoom / pan are not available, in exchange for offline rendering.
 
-**Caching.** Each rendered diagram is hashed (BLAKE3) and cached under
-`plots/<notebook>/.cache/`. Re-renders only redraw diagrams whose source
-has changed. Delete `.cache/` to force a full rebuild.
+**Colours follow the theme.** Diagrams use the render theme (`-t`, a
+theme file, frontmatter `theme:`, or the rc default), builtin or file.
+The diagram has no background of its own: the canvas is transparent, so
+it sits on the page colour. The roles used:
+
+| Diagram part | Theme role |
+| --- | --- |
+| Node and sequence-actor fill | `bg_secondary` |
+| Node and actor outline | `border_subtle` |
+| Labels and titles | `text` |
+| Edges, arrowheads, lifelines | `text_dim` |
+| Edge-label backing, knockouts | `bg` |
+| Subgraph outline, activation bar | `border` |
+| Sequence note | `inline_code_bg` fill, `accent_secondary` outline |
+| Pie slices | accents and syntax colours; slice labels `bg` |
+| Timeline events, quadrant cells, mindmap nodes | an accent at 20% over `bg` |
+| Chart grid lines | `border_subtle` |
+
+Gantt, sankey, xychart, and C4 keep the renderer's own saturated series
+colours, which read on light and dark pages. LaTeX and PDF always draw
+diagrams in Latte, like the rest of the printed page. Markdown output is
+the original fence, so the viewer (GitHub, Obsidian) picks the colours.
+
+**Caching.** Each rendered diagram is hashed (BLAKE3) over its source and
+theme, and cached under `plots/<notebook>/.cache/`. Re-renders only redraw
+diagrams whose source or theme has changed. Delete `.cache/` to force a
+full rebuild.
 
 **Disabling.** Build `rustlab-notebook` with `--no-default-features` to
 drop the renderer (and its `resvg`/`usvg`/`fontdb` dep tree). Mermaid

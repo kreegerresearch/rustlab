@@ -6,6 +6,12 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.100
+
+### Breaking / behavior changes
+- **Mermaid diagrams follow the notebook theme.** Before, every diagram was the renderer's light default whatever the theme: a white `#FFFFFF` background rectangle, `#F8FAFC` nodes, `#0F172A` text, so a dark page (`-t mocha`, or a dark theme file) showed a bright box. Now HTML (static and `notebook watch`) and `--format json` draw diagrams in the render theme, builtin or theme file. The background rectangle is transparent. Nodes are `bg_secondary` with a `border_subtle` outline, labels `text`, edges `text_dim`; the full table is in `docs/notebooks.md` § "Mermaid diagrams". Timeline, quadrant, and mindmap fills and chart grid lines, which the renderer hard-codes, are mapped to theme roles too. LaTeX and PDF draw diagrams in Latte, matching the printed page. Markdown output is unchanged (the fence is passed through).
+  - *Migration:* rendered diagram SVGs change on every theme, including `latte`, and the `.cache/` key now includes the theme, so the first render after upgrading redraws each diagram once. A page that relied on the white box behind a diagram now shows the page colour through it.
+
 ## 0.3.99
 
 ### Breaking / behavior changes
@@ -83,6 +89,7 @@ should re-validate against those entries when upgrading.
   - `K` is an integer from 1 to 1024. The option name is case-insensitive.
   - 3001×3001 grid: `disk_mask` takes ~0.06 s at any `K` (it skips whole cells; the binary mask takes 0.10 s). A 64-vertex `polygon_mask` takes 0.14 s at `K = 16` (binary: 0.74 s). Rows run in parallel. The counts equal a brute-force `K×K` loop.
   - Without the option the masks are binary and unchanged. A wrong argument count now names the `"coverage", K` form.
+
 ## 0.3.93
 
 ### Added
