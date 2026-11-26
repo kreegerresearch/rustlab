@@ -5118,6 +5118,18 @@ seed(1);
 y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
 ```
 
+### `parmap(f, xs, "sum")` / `parsum(f, xs)`
+The sum of `f(x)` over `xs`, computed in parallel. The two spellings do the same thing. Results are added while the workers run, so the `B` per-call results are never packed into a `B × n` matrix. Every call must return the same shape, and the result has that shape: a scalar, a complex scalar, a vector, an `m×n` matrix (an `n×1` column stays a column), or a rank-3 tensor. A bool counts as 0 or 1. A shape mismatch is an error that names both trials and both shapes (`parsum: trial 2 returned vector of length 3 but trial 1 returned vector of length 2; all trials must return the same shape`). Any other return type is an error. An empty `xs` returns `0`. Any third argument to `parmap` other than `"sum"` is an error.
+
+The addition order is fixed: a binary tree over the trial indices, `S(lo, hi) = S(lo, mid) + S(mid, hi)` with `mid = lo + ceil((hi - lo)/2)`, earlier trials on the left, one trial per leaf. For 8 trials that is `((r1 + r2) + (r3 + r4)) + ((r5 + r6) + (r7 + r8))`; for 5 it is `((r1 + r2) + r3) + (r4 + r5)`. The tree depends only on the number of trials, so the result is bit-identical across runs, thread counts, and the order in which workers finish. Because the order differs from `sum(parmap(f, xs))`, the last digits can differ from it; integer-valued results agree exactly.
+
+Seeds, the pure-lambda denylist, the path jail, and the plot context are the same as `parmap(f, xs)`: `seed(N); parsum(...)` draws the same per-trial numbers as `seed(N); parmap(...)`. If several trials fail, the error of the earliest is reported.
+
+```
+parsum(@(k) k^2, 1:10)                 # → 385
+g = parmap(@(b) grad(W(b, :)), 1:8, "sum") / 8;   # mean gradient over a batch
+```
+
 ### `nproc()`
 
 Number of logical CPUs, the same count the rayon pool and `parmap` use. On Linux this respects a cgroup CPU quota. On macOS it is the total core count.
