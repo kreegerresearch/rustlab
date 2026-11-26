@@ -1136,11 +1136,29 @@ pub fn cmd_render_dir(
         }
         Some(set)
     };
+    // Unlabelled links to these targets show the target's title. Built from
+    // the notebooks this build already read; no link target is opened.
+    let titles: render::LinkTitles = {
+        let mut map: std::collections::HashMap<String, String> = pending
+            .iter()
+            .filter_map(|p| notebook_title(&p.source).map(|t| (p.rel_md.clone(), t)))
+            .collect();
+        if emit_nav {
+            let index_md_title = index_md_path
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| notebook_title(&s));
+            if let Some(t) = index_title.clone().or(index_md_title) {
+                map.insert("index.md".to_string(), t);
+            }
+        }
+        std::sync::Arc::new(map)
+    };
     // Root-level link mode, used for the index page's own body.
     let link_mode = render::LinkMode::Static {
         known: known.clone(),
         current_rel_dir: String::new(),
-        titles: Default::default(),
+        titles: titles.clone(),
     };
 
     // Index title is also the file-browser label, so resolve it before
@@ -1209,7 +1227,7 @@ pub fn cmd_render_dir(
         let page_link_mode = render::LinkMode::Static {
             known: known.clone(),
             current_rel_dir: page_dir,
-            titles: Default::default(),
+            titles: titles.clone(),
         };
 
         let p = &pending[i];
@@ -2151,21 +2169,56 @@ fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-pub fn notebook_title(_source: &str) -> Option<String> {
+/// The title a notebook gives itself: frontmatter `title:`, else the first
+/// `# ` heading outside a code fence, without a trailing `{#id}`. `None`
+/// when it has neither. Index entries, page nav, and cross-notebook link
+/// text all use this.
+pub fn notebook_title(source: &str) -> Option<String> {
+    let (fm, body) = parse::extract_frontmatter(source);
+    if let Some(t) = fm.title {
+        return Some(t);
+    }
+    // `#` starts a rustlab comment, so a fenced cell can hold `# setup`.
+    let mut fence: Option<(char, usize)> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(c) = trimmed.chars().next().filter(|c| *c == '`' || *c == '~') {
+            let run = trimmed.chars().take_while(|x| *x == c).count();
+            if run >= 3 {
+                match fence {
+                    None => {
+                        fence = Some((c, run));
+                        continue;
+                    }
+                    Some((fc, fl)) if fc == c && run >= fl && trimmed[run..].trim().is_empty() => {
+                        fence = None;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let mut title = rest.trim();
+            if title.ends_with('}') {
+                if let Some(at) = title.rfind(" {#") {
+                    title = title[..at].trim_end();
+                }
+            }
+            if !title.is_empty() {
+                return Some(title.to_string());
+            }
+        }
+    }
     None
 }
 
 pub fn extract_title(source: &str, path: &PathBuf) -> String {
-    // Frontmatter `title:` wins over the H1 fallback.
-    let (fm, body) = parse::extract_frontmatter(source);
-    if let Some(t) = fm.title {
+    if let Some(t) = notebook_title(source) {
         return t;
-    }
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("# ") && !trimmed.starts_with("## ") {
-            return trimmed[2..].trim().to_string();
-        }
     }
     path.file_stem()
         .unwrap_or_default()

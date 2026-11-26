@@ -2231,7 +2231,10 @@ fn scheme_normalised(url: &str) -> String {
 
 /// Apply [`LinkMode`] resolution to every link-open event in place. Shared
 /// with the index-page body renderer, which runs its own event pipeline.
-pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
+pub(crate) fn rewrite_link_events(events: &mut Vec<Event<'_>>, mode: &LinkMode) {
+    // Titles are matched against the destination as written, so this runs
+    // before the hrefs below are rewritten.
+    *events = retitle_links(std::mem::take(events), mode, "html");
     for ev in events.iter_mut() {
         if let Event::Start(Tag::Link { dest_url, .. }) = ev {
             if is_dangerous_url(dest_url) {
@@ -2243,6 +2246,90 @@ pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
             }
         }
     }
+}
+
+/// Give an unlabelled cross-notebook link its target's title.
+///
+/// A link is retitled only when its destination resolves (per `mode`, to
+/// the `target_ext` artifacts) to a notebook in `mode`'s title map and its
+/// text is plain text that names no more than the target: empty, the
+/// path or file name with or without `.md`, or the `name § Section` text
+/// that `[[name#Section]]` expands to. Any other text, or text with
+/// markup (code spans, emphasis), is an explicit label and is kept. The
+/// title goes in as a `Text` event, so each emitter escapes it.
+pub(crate) fn retitle_links<'a>(
+    events: Vec<Event<'a>>,
+    mode: &LinkMode,
+    target_ext: &str,
+) -> Vec<Event<'a>> {
+    let titles = mode.titles();
+    if titles.is_empty() {
+        return events;
+    }
+    let mut out = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(ev) = iter.next() {
+        let found = match &ev {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                resolve_link_dest(dest_url, mode, target_ext, true)
+                    .and_then(|r| r.key)
+                    .and_then(|k| titles.get(&k))
+                    .map(|title| (title.clone(), dest_url.to_string()))
+            }
+            _ => None,
+        };
+        out.push(ev);
+        let Some((title, dest)) = found else {
+            continue;
+        };
+        let mut inner = Vec::new();
+        let mut end = None;
+        for e in iter.by_ref() {
+            if matches!(e, Event::End(TagEnd::Link)) {
+                end = Some(e);
+                break;
+            }
+            inner.push(e);
+        }
+        let text = inner.iter().try_fold(String::new(), |mut acc, e| match e {
+            Event::Text(t) => {
+                acc.push_str(t);
+                Some(acc)
+            }
+            _ => None,
+        });
+        match text.and_then(|t| default_link_text(&t, &dest, &title)) {
+            Some(new) => out.push(Event::Text(new.into())),
+            None => out.extend(inner),
+        }
+        out.extend(end);
+    }
+    out
+}
+
+/// The retitled text when `text` is one of the defaults the renderer
+/// writes for an unlabelled link to `dest`, else `None`.
+fn default_link_text(text: &str, dest: &str, title: &str) -> Option<String> {
+    let (path, fragment) = match dest.find('#') {
+        Some(at) => (&dest[..at], &dest[at + 1..]),
+        None => (dest, ""),
+    };
+    let path = percent_decode(path);
+    let stem = path.strip_suffix(".md").unwrap_or(&path);
+    let base = stem.rsplit('/').next().unwrap_or(stem);
+    let base_md = format!("{base}.md");
+    let text = text.trim();
+    if text.is_empty() || [stem, path.as_str(), base, base_md.as_str()].contains(&text) {
+        return Some(title.to_string());
+    }
+    if !fragment.is_empty() {
+        for name in [stem, base] {
+            if let Some(section) = text.strip_prefix(name).and_then(|r| r.strip_prefix(" § ")) {
+                return Some(format!("{title} § {section}"));
+            }
+        }
+    }
+    None
 }
 
 /// `javascript:`, `data:`, `vbscript:`, `blob:` — never emit as href (and
@@ -6381,7 +6468,7 @@ w = 4
         let html = link_html("[[x]]", &mode);
         assert!(!html.contains("<script>"), "{html}");
         assert!(
-            html.contains(">&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot;</a>"),
+            html.contains(">&lt;script&gt;alert(1)&lt;/script&gt; &amp; \"q\"</a>"),
             "{html}"
         );
     }

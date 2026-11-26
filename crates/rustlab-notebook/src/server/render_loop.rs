@@ -397,7 +397,7 @@ fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
             slugs: state.link_slugs.clone(),
             current_rel_dir: String::new(),
             index_at_root: true,
-            titles: Default::default(),
+            titles: state.link_titles.clone(),
         };
         let rendered = tokio::task::spawn_blocking(move || {
             crate::read_and_render_index_md(&path, &root, theme, &link)
@@ -714,6 +714,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: Map::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),

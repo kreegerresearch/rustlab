@@ -164,6 +164,10 @@ pub struct ServerState {
     /// `intro.md` do not share a key. Single-file mode holds just that
     /// file, keyed by its bare filename, and the identity is `slugify`'d.
     pub link_slugs: HashMap<String, String>,
+    /// Titles of the listed notebooks, keyed like `link_slugs`, read once
+    /// at startup like the listing titles. Unlabelled cross-notebook links
+    /// show them (see [`crate::render::retitle_links`]).
+    pub link_titles: crate::render::LinkTitles,
     /// Rendered body of the collection root's `index.md`, shown on `/` —
     /// matching the static build, which hoists it into `index.html`.
     /// Empty when the collection has none. RwLock: an `index.md` edit
@@ -251,7 +255,7 @@ impl ServerState {
             // Single-file `/` redirects to the notebook itself — mapping
             // index.md there would send the link in a circle.
             index_at_root: !self.single,
-            titles: Default::default(),
+            titles: self.link_titles.clone(),
         }
     }
 }
@@ -1109,6 +1113,7 @@ mod tests {
             plot_dir,
             editable: false,
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
@@ -1246,6 +1251,7 @@ mod tests {
             plot_dir,
             editable,
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
@@ -1751,6 +1757,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -1851,6 +1858,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -1902,6 +1910,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -1950,6 +1959,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -2045,6 +2055,7 @@ mod tests {
             plot_dir,
             editable: false,
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             single: false,
             theme: Theme::Dark.colors(),
             index_title: "Collection".to_string(),
@@ -2316,6 +2327,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -2413,6 +2425,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -2454,6 +2467,7 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
@@ -2629,6 +2643,7 @@ mod tests {
             plot_dir,
             editable: false,
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".into(),
@@ -2709,6 +2724,7 @@ mod tests {
             plot_dir,
             editable: false,
             link_slugs: HashMap::new(),
+            link_titles: Default::default(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".into(),

@@ -635,7 +635,7 @@ fn markdown_to_latex_in(
     opts.insert(Options::ENABLE_MATH);
     // Same single-tilde demotion as the HTML target: `~word~` stays literal
     // prose; only `~~word~~` becomes strikethrough.
-    let events = parse_single_tilde_safe(&md, opts);
+    let events = crate::render::retitle_links(parse_single_tilde_safe(&md, opts), link, "pdf");
 
     let mut out = String::new();
     let mut table_cell_idx: usize = 0;
