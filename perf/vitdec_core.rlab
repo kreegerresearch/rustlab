@@ -1,0 +1,44 @@
+# Native `vitdec` benchmark on the inputs of viterbi_core.rlab: rate 1/2,
+# K = 7, generators 171, 133 (octal), Eb/N0 = 3 dB, same seed and noise.
+# The caller sets N (message bits), HARD (0 = unquant, 1 = hard), and
+# TBLEN (0 = traceback over the whole frame, which decodes exactly as the
+# script decoder; otherwise a "term" decode with that traceback depth).
+
+G = [1 1 1 1 0 0 1; 1 0 1 1 0 1 1];    # 171, 133 octal, current input first
+
+function c = conv_encode(u, G)
+  x = [u, zeros(1, 6)];
+  L = length(x);
+  n = size(G, 1);
+  c = zeros(n, L);
+  for j = 1:n
+    v = convolve(x, G(j, :));
+    c(j, :) = mod(v(1:L), 2);
+  end
+end
+
+t = poly2trellis(7, [171 133]);
+seed(42);
+u = randi([0, 1], 1, N);
+x = 1 - 2 * conv_encode(u, G);
+sigma = sqrt(1 / (2 * 0.5 * 10^(3 / 10)));   # Eb/N0 = 3 dB at rate 1/2
+Y = x + sigma * randn(size(x, 1), size(x, 2));
+L = N + 6;
+if HARD
+  code = reshape(Y < 0, 1, 2 * L);
+  dectype = "hard";
+else
+  code = reshape(Y, 1, 2 * L);
+  dectype = "unquant";
+end
+tb = TBLEN;
+if tb == 0
+  tb = L;
+end
+tic;
+d = vitdec(code, t, tb, "term", dectype);
+t_dec = toc;
+uh = d(1:N);
+errors = sum(uh != u);
+chk = mod(sum(uh .* mod((1:N) * 7919, 1000003)), 1000003);
+fprintf("N=%d hard=%d tblen=%d decode=%.3f s errors=%d checksum=%d\n", N, HARD, TBLEN, t_dec, errors, chk);

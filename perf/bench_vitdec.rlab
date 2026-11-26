@@ -1,0 +1,6 @@
+# Native vitdec, rate 1/2 K = 7, 100,000 bits, whole-frame traceback
+# (see vitdec_core.rlab and vitdec_perf.sh).
+N = 100000;
+HARD = 0;
+TBLEN = 0;
+run vitdec_core.rlab

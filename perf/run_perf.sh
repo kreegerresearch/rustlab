@@ -201,6 +201,7 @@ Work through these tasks in order:
    - bench_builtins total:       > 300 ms
    - bench_interpreter total:    > 2000 ms
    - bench_viterbi total:        > 200 ms
+   - bench_vitdec total:         > 200 ms
    For each benchmark that exceeds its threshold, suggest a specific next
    profiling step (e.g. samply, flamegraph, criterion micro-benchmark).
 
