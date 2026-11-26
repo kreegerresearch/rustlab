@@ -804,6 +804,7 @@ P = softmax(S, 1)                     # per-column, each column sums to 1
 - Replaces the manual `for t = 1:T; A(t) = softmax(S(t, :)); end` attention idiom.
 - 1-D-shaped matrices (1×N or N×1) are flattened regardless of `dim`.
 - Single scalar input returns `1.0`.
+- `exp` is rustlab's own (table driven, within one ulp of the correctly rounded value, no fused multiply-add), so results are the same bits on every platform. Since 0.3.97 they can differ from the platform `exp` in the last bit (about 0.1% of terms against glibc); each probability stays within 1e-15 relative of the earlier result (measured worst 4e-16). The max and each sum are unchanged: same values, same summation order. `NaN` in a slice makes that slice `NaN`; `-Inf` entries get probability 0.
 - Monotone: larger input values produce larger output probabilities.
 
 ### `relu(x)`

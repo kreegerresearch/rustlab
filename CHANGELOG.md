@@ -6,6 +6,24 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.97
+
+### Performance
+- **Lower fixed cost of `softmax` and of an attention head on small arrays** (rustlab_llm perf iteration 04, request R3). Release build, `rustlab_llm/perf/bench_suite.rlab`, medians, on a 4-vCPU Intel Xeon VM at 2.4 GHz (x86-64, baseline SSE2 target), 0.3.90 → 0.3.97:
+
+  | Key | 0.3.90 | 0.3.97 | |
+  |---|---:|---:|---:|
+  | `prim.softmax_129x129` | 78.2 µs | 53.1 µs | 1.47× |
+  | `prim.attn_head_129x32` | 204.9 µs | 103.8 µs | 1.97× |
+  | `e2e.train_step_B8` | 122.5 ms | 119.2 ms | within noise |
+
+  Not measured on an M4; check there with `RUSTLAB=$PWD/target/release/rustlab make -C ../rustlab_llm perf-check`.
+  - `softmax` runs a new kernel (`rustlab-core/src/softmax.rs`): a table-driven `exp` written so the slice loop vectorizes (SSE2 / NEON), the row maximum over 16 independent lanes, each row's sum in its old order with 8 rows interleaved, and no `exp` for a causal row's masked tail (exactly 0). A temporary argument's buffer is reused for the result.
+  - `eye` and `cumsum` of real input return real storage. The causal mask `-1e9 * (1 - cumsum(eye(T), 1))` was complex-stored, so `S * scale + M` promoted `S` and ran the complex add on every head: 35 µs → 6.4 µs at 129 × 129 on the same VM. Values are unchanged (storage is not observable).
+
+### Breaking / behavior changes
+- **`softmax` values can differ in the last bit.** `exp` is now rustlab's own (`rustlab_core::softmax::exp_f64`: within one ulp of the correctly rounded value, no fused multiply-add), not the platform libm, so `softmax` gives the same bits on macOS and Linux. Against 0.3.90 on glibc, 0.05–0.1% of probabilities differ, by at most 3.7e-16 relative (measured on 129 × 129 attention scores with and without the causal mask, 400 × 300 random scores by row and by column, and a 5000-vector). The max, each sum's order, and the division are unchanged; `NaN`, `±Inf`, all `-Inf`, and subnormal results print identically. The rustlab_llm gate is unchanged (gradient check 7.93e-08, trajectory 1.42e-15). *Migration:* none, unless a test compares `softmax` output bit for bit against a stored 0.3.90 result; use a 1e-15 relative tolerance.
+
 ## 0.3.96
 
 ### Added
@@ -82,7 +100,6 @@ should re-validate against those entries when upgrading.
 
 ### Breaking / behavior changes
 - **`end` after a nested index in the same subscript is the outer array's `end`.** `v(b(1) + end - 1)` and `v(b(1) + end) = x` used to fail with `undefined variable 'end'`, because the inner `b(1)` removed the outer binding. They now index `v` as in MATLAB. *Migration:* none; these forms were errors before.
-
 ## 0.3.90
 
 ### Added
