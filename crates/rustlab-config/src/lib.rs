@@ -12,8 +12,9 @@
 //! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
 //!
 //! A project may also carry `rustlab.toml` (see [`find_project_config`] and
-//! [`load_project`]). It accepts only `[notebook] theme` and
-//! `[notebook] theme_dir`; other keys warn. `startup.rlab` is out of scope.
+//! [`load_project`]). It accepts only `[notebook] theme`,
+//! `[notebook] theme_dir`, and `[notebook] jail_root`; other keys warn.
+//! `startup.rlab` is out of scope.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -366,6 +367,10 @@ pub struct ProjectConfig {
     pub notebook_theme: Option<String>,
     /// `[notebook] theme_dir`, resolved against `root`. Must stay inside it.
     pub theme_dir: Option<PathBuf>,
+    /// `[notebook] jail_root`: the notebook file-I/O jail, canonical. An
+    /// existing directory at or below the canonical `root`; see
+    /// [`project_jail_dir`].
+    pub jail_root: Option<PathBuf>,
     /// Dotted keys this schema does not know. Callers warn once each.
     pub unknown_keys: Vec<String>,
 }
@@ -409,6 +414,7 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
         root: root.clone(),
         notebook_theme: None,
         theme_dir: None,
+        jail_root: None,
         unknown_keys: Vec::new(),
     };
     for (key, val) in table {
@@ -431,6 +437,13 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
                             format!("\"{s}\" leaves the project root {}", root.display()),
                         )
                     })?);
+                }
+                "jail_root" => {
+                    let s = expect_string(v, path, "notebook.jail_root")?;
+                    out.jail_root = Some(
+                        project_jail_dir(&root, s)
+                            .map_err(|m| ConfigError::invalid(path, "notebook.jail_root", m))?,
+                    );
                 }
                 other => out.unknown_keys.push(format!("notebook.{other}")),
             }
@@ -474,6 +487,73 @@ fn project_relative_dir(root: &Path, rel: &str) -> Option<PathBuf> {
         return Some(canon);
     }
     Some(joined)
+}
+
+/// Resolve a `[notebook] jail_root` value against the directory holding
+/// `rustlab.toml`. The value must be relative and must name an existing
+/// directory whose canonical path is that directory or below it, so `..`,
+/// an absolute path, and a symlink that leads out are all refused. Returns
+/// the canonical path. A project file can only narrow to its own tree;
+/// widening past it takes the `--jail-root` flag.
+pub fn project_jail_dir(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let canon_root = std::fs::canonicalize(root).map_err(|e| {
+        format!(
+            "cannot resolve the project directory {}: {e}",
+            root.display()
+        )
+    })?;
+    if rel.is_empty() {
+        return Err(format!(
+            "expected a directory relative to {} (\".\" is the project directory)",
+            canon_root.display()
+        ));
+    }
+    let rel_path = Path::new(rel);
+    if rel_path.has_root() || rel_path.is_absolute() {
+        return Err(format!(
+            "\"{rel}\" must be relative to the project directory {}",
+            canon_root.display()
+        ));
+    }
+    let escapes = || {
+        format!(
+            "\"{rel}\" escapes the project directory {}",
+            canon_root.display()
+        )
+    };
+    let mut depth = 0usize;
+    for c in rel_path.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => depth = depth.checked_sub(1).ok_or_else(escapes)?,
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "\"{rel}\" must be relative to the project directory {}",
+                    canon_root.display()
+                ))
+            }
+        }
+    }
+    // Joined as written so the OS resolves `link/..` the way a later
+    // open would; the canonical prefix check below is the authority.
+    let canon = std::fs::canonicalize(canon_root.join(rel_path)).map_err(|e| {
+        format!(
+            "\"{rel}\" is not a directory under {}: {e}",
+            canon_root.display()
+        )
+    })?;
+    if !canon.starts_with(&canon_root) {
+        return Err(escapes());
+    }
+    if !canon.is_dir() {
+        return Err(format!(
+            "\"{rel}\" is not a directory ({})",
+            canon.display()
+        ));
+    }
+    Ok(canon)
 }
 
 /// Locations consulted by [`load`].

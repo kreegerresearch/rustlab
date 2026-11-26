@@ -14,7 +14,8 @@ use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_rustlab-notebook");
 
-const NOTEBOOK: &str = "# Lesson\n\n```rustlab\nrun \"../lib/helper.rlab\"\ndisp(shared_value)\n```\n";
+const NOTEBOOK: &str =
+    "# Lesson\n\n```rustlab\nrun \"../lib/helper.rlab\"\ndisp(shared_value)\n```\n";
 const ESCAPE: &str = "path escapes notebook directory";
 
 struct Project {
@@ -117,7 +118,10 @@ fn cli_jail_root_overrides_the_project_value() {
     let (o, html) = p.render(&["--jail-root", "lessons"]);
     assert!(o.status.success(), "{}", text(&o));
     let html = html.expect("output written");
-    assert!(html.contains(ESCAPE), "--jail-root lessons must narrow the jail");
+    assert!(
+        html.contains(ESCAPE),
+        "--jail-root lessons must narrow the jail"
+    );
 }
 
 #[test]
@@ -244,6 +248,25 @@ fn watch_uses_the_project_jail_root() {
     let page = watch_page(&p, "lessons/x.md", "x");
     assert!(page.contains("4242"), "watch page did not run the helper");
     assert!(!page.contains(ESCAPE));
+}
+
+#[test]
+fn watch_refuses_files_whose_projects_disagree_on_the_jail() {
+    let p = Project::new(Some("[notebook]\njail_root = \".\"\n"));
+    let other = TempDir::new().unwrap();
+    let stray = other.path().join("stray.md");
+    std::fs::write(&stray, "# Stray\n").unwrap();
+    let o = p
+        .cmd()
+        .args(["watch", "lessons/x.md"])
+        .arg(&stray)
+        .args(["--no-browser", "--port", "1"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    let err = stderr(&o);
+    assert!(err.contains("different jails"), "{err}");
+    assert!(err.contains("--jail-root"), "{err}");
 }
 
 #[test]
