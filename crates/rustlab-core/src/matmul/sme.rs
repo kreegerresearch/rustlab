@@ -29,8 +29,11 @@
 //! `smstart` and `smstop` zero the vector and predicate registers, which is
 //! why every `v` register is declared clobbered.
 
+use super::neon;
+use super::slots::{self, Slots};
 use crate::types::{CMatrix, C64};
 use ndarray::{Array2, ArrayView2};
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 /// Rows and columns of C per kernel block: two 8-element vectors.
@@ -44,8 +47,9 @@ pub(crate) fn available() -> bool {
     *ON.get_or_init(|| std::env::var_os("RUSTLAB_NO_SME").is_none() && detect())
 }
 
+/// An integer `sysctl`, `None` when the name does not exist.
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-fn detect() -> bool {
+fn sysctl_int(name: &std::ffi::CStr) -> Option<i64> {
     use std::ffi::{c_char, c_int, c_void};
     extern "C" {
         // libSystem; always linked on macOS.
@@ -57,22 +61,26 @@ fn detect() -> bool {
             newlen: usize,
         ) -> c_int;
     }
-    let flag = |name: &std::ffi::CStr| {
-        let mut v: c_int = 0;
-        let mut len = std::mem::size_of::<c_int>();
-        // SAFETY: `v` and `len` are valid for writes of the sizes given; no
-        // new value is set.
-        let r = unsafe {
-            sysctlbyname(
-                name.as_ptr(),
-                (&mut v as *mut c_int).cast(),
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        r == 0 && v == 1
+    let mut v: i64 = 0;
+    let mut len = std::mem::size_of::<i64>();
+    // SAFETY: `v` and `len` are valid for writes of the sizes given; no new
+    // value is set. A 4-byte value fills the low half of the zeroed `v`
+    // (little-endian).
+    let r = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            (&mut v as *mut i64).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
     };
+    (r == 0 && (len == 4 || len == 8)).then_some(if len == 4 { v as i32 as i64 } else { v })
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn detect() -> bool {
+    let flag = |name: &std::ffi::CStr| sysctl_int(name) == Some(1);
     if !(flag(c"hw.optional.arm.FEAT_SME") && flag(c"hw.optional.arm.FEAT_SME_F64F64")) {
         return false;
     }
@@ -94,6 +102,20 @@ fn detect() -> bool {
 #[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
 fn detect() -> bool {
     false
+}
+
+/// Performance clusters (cores sharing one L2, and on an M4 one matrix
+/// unit): `hw.perflevel0.physicalcpu / hw.perflevel0.cpusperl2`.
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub(crate) fn perf_clusters() -> Option<usize> {
+    let cpus = sysctl_int(c"hw.perflevel0.physicalcpu")?;
+    let per_l2 = sysctl_int(c"hw.perflevel0.cpusperl2")?;
+    (cpus > 0 && per_l2 > 0).then(|| (cpus as usize).div_ceil(per_l2 as usize))
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+pub(crate) fn perf_clusters() -> Option<usize> {
+    None
 }
 
 /// `a · b` on the matrix unit, for real `f64` operands. The caller checks
@@ -181,6 +203,29 @@ thread_local! {
 /// to `finish` as a row-major slice with `np` words per row. `None` when an
 /// operand has a nonzero imaginary part.
 fn product<T>(a: Src, b: Src, finish: impl FnOnce(&[f64], usize) -> T) -> Option<T> {
+    product_in(a, b, Route::Auto, slots::global(), finish)
+}
+
+/// Which kernel runs a packed product.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Route {
+    /// SME when a slot is free (or the product is too large to overflow),
+    /// NEON otherwise.
+    Auto,
+    /// Only tests force a route; on x86 they cannot run NEON.
+    #[allow(dead_code)]
+    Sme,
+    #[allow(dead_code)]
+    Neon,
+}
+
+fn product_in<T>(
+    a: Src,
+    b: Src,
+    route: Route,
+    slots: &Slots,
+    finish: impl FnOnce(&[f64], usize) -> T,
+) -> Option<T> {
     let (m, k, n) = (a.rows, a.cols, b.cols);
     debug_assert_eq!(k, b.rows);
     let (mb, nb) = (m.div_ceil(BLOCK), n.div_ceil(BLOCK));
@@ -199,7 +244,18 @@ fn product<T>(a: Src, b: Src, finish: impl FnOnce(&[f64], usize) -> T) -> Option
             {
                 return None;
             }
-            kernel(&s.a, &s.b, &mut s.c[..need], k, mb, nb, np);
+            run_kernel(
+                route,
+                slots,
+                m * k * n,
+                &s.a,
+                &s.b,
+                &mut s.c[..need],
+                k,
+                mb,
+                nb,
+                np,
+            );
         } else {
             s.c[..need].fill(0.0);
         }
@@ -211,6 +267,77 @@ fn product<T>(a: Src, b: Src, finish: impl FnOnce(&[f64], usize) -> T) -> Option
         }
         Some(out)
     })
+}
+
+/// Runs the SME kernel while holding a slot, or the NEON kernel when no
+/// slot is free. Packing stays outside the slot: it runs on the core, not
+/// the matrix unit. Both kernels give the same bits.
+#[allow(clippy::too_many_arguments)]
+fn run_kernel(
+    route: Route,
+    slots: &Slots,
+    macs: usize,
+    pa: &[f64],
+    pb: &[f64],
+    c: &mut [f64],
+    k: usize,
+    mb: usize,
+    nb: usize,
+    ldc: usize,
+) {
+    let held = match route {
+        Route::Sme => Some(slots.acquire_anyway()),
+        Route::Neon => None,
+        Route::Auto => slots.try_acquire().or_else(|| {
+            (macs > slots::overflow_max_macs().load(Ordering::Relaxed))
+                .then(|| slots.acquire_anyway())
+        }),
+    };
+    let count = if held.is_some() {
+        kernel(pa, pb, c, k, mb, nb, ldc);
+        &slots::SME_RUNS
+    } else {
+        neon::kernel(pa, pb, c, k, mb, nb, ldc);
+        &slots::NEON_RUNS
+    };
+    if route == Route::Auto {
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Test entry points that pick the route or the slot set.
+#[cfg(test)]
+pub(crate) fn gemm_routed(a: &ArrayView2<f64>, b: &ArrayView2<f64>, route: Route) -> Array2<f64> {
+    let (m, n) = (a.nrows(), b.ncols());
+    let out = product_routed(Src::of_f64(a), Src::of_f64(b), route, |c, np| {
+        unpack(c, np, m, n, |x| x)
+    })
+    .expect("real operands");
+    Array2::from_shape_vec((m, n), out).expect("length matches the shape")
+}
+
+#[cfg(test)]
+fn product_routed<T>(
+    a: Src,
+    b: Src,
+    route: Route,
+    finish: impl FnOnce(&[f64], usize) -> T,
+) -> Option<T> {
+    product_in(a, b, route, slots::global(), finish)
+}
+
+#[cfg(test)]
+fn gemm_with_slots(a: &ArrayView2<f64>, b: &ArrayView2<f64>, slots: &Slots) -> Array2<f64> {
+    let (m, n) = (a.nrows(), b.ncols());
+    let out = product_in(
+        Src::of_f64(a),
+        Src::of_f64(b),
+        Route::Auto,
+        slots,
+        |c, np| unpack(c, np, m, n, |x| x),
+    )
+    .expect("real operands");
+    Array2::from_shape_vec((m, n), out).expect("length matches the shape")
 }
 
 /// Panels of 16 along one dimension (`len` long, `along` stride), k-major:
@@ -483,6 +610,100 @@ mod tests {
         let a = Array2::<f64>::zeros((0, 5));
         let b = Array2::<f64>::zeros((5, 2));
         assert_eq!(gemm(&a.view(), &b.view()).dim(), (0, 2));
+    }
+
+    /// The NEON kernel that takes a product when no SME slot is free must
+    /// round exactly like the matrix unit: zero, then one fused
+    /// multiply-add per k. Runs on any aarch64 CPU (no SME needed).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_route_matches_the_fused_k_order_bit_for_bit() {
+        let dims = [1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 129];
+        for &m in &dims {
+            for &n in &dims {
+                for &k in &[1, 2, 8, 33, 128] {
+                    let a = filled(m, k, (m * 1000 + k) as u64);
+                    let b = filled(k, n, (n * 1000 + k + 7) as u64);
+                    assert_bits(
+                        &gemm_routed(&a.view(), &b.view(), Route::Neon),
+                        &fma_reference(&a.view(), &b.view()),
+                        &format!("neon {m}x{k}x{n}"),
+                    );
+                }
+            }
+        }
+        let at = filled(40, 37, 1);
+        let bt = filled(23, 40, 2);
+        assert_bits(
+            &gemm_routed(&at.t(), &bt.t(), Route::Neon),
+            &fma_reference(&at.t(), &bt.t()),
+            "neon A' * B'",
+        );
+        let a = filled(129, 128, 11);
+        let b = filled(128, 512, 12);
+        assert_bits(
+            &gemm_routed(&a.view(), &b.view(), Route::Neon),
+            &fma_reference(&a.view(), &b.view()),
+            "neon 129x128x512",
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_route_reads_complex_storage() {
+        let a = filled(20, 9, 13).mapv(|x| C64::new(x, 0.0));
+        let b = filled(9, 18, 14).mapv(|x| C64::new(x, -0.0));
+        let want = fma_reference(&a.mapv(|z| z.re).view(), &b.mapv(|z| z.re).view());
+        let got = product_routed(
+            Src::of_c64(&a.view()),
+            Src::of_c64(&b.view()),
+            Route::Neon,
+            |c, np| unpack(c, np, 20, 18, |x| x),
+        )
+        .expect("real parts only");
+        assert_bits(
+            &Array2::from_shape_vec((20, 18), got).unwrap(),
+            &want,
+            "neon c64",
+        );
+        let mut bad = b.clone();
+        bad[[2, 3]] = C64::new(1.0, 0.5);
+        assert!(product_routed(
+            Src::of_c64(&a.view()),
+            Src::of_c64(&bad.view()),
+            Route::Neon,
+            |_, _| ()
+        )
+        .is_none());
+    }
+
+    /// With one slot and eight threads most products overflow to NEON; every
+    /// result must still equal the single-thread SME product bit for bit.
+    #[test]
+    fn capped_concurrent_calls_agree() {
+        if !available() {
+            return;
+        }
+        let a = filled(129, 128, 9);
+        let b = filled(128, 512, 10);
+        let want = gemm_routed(&a.view(), &b.view(), Route::Sme);
+        let slots = Slots::new(1);
+        std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        (0..10)
+                            .map(|_| gemm_with_slots(&a.view(), &b.view(), &slots))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            for h in hs {
+                for c in h.join().unwrap() {
+                    assert_bits(&c, &want, "capped thread");
+                }
+            }
+        });
     }
 
     #[test]

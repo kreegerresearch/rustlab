@@ -13,12 +13,21 @@
 //! straight from the complex storage. Each element is then a fused
 //! multiply-add chain in k order. `RUSTLAB_NO_SME=1` turns that path off.
 //!
+//! The matrix unit is shared by every core of a cluster, so at most
+//! [`sme_slots`] products run on it at once (`RUSTLAB_SME_SLOTS`; default
+//! one per performance cluster). A product that finds every slot taken runs
+//! on a NEON kernel with the same rounding instead, unless it has more than
+//! [`sme_overflow_macs`] multiply-adds (`RUSTLAB_SME_OVERFLOW_MACS`). The
+//! route never changes a result bit.
+//!
 //! The real path sums in a different order from the complex kernel, so
 //! results can differ in the last digits. It also differs where the complex
 //! kernel manufactured NaN: `(Inf + 0i)·(1 + 0i)` has imaginary part
 //! `Inf·0 = NaN` there, while the real product is `Inf` with a zero
 //! imaginary part.
 
+mod neon;
+mod slots;
 mod sme;
 
 use crate::error::CoreError;
@@ -104,6 +113,45 @@ const SME_MIN_MACS: usize = 1 << 14;
 /// Whether a real `m × k` by `k × n` product runs on the SME kernel.
 fn use_sme(m: usize, k: usize, n: usize) -> bool {
     m.saturating_mul(k).saturating_mul(n) >= SME_MIN_MACS && sme::available()
+}
+
+/// Whether real products of at least 16,384 multiply-adds use
+/// the SME kernel in this process.
+pub fn sme_available() -> bool {
+    sme::available()
+}
+
+/// How many SME products may run at once; 0 means no cap. Starts from
+/// `RUSTLAB_SME_SLOTS`, else the number of performance clusters (macOS),
+/// else 2.
+pub fn sme_slots() -> usize {
+    slots::global().cap()
+}
+
+/// Set the cap on concurrent SME products (0 = no cap) for this process.
+pub fn set_sme_slots(cap: usize) {
+    slots::global().set_cap(cap);
+}
+
+/// Products with more multiply-adds than this run on SME even when every
+/// slot is taken. Starts from `RUSTLAB_SME_OVERFLOW_MACS`, else 2²⁴.
+pub fn sme_overflow_macs() -> usize {
+    slots::overflow_max_macs().load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set [`sme_overflow_macs`] for this process (0 = never overflow).
+pub fn set_sme_overflow_macs(macs: usize) {
+    slots::overflow_max_macs().store(macs, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Products run on the SME kernel and on its NEON overflow since the
+/// process started, as `(sme, neon)`. Both stay 0 without SME.
+pub fn sme_route_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        slots::SME_RUNS.load(Relaxed),
+        slots::NEON_RUNS.load(Relaxed),
+    )
 }
 
 /// The real parts of `a` when every imaginary part is zero (the same test
@@ -288,6 +336,51 @@ mod tests {
         let one = Array2::from_elem((1, 1), C64::new(1.0, 0.0));
         let c = matmul(&inf.view(), &one.view()).unwrap();
         assert_eq!(c[[0, 0]], C64::new(f64::INFINITY, 0.0));
+    }
+
+    #[test]
+    fn sme_slot_cap_round_trips() {
+        let before = sme_slots();
+        set_sme_slots(3);
+        assert_eq!(sme_slots(), 3);
+        set_sme_slots(0);
+        assert_eq!(sme_slots(), 0);
+        set_sme_slots(before);
+        let (s0, n0) = sme_route_counts();
+        let _ = matmul_real(
+            &Array2::<f64>::eye(64).view(),
+            &Array2::<f64>::eye(64).view(),
+        );
+        let (s1, n1) = sme_route_counts();
+        if sme::available() {
+            assert!(s1 + n1 > s0 + n0, "an SME-sized product is counted");
+        } else {
+            assert_eq!((s1, n1), (s0, n0), "no SME, no routing");
+        }
+    }
+
+    /// Real-stored and complex-stored products stay bit-identical while
+    /// other threads saturate the SME slots.
+    #[test]
+    fn real_and_complex_storage_agree_under_contention() {
+        let a = filled(129, 128, 51, false);
+        let b = filled(128, 512, 52, false);
+        let (ar, br) = (a.mapv(|z| z.re), b.mapv(|z| z.re));
+        let want = matmul_real(&ar.view(), &br.view()).unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..5 {
+                        let c = matmul(&a.view(), &b.view()).unwrap();
+                        let r = matmul_real(&ar.view(), &br.view()).unwrap();
+                        for ((p, q), w) in c.iter().zip(r.iter()).zip(want.iter()) {
+                            assert_eq!(p.re.to_bits(), w.to_bits());
+                            assert_eq!(q.to_bits(), w.to_bits());
+                        }
+                    }
+                });
+            }
+        });
     }
 
     #[test]
