@@ -16,6 +16,8 @@ use std::io;
 use std::panic;
 use std::path::{Path, PathBuf};
 
+use rustlab_plot::theme::ThemeColors;
+
 #[derive(Debug)]
 pub enum MermaidRenderError {
     /// The renderer returned an error or panicked.
@@ -48,8 +50,9 @@ pub fn render_to_svg_file(
     source: &str,
     plot_dir: &Path,
     diagram_idx: usize,
+    colors: &ThemeColors,
 ) -> Result<PathBuf, MermaidRenderError> {
-    let cache_path = ensure_rendered(source, plot_dir)?;
+    let cache_path = ensure_rendered(source, plot_dir, colors)?;
     let target = plot_dir.join(format!("diagram-{diagram_idx}.svg"));
     // Always copy fresh — diagram_idx may have moved between renders even
     // if source hasn't, and copy is cheap relative to render.
@@ -59,14 +62,22 @@ pub fn render_to_svg_file(
 
 /// Render a Mermaid diagram to SVG and return the SVG content as a String.
 /// Suitable for inline embedding in HTML. Caches by BLAKE3 hash of source.
-pub fn render_to_svg_string(source: &str, plot_dir: &Path) -> Result<String, MermaidRenderError> {
-    let cache_path = ensure_rendered(source, plot_dir)?;
+pub fn render_to_svg_string(
+    source: &str,
+    plot_dir: &Path,
+    colors: &ThemeColors,
+) -> Result<String, MermaidRenderError> {
+    let cache_path = ensure_rendered(source, plot_dir, colors)?;
     Ok(fs::read_to_string(&cache_path)?)
 }
 
 /// Ensure the SVG for `source` exists in the cache; render if needed.
 /// Returns the cache file path.
-fn ensure_rendered(source: &str, plot_dir: &Path) -> Result<PathBuf, MermaidRenderError> {
+fn ensure_rendered(
+    source: &str,
+    plot_dir: &Path,
+    _colors: &ThemeColors,
+) -> Result<PathBuf, MermaidRenderError> {
     let cache_dir = plot_dir.join(".cache");
     fs::create_dir_all(&cache_dir)?;
 
@@ -103,9 +114,14 @@ fn render_one(source: &str) -> Result<String, MermaidRenderError> {
     }
 }
 
+fn clear_canvas(svg: &str, _bg: &str) -> String {
+    svg.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustlab_plot::theme::Theme;
 
     fn tmp_dir(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
@@ -122,7 +138,7 @@ mod tests {
     #[test]
     fn renders_simple_flowchart() {
         let dir = tmp_dir("simple");
-        let svg = render_to_svg_string("flowchart LR\n  A --> B\n", &dir).unwrap();
+        let svg = render_to_svg_string("flowchart LR\n  A --> B\n", &dir, mocha()).unwrap();
         assert!(
             svg.starts_with("<?xml") || svg.starts_with("<svg"),
             "expected SVG, got {:?}",
@@ -135,8 +151,8 @@ mod tests {
     fn cache_hit_returns_same_content() {
         let dir = tmp_dir("hit");
         let src = "flowchart LR\n  X --> Y\n";
-        let a = render_to_svg_string(src, &dir).unwrap();
-        let b = render_to_svg_string(src, &dir).unwrap();
+        let a = render_to_svg_string(src, &dir, mocha()).unwrap();
+        let b = render_to_svg_string(src, &dir, mocha()).unwrap();
         assert_eq!(a, b);
         // Confirm exactly one cache entry exists for this source.
         let cache = dir.join(".cache");
@@ -148,8 +164,8 @@ mod tests {
     #[test]
     fn cache_miss_on_source_change() {
         let dir = tmp_dir("miss");
-        let _ = render_to_svg_string("flowchart LR\n  A --> B\n", &dir).unwrap();
-        let _ = render_to_svg_string("flowchart LR\n  A --> C\n", &dir).unwrap();
+        let _ = render_to_svg_string("flowchart LR\n  A --> B\n", &dir, mocha()).unwrap();
+        let _ = render_to_svg_string("flowchart LR\n  A --> C\n", &dir, mocha()).unwrap();
         let cache = dir.join(".cache");
         let count = fs::read_dir(&cache).unwrap().count();
         assert_eq!(count, 2, "expected two distinct cache files, got {count}");
@@ -162,14 +178,14 @@ mod tests {
         // Empty source / unsupported diagram type. Either returns Err or
         // produces a degenerate SVG — both acceptable. The test only
         // requires no panic.
-        let _ = render_to_svg_string("@@@ not a diagram @@@", &dir);
+        let _ = render_to_svg_string("@@@ not a diagram @@@", &dir, mocha());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn svg_output_has_no_script_tags() {
         let dir = tmp_dir("noscript");
-        let svg = render_to_svg_string("flowchart LR\n  A --> B\n", &dir).unwrap();
+        let svg = render_to_svg_string("flowchart LR\n  A --> B\n", &dir, mocha()).unwrap();
         assert!(!svg.contains("<script"), "SVG must not contain <script>");
         assert!(!svg.contains("onclick="), "SVG must not contain onclick=");
         let _ = fs::remove_dir_all(&dir);
@@ -178,10 +194,135 @@ mod tests {
     #[test]
     fn render_to_svg_file_writes_diagram_n() {
         let dir = tmp_dir("file");
-        let path = render_to_svg_file("flowchart LR\n  A --> B\n", &dir, 3).unwrap();
+        let path = render_to_svg_file("flowchart LR\n  A --> B\n", &dir, 3, mocha()).unwrap();
         assert_eq!(path, dir.join("diagram-3.svg"));
         assert!(path.exists());
         assert!(fs::metadata(&path).unwrap().len() > 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const FLOW: &str = "flowchart LR\n  A[text] --> B[tokens] --> C[ids]\n";
+
+    fn mocha() -> &'static ThemeColors {
+        Theme::Mocha.colors()
+    }
+
+    fn latte() -> &'static ThemeColors {
+        Theme::Latte.colors()
+    }
+
+    /// Every `fill="…"` / `stroke="…"` value in the SVG, lowercased.
+    fn paint_values(svg: &str, attr: &str) -> Vec<String> {
+        let needle = format!(" {attr}=\"");
+        svg.match_indices(&needle)
+            .map(|(i, _)| {
+                let rest = &svg[i + needle.len()..];
+                rest[..rest.find('"').unwrap()].to_ascii_lowercase()
+            })
+            .collect()
+    }
+
+    /// The `<rect …/>` tags of the SVG.
+    fn rects(svg: &str) -> Vec<&str> {
+        svg.match_indices("<rect ")
+            .map(|(i, _)| {
+                let rest = &svg[i..];
+                &rest[..rest.find('>').unwrap() + 1]
+            })
+            .collect()
+    }
+
+    fn assert_themed_flowchart(svg: &str, c: &ThemeColors) {
+        let lower = svg.to_ascii_lowercase();
+        assert!(!lower.contains("#ffffff") || c.bg.eq_ignore_ascii_case("#ffffff"));
+        for stock in ["#f8fafc", "#0f172a", "#64748b", "#94a3b8"] {
+            assert!(!lower.contains(stock), "stock colour {stock} left in {svg}");
+        }
+        let canvas = rects(svg)[0];
+        assert!(canvas.contains("fill=\"none\""), "canvas not transparent: {canvas}");
+        let node = rects(svg)
+            .into_iter()
+            .find(|r| r.contains("data-id=\"A\"") || r.contains("rx="))
+            .unwrap_or_else(|| panic!("no node rect in {svg}"));
+        assert!(
+            node.contains(&format!("fill=\"{}\"", c.bg_secondary)),
+            "node fill is not bg_secondary {}: {node}",
+            c.bg_secondary
+        );
+        assert!(
+            node.contains(&format!("stroke=\"{}\"", c.border_subtle)),
+            "node stroke is not border_subtle {}: {node}",
+            c.border_subtle
+        );
+        let fills = paint_values(svg, "fill");
+        assert!(fills.contains(&c.text.to_ascii_lowercase()), "no text-coloured label");
+        let strokes = paint_values(svg, "stroke");
+        assert!(strokes.contains(&c.text_dim.to_ascii_lowercase()), "edges not text_dim");
+    }
+
+    #[test]
+    fn mocha_has_no_white_canvas_and_uses_theme_roles() {
+        let dir = tmp_dir("mocha");
+        let svg = render_to_svg_string(FLOW, &dir, mocha()).unwrap();
+        assert_themed_flowchart(&svg, mocha());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn latte_uses_theme_roles() {
+        let dir = tmp_dir("latte");
+        let svg = render_to_svg_string(FLOW, &dir, latte()).unwrap();
+        assert_themed_flowchart(&svg, latte());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_file_colours_reach_the_diagram() {
+        let dir = tmp_dir("theme-file");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("brand.toml");
+        fs::write(
+            &path,
+            "inherits = \"mocha\"\n[colors]\nbg_secondary = \"#102030\"\nborder_subtle = \"#405060\"\ntext = \"#e0e8f0\"\ntext_dim = \"#a0b0c0\"\n",
+        )
+        .unwrap();
+        let loaded = crate::theme_file::load_path(&path, &Default::default()).unwrap();
+        let c = &loaded.theme.colors;
+        assert_eq!(c.bg_secondary, "#102030");
+        let svg = render_to_svg_string(FLOW, &dir, c).unwrap();
+        assert_themed_flowchart(&svg, c);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_is_keyed_by_theme() {
+        let dir = tmp_dir("theme-key");
+        let a = render_to_svg_string(FLOW, &dir, mocha()).unwrap();
+        let b = render_to_svg_string(FLOW, &dir, latte()).unwrap();
+        assert_ne!(a, b, "latte reused the mocha cache entry");
+        assert_eq!(fs::read_dir(dir.join(".cache")).unwrap().count(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_bare_canvas_rects_turn_transparent() {
+        let svg = "<svg><rect x=\"0\" y=\"0\" width=\"5\" height=\"5\" fill=\"#1e1e2e\"/>\
+                   <rect x=\"1\" y=\"1\" width=\"2\" height=\"2\" rx=\"2\" ry=\"2\" fill=\"#1e1e2e\" stroke=\"none\"/>\
+                   <circle r=\"2\" fill=\"#1e1e2e\"/></svg>";
+        let out = clear_canvas(svg, "#1e1e2e");
+        assert_eq!(rects(&out)[0], "<rect x=\"0\" y=\"0\" width=\"5\" height=\"5\" fill=\"none\"/>");
+        assert!(rects(&out)[1].contains("fill=\"#1e1e2e\""), "label backing changed");
+        assert!(out.contains("<circle r=\"2\" fill=\"#1e1e2e\"/>"), "knockout changed");
+    }
+
+    #[test]
+    fn sequence_diagram_has_no_stock_colours() {
+        let dir = tmp_dir("seq");
+        let src = "sequenceDiagram\n  Alice->>Bob: hi\n  Note right of Bob: hm\n";
+        let svg = render_to_svg_string(src, &dir, mocha()).unwrap().to_ascii_lowercase();
+        for stock in ["#ffffff", "#f8fafc", "#0f172a", "#64748b", "#94a3b8", "#fff7ed", "#fdba74"] {
+            assert!(!svg.contains(stock), "stock colour {stock} left in sequence diagram");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }
