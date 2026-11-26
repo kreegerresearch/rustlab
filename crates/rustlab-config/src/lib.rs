@@ -338,7 +338,9 @@ pub const PROJECT_CONFIG: &str = "rustlab.toml";
 
 /// Nearest `rustlab.toml`, walking up from `start` (a file's directory or
 /// a directory). Stops at the first match or the filesystem root, and
-/// does not go above `home`: `home` itself is checked, its parents are not.
+/// does not go above `home` or the first directory with a `.git` entry
+/// (a directory, or a file as in a worktree or submodule): that directory
+/// itself is checked, its parents are not.
 pub fn find_project_config(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
     let home = home.map(|h| std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
@@ -348,7 +350,7 @@ pub fn find_project_config(start: &Path, home: Option<&Path>) -> Option<PathBuf>
         if candidate.is_file() {
             return Some(candidate);
         }
-        if home.as_deref() == Some(d) {
+        if home.as_deref() == Some(d) || d.join(".git").symlink_metadata().is_ok() {
             return None;
         }
         dir = d.parent();

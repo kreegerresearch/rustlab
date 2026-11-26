@@ -4,7 +4,7 @@
 //!
 //! 1. `--theme NAME` or `--theme-file PATH`
 //! 2. notebook frontmatter `theme: NAME` (a name, never a path)
-//! 3. `rustlab.toml` `[notebook] theme` (nearest ancestor directory)
+//! 3. `rustlab.toml` `[notebook] theme` (nearest ancestor directory, not above the `.git` root)
 //! 4. `~/.rustlabrc` / `$XDG_CONFIG_HOME/rustlab/config.toml` `[notebook]
 //!    theme`, then `[plot] theme`
 //! 5. `mocha`
