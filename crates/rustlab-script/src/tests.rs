@@ -22186,6 +22186,73 @@ mod michael_bug_batch {
         }
     }
 
+    /// `eye` and `cumsum` of real input are real-stored, so the causal mask
+    /// `-1e9 * (1 - cumsum(eye(T), 1))` is real and `S * a + M` stays on the
+    /// real kernels. Values match the complex-storage path bit for bit.
+    #[test]
+    fn eye_and_cumsum_are_real_stored_and_match_complex_storage() {
+        use crate::eval::shared::{set_real_storage, Shared};
+        let src = "seed(3);
+             M = -1.0e9 * (1 - cumsum(eye(7), 1));
+             R = randn(5, 4);
+             c1 = cumsum(R);  c2 = cumsum(R, 2);  c3 = cumsum(R, 1);
+             v = randn(1, 6);  v = v(1, :);
+             cv = cumsum(v);  cv2 = cumsum(v, 2);  cv1 = cumsum(v, 1);
+             col = cumsum(R(:, 2));  row = cumsum(R(3, :));
+             S = randn(7, 7) * 0.17 + M;";
+        let names = ["M", "c1", "c2", "c3", "cv", "cv2", "cv1", "col", "row", "S"];
+        let bits = |ev: &Evaluator, name: &str| -> Vec<u64> {
+            let v = ev.get(name).unwrap();
+            let a: Vec<rustlab_core::C64> = match v {
+                Value::Matrix(m) => m.iter().copied().collect(),
+                Value::Vector(v) => v.iter().copied().collect(),
+                other => panic!("{name}: {other:?}"),
+            };
+            a.iter()
+                .flat_map(|z| [z.re.to_bits(), z.im.to_bits()])
+                .collect()
+        };
+        set_real_storage(Some(true));
+        let real = eval(src);
+        set_real_storage(Some(false));
+        let complex = eval(src);
+        set_real_storage(None);
+        for name in names {
+            match real.get(name) {
+                Some(Value::Matrix(m)) => assert!(Shared::is_real(m), "{name} is complex"),
+                Some(Value::Vector(v)) => assert!(Shared::is_real(v), "{name} is complex"),
+                other => panic!("{name}: {other:?}"),
+            }
+            assert_eq!(bits(&real, name), bits(&complex, name), "{name}");
+        }
+        let ev = eval("E = eye(3); s = E(2, 2) + E(1, 2); n = size(eye(0));");
+        assert_eq!(scalar(&ev, "s"), 1.0);
+        assert_eq!(vec_re(&ev, "n"), vec![0.0, 0.0]);
+    }
+
+    /// softmax reuses a temporary's buffer and copies a variable's, and
+    /// both give the kernel's values; the variable is left unchanged.
+    #[test]
+    fn softmax_of_temporary_and_variable_agree() {
+        let ev = eval(
+            "S = [1, 2, 3; 0, -1, 4; 5, 5, 5];
+             A = softmax(S);
+             B = softmax(S + 0);
+             C = softmax(S, 1);
+             D = softmax(S + 0, 1);
+             untouched = S(2, 3);",
+        );
+        for (x, y) in [("A", "B"), ("C", "D")] {
+            let bx: Vec<u64> = vec_re(&ev, x).iter().map(|v| v.to_bits()).collect();
+            let by: Vec<u64> = vec_re(&ev, y).iter().map(|v| v.to_bits()).collect();
+            assert_eq!(bx, by, "{x} vs {y}");
+        }
+        assert_eq!(scalar(&ev, "untouched"), 4.0);
+        let a = cell(&ev, "A", 0, 2);
+        let want = 1.0 / (1.0 + (-1.0f64).exp() + (-2.0f64).exp());
+        assert!((a - want).abs() <= 1e-15 * want, "{a} vs {want}");
+    }
+
     fn logical_of(ev: &Evaluator, name: &str) -> rustlab_core::LogicalArray {
         match ev.get(name) {
             Some(Value::Logical(a)) => a.clone(),

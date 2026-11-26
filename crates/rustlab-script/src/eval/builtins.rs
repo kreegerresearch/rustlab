@@ -6,6 +6,7 @@ use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
 use rand_distr::{Distribution, Normal, StandardNormal, Uniform};
+use rustlab_core::softmax;
 use rustlab_core::Sum0;
 use rustlab_core::{CMatrix, CVector, Filter, SparseMat, SparseVec, C64};
 use rustlab_core::{IntClass, OverflowMode, RoundMode};
@@ -3611,6 +3612,69 @@ fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
     )
 }
 
+/// `cumsum` of a real-stored vector or matrix, kept real: the same adds in
+/// the same order as the complex path, whose imaginary parts stay zero.
+/// `None` for anything the complex path handles (complex storage, identity
+/// and empty cases).
+fn cumsum_real_stored(v: &Value, dim_arg: Option<usize>) -> Option<Value> {
+    fn running(it: impl Iterator<Item = f64>) -> Vec<f64> {
+        let mut acc = 0.0_f64;
+        it.map(|x| {
+            acc += x;
+            acc
+        })
+        .collect()
+    }
+    match v {
+        Value::Vector(a) if dim_arg != Some(1) => {
+            let r = Shared::as_real(a)?;
+            Some(Value::real_vector(Array1::from_vec(running(
+                r.iter().copied(),
+            ))))
+        }
+        Value::Matrix(m) => {
+            let r = Shared::as_real(m)?;
+            let (nrows, ncols) = r.dim();
+            if nrows == 0 || ncols == 0 {
+                return None;
+            }
+            if nrows == 1 || ncols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
+                    return None;
+                }
+                let data = running(r.iter().copied());
+                return Some(Value::real_matrix(
+                    Array2::from_shape_vec((nrows, ncols), data).expect("same shape"),
+                ));
+            }
+            let mut out = Array2::<f64>::zeros((nrows, ncols));
+            match dim_arg.unwrap_or(1) {
+                1 => {
+                    let mut acc = vec![0.0_f64; ncols];
+                    for i in 0..nrows {
+                        for j in 0..ncols {
+                            acc[j] += r[[i, j]];
+                            out[[i, j]] = acc[j];
+                        }
+                    }
+                }
+                2 => {
+                    for i in 0..nrows {
+                        let mut acc = 0.0_f64;
+                        for j in 0..ncols {
+                            acc += r[[i, j]];
+                            out[[i, j]] = acc;
+                        }
+                    }
+                }
+                _ => return None,
+            }
+            Some(Value::real_matrix(out))
+        }
+        _ => None,
+    }
+}
+
 /// cumsum(v) — cumulative sum of a vector. Returns a vector of the same length.
 /// cumsum(v) — running total of a vector / 1-D-shaped matrix → same-shape result.
 /// cumsum(M) — running total along dim 1 (each column independently).
@@ -3618,6 +3682,9 @@ fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("cumsum", &args, 1, 2)?;
     let dim_arg = parse_reduction_dim("cumsum", &args)?;
+    if let Some(v) = cumsum_real_stored(&args[0], dim_arg) {
+        return Ok(v);
+    }
     match &args[0] {
         Value::Vector(v) => {
             // Vector behaves like a 1×N row matrix. dim=1 is a no-op (each
@@ -9093,12 +9160,12 @@ fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_eye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("eye", &args, 1)?;
     let n = count_arg(&args[0])?;
-    require_elems("eye", &[n, n], rustlab_core::ELEM_C64)?;
-    let mut m: CMatrix = Array2::zeros((n, n));
+    require_elems("eye", &[n, n], rustlab_core::ELEM_F64)?;
+    let mut m: Array2<f64> = Array2::zeros((n, n));
     for i in 0..n {
-        m[[i, i]] = Complex::new(1.0, 0.0);
+        m[[i, i]] = 1.0;
     }
-    Ok(Value::Matrix(m.into()))
+    Ok(Value::real_matrix(m))
 }
 
 // ─── Matrix operations ─────────────────────────────────────────────────────
@@ -13374,43 +13441,26 @@ fn builtin_margin(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── ML / activation functions ──────────────────────────────────────────────
 
-/// Numerically-stable softmax of a slice in place: subtract the per-slice
-/// max before exponentiating, then divide by the sum. Single owner of the
-/// formula, used by both the vector and matrix forms of `softmax`.
-/// Operates on the real parts and clears any imaginary component.
-/// [`softmax_slice_inplace`] on real numbers: the same operations in the
-/// same order, so the same bits.
-fn softmax_slice_f64(slice: &mut [f64]) {
-    let max_re = slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let mut sum = 0.0_f64;
-    for x in slice.iter_mut() {
-        let e = (*x - max_re).exp();
-        *x = e;
-        sum += e;
+/// Real parts of a vector or matrix as one row-major `Vec`. A real-stored
+/// buffer nothing else refers to (a temporary) is moved out, not copied.
+fn owned_real_parts(v: Value) -> Vec<f64> {
+    fn take<D: ndarray::Dimension>(a: Shared<ndarray::Array<C64, D>>) -> Vec<f64> {
+        match Shared::into_real(a) {
+            Ok(r) if r.is_standard_layout() => r.into_raw_vec_and_offset().0,
+            Ok(r) => r.iter().copied().collect(),
+            Err(c) => c.iter().map(|z| z.re).collect(),
+        }
     }
-    for x in slice.iter_mut() {
-        *x /= sum;
-    }
-}
-
-/// The real parts of a vector or matrix, row-major, without widening
-/// real storage.
-fn real_parts_of(v: &Value) -> Option<Vec<f64>> {
     match v {
-        Value::Vector(a) => Some(match Shared::real_slice(a) {
-            Some(d) => d.to_vec(),
-            None => a.iter().map(|c| c.re).collect(),
-        }),
-        Value::Matrix(m) => Some(match Shared::real_slice(m) {
-            Some(d) => d.to_vec(),
-            None => m.iter().map(|c| c.re).collect(),
-        }),
-        _ => None,
+        Value::Vector(a) => take(a),
+        Value::Matrix(m) => take(m),
+        _ => unreachable!("softmax checks the type first"),
     }
 }
 
-/// The complex-storage softmax kernel this module used before real
-/// storage; kept as the reference [`softmax_slice_f64`] is tested against.
+/// The complex-storage softmax kernel this module used before real storage
+/// (libm `exp`); kept as the reference the `rustlab_core::softmax` kernels
+/// are tested against.
 #[cfg(test)]
 fn softmax_slice_inplace(slice: &mut [C64]) {
     let max_re = slice.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
@@ -13455,8 +13505,8 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                     "softmax: vector form takes one argument".to_string(),
                 ));
             }
-            let mut data = real_parts_of(&args[0]).expect("a vector");
-            softmax_slice_f64(&mut data);
+            let mut data = owned_real_parts(args.into_iter().next().expect("one argument"));
+            softmax::softmax_slice(&mut data);
             Ok(Value::real_vector(Array1::from_vec(data)))
         }
         Value::Matrix(m) => {
@@ -13475,8 +13525,8 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                         "softmax: 1-D-shaped matrix takes one argument".to_string(),
                     ));
                 }
-                let mut data = real_parts_of(&args[0]).expect("a matrix");
-                softmax_slice_f64(&mut data);
+                let mut data = owned_real_parts(args.into_iter().next().expect("one argument"));
+                softmax::softmax_slice(&mut data);
                 return Ok(Value::real_matrix(
                     Array2::from_shape_vec((nrows, ncols), data)
                         .expect("preserves 1-D matrix shape"),
@@ -13498,25 +13548,10 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else {
                 2
             };
-            let mut out = real_parts_of(&args[0]).expect("a matrix");
+            let mut out = owned_real_parts(args.into_iter().next().expect("one argument"));
             match dim {
-                2 => {
-                    for row in out.chunks_exact_mut(ncols) {
-                        softmax_slice_f64(row);
-                    }
-                }
-                1 => {
-                    let mut col = vec![0.0; nrows];
-                    for j in 0..ncols {
-                        for i in 0..nrows {
-                            col[i] = out[i * ncols + j];
-                        }
-                        softmax_slice_f64(&mut col);
-                        for i in 0..nrows {
-                            out[i * ncols + j] = col[i];
-                        }
-                    }
-                }
+                2 => softmax::softmax_rows(&mut out, ncols),
+                1 => softmax::softmax_cols(&mut out, ncols),
                 _ => unreachable!(),
             }
             Ok(Value::real_matrix(
@@ -18419,17 +18454,17 @@ mod real_builtin_tests {
     use super::*;
 
     #[test]
-    fn real_softmax_matches_the_complex_kernel_bit_for_bit() {
+    fn real_softmax_matches_the_complex_kernel_within_1e_15() {
         for n in [1usize, 2, 7, 129, 1000] {
             let xs: Vec<f64> = (0..n)
                 .map(|i| ((i * 37 % 101) as f64 - 50.0) * 0.37)
                 .collect();
             let mut r = xs.clone();
-            softmax_slice_f64(&mut r);
+            softmax::softmax_slice(&mut r);
             let mut c: Vec<C64> = xs.iter().map(|&x| C64::new(x, 0.0)).collect();
             softmax_slice_inplace(&mut c);
             for (a, b) in r.iter().zip(&c) {
-                assert_eq!(a.to_bits(), b.re.to_bits());
+                assert!(((a - b.re) / b.re).abs() <= 1e-15, "{a} vs {}", b.re);
                 assert_eq!(b.im, 0.0);
             }
         }

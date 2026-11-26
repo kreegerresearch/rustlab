@@ -1,0 +1,86 @@
+# Script:  small_arrays.rlab
+# System:  Fixed cost of operations on small (129 x 129) arrays: the
+#          softmax and attention-head keys of rustlab_llm's
+#          perf/bench_suite.rlab (iteration 04, request R3), plus the
+#          parts of one head. Run: rustlab run perf/small_arrays.rlab
+# Units:   microseconds per call, median of R repeats of 20 calls.
+
+function perf_out(key, ts, work, unit)
+  t = median(ts);
+  r = 0;
+  if work > 0
+    r = work / t;
+  end
+  print(sprintf("PERF %-28s %9.2f us  %9.6g %s", key, 1e6 * t, r, unit));
+end
+
+R = 9;
+seed(42);
+QKVa = randn(129, 384);  Ma = -1.0e9 * (1 - cumsum(eye(129), 1));
+Sa = QKVa(:, 1:32) * QKVa(:, 129:160)';
+Q = QKVa(:, 1:32);  K = QKVa(:, 129:160);  V = QKVa(:, 257:288);
+Ss = Sa * 0.17 + Ma;  A = softmax(Ss);
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    A = softmax(Sa);
+  end; ts(r) = toc / 20;
+end
+perf_out("prim.softmax_129x129", ts, 129 * 129 / 1e6, "Melem/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    A = softmax(QKVa(:, 1:32) * QKVa(:, 129:160)' * 0.17 + Ma);
+    O = A * QKVa(:, 257:288);
+  end; ts(r) = toc / 20;
+end
+perf_out("prim.attn_head_129x32", ts, 0, "-");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    A = softmax(Ss);
+  end; ts(r) = toc / 20;
+end
+perf_out("part.softmax_masked", ts, 129 * 129 / 1e6, "Melem/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    S2 = Sa * 0.17 + Ma;
+  end; ts(r) = toc / 20;
+end
+perf_out("part.scale_mask", ts, 2 * 129 * 129 / 1e6, "Melem/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    S2 = Sa * 0.17;
+  end; ts(r) = toc / 20;
+end
+perf_out("part.scale", ts, 129 * 129 / 1e6, "Melem/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    S2 = Q * K';
+  end; ts(r) = toc / 20;
+end
+perf_out("part.QKt", ts, 2 * 129 * 32 * 129 / 1e9, "GFLOP/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    O = A * V;
+  end; ts(r) = toc / 20;
+end
+perf_out("part.AV", ts, 2 * 129 * 129 * 32 / 1e9, "GFLOP/s");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    Qs = QKVa(:, 1:32);  Ks = QKVa(:, 129:160);  Vs = QKVa(:, 257:288);
+  end; ts(r) = toc / 20;
+end
+perf_out("part.slices3", ts, 0, "-");
+
+ts = zeros(1, R); for r = 1:R
+  tic; for k = 1:20
+    z = 1;
+  end; ts(r) = toc / 20;
+end
+perf_out("part.loop_overhead", ts, 0, "-");
