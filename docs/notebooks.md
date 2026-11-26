@@ -977,11 +977,11 @@ in source notebooks and transformed to standard markdown links and
 images on the way out, so the committed `book/*.md` displays correctly
 on GitHub (which would otherwise render `[[Note]]` as literal text).
 
-| Source | Becomes (markdown output) | Becomes (HTML output) |
+| Source | Becomes (markdown output) | Becomes (HTML output, `Foo.md` titled "Foo Title") |
 |---|---|---|
-| `[[Foo]]` | `[Foo](Foo.md)` | `<a href="Foo.html">Foo</a>` |
+| `[[Foo]]` | `[Foo](Foo.md)` | `<a href="Foo.html">Foo Title</a>` |
 | `[[Foo\|alias]]` | `[alias](Foo.md)` | `<a href="Foo.html">alias</a>` |
-| `[[Foo#Section]]` | `[Foo § Section](Foo.md#section)` | `<a href="Foo.html#section">Foo § Section</a>` |
+| `[[Foo#Section]]` | `[Foo § Section](Foo.md#section)` | `<a href="Foo.html#section">Foo Title § Section</a>` |
 | `[[Foo#Section\|alias]]` | `[alias](Foo.md#section)` | `<a href="Foo.html#section">alias</a>` |
 | `![[image.png]]` | `![](image.png)` | `<img src="image.png">` |
 | `![[image.png\|alt]]` | `![alt](image.png)` | `<img src="image.png" alt="alt">` |
@@ -995,6 +995,48 @@ how GitHub and pulldown-cmark generate heading IDs, so
 Wikilink syntax inside fenced code blocks (` ``` `) and inline code
 spans (`` ` ``) is preserved verbatim — only narrative prose is
 transformed.
+
+### Link text: the target notebook's title
+
+A link to another notebook with no label of its own shows that
+notebook's title. The title is the frontmatter `title:`, else the first
+`# ` heading outside a code fence (a trailing `{#id}` is dropped), the
+same title the index page, the file browser, and the previous / next
+links use. A target with neither keeps its file name.
+
+| Source (from `notes.md`) | Link text |
+|---|---|
+| `[[01-tokens]]`, `[[01-tokens.md]]` | the title of `01-tokens.md` |
+| `[01-tokens](01-tokens.md)`, `[01-tokens.md](01-tokens.md)`, `[](01-tokens.md)` | the title |
+| `[filters](ch2/filters.md)`, `[[ch2/filters]]` | the title of `ch2/filters.md` |
+| `[[01-tokens#Setup]]` | `<title> § Setup` |
+| `[[01-tokens\|Lesson 01]]`, `[Lesson 01](01-tokens.md)` | `Lesson 01` (an explicit label) |
+| ``[`01-tokens.md`](01-tokens.md)``, `[*01-tokens*](01-tokens.md)` | unchanged (markup makes it a label) |
+
+So plain text that names only the target (empty, its path, or its file
+name, with or without `.md`) counts as no label; anything else is kept.
+A label that happens to equal the file name is replaced, so write a
+different label (or format it) to keep it.
+
+Titles come from the notebooks the renderer already lists, never from a
+file a link points at:
+
+- `render <dir>` (HTML, LaTeX, PDF): the notebooks in the directory.
+  A root `index.md` is titled by `--title`, else its own title (HTML
+  only; there is no `index.pdf`).
+- `watch <dir>` and `watch a.md ch2/b.md …`: the served notebooks,
+  read at startup like the listing titles, so renaming a heading shows
+  in other pages' links after a restart.
+- `render file.md` and `watch file.md` have no collection, so links
+  keep their file names (a self-link in `watch file.md` gets the title).
+- A link that does not resolve (a partial, a missing or unlisted file,
+  a path outside the collection) is left exactly as written.
+
+The title is inserted as text, so it is escaped for HTML (`&`, `<`, `>`)
+and LaTeX (`&`, `%`, `#`, `_`, `$`, …). Inline markdown in a heading
+(`**`, `$x$`) appears literally in link text. Markdown output
+(`--format markdown`, with or without `--obsidian`) and JSON output keep
+the link text as written.
 
 ### File embeds (transclusion)
 
