@@ -1460,4 +1460,74 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    fn jail_err(root: &Path, value: &str) -> String {
+        parse_project_toml(
+            &format!("[notebook]\njail_root = \"{value}\"\n"),
+            &root.join(PROJECT_CONFIG),
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    #[test]
+    fn project_jail_root_resolves_inside_the_toml_directory() {
+        let root = tempdir("jail-ok");
+        std::fs::create_dir_all(root.join("lib/deep")).unwrap();
+        let path = root.join(PROJECT_CONFIG);
+        let p = parse_project_toml("[notebook]\njail_root = \".\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, Some(root.clone()));
+        assert!(p.unknown_keys.is_empty());
+        let p = parse_project_toml("[notebook]\njail_root = \"lib/./deep/..\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, Some(root.join("lib")));
+        let p = parse_project_toml("[notebook]\ntheme = \"latte\"\n", &path).unwrap();
+        assert_eq!(p.jail_root, None);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("lib/deep"), root.join("inner")).unwrap();
+            let p = parse_project_toml("[notebook]\njail_root = \"inner\"\n", &path).unwrap();
+            assert_eq!(p.jail_root, Some(root.join("lib/deep")));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_jail_root_refuses_to_escape() {
+        let root = tempdir("jail-escape");
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        for escape in ["..", "../", "../x", "lib/../..", "lib/../../x"] {
+            let err = jail_err(&root, escape);
+            assert!(err.contains("notebook.jail_root"), "{escape}: {err}");
+            assert!(err.contains("escapes"), "{escape}: {err}");
+        }
+        let abs_inside = root.join("lib").display().to_string();
+        for abs in ["/", "/etc", abs_inside.as_str()] {
+            let err = jail_err(&root, abs);
+            assert!(err.contains("notebook.jail_root"), "{abs}: {err}");
+            assert!(err.contains("must be relative"), "{abs}: {err}");
+        }
+        let err = jail_err(&root, "");
+        assert!(err.contains("notebook.jail_root"), "{err}");
+        let err = jail_err(&root, "missing");
+        assert!(err.contains("not a directory"), "{err}");
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        let err = jail_err(&root, "file.txt");
+        assert!(err.contains("not a directory"), "{err}");
+        let err = parse_project_toml("[notebook]\njail_root = 1\n", &root.join(PROJECT_CONFIG))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected a string"), "{err}");
+        #[cfg(unix)]
+        {
+            let outside = tempdir("jail-outside");
+            std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+            std::os::unix::fs::symlink(root.parent().unwrap(), root.join("lib/up")).unwrap();
+            for via_link in ["link", "link/.", "lib/up"] {
+                let err = jail_err(&root, via_link);
+                assert!(err.contains("escapes"), "{via_link}: {err}");
+            }
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
