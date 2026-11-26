@@ -56,7 +56,7 @@ impl BoundaryCondition {
     }
 }
 
-fn check_pos(name: &str, label: &str, h: f64) -> Result<(), DspError> {
+pub(crate) fn check_pos(name: &str, label: &str, h: f64) -> Result<(), DspError> {
     if !h.is_finite() || h <= 0.0 {
         return Err(DspError::InvalidParameter(format!(
             "{name}: {label} must be positive and finite, got {h}"
@@ -65,7 +65,7 @@ fn check_pos(name: &str, label: &str, h: f64) -> Result<(), DspError> {
     Ok(())
 }
 
-fn check_min(name: &str, label: &str, n: usize, min: usize) -> Result<(), DspError> {
+pub(crate) fn check_min(name: &str, label: &str, n: usize, min: usize) -> Result<(), DspError> {
     if n < min {
         return Err(DspError::InvalidParameter(format!(
             "{name}: {label} must be >= {min}, got {n}"
@@ -94,7 +94,7 @@ fn hmean(a: C64, b: C64) -> C64 {
 /// `(col, value)` pairs into a stack-allocated buffer, sort by column,
 /// emit into the output entries vec at the given row. The per-row sort
 /// is constant-time since the stencil width is bounded.
-fn flush_row<const MAX: usize>(
+pub(crate) fn flush_row<const MAX: usize>(
     out: &mut Vec<(usize, usize, C64)>,
     row: usize,
     buf: &mut [(usize, C64); MAX],
