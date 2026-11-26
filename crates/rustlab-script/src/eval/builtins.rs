@@ -3611,6 +3611,69 @@ fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
     )
 }
 
+/// `cumsum` of a real-stored vector or matrix, kept real: the same adds in
+/// the same order as the complex path, whose imaginary parts stay zero.
+/// `None` for anything the complex path handles (complex storage, identity
+/// and empty cases).
+fn cumsum_real_stored(v: &Value, dim_arg: Option<usize>) -> Option<Value> {
+    fn running(it: impl Iterator<Item = f64>) -> Vec<f64> {
+        let mut acc = 0.0_f64;
+        it.map(|x| {
+            acc += x;
+            acc
+        })
+        .collect()
+    }
+    match v {
+        Value::Vector(a) if dim_arg != Some(1) => {
+            let r = Shared::as_real(a)?;
+            Some(Value::real_vector(Array1::from_vec(running(
+                r.iter().copied(),
+            ))))
+        }
+        Value::Matrix(m) => {
+            let r = Shared::as_real(m)?;
+            let (nrows, ncols) = r.dim();
+            if nrows == 0 || ncols == 0 {
+                return None;
+            }
+            if nrows == 1 || ncols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
+                    return None;
+                }
+                let data = running(r.iter().copied());
+                return Some(Value::real_matrix(
+                    Array2::from_shape_vec((nrows, ncols), data).expect("same shape"),
+                ));
+            }
+            let mut out = Array2::<f64>::zeros((nrows, ncols));
+            match dim_arg.unwrap_or(1) {
+                1 => {
+                    let mut acc = vec![0.0_f64; ncols];
+                    for i in 0..nrows {
+                        for j in 0..ncols {
+                            acc[j] += r[[i, j]];
+                            out[[i, j]] = acc[j];
+                        }
+                    }
+                }
+                2 => {
+                    for i in 0..nrows {
+                        let mut acc = 0.0_f64;
+                        for j in 0..ncols {
+                            acc += r[[i, j]];
+                            out[[i, j]] = acc;
+                        }
+                    }
+                }
+                _ => return None,
+            }
+            Some(Value::real_matrix(out))
+        }
+        _ => None,
+    }
+}
+
 /// cumsum(v) — cumulative sum of a vector. Returns a vector of the same length.
 /// cumsum(v) — running total of a vector / 1-D-shaped matrix → same-shape result.
 /// cumsum(M) — running total along dim 1 (each column independently).
@@ -3618,6 +3681,9 @@ fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("cumsum", &args, 1, 2)?;
     let dim_arg = parse_reduction_dim("cumsum", &args)?;
+    if let Some(v) = cumsum_real_stored(&args[0], dim_arg) {
+        return Ok(v);
+    }
     match &args[0] {
         Value::Vector(v) => {
             // Vector behaves like a 1×N row matrix. dim=1 is a no-op (each
@@ -9093,12 +9159,12 @@ fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_eye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("eye", &args, 1)?;
     let n = count_arg(&args[0])?;
-    require_elems("eye", &[n, n], rustlab_core::ELEM_C64)?;
-    let mut m: CMatrix = Array2::zeros((n, n));
+    require_elems("eye", &[n, n], rustlab_core::ELEM_F64)?;
+    let mut m: Array2<f64> = Array2::zeros((n, n));
     for i in 0..n {
-        m[[i, i]] = Complex::new(1.0, 0.0);
+        m[[i, i]] = 1.0;
     }
-    Ok(Value::Matrix(m.into()))
+    Ok(Value::real_matrix(m))
 }
 
 // ─── Matrix operations ─────────────────────────────────────────────────────
