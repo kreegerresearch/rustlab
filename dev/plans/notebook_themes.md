@@ -142,7 +142,7 @@ changing anything.
   `ThemeColors`. Markdown renders (the gallery) pass the render theme,
   so gallery SVGs are Mocha. **Any change to a default plot colour
   rewrites every committed gallery SVG.**
-- Mermaid diagrams (`mermaid.rs`) follow the render theme since 0.3.99
+- Mermaid diagrams (`mermaid.rs`) follow the render theme since 0.3.100
   (decision 7): `mermaid-rs-renderer`'s `Theme` struct takes the role
   colours, the canvas rectangle is transparent, and the renderer's
   hard-coded light fills are remapped. Before that they ignored the theme
@@ -196,7 +196,7 @@ cannot be iframed, which is correct for a localhost dev server.
 4. Global, partly unprefixed CSS; no fragment output; HTML ids like
    `plot-1` would collide when two notebooks share a host page.
 5. Plot series colours ignore the theme; Plotly colours are frozen at
-   render time. (Mermaid followed the theme from 0.3.99.)
+   render time. (Mermaid followed the theme from 0.3.100.)
 6. Inline per-figure scripts would need `'unsafe-inline'` or a nonce on a
    host site with a strict CSP.
 7. PDF ignores the theme by design, with no way for a light theme to
@@ -778,7 +778,7 @@ generators get shorter recipes.
   how data reads.
 - Static GIF and HTML animations (`saveanim`) are scripts' own output,
   not notebook pages; they keep using the process default theme.
-- **Mermaid:** shipped ahead of Phase 4 in 0.3.99 (decision 7).
+- **Mermaid:** shipped ahead of Phase 4 in 0.3.100 (decision 7).
   `mermaid-rs-renderer` 0.2 exposes a `Theme` struct through
   `render_with_options`, so `mermaid::mermaid_theme` maps roles into it:
   node fill `bg_secondary`, node stroke `border_subtle`, text `text`, edges
@@ -940,7 +940,7 @@ number. 0.3.67–0.3.80 are already taken, so Phase 2 is likely about
 | 1 | Token model refactor: `ResolvedTheme`, owned `ThemeColors`, new token groups with values equal to today's literals, stylesheet reads them, golden-file harness. | Additive `:root` lines only | 0.3.66 (shipped, #147) |
 | 2 | Theme files: TOML schema, `inherits`, palette, value grammar, contrast warnings, `--theme-file`, `theme list/show/check` (`check` exits nonzero on contrast failures), `render --theme-contrast=error`, discovery directories, frontmatter `theme:`, project config in `rustlab.toml` (ancestor search, `[notebook] theme` and `theme_dir`), rc `[notebook] theme` accepting any theme name, watch chrome colours on tokens (below). (v1 F3, F4, F6, F8 project half.) | New flags and keys | next patch at merge |
 | 3 | Light/dark pairs, `--scheme`, `data-rl-scheme`, then the four new builtins (`clean`, `paper`, `docs`, `contrast`) and `catppuccin` pair. Screenshot and axe harness lands here, with baselines. | New themes | next patch at merge |
-| 4 | Plot theming: colorway token, JSON figure blocks plus `rustlab-notebook.js` for static and watch, runtime template with probe resolution, scheme-switch relayout, SVG colorway parity (Mermaid theming already shipped in 0.3.99). | New themes' plots change colour; Catppuccin unchanged | next patch at merge |
+| 4 | Plot theming: colorway token, JSON figure blocks plus `rustlab-notebook.js` for static and watch, runtime template with probe resolution, scheme-switch relayout, SVG colorway parity (Mermaid theming already shipped in 0.3.100). | New themes' plots change colour; Catppuccin unchanged | next patch at merge |
 | 5 | CSS split and scoping: notebook vs page CSS, `:where(.rl-notebook)`, `@layer rustlab`, `rl-` class renames with the rename table, CHANGELOG migration note, and downstream selector check (§3.3.1), scoped reset, hostile-host hardening. | Standalone looks the same; class names change (breaking for custom CSS) | next patch at merge |
 | 6 | `--embed` flag on `render` (HTML only): fragment, id prefixing, `--heading-offset`, `--strip-title`, `--embed-toc`, `.meta.json`, `--asset-base` with SRI, `--no-assets` / `--no-katex` / `--no-plotly`, `docs/embedding.md` leading with Hugo and MkDocs (worked examples and a sample site), shorter Jekyll / Astro / Docusaurus recipes, the CSP snippet, lesson-site-pattern update. | New output mode | next patch at merge |
 | 7 | Inherit mode: `var()` references in theme files, host presets in `docs/themes/hosts/` (generic Hugo, MkDocs, Material for MkDocs first), host dark-mode mapping, Hugo and MkDocs fixture-host screenshot tests. | New theme capability | next patch at merge |
@@ -1078,7 +1078,7 @@ custom theme files (Phase 2) and new builtins (Phase 3) are approved.
 
 7. **Mermaid diagrams follow the theme (2026-11-26).** (Was open
    question 10.) Yes, and ahead of Phase 4: Michael hit a white box on a
-   dark theme file while publishing. Shipped in 0.3.99; PDF stays Latte,
+   dark theme file while publishing. Shipped in 0.3.100; PDF stays Latte,
    as approved for the rest of the printed page. Affects §Current state,
    Gaps, §4.2.
 
@@ -1109,7 +1109,7 @@ names the phase that needs the answer.
 9. ~~**Which host sites matter?**~~ Resolved: a generic Hugo or MkDocs
    site first (decision 6).
 10. ~~**Mermaid theming.**~~ Resolved: yes, diagrams follow the theme;
-    shipped in 0.3.99 (decision 7).
+    shipped in 0.3.100 (decision 7).
 11. **iframe resize helper.** (Needed by Phase 6.) Worth shipping a small
     `postMessage` script so iframed notebooks size to their content, or
     document fixed heights only?
