@@ -229,15 +229,34 @@ pub struct NotebookNav {
     /// nav that only carries prev/next). Directory HTML sets it on the
     /// index and on every notebook page.
     pub files: Option<CollectionBrowser>,
-    /// Drop the in-page heading sidebar. Directory and watch leave this false.
+    /// Drop the in-page heading sidebar (`--no-toc`).
     pub hide_toc: bool,
+}
+
+/// Collection chrome for directory HTML and `watch`. The default shows the
+/// file browser and the heading sidebar. Prev/next and the index link stay
+/// whatever is hidden.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CollectionChrome {
+    /// `--no-file-browser`, or `rustlab.toml` `[notebook] file_browser = false`.
+    pub no_file_browser: bool,
+    /// `--no-toc`.
+    pub no_toc: bool,
+}
+
+/// Whether the collection file browser is shown: the CLI flag
+/// (`--file-browser` is `Some(true)`, `--no-file-browser` is `Some(false)`),
+/// else `rustlab.toml` `[notebook] file_browser`, else on.
+pub fn file_browser_setting(cli: Option<bool>, project: Option<bool>) -> bool {
+    cli.or(project).unwrap_or(true)
 }
 
 /// Single-file HTML chrome from `render --index` and `render --no-toc`.
 ///
 /// A default value leaves a single-file page with no parent link and the
-/// heading sidebar. These flags are refused for a directory and for every
-/// format other than HTML.
+/// heading sidebar. `--index` is refused for a directory; both are refused
+/// for every format other than HTML. A directory takes `--no-toc` through
+/// [`CollectionChrome`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SingleHtmlOpts {
     pub index_href: Option<String>,
@@ -255,8 +274,8 @@ impl SingleHtmlOpts {
         if !self.is_active() {
             return Ok(());
         }
-        if is_dir {
-            return Err("--index and --no-toc apply to a single notebook, not a directory".into());
+        if is_dir && (self.index_href.is_some() || self.index_label.is_some()) {
+            return Err("--index applies to a single notebook, not a directory".into());
         }
         if !html {
             return Err("--index and --no-toc apply only to HTML".into());
@@ -1000,6 +1019,26 @@ pub fn cmd_render_dir(
     theme: &ThemeColors,
     index_title: Option<String>,
 ) -> Result<(), String> {
+    cmd_render_dir_with(
+        dir,
+        output,
+        format,
+        theme,
+        index_title,
+        CollectionChrome::default(),
+    )
+}
+
+/// [`cmd_render_dir`] with the HTML collection chrome switched by `chrome`.
+/// Other formats ignore it.
+pub fn cmd_render_dir_with(
+    dir: PathBuf,
+    output: Option<PathBuf>,
+    format: Format,
+    theme: &ThemeColors,
+    index_title: Option<String>,
+    chrome: CollectionChrome,
+) -> Result<(), String> {
     let _cwd_guard = CwdGuard::new();
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     // A collection is one trust unit: jail every notebook's file I/O to
@@ -1202,7 +1241,7 @@ pub fn cmd_render_dir(
                     href_to(&pending[i + 1].filename),
                 )
             });
-            let files = Some(CollectionBrowser {
+            let files = (!chrome.no_file_browser).then(|| CollectionBrowser {
                 label: resolved_title.clone(),
                 current_rel: Some(pending[i].rel_md.clone()),
                 entries: pending
@@ -1219,6 +1258,7 @@ pub fn cmd_render_dir(
                 prev,
                 next,
                 files,
+                hide_toc: chrome.no_toc,
                 ..Default::default()
             })
         } else {
@@ -1287,7 +1327,7 @@ pub fn cmd_render_dir(
             &entries_simple,
             theme,
             &index_body_html,
-            Some(&browser),
+            (!chrome.no_file_browser).then_some(&browser),
         );
         let index_path = out_dir.join("index.html");
         write_output(&index_path, index_html.as_bytes());
@@ -2281,16 +2321,18 @@ pub fn generate_index_html(
     font-size: {font_size};
     background: {bg};
     color: {text};
-    display: flex;
-    justify-content: center;
     min-height: 100vh;
     padding: 3rem {space_4};
   }}
+  /* A block body with an auto-margin column, not a flex row: a nav or
+     footer a host adds beside the main column stacks above or below it. */
   main {{
     max-width: 720px;
-    width: 100%;
+    margin: 0 auto;
   }}
-  h1 {{
+  /* Every element rule is scoped to this page's own markup, so a link or
+     list a site adds around the listing keeps its own look. */
+  main > h1 {{
     font-size: 2rem;
     color: {accent_primary};
     margin-bottom: {space_1};
@@ -2302,14 +2344,14 @@ pub fn generate_index_html(
     font-size: 0.9rem;
     margin-bottom: {space_5};
   }}
-  ul {{
+  ul.rl-index-list {{
     list-style: none;
     padding: 0;
   }}
-  li {{
+  ul.rl-index-list > li {{
     margin-bottom: {space_1};
   }}
-  a {{
+  ul.rl-index-list > li > a {{
     display: block;
     padding: 0.8rem 1.2rem;
     background: {bg_secondary};
@@ -2320,11 +2362,11 @@ pub fn generate_index_html(
     font-size: 1.05rem;
     transition: background 0.15s, border-color 0.15s;
   }}
-  a:hover {{
+  ul.rl-index-list > li > a:hover {{
     background: {border};
     border-color: {accent_secondary};
   }}
-  footer {{
+  main > footer {{
     color: {footer_text};
     font-size: 0.8rem;
     margin-top: 3rem;
@@ -2336,17 +2378,13 @@ pub fn generate_index_html(
     margin-bottom: {space_5};
   }}
   .intro p, .intro ul, .intro ol {{ margin-bottom: {space_3}; }}
+  .intro ul, .intro ol {{ padding-left: 1.5rem; }}
   .intro h2 {{ color: {accent_primary}; margin: {space_4} 0 {space_1}; }}
-  .intro a {{
-    display: inline; padding: 0; background: transparent; border: 0;
-    color: {link}; text-decoration: underline;
-  }}
+  .intro a {{ color: {link}; text-decoration: underline; }}
   .intro a:visited {{ color: {link_visited}; }}
-  .intro a:hover {{ background: transparent; color: {accent_tertiary}; }}
+  .intro a:hover {{ color: {accent_tertiary}; }}
   body.has-files {{
-    display: block;
     padding: 0;
-    justify-content: flex-start;
   }}
   body.has-files main {{
     margin-left: max(var(--fb-w, 16.5rem), calc(50% - 360px));
@@ -2359,7 +2397,7 @@ pub fn generate_index_html(
 {file_nav}<main>
 <h1>{title}</h1>
 <p class="subtitle">{count} notebook{plural}</p>
-{intro}<ul>
+{intro}<ul class="rl-index-list">
 {links}</ul>
 <footer>Generated by rustlab-notebook</footer>
 </main>
@@ -2724,6 +2762,255 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("only to HTML"), "{err}");
         assert!(!pdf.exists());
+    }
+
+    /// `<body …>` open tag and the first `<style>` block of a page.
+    fn body_tag_and_style(html: &str) -> (String, String) {
+        let b = html.find("<body").expect("body");
+        let body = html[b..b + html[b..].find('>').unwrap() + 1].to_string();
+        let s = html.find("<style>").expect("style");
+        let e = s + html[s..].find("</style>").unwrap();
+        (body, html[s..e].to_string())
+    }
+
+    fn three_notebook_collection() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ch2")).unwrap();
+        std::fs::write(root.join("a.md"), "# Alpha\n\n## One\n\ntext\n").unwrap();
+        std::fs::write(root.join("b.md"), "# Beta\n\n## Two\n\ntext\n").unwrap();
+        std::fs::write(root.join("ch2/c.md"), "# Gamma\n\n## Three\n\ntext\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn single_html_check_accepts_no_toc_for_a_directory() {
+        let toc = SingleHtmlOpts {
+            no_toc: true,
+            ..Default::default()
+        };
+        assert_eq!(toc.check(true, true), Ok(()));
+        let err = toc.check(true, false).unwrap_err();
+        assert!(err.contains("only to HTML"), "{err}");
+        let index = SingleHtmlOpts {
+            index_href: Some("/x/".into()),
+            ..Default::default()
+        };
+        let err = index.check(true, true).unwrap_err();
+        assert!(
+            err.contains("--index") && err.contains("not a directory"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn directory_without_browser_and_toc_matches_a_single_no_toc_page() {
+        let src = three_notebook_collection();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir_with(
+            src.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+            CollectionChrome {
+                no_file_browser: true,
+                no_toc: true,
+            },
+        )
+        .expect("directory render");
+        let page = std::fs::read_to_string(out.path().join("b.html")).unwrap();
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+
+        let single_dir = tempfile::tempdir().unwrap();
+        let md = single_dir.path().join("b.md");
+        std::fs::write(&md, "# Beta\n\n## Two\n\ntext\n").unwrap();
+        let single_out = single_dir.path().join("b.html");
+        cmd_render_with(
+            md,
+            Some(single_out.clone()),
+            Format::Html,
+            Theme::Dark.colors(),
+            &SingleHtmlOpts {
+                no_toc: true,
+                ..Default::default()
+            },
+        )
+        .expect("single render");
+        let single = std::fs::read_to_string(&single_out).unwrap();
+
+        assert_eq!(body_tag_and_style(&page), body_tag_and_style(&single));
+        assert!(page.contains("<body class=\"no-toc\">"));
+        for html in [&page, &index] {
+            assert!(!html.contains("<nav class=\"file-browser\""));
+            assert!(!body_tag_and_style(html).0.contains("has-files"));
+        }
+        assert!(!page.contains("<nav class=\"sidebar\""));
+        assert!(!page.contains("<button class=\"nav-toggle\""));
+        // Prev/next survive in the footer and the top bar.
+        assert!(page.contains("<nav class=\"page-nav\">"));
+        assert!(page.contains("<a class=\"prev\" href=\"a.html\""));
+        assert!(page.contains("<a class=\"next\" href=\"ch2/c.html\""));
+        assert!(page.contains("<a class=\"index\" href=\"index.html\""));
+        // A nested page still climbs out for its neighbours.
+        let nested = std::fs::read_to_string(out.path().join("ch2/c.html")).unwrap();
+        assert!(nested.contains("<a class=\"prev\" href=\"../b.html\""));
+        assert!(index.contains("<body>"));
+    }
+
+    #[test]
+    fn directory_chrome_flags_work_one_at_a_time() {
+        let src = three_notebook_collection();
+        let no_files = tempfile::tempdir().unwrap();
+        cmd_render_dir_with(
+            src.path().to_path_buf(),
+            Some(no_files.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+            CollectionChrome {
+                no_file_browser: true,
+                no_toc: false,
+            },
+        )
+        .unwrap();
+        let page = std::fs::read_to_string(no_files.path().join("a.html")).unwrap();
+        assert!(!page.contains("<nav class=\"file-browser\""));
+        assert!(page.contains("<nav class=\"sidebar\">"));
+        assert!(page.contains("<body>"), "neither has-files nor no-toc");
+
+        let no_toc = tempfile::tempdir().unwrap();
+        cmd_render_dir_with(
+            src.path().to_path_buf(),
+            Some(no_toc.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+            CollectionChrome {
+                no_file_browser: false,
+                no_toc: true,
+            },
+        )
+        .unwrap();
+        let page = std::fs::read_to_string(no_toc.path().join("a.html")).unwrap();
+        assert!(page.contains("<nav class=\"file-browser\""));
+        assert!(!page.contains("<nav class=\"sidebar\""));
+        assert!(page.contains("<body class=\"no-toc has-files\">"));
+        let index = std::fs::read_to_string(no_toc.path().join("index.html")).unwrap();
+        assert!(index.contains("<nav class=\"file-browser\""));
+    }
+
+    #[test]
+    fn file_browser_setting_precedence() {
+        assert!(file_browser_setting(None, None));
+        assert!(!file_browser_setting(None, Some(false)));
+        assert!(file_browser_setting(Some(true), Some(false)));
+        assert!(!file_browser_setting(Some(false), Some(true)));
+        assert!(file_browser_setting(None, Some(true)));
+    }
+
+    /// Selectors in `css` that are a bare element name (optionally with a
+    /// pseudo-class), outside the document-level ones a page owns.
+    fn unscoped_element_selectors(css: &str) -> Vec<String> {
+        const OWNED: &[&str] = &["*", "html", "body", "main", ":root"];
+        let mut out = Vec::new();
+        let mut depth = 0usize;
+        let mut sel = String::new();
+        let mut in_comment = false;
+        let bytes: Vec<char> = css.chars().collect();
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if in_comment {
+                if c == '*' && bytes.get(i + 1) == Some(&'/') {
+                    in_comment = false;
+                    i += 1;
+                }
+            } else if c == '/' && bytes.get(i + 1) == Some(&'*') {
+                in_comment = true;
+                i += 1;
+            } else if c == '{' {
+                let s = sel.trim().to_string();
+                if !s.starts_with('@') {
+                    for part in s.split(',') {
+                        let part = part.trim();
+                        let base = part.split(':').next().unwrap_or("");
+                        let rest = &part[base.len()..];
+                        let bare = !base.is_empty()
+                            && base.chars().all(|ch| ch.is_ascii_alphanumeric())
+                            && !OWNED.contains(&base)
+                            && !rest.contains(['.', '#', '[']);
+                        if bare && !part.starts_with(':') {
+                            out.push(part.to_string());
+                        }
+                    }
+                    depth += 1;
+                } else {
+                    depth += 1;
+                }
+                sel.clear();
+            } else if c == '}' {
+                depth = depth.saturating_sub(1);
+                sel.clear();
+            } else if c == ';' {
+                sel.clear();
+            } else {
+                sel.push(c);
+            }
+            i += 1;
+        }
+        let _ = depth;
+        out
+    }
+
+    #[test]
+    fn index_page_styles_only_its_own_listing_links() {
+        let browser = CollectionBrowser {
+            label: "Course".into(),
+            current_rel: None,
+            entries: vec![FileEntry {
+                title: "Alpha".into(),
+                rel_md: "a.md".into(),
+                href: "a.html".into(),
+            }],
+        };
+        for b in [None, Some(&browser)] {
+            let html = generate_index_html(
+                "Course",
+                &[("Alpha".into(), "a.html".into())],
+                Theme::Dark.colors(),
+                "<ul><li>intro bullet</li></ul>",
+                b,
+            );
+            let (_, css) = body_tag_and_style(&html);
+            assert_eq!(unscoped_element_selectors(&css), Vec::<String>::new());
+            assert!(html.contains("<ul class=\"rl-index-list\">"));
+            assert!(css.contains("ul.rl-index-list > li > a {"));
+            assert!(!css.contains(".intro a {\n    display: inline; padding: 0;"));
+            let body_at = css.find("\n  body {").expect("body rule");
+            let body_rule = &css[body_at..body_at + css[body_at..].find('}').unwrap()];
+            assert!(
+                !body_rule.contains("display: flex"),
+                "host siblings of <main> must stack, not sit in a flex row"
+            );
+        }
+    }
+
+    #[test]
+    fn notebook_page_has_no_unscoped_element_rules() {
+        let src = three_notebook_collection();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            src.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .unwrap();
+        let page = std::fs::read_to_string(out.path().join("a.html")).unwrap();
+        let (_, css) = body_tag_and_style(&page);
+        assert_eq!(unscoped_element_selectors(&css), Vec::<String>::new());
     }
 
     #[test]

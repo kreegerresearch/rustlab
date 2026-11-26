@@ -68,6 +68,7 @@ fn single_state_with(
         annotate: false,
         comments_on: true,
         git_enabled: false,
+        chrome: Default::default(),
     })
 }
 
@@ -1110,6 +1111,7 @@ async fn directory_link_navigation_opens_target_websocket() {
         annotate: false,
         comments_on: true,
         git_enabled: false,
+        chrome: Default::default(),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1238,6 +1240,7 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         annotate: false,
         comments_on: true,
         git_enabled: false,
+        chrome: Default::default(),
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

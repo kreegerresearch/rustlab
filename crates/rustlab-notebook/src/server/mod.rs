@@ -72,6 +72,10 @@ pub struct ServerOpts {
     /// `watch --git-diff` or `[notebook] git_diff`. Off by default. When
     /// false the server never spawns git.
     pub git_diff: bool,
+    /// `--no-file-browser` / `--no-toc` (and `[notebook] file_browser`).
+    /// Each hides its part of the Contents drawer; with both hidden there
+    /// is no drawer.
+    pub chrome: crate::CollectionChrome,
 }
 
 /// Per-render page context the server threads into the renderer: the CSP
@@ -125,7 +129,7 @@ pub fn start_set(
             "[watch] --diff is ignored until git diff is enabled (--git-diff or [notebook] git_diff = true)"
         );
     }
-    let state = build_set_state(
+    let state = build_set_state_with(
         &set,
         theme,
         opts.editable,
@@ -134,6 +138,7 @@ pub fn start_set(
         csp_nonce,
         jail_root,
         opts.git_diff,
+        opts.chrome,
     )?;
 
     // ── 3. Bind ───────────────────────────────────────────────────
@@ -233,6 +238,7 @@ fn build_state(
 /// order: identities are paths relative to the common ancestor, the
 /// drawer shows that tree, and `/` lists the files. There is no
 /// `index.md` body; a named `index.md` is an ordinary page.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_set_state(
     set: &fileset::WatchSet,
@@ -243,6 +249,32 @@ pub(super) fn build_set_state(
     csp_nonce: String,
     jail_root: Option<PathBuf>,
     git_enabled: bool,
+) -> Result<Arc<http::ServerState>> {
+    build_set_state_with(
+        set,
+        theme,
+        editable,
+        annotate,
+        comments_on,
+        csp_nonce,
+        jail_root,
+        git_enabled,
+        crate::CollectionChrome::default(),
+    )
+}
+
+/// [`build_set_state`] with the drawer parts switched by `chrome`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_set_state_with(
+    set: &fileset::WatchSet,
+    theme: &'static ThemeColors,
+    editable: bool,
+    annotate: bool,
+    comments_on: bool,
+    csp_nonce: String,
+    jail_root: Option<PathBuf>,
+    git_enabled: bool,
+    chrome: crate::CollectionChrome,
 ) -> Result<Arc<http::ServerState>> {
     // `is_dir` below means "a collection" (directory or file set): the
     // collection-relative identities, the drawer tree, and the index.
@@ -477,7 +509,14 @@ pub(super) fn build_set_state(
             &rels,
             idx,
             !is_dir,
-            directory_browser(&listing, &rels, &index_title, Some(idx), is_dir),
+            chrome.no_toc,
+            directory_browser(
+                &listing,
+                &rels,
+                &index_title,
+                Some(idx),
+                is_dir && !chrome.no_file_browser,
+            ),
         );
         let link = crate::render::LinkMode::Server {
             slugs: link_slugs.clone(),
@@ -546,6 +585,7 @@ pub(super) fn build_set_state(
         annotate,
         comments_on,
         git_enabled,
+        chrome,
     }))
 }
 
@@ -653,7 +693,7 @@ fn stamp_rl_slug(html: &str, slug: &str) -> String {
 ///
 /// Returns `None` in single-file mode (no siblings, no index) — which
 /// keeps `render_html` on its sidebar layout, matching `cmd_render` for
-/// a lone file.
+/// a lone file — unless `hide_toc` asks for the `--no-toc` layout.
 ///
 /// Hrefs are *server* paths, not the static filenames `cmd_render_dir`
 /// uses: the index lives at `/` and each notebook at
@@ -664,10 +704,14 @@ fn server_nav(
     rels: &[String],
     idx: usize,
     single: bool,
+    hide_toc: bool,
     files: Option<crate::CollectionBrowser>,
 ) -> Option<crate::NotebookNav> {
     if single {
-        return None;
+        return hide_toc.then(|| crate::NotebookNav {
+            hide_toc,
+            ..Default::default()
+        });
     }
     let link = |i: usize| {
         let title = &listing[i].1;
@@ -681,6 +725,7 @@ fn server_nav(
         prev: (idx > 0).then(|| link(idx - 1)),
         next: (idx + 1 < listing.len()).then(|| link(idx + 1)),
         files,
+        hide_toc,
         ..Default::default()
     })
 }
@@ -717,7 +762,8 @@ fn directory_browser(
 }
 
 /// Directory-mode file browser for `current_slug` (`None` on the index).
-/// `None` in single-file mode — that page has no collection.
+/// `None` in single-file mode — that page has no collection — and under
+/// `--no-file-browser`.
 ///
 /// Paths come from `link_slugs` (the sort key), titles and order from
 /// `state.order`, so a live re-render matches the sidebar baked in at
@@ -726,7 +772,7 @@ pub(super) fn collection_browser(
     state: &http::ServerState,
     current_slug: Option<&str>,
 ) -> Option<crate::CollectionBrowser> {
-    if state.single {
+    if state.single || state.chrome.no_file_browser {
         return None;
     }
     let rel_of = state.rel_by_slug();
@@ -1373,20 +1419,20 @@ mod tests {
         ];
         // Middle page: prev + next + index, all as server URLs.
         let rels = vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()];
-        let mid = server_nav(&listing, &rels, 1, false, None).unwrap();
+        let mid = server_nav(&listing, &rels, 1, false, false, None).unwrap();
         assert_eq!(mid.index_href.as_deref(), Some("/"));
         assert_eq!(mid.prev, Some(("Alpha".to_string(), "/n/a".to_string())));
         assert_eq!(mid.next, Some(("Gamma".to_string(), "/n/c".to_string())));
         // First page: no prev.
-        let first = server_nav(&listing, &rels, 0, false, None).unwrap();
+        let first = server_nav(&listing, &rels, 0, false, false, None).unwrap();
         assert!(first.prev.is_none());
         assert_eq!(first.next, Some(("Beta".to_string(), "/n/b".to_string())));
         // Last page: no next.
-        let last = server_nav(&listing, &rels, 2, false, None).unwrap();
+        let last = server_nav(&listing, &rels, 2, false, false, None).unwrap();
         assert!(last.next.is_none());
         assert_eq!(last.prev, Some(("Beta".to_string(), "/n/b".to_string())));
         // Single-file mode: no nav at all (keeps the sidebar layout).
-        assert!(server_nav(&listing, &rels, 0, true, None).is_none());
+        assert!(server_nav(&listing, &rels, 0, true, false, None).is_none());
     }
 
     #[tokio::test]

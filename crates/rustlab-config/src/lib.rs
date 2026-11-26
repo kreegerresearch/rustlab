@@ -13,8 +13,8 @@
 //!
 //! A project may also carry `rustlab.toml` (see [`find_project_config`] and
 //! [`load_project`]). It accepts only `[notebook] theme`,
-//! `[notebook] theme_dir`, and `[notebook] jail_root`; other keys warn.
-//! `startup.rlab` is out of scope.
+//! `[notebook] theme_dir`, `[notebook] jail_root`, and
+//! `[notebook] file_browser`; other keys warn. `startup.rlab` is out of scope.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -373,6 +373,9 @@ pub struct ProjectConfig {
     /// existing directory at or below the canonical `root`; see
     /// [`project_jail_dir`].
     pub jail_root: Option<PathBuf>,
+    /// `[notebook] file_browser`. `Some(false)` drops the collection file
+    /// browser from directory HTML and watch. CLI flags override it.
+    pub file_browser: Option<bool>,
     /// Dotted keys this schema does not know. Callers warn once each.
     pub unknown_keys: Vec<String>,
 }
@@ -417,6 +420,7 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
         notebook_theme: None,
         theme_dir: None,
         jail_root: None,
+        file_browser: None,
         unknown_keys: Vec::new(),
     };
     for (key, val) in table {
@@ -446,6 +450,9 @@ pub fn parse_project_toml(text: &str, path: &Path) -> Result<ProjectConfig, Conf
                         project_jail_dir(&root, s)
                             .map_err(|m| ConfigError::invalid(path, "notebook.jail_root", m))?,
                     );
+                }
+                "file_browser" => {
+                    out.file_browser = Some(expect_bool(v, path, "notebook.file_browser")?);
                 }
                 other => out.unknown_keys.push(format!("notebook.{other}")),
             }
@@ -1665,5 +1672,21 @@ mod tests {
             let _ = std::fs::remove_dir_all(&outside);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_config_file_browser_key() {
+        let path = PathBuf::from("/proj").join(PROJECT_CONFIG);
+        let off = parse_project_toml("[notebook]\nfile_browser = false\n", &path).unwrap();
+        assert_eq!(off.file_browser, Some(false));
+        assert!(off.unknown_keys.is_empty());
+        let on = parse_project_toml("[notebook]\nfile_browser = true\n", &path).unwrap();
+        assert_eq!(on.file_browser, Some(true));
+        let unset = parse_project_toml("[notebook]\ntheme = \"latte\"\n", &path).unwrap();
+        assert_eq!(unset.file_browser, None);
+        let err = parse_project_toml("[notebook]\nfile_browser = \"no\"\n", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("notebook.file_browser"), "{err}");
     }
 }

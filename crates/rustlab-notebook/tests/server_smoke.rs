@@ -87,6 +87,7 @@ fn build_state() -> (
         annotate: false,
         comments_on: true,
         git_enabled: false,
+        chrome: Default::default(),
     });
     (state, src_dir, plot_dir)
 }

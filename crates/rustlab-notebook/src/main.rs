@@ -126,7 +126,7 @@ enum Command {
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
-            A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.\n\n\
+            A directory watch shows a file browser of file names, together with the section outline, in one Contents drawer (also `\\`). It does not reserve width. --no-file-browser and --no-toc each leave their part out of the drawer (rustlab.toml `[notebook] file_browser = false` does the same for the browser); with both there is no drawer. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has the outline drawer, not the file browser.\n\n\
             Several files are browsed the same way, as a tree rooted at their common folder: /n/ch2/filters for ch2/filters.md, /n/demo.rlab for a script. Only the listed files are served. Each notebook's file I/O is jailed to its own folder (--jail-root widens it). A missing path, a directory among files, or another file type is an error.\n\n\
             A quoted path with *, ?, or [...] is a pattern (** matches any number of folders). Its .md and .rlab matches, sorted by path, take its place in the list; other files and folders are skipped. Wildcards skip hidden names; ** also skips target, node_modules, and symlinked folders. A pattern with no matches is an error. Patterns your shell already expanded work the same way.")]
     Watch {
@@ -212,6 +212,21 @@ enum Command {
         /// Ignored by the re-render-on-save watcher.
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
         diff: Option<String>,
+        /// (interactive server mode only) Leave the section outline out of
+        /// the Contents drawer.
+        #[arg(long)]
+        no_toc: bool,
+        /// (interactive server mode only) Show the file browser in the
+        /// Contents drawer even when rustlab.toml sets
+        /// `[notebook] file_browser = false`.
+        #[arg(long, conflicts_with = "no_file_browser")]
+        file_browser: bool,
+        /// (interactive server mode only) Leave the file browser out of the
+        /// Contents drawer and the index page. Overrides rustlab.toml
+        /// `[notebook] file_browser`. With --no-toc as well there is no
+        /// drawer; prev/next links stay.
+        #[arg(long, conflicts_with = "file_browser")]
+        no_file_browser: bool,
         /// Let `cache enable` open or create the SQLite function cache.
         /// Overrides `[cache] enabled = false`.
         #[arg(long, conflicts_with = "no_cache")]
@@ -310,6 +325,7 @@ enum Command {
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
             rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n  \
             rustlab-notebook render analysis.md --no-toc --no-comments --index /notebooks/ Notebooks\n  \
+            rustlab-notebook render course/ -o site/ --no-toc --no-file-browser  # one centred column\n  \
             rustlab-notebook render analysis.md --strict            # exit 1 if a cell errors\n  \
             rustlab-notebook render analysis.md --theme-file course.toml --theme-contrast=error\n\n\
             Options:\n  \
@@ -329,7 +345,7 @@ enum Command {
             pdf       Compile LaTeX to PDF (always Latte on white paper; requires pdflatex or tectonic)\n  \
             json      JSON on stdout for one notebook (--stdin, --cwd, --pretty). No --output file.\n\n\
             Fences tagged bash, python, toml, yaml (or yml), or text are highlighted (text is uncolored). A fence with no tag is text.\n\
-            Directory render shows a fixed file browser. Directory watch shows that browser and the section outline in a Contents drawer (also `\\`) that does not reserve width. A single file, LaTeX, and PDF do not show a file browser.\n\n\
+            Directory render shows a fixed file browser and, on each page, the heading sidebar. --no-file-browser (or rustlab.toml `[notebook] file_browser = false`; --file-browser overrides it) and --no-toc drop them; prev/next links stay. Directory watch shows that browser and the section outline in a Contents drawer (also `\\`) that does not reserve width. A single file, LaTeX, and PDF do not show a file browser.\n\n\
             Themes:\n  \
             mocha / dark (default)  Catppuccin Mocha\n  \
             macchiato               Catppuccin Macchiato\n  \
@@ -428,9 +444,19 @@ enum Command {
         /// --strict, which is about cell errors.
         #[arg(long, value_enum, value_name = "warn|error", default_value = "warn")]
         theme_contrast: CliContrast,
-        /// Omit the heading sidebar. Single HTML notebook only.
+        /// Omit the heading sidebar. HTML only; for a directory it applies
+        /// to every notebook page.
         #[arg(long)]
         no_toc: bool,
+        /// Show the collection file browser on a directory render, even
+        /// when rustlab.toml sets `[notebook] file_browser = false`.
+        #[arg(long, conflicts_with = "no_file_browser")]
+        file_browser: bool,
+        /// Omit the collection file browser from a directory render (the
+        /// notebook pages and index.html). Overrides rustlab.toml
+        /// `[notebook] file_browser`. HTML only. Prev/next links stay.
+        #[arg(long, conflicts_with = "file_browser")]
+        no_file_browser: bool,
         /// Let `cache enable` open or create the SQLite function cache.
         /// Overrides `[cache] enabled = false`.
         #[arg(long, conflicts_with = "no_cache")]
@@ -685,6 +711,9 @@ fn main() {
             annotate,
             git_diff,
             diff,
+            no_toc,
+            file_browser,
+            no_file_browser,
             cache,
             no_cache,
         } => {
@@ -707,7 +736,7 @@ fn main() {
                 );
                 std::process::exit(2);
             }
-            let colors = resolve_theme_or_exit(
+            let (colors, project_file_browser) = resolve_theme_or_exit(
                 &input,
                 theme,
                 theme_file,
@@ -763,6 +792,13 @@ fn main() {
                     comments_on,
                     diff,
                     git_diff: git_on,
+                    chrome: rustlab_notebook::CollectionChrome {
+                        no_file_browser: !rustlab_notebook::file_browser_setting(
+                            cli_file_browser(file_browser, no_file_browser),
+                            project_file_browser,
+                        ),
+                        no_toc,
+                    },
                 };
                 if let Err(e) = rustlab_notebook::server::start_set(set, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -771,9 +807,18 @@ fn main() {
                 return;
             }
 
-            if port.is_some() || no_browser || editable || annotate || diff.is_some() || git_diff {
+            if port.is_some()
+                || no_browser
+                || editable
+                || annotate
+                || diff.is_some()
+                || git_diff
+                || no_toc
+                || file_browser
+                || no_file_browser
+            {
                 eprintln!(
-                    "warning: --port / --no-browser / --editable / --annotate / --diff / --git-diff only apply to the bare-input interactive server; ignored",
+                    "warning: --port / --no-browser / --editable / --annotate / --diff / --git-diff / --no-toc / --file-browser / --no-file-browser only apply to the bare-input interactive server; ignored",
                 );
             }
             rustlab_notebook::set_comment_display(resolve_comments(
@@ -818,6 +863,8 @@ fn main() {
             comments_style,
             index,
             no_toc,
+            file_browser,
+            no_file_browser,
             strict,
             theme_contrast,
             cache,
@@ -830,7 +877,7 @@ fn main() {
                 (None, true) => PathBuf::from("."),
                 (None, false) => input.clone(),
             };
-            let colors = resolve_theme_or_exit(
+            let (colors, project_file_browser) = resolve_theme_or_exit(
                 &project_from,
                 theme,
                 theme_file,
@@ -851,6 +898,23 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(2);
             }
+            let cli_browser = cli_file_browser(file_browser, no_file_browser);
+            if cli_browser.is_some() && format != CliFormat::Html {
+                eprintln!("error: --file-browser and --no-file-browser apply only to HTML");
+                std::process::exit(2);
+            }
+            if cli_browser.is_some() && !input.is_dir() {
+                eprintln!(
+                    "warning: --file-browser / --no-file-browser only apply to a directory render; ignored"
+                );
+            }
+            let collection = rustlab_notebook::CollectionChrome {
+                no_file_browser: !rustlab_notebook::file_browser_setting(
+                    cli_browser,
+                    project_file_browser,
+                ),
+                no_toc,
+            };
             let comments_on = resolve_comments(comments.as_deref(), no_comments, &settings);
             rustlab_notebook::set_comment_display(comments_on);
             if let Err(e) = resolve_comments_style(
@@ -924,7 +988,9 @@ fn main() {
                 CliFormat::Json => unreachable!("--format json branched to cmd_render_json above"),
             };
             let result = if input.is_dir() {
-                rustlab_notebook::cmd_render_dir(input, output, format, colors, title)
+                rustlab_notebook::cmd_render_dir_with(
+                    input, output, format, colors, title, collection,
+                )
             } else {
                 if title.is_some() {
                     eprintln!("warning: --title is only used when rendering a directory; ignored for single-file input");
@@ -1275,6 +1341,17 @@ fn cli_jail_guard(
     Some(rustlab_notebook::execute::JailRootGuard::new(Some(root)))
 }
 
+/// `--file-browser` is `Some(true)`, `--no-file-browser` `Some(false)`.
+fn cli_file_browser(on: bool, off: bool) -> Option<bool> {
+    if off {
+        Some(false)
+    } else if on {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 /// `-t NAME` wins; otherwise `~/.rustlabrc` `[notebook] theme` (then
 /// `[plot] theme`, then mocha). Both spell the same names, so the rc value
 /// maps through the plot crate's parser rather than a second table.
@@ -1336,7 +1413,7 @@ fn resolve_theme_or_exit(
     settings: &UserSettings,
     rc_path: Option<&std::path::Path>,
     contrast: ContrastMode,
-) -> &'static ThemeColors {
+) -> (&'static ThemeColors, Option<bool>) {
     match resolve_theme(input, cli_theme, cli_file, settings, rc_path, contrast) {
         Ok(c) => c,
         Err((code, e)) => {
@@ -1353,8 +1430,9 @@ fn resolve_theme(
     settings: &UserSettings,
     rc_path: Option<&std::path::Path>,
     contrast: ContrastMode,
-) -> Result<&'static ThemeColors, (i32, String)> {
+) -> Result<(&'static ThemeColors, Option<bool>), (i32, String)> {
     let project = load_project_config(&theme_select::project_start(input)).map_err(|e| (2, e))?;
+    let file_browser = project.as_ref().and_then(|p| p.file_browser);
     let search = theme_select::search_for(project.as_ref());
     let rc_set = settings.notebook.theme.is_some() || settings.plot.theme.is_some();
     let req = ThemeRequest {
@@ -1376,7 +1454,7 @@ fn resolve_theme(
         search,
         contrast,
     });
-    Ok(colors)
+    Ok((colors, file_browser))
 }
 
 fn load_project_config(
