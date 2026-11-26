@@ -397,6 +397,7 @@ fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
             slugs: state.link_slugs.clone(),
             current_rel_dir: String::new(),
             index_at_root: true,
+            titles: Default::default(),
         };
         let rendered = tokio::task::spawn_blocking(move || {
             crate::read_and_render_index_md(&path, &root, theme, &link)

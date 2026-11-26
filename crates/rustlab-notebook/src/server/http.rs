@@ -251,6 +251,7 @@ impl ServerState {
             // Single-file `/` redirects to the notebook itself — mapping
             // index.md there would send the link in a circle.
             index_at_root: !self.single,
+            titles: Default::default(),
         }
     }
 }

@@ -1140,6 +1140,7 @@ pub fn cmd_render_dir(
     let link_mode = render::LinkMode::Static {
         known: known.clone(),
         current_rel_dir: String::new(),
+        titles: Default::default(),
     };
 
     // Index title is also the file-browser label, so resolve it before
@@ -1208,6 +1209,7 @@ pub fn cmd_render_dir(
         let page_link_mode = render::LinkMode::Static {
             known: known.clone(),
             current_rel_dir: page_dir,
+            titles: Default::default(),
         };
 
         let p = &pending[i];
@@ -2149,6 +2151,10 @@ fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+pub fn notebook_title(_source: &str) -> Option<String> {
+    None
+}
+
 pub fn extract_title(source: &str, path: &PathBuf) -> String {
     // Frontmatter `title:` wins over the H1 fallback.
     let (fm, body) = parse::extract_frontmatter(source);
@@ -2718,6 +2724,7 @@ mod tests {
         let link = render::LinkMode::Static {
             known: None,
             current_rel_dir: "ch1/sec".into(),
+            titles: Default::default(),
         };
         assert_eq!(
             html_asset_root_for(Path::new("/tmp/out/ch1/sec/a.html"), &link),
@@ -4325,6 +4332,100 @@ More.\n";
         assert!(!std::fs::read_to_string(&dst)
             .unwrap()
             .contains(GENERATED_HEADER));
+    }
+
+    #[test]
+    fn notebook_title_is_frontmatter_or_first_h1_else_none() {
+        assert_eq!(
+            notebook_title("---\ntitle: \"Front\"\n---\n# H1\n").as_deref(),
+            Some("Front")
+        );
+        assert_eq!(
+            notebook_title("intro\n\n# Lesson 01: Tokens\n").as_deref(),
+            Some("Lesson 01: Tokens")
+        );
+        assert_eq!(notebook_title("## Only an H2\n"), None);
+        assert_eq!(notebook_title("no heading\n"), None);
+        // A `#` comment inside a code fence is not a heading.
+        assert_eq!(
+            notebook_title("```rustlab\n# setup\nx = 1;\n```\n\n# Real Title\n").as_deref(),
+            Some("Real Title")
+        );
+        // An explicit heading id is not part of the title.
+        assert_eq!(
+            notebook_title("# Intro {#start}\n").as_deref(),
+            Some("Intro")
+        );
+    }
+
+    #[test]
+    fn directory_render_links_show_target_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ch2")).unwrap();
+        std::fs::write(
+            root.join("01-tokens.md"),
+            "# Lesson 01: Tokens & <Encoding>\n\nNext: [[02-untitled]], [[ch2/03-deep]], \
+             [[ch2/03-deep|Lesson 3]], [[_partial]].\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("02-untitled.md"), "No heading.\n").unwrap();
+        std::fs::write(
+            root.join("ch2").join("03-deep.md"),
+            "---\ntitle: Deep Dive\n---\n\nBack to [01-tokens](../01-tokens.md).\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("_partial.md"), "# Partial Title\n").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("directory render");
+        let first = std::fs::read_to_string(out.path().join("01-tokens.html")).unwrap();
+        assert!(
+            first.contains("<a href=\"02-untitled.html\">02-untitled</a>"),
+            "{first}"
+        );
+        assert!(
+            first.contains("<a href=\"ch2/03-deep.html\">Deep Dive</a>"),
+            "{first}"
+        );
+        assert!(
+            first.contains("<a href=\"ch2/03-deep.html\">Lesson 3</a>"),
+            "{first}"
+        );
+        // A partial is not a rendered notebook: left as written, not retitled.
+        assert!(
+            first.contains("<a href=\"_partial.md\">_partial</a>"),
+            "{first}"
+        );
+        let deep = std::fs::read_to_string(out.path().join("ch2/03-deep.html")).unwrap();
+        assert!(
+            deep.contains(
+                "<a href=\"../01-tokens.html\">Lesson 01: Tokens &amp; &lt;Encoding&gt;</a>"
+            ),
+            "{deep}"
+        );
+
+        let tex_out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(tex_out.path().to_path_buf()),
+            Format::Latex,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("latex directory render");
+        let deep_tex = std::fs::read_to_string(tex_out.path().join("ch2/03-deep.tex")).unwrap();
+        assert!(
+            deep_tex.contains("\\href{../01-tokens.pdf}{Lesson 01: Tokens \\& <Encoding>}"),
+            "{deep_tex}"
+        );
     }
 
     #[test]

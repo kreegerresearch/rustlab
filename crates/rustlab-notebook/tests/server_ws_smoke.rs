@@ -1070,6 +1070,7 @@ async fn directory_link_navigation_opens_target_websocket() {
         slugs: slugs.clone(),
         current_rel_dir: String::new(),
         index_at_root: true,
+        titles: Default::default(),
     };
     let plot_dir = TempDir::new().unwrap();
     let html_a = render_linked(&a_path, "a", plot_dir.path(), theme, &link);
@@ -1203,6 +1204,7 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         slugs: slugs.clone(),
         current_rel_dir: String::new(),
         index_at_root: false,
+        titles: Default::default(),
     };
     let plot_dir = TempDir::new().unwrap();
     let html = render_linked(&a_path, "a", plot_dir.path(), theme, &link);

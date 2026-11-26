@@ -159,6 +159,7 @@ pub enum LinkMode {
     Static {
         known: Option<HashSet<String>>,
         current_rel_dir: String,
+        titles: LinkTitles,
     },
     /// Watch server. Directory mode (`index_at_root`) emits
     /// `/n/<collection-relative path without .md>` (`ch2/filters.md` →
@@ -181,8 +182,16 @@ pub enum LinkMode {
         slugs: HashMap<String, String>,
         current_rel_dir: String,
         index_at_root: bool,
+        titles: LinkTitles,
     },
 }
+
+/// Titles of the notebooks a [`LinkMode`] resolves, keyed by the same
+/// collection-root-relative `.md` path as `known` / `slugs`. Only
+/// notebooks with a real title (frontmatter `title:` or an H1) are
+/// present; see [`crate::notebook_title`]. Built from the notebook list
+/// the renderer already holds, never by reading a link target from disk.
+pub type LinkTitles = std::sync::Arc<HashMap<String, String>>;
 
 impl LinkMode {
     /// The mode for a standalone single-file static render.
@@ -190,6 +199,13 @@ impl LinkMode {
         LinkMode::Static {
             known: None,
             current_rel_dir: String::new(),
+            titles: LinkTitles::default(),
+        }
+    }
+
+    fn titles(&self) -> &HashMap<String, String> {
+        match self {
+            LinkMode::Static { titles, .. } | LinkMode::Server { titles, .. } => titles,
         }
     }
 }
@@ -214,6 +230,24 @@ fn rewrite_link_dest_to(
     target_ext: &str,
     keep_fragment: bool,
 ) -> Option<String> {
+    resolve_link_dest(dest, mode, target_ext, keep_fragment).map(|r| r.href)
+}
+
+/// A rewritten link: the emitted `href`, and the collection-root-relative
+/// `.md` key it resolved to (`None` for a single-file render, which
+/// rewrites without a collection to check against).
+pub(crate) struct ResolvedLink {
+    pub href: String,
+    pub key: Option<String>,
+}
+
+fn resolve_link_dest(
+    dest: &str,
+    mode: &LinkMode,
+    target_ext: &str,
+    keep_fragment: bool,
+) -> Option<ResolvedLink> {
+    let found = |href: String, key: Option<String>| Some(ResolvedLink { href, key });
     // Scheme'd (`https:`, `mailto:`), protocol-relative (`//host/x`),
     // absolute (`/docs/x`), and pure-fragment (`#x`) destinations are not
     // notebook references.
@@ -230,6 +264,7 @@ fn rewrite_link_dest_to(
         LinkMode::Static {
             known,
             current_rel_dir,
+            ..
         } => {
             if let Some(known) = known {
                 let decoded = percent_decode(path);
@@ -248,13 +283,16 @@ fn rewrite_link_dest_to(
                 // the dest as written would 404 from a nested page.
                 let page_rel = normalize_rel_path(current_rel_dir, &decoded);
                 if page_rel.as_deref() == Some(resolved.as_str()) {
-                    return Some(format!("{stem}.{target_ext}{fragment}"));
+                    return found(format!("{stem}.{target_ext}{fragment}"), Some(resolved));
                 }
                 let target = swap_md_ext(&resolved, target_ext);
-                return Some(format!(
-                    "{}{fragment}",
-                    crate::href_between(current_rel_dir, &target)
-                ));
+                return found(
+                    format!(
+                        "{}{fragment}",
+                        crate::href_between(current_rel_dir, &target)
+                    ),
+                    Some(resolved),
+                );
             }
             // known: None (single-file render) rewrites unconditionally —
             // including `../sibling.md`, which may well be rendered
@@ -262,12 +300,13 @@ fn rewrite_link_dest_to(
             //
             // Extension swap on the path AS WRITTEN — a `../ch2/` prefix
             // (or its percent-encoding) stays relative to the page.
-            Some(format!("{stem}.{target_ext}{fragment}"))
+            found(format!("{stem}.{target_ext}{fragment}"), None)
         }
         LinkMode::Server {
             slugs,
             current_rel_dir,
             index_at_root,
+            ..
         } => {
             let decoded = percent_decode(path);
             let resolved = resolve_collection_md(
@@ -282,14 +321,14 @@ fn rewrite_link_dest_to(
             if *index_at_root && resolved == "index.md" && !slugs.contains_key("index.md") {
                 // The index page's body, hoisted to the server root. A
                 // file set that names index.md serves it as a page.
-                return Some(format!("/{fragment}"));
+                return found(format!("/{fragment}"), Some(resolved));
             }
             if *index_at_root {
                 let public = watch_public_rel(&resolved);
-                return Some(format!("/n/{public}{fragment}"));
+                return found(format!("/n/{public}{fragment}"), Some(resolved));
             }
             let slug = slugs.get(&resolved)?;
-            Some(format!("/n/{slug}{fragment}"))
+            found(format!("/n/{slug}{fragment}"), Some(resolved))
         }
     }
 }
@@ -5909,6 +5948,7 @@ w = 4
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             index_at_root: true,
+            titles: Default::default(),
             current_rel_dir: current_rel_dir.to_string(),
         }
     }
@@ -5969,6 +6009,7 @@ w = 4
         let mode = LinkMode::Static {
             known: Some(known.clone()),
             current_rel_dir: String::new(),
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("01-intro.md", &mode).as_deref(),
@@ -5991,6 +6032,7 @@ w = 4
         let nested = LinkMode::Static {
             known: Some(known),
             current_rel_dir: "ch2".to_string(),
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("../01-intro.md", &nested).as_deref(),
@@ -6116,6 +6158,7 @@ w = 4
         let nested = LinkMode::Static {
             known: Some(known),
             current_rel_dir: "ch1".to_string(),
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("ch2/notes.md", &nested).as_deref(),
@@ -6160,6 +6203,7 @@ w = 4
         let mode = LinkMode::Static {
             known: Some(known),
             current_rel_dir: String::new(),
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
@@ -6188,6 +6232,7 @@ w = 4
             .collect(),
             current_rel_dir: "ch2".to_string(),
             index_at_root: true,
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("../index.md#top", &mode).as_deref(),
@@ -6208,6 +6253,7 @@ w = 4
                 .collect(),
             current_rel_dir: String::new(),
             index_at_root: false,
+            titles: Default::default(),
         };
         assert_eq!(
             rewrite_link_dest("index.md", &mode),
@@ -6219,6 +6265,153 @@ w = 4
             rewrite_link_dest("solo.md", &mode).as_deref(),
             Some("/n/solo")
         );
+    }
+
+    fn titles_of(pairs: &[(&str, &str)]) -> LinkTitles {
+        std::sync::Arc::new(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    /// Directory-render mode over `known`, with `titles` for some of them.
+    fn titled_static(known: &[&str], titles: &[(&str, &str)], rel_dir: &str) -> LinkMode {
+        LinkMode::Static {
+            known: Some(known.iter().map(|s| s.to_string()).collect()),
+            current_rel_dir: rel_dir.to_string(),
+            titles: titles_of(titles),
+        }
+    }
+
+    fn link_html(src: &str, mode: &LinkMode) -> String {
+        markdown_to_html_linked(&transform_wikilinks(src), Some(mode), None)
+    }
+
+    #[test]
+    fn link_text_defaults_to_target_title_for_every_unlabelled_form() {
+        let mode = titled_static(
+            &["01-tokens.md", "ch2/filters.md"],
+            &[
+                ("01-tokens.md", "Lesson 01: Tokens & Encoding"),
+                ("ch2/filters.md", "Filters"),
+            ],
+            "",
+        );
+        let want = "<a href=\"01-tokens.html\">Lesson 01: Tokens &amp; Encoding</a>";
+        for src in [
+            "[[01-tokens]]",
+            "[01-tokens](01-tokens.md)",
+            "[01-tokens.md](01-tokens.md)",
+            "[](01-tokens.md)",
+            "[[01-tokens.md]]",
+        ] {
+            let html = link_html(src, &mode);
+            assert!(html.contains(want), "{src} → {html}");
+        }
+        // Nested target: the written path, the vault path, or the bare
+        // file name all count as "no label".
+        for src in [
+            "[[ch2/filters]]",
+            "[ch2/filters](ch2/filters.md)",
+            "[filters](ch2/filters.md)",
+        ] {
+            let html = link_html(src, &mode);
+            assert!(
+                html.contains("<a href=\"ch2/filters.html\">Filters</a>"),
+                "{src} → {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_text_explicit_labels_are_kept() {
+        let mode = titled_static(&["01-tokens.md"], &[("01-tokens.md", "Tokens")], "");
+        for (src, text) in [
+            ("[[01-tokens|Lesson 01]]", ">Lesson 01</a>"),
+            ("[Lesson 01](01-tokens.md)", ">Lesson 01</a>"),
+            ("[[01-tokens#Setup|the setup]]", ">the setup</a>"),
+            // A code span is a deliberate file-name label.
+            (
+                "[`01-tokens.md`](01-tokens.md)",
+                "><code>01-tokens.md</code></a>",
+            ),
+            // Mixed markup is a label, even when it spells the file name.
+            ("[*01-tokens*](01-tokens.md)", "><em>01-tokens</em></a>"),
+        ] {
+            let html = link_html(src, &mode);
+            assert!(html.contains(text), "{src} → {html}");
+            assert!(!html.contains(">Tokens<"), "{src} retitled: {html}");
+        }
+    }
+
+    #[test]
+    fn link_text_anchor_form_keeps_the_section() {
+        let mode = titled_static(&["01-tokens.md"], &[("01-tokens.md", "Tokens")], "");
+        let html = link_html("[[01-tokens#One-hot vectors]]", &mode);
+        assert!(
+            html.contains(
+                "<a href=\"01-tokens.html#one-hot-vectors\">Tokens § One-hot vectors</a>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn link_text_falls_back_to_file_name_without_a_title_or_resolution() {
+        // Known but untitled: the file name stays.
+        let mode = titled_static(&["a.md", "b.md"], &[("b.md", "Bee")], "");
+        assert!(link_html("[[a]]", &mode).contains(">a</a>"));
+        // Unresolved (not in the collection): left exactly as written.
+        let html = link_html("[[zzz]]", &mode);
+        assert!(html.contains("<a href=\"zzz.md\">zzz</a>"), "{html}");
+        // Single-file render: no collection, so no title lookup.
+        let html = link_html("[[b]]", &LinkMode::single_file());
+        assert!(html.contains("<a href=\"b.html\">b</a>"), "{html}");
+    }
+
+    #[test]
+    fn link_text_title_is_html_escaped() {
+        let mode = titled_static(
+            &["x.md"],
+            &[("x.md", "<script>alert(1)</script> & \"q\"")],
+            "",
+        );
+        let html = link_html("[[x]]", &mode);
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(
+            html.contains(">&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot;</a>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn link_text_server_mode_uses_titles_and_nested_relative_paths() {
+        let mode = LinkMode::Server {
+            slugs: [
+                ("ch1/a.md".to_string(), "ch1/a".to_string()),
+                ("ch2/b.md".to_string(), "ch2/b".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            current_rel_dir: "ch1".to_string(),
+            index_at_root: true,
+            titles: titles_of(&[("ch2/b.md", "Bee Notebook")]),
+        };
+        for src in [
+            "[[ch2/b]]",
+            "[b](../ch2/b.md)",
+            "[../ch2/b](../ch2/b.md)",
+            "[[b]]",
+        ] {
+            let html = link_html(src, &mode);
+            assert!(
+                html.contains("<a href=\"/n/ch2/b\">Bee Notebook</a>"),
+                "{src} → {html}"
+            );
+        }
+        assert!(link_html("[[ch2/b|B]]", &mode).contains(">B</a>"));
     }
 
     /// Render one markdown block through the full HTML pipeline in `mode`.
@@ -6365,6 +6558,7 @@ w = 4
             &LinkMode::Static {
                 known: Some(known),
                 current_rel_dir: "ch1".to_string(),
+                titles: Default::default(),
             },
         );
         assert!(

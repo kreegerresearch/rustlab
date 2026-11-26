@@ -436,6 +436,7 @@ pub(super) fn build_set_state(
                 slugs: link_slugs.clone(),
                 current_rel_dir: String::new(),
                 index_at_root: true,
+                titles: Default::default(),
             };
             crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
         })
@@ -465,6 +466,7 @@ pub(super) fn build_set_state(
             slugs: link_slugs.clone(),
             current_rel_dir: crate::rel_dir_of(&rels[idx]),
             index_at_root: is_dir,
+            titles: Default::default(),
         };
         let render = render_for_server(
             path,
@@ -1708,6 +1710,7 @@ mod tests {
                 slugs,
                 current_rel_dir,
                 index_at_root,
+                ..
             } => {
                 assert_eq!(current_rel_dir, "ch1");
                 assert_eq!(slugs, state.link_slugs);

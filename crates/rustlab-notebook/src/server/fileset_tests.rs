@@ -567,6 +567,61 @@ fn file_set_jail_blocks_writes_outside_each_notebook_directory() {
     assert!(root.join("escape.csv").exists());
 }
 
+#[test]
+fn file_set_links_show_listed_titles_only() {
+    let (_d, root) = sample_tree();
+    let set = resolve_watch_inputs(&listed(&root)).unwrap();
+    let state = state_for(&set, false, None);
+    let html = futures_html(&state, "intro");
+    assert!(
+        html.contains("<a href=\"/n/ch2/filters\">Filters</a>"),
+        "{html}"
+    );
+    // ch2/secret.md is not listed: unresolved, and its title is never read.
+    assert!(
+        html.contains("<a href=\"ch2/secret.md\">secret</a>"),
+        "{html}"
+    );
+    assert!(!html.contains(">Secret<"), "{html}");
+    // Live re-renders use the same titles as the startup render.
+    let live = crate::render::markdown_to_html_linked(
+        &crate::render::transform_wikilinks("[[ch2/filters]] [[intro|Home]]"),
+        Some(&state.link_mode_for("intro")),
+        None,
+    );
+    assert!(
+        live.contains("<a href=\"/n/ch2/filters\">Filters</a>"),
+        "{live}"
+    );
+    assert!(live.contains("<a href=\"/n/intro\">Home</a>"), "{live}");
+}
+
+#[test]
+fn directory_watch_links_show_titles() {
+    let (_d, root) = sample_tree();
+    let set = resolve_watch_inputs(&[root.clone()]).unwrap();
+    let state = state_for(&set, false, None);
+    let html = futures_html(&state, "intro");
+    assert!(
+        html.contains("<a href=\"/n/ch2/filters\">Filters</a>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<a href=\"/n/ch2/secret\">Secret</a>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn single_file_watch_links_keep_file_names() {
+    let (_d, root) = sample_tree();
+    let set = resolve_watch_inputs(&[root.join("intro.md")]).unwrap();
+    let state = state_for(&set, false, None);
+    let html = futures_html(&state, state.order[0].as_str());
+    assert!(html.contains(">filters</a>"), "{html}");
+    assert!(!html.contains(">Filters</a>"), "{html}");
+}
+
 fn futures_html(state: &http::ServerState, slug: &str) -> String {
     let nb = state.notebook(slug).unwrap();
     nb.html.blocking_read().clone()
