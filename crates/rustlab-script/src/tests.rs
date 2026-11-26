@@ -7559,6 +7559,31 @@ mod profiling_tests {
     }
 
     #[test]
+    fn parmap_large_kernels_match_one_thread_bit_for_bit() {
+        // 300 × 512 is above every split threshold, so outside parmap the
+        // kernels run in chunks and inside a full parmap they do not.
+        let tokens = crate::lexer::tokenize(
+            "seed(3); X = randn(300, 512);\n\
+             G = parmap(@(k) gelu(X) + k, 1:8);\n\
+             S = parmap(@(k) sum(sum(tanh(X) .* X)) + k, 1:8);\n\
+             ok = 1;\n\
+             for k = 1:8\n  ok = ok && all(all(G(:, :, k) == gelu(X) + k));\n\
+               ok = ok && S(k) == sum(sum(tanh(X) .* X)) + k;\nend\n",
+        )
+        .unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &crate::parser::parse(tokens).unwrap() {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        let ok = match ev.get("ok").unwrap() {
+            crate::eval::value::Value::Bool(b) => *b,
+            crate::eval::value::Value::Scalar(x) => *x == 1.0,
+            other => panic!("ok: {other:?}"),
+        };
+        assert!(ok);
+    }
+
+    #[test]
     fn parmap_row_counts_tasks_and_page_faults() {
         // Each task fills a fresh 32 MB array, so it touches thousands of
         // new pages.

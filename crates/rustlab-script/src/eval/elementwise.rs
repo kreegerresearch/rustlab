@@ -1093,11 +1093,20 @@ mod tests {
     }
 
     #[test]
-    fn drivers_run_on_the_task_thread_inside_parmap() {
+    fn drivers_run_on_the_task_thread_inside_a_full_parmap() {
+        use crate::eval::parmap::{split_inside_tasks, TaskSplitGuard};
         let outside = driver_calls();
         assert!(outside.iter().all(|&c| c > 1), "split outside: {outside:?}");
-        let _task = crate::eval::parmap::ParallelContextGuard::enter();
+        {
+            let _task = TaskSplitGuard::enter(true);
+            assert_eq!(driver_calls(), outside);
+        }
+        let _task = TaskSplitGuard::enter(false);
         assert_eq!(driver_calls(), [1, 1, 1, 1]);
+        // Split only with at least two pool threads per task.
+        assert!(split_inside_tasks(1, 4) && split_inside_tasks(2, 4));
+        assert!(!split_inside_tasks(3, 4) && !split_inside_tasks(8, 4));
+        assert!(split_inside_tasks(7, 14) && !split_inside_tasks(8, 14));
     }
 
     fn vec_of(xs: &[(f64, f64)]) -> Value {

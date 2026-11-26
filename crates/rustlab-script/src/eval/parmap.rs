@@ -104,18 +104,52 @@ impl Drop for WorkerScope {
     }
 }
 
-/// Whether a chunked kernel may hand chunks to other rayon threads.
+thread_local! {
+    /// Inside a `parmap` task: whether its kernels may split. `None`
+    /// outside a task.
+    static TASK_SPLIT: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Sets [`TASK_SPLIT`] for one task and restores the previous value.
+pub(crate) struct TaskSplitGuard {
+    previous: Option<bool>,
+}
+
+impl TaskSplitGuard {
+    pub(crate) fn enter(allowed: bool) -> Self {
+        Self {
+            previous: TASK_SPLIT.with(|c| c.replace(Some(allowed))),
+        }
+    }
+}
+
+impl Drop for TaskSplitGuard {
+    fn drop(&mut self) {
+        TASK_SPLIT.with(|c| c.set(self.previous));
+    }
+}
+
+/// Whether the kernels of `tasks` concurrent `parmap` tasks may split onto
+/// a pool of `threads`: only when each task has at least two threads.
 ///
-/// False inside a `parmap` task: the tasks already occupy the pool, and a
-/// task that splits its arrays made every task wait on chunks that other
-/// tasks' threads had stolen (`gelu` on 129 × 512 ran 2.2× slower per
-/// worker under `parmap` × 8 on a 14-core M4 Max). Every chunked kernel
-/// computes each element or partial sum the same way whole or split, so
-/// this never changes a result. `RUSTLAB_PARMAP_NESTED=1` restores the
-/// split, for measuring.
+/// With fewer, the tasks already occupy the pool, and a task that splits
+/// its arrays waits on chunks other tasks' threads stole (`gelu` on
+/// 129 × 512 ran 2.2× slower per worker under `parmap` × 8 on a 14-core
+/// M4 Max). With spare threads, splitting is what lets one or two large
+/// tasks use them (`parmap` over one gradient window ran 15% slower
+/// serial on 4 cores).
+pub(crate) fn split_inside_tasks(tasks: usize, threads: usize) -> bool {
+    2 * tasks <= threads
+}
+
+/// Whether a chunked kernel may hand chunks to other rayon threads: always
+/// outside a `parmap` task, and inside one as [`split_inside_tasks`]
+/// decided for its call. Every chunked kernel computes each element or
+/// partial sum the same way whole or split, so this never changes a
+/// result. `RUSTLAB_PARMAP_NESTED=1` always splits, for measuring.
 pub(crate) fn may_split() -> bool {
     static NESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    !PARALLEL_CONTEXT.with(Cell::get)
+    TASK_SPLIT.with(Cell::get).unwrap_or(true)
         || *NESTED
             .get_or_init(|| std::env::var_os("RUSTLAB_PARMAP_NESTED").is_some_and(|v| v == "1"))
 }
@@ -236,6 +270,7 @@ impl ParmapBackend for LocalRayonBackend {
         // Captured on the calling thread. Workers install these per task.
         let jail = crate::path_jail::path_jail();
         let plot = rustlab_plot::plot_context();
+        let split = split_inside_tasks(xs.len(), rayon::current_num_threads());
         let results: Vec<(Result<Value, ScriptError>, HashMap<String, FnStats>)> = xs
             .into_par_iter()
             .enumerate()
@@ -251,6 +286,7 @@ impl ParmapBackend for LocalRayonBackend {
                 // if invoked during the lambda body. The guard restores
                 // the flag when it drops at end-of-task scope.
                 let _guard = ParallelContextGuard::enter();
+                let _split = TaskSplitGuard::enter(split);
                 // Large blocks freed in the task are kept on this thread for
                 // the next allocation of the same size (`worker_alloc`).
                 let _cache =
