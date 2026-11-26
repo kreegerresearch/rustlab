@@ -455,3 +455,30 @@ fn errors_name_the_problem() {
         assert!(err.contains(want), "{src}: {err}");
     }
 }
+
+/// Every table entry against GNU Octave's `poly2trellis` (communications
+/// package): feedforward, recursive, and two-input codes, including the
+/// two-input register layout (the last input's register in the high bits).
+#[test]
+fn poly2trellis_matches_octave() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/poly2trellis_octave.txt");
+    let text = std::fs::read_to_string(path).unwrap();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+    let nums = |l: &str| -> Vec<f64> { l.split_whitespace().map(|x| x.parse().unwrap()).collect() };
+    let mut checked = 0;
+    for block in lines.chunks(4) {
+        let spec = block[0].strip_prefix("code ").unwrap();
+        let args = spec.split(" | ").collect::<Vec<_>>().join(", ");
+        let ev = eval(&format!(
+            "t = poly2trellis({args});
+             c = [t.numInputSymbols, t.numOutputSymbols, t.numStates];
+             ns = t.nextStates; out = t.outputs;"
+        ));
+        assert_eq!(reals(&ev, "c"), nums(block[1]), "{spec}");
+        assert_eq!(reals(&ev, "ns"), nums(block[2]), "{spec} nextStates");
+        assert_eq!(reals(&ev, "out"), nums(block[3]), "{spec} outputs");
+        checked += 1;
+    }
+    assert_eq!(checked, 8);
+}

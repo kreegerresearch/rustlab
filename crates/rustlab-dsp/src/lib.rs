@@ -11,6 +11,7 @@ pub mod scpml;
 pub mod stft;
 pub mod upfirdn;
 pub mod vector_calc;
+pub mod viterbi;
 pub mod waterfall;
 pub mod wavelet;
 pub mod welch;
