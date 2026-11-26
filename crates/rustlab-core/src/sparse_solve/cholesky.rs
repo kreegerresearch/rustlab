@@ -201,7 +201,7 @@ impl<T: SparseScalar> SparseChol<T> {
         let n = prep.c.ncols();
         let nnz = prep.nnz();
         if let Some((lower, sym)) = prep.supernodal_plan(kernel) {
-            let f = supernodal::Factor::factor(sym, &lower, prep.spd_tol)
+            let f = supernodal::Factor::compute(sym, &lower, prep.spd_tol)
                 .map_err(|col| SparseSolveError::NotSpd { col })?;
             return Ok(SparseChol {
                 storage: Storage::Supernodal(f),
@@ -258,9 +258,11 @@ impl<T: SparseScalar> SparseChol<T> {
         let prep = Prepared::new(a, ord)?;
         let n = prep.c.ncols();
         if let Some((lower, sym)) = prep.supernodal_plan(kernel) {
-            if let Ok(f) = supernodal::Factor::factor(sym, &lower, prep.spd_tol) {
+            if let Ok(f) = supernodal::Factor::compute(sym, &lower, prep.spd_tol) {
+                let l = f.to_csc();
+                drop(f);
                 return Ok(PartialChol {
-                    l: f.to_csc(),
+                    l,
                     perm: prep.perm,
                     failed: None,
                 });

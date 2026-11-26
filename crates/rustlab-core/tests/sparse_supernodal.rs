@@ -208,6 +208,19 @@ fn matches_simplicial_on_random_spd() {
 }
 
 #[test]
+fn matches_simplicial_when_the_fixed_order_is_not_a_postorder() {
+    // A random pattern in its own order has an elimination tree whose
+    // natural numbering is not a postorder.
+    for seed in 4..7 {
+        let a = random_spd(200, 3, seed);
+        let (sim, sup) = both(&a, &IdentityOrdering);
+        assert_same_factor(&sim, &sup, 1e-12);
+        let b = rhs(a.ncols());
+        assert!(rel_residual(&a, &sup.solve(&b).unwrap(), &b) < 1e-12);
+    }
+}
+
+#[test]
 fn matches_simplicial_on_complex_hermitian() {
     let a = hermitian3(8);
     let (sim, sup) = both(&a, &SpdAutoOrdering);

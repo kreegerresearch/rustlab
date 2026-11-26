@@ -39,7 +39,7 @@ const NB: usize = 48;
 /// Factorizations with fewer flops than this run on the calling thread
 /// alone (starting the pool costs more than it saves). Stored as `f64`
 /// bits so tests can lower it.
-static PAR_MIN_FLOPS: AtomicU64 = AtomicU64::new(0x41CD_CD65_0000_0000); // 1e9
+static PAR_MIN_FLOPS: AtomicU64 = AtomicU64::new(1.0e9_f64.to_bits());
 
 /// Set the flop count from which a factorization may use the rayon pool.
 /// For tests: the result is the same either way.
@@ -49,6 +49,15 @@ pub fn set_parallel_min_flops(flops: f64) {
 
 /// Subtrees with more flops than this run their children in parallel.
 const PAR_SUBTREE_FLOPS: f64 = 4.0e6;
+
+/// A subtree whose update stack needs at most this many entries is one
+/// task, factored on whichever thread picks it up. Larger subtrees (the top
+/// of the tree) are factored on the calling thread, which gets its threads
+/// from the dense kernels: memory freed on a worker thread stays in that
+/// thread's allocator arena and is not reused by the large allocations
+/// that follow. Parallel tasks get their stacks from one buffer the calling
+/// thread allocates ([`parallel_subtrees`]).
+const PAR_MAX_STACK: usize = 1 << 20;
 
 /// Dense products with more multiply-adds than this are split in two
 /// halves that run in parallel.
@@ -74,6 +83,9 @@ pub(crate) struct Symbolic {
     subtree_flops: Vec<f64>,
     /// Supernode `s`'s panel starts at `val_ptr[s]`.
     val_ptr: Vec<usize>,
+    /// Entries of the update stack that factoring the subtree at `s`
+    /// needs, children in order.
+    stack_need: Vec<usize>,
 }
 
 /// Column width of the blocks an update matrix is stored in.
@@ -295,14 +307,13 @@ pub(crate) fn analyze<T: SparseScalar>(
     let mut mark = vec![NONE; n];
     let mut subtree_flops = vec![0.0f64; ns];
     let mut val_ptr = vec![0usize; ns + 1];
+    let mut stack_need = vec![0usize; ns];
     for s in 0..ns {
         let (f, k) = (sup_ptr[s], sup_ptr[s + 1] - sup_ptr[s]);
         let l = f + k - 1;
         let start = rows.len();
-        for j in f..=l {
-            rows.push(j);
-            mark[j] = s;
-        }
+        rows.extend(f..=l);
+        mark[f..=l].fill(s);
         for j in f..=l {
             for (i, _) in lower.col_iter(j) {
                 if i > l && mark[i] != s {
@@ -325,6 +336,13 @@ pub(crate) fn analyze<T: SparseScalar>(
         rows[start + k..].sort_unstable();
         row_ptr[s + 1] = rows.len();
         val_ptr[s + 1] = val_ptr[s] + (rows.len() - start) * k;
+        let mut held = 0usize;
+        let mut need = 0usize;
+        for &c in &children[child_ptr[s]..child_ptr[s + 1]] {
+            need = need.max(held + stack_need[c]);
+            held += ub_len(row_ptr[c + 1] - row_ptr[c] - (sup_ptr[c + 1] - sup_ptr[c]));
+        }
+        stack_need[s] = need.max(held + ub_len(rows.len() - start - k));
         let (kf, mf) = (k as f64, (rows.len() - start - k) as f64);
         subtree_flops[s] += kf * kf * kf / 3.0 + mf * kf * kf + mf * mf * kf;
         if sparent[s] != NONE {
@@ -341,6 +359,7 @@ pub(crate) fn analyze<T: SparseScalar>(
         roots,
         subtree_flops,
         val_ptr,
+        stack_need,
     }
 }
 
@@ -356,7 +375,7 @@ pub(crate) struct Factor<T> {
 impl<T: SparseScalar> Factor<T> {
     /// Factor the matrix whose lower triangle is `lower`. `Err(col)` is the
     /// first column (permuted index) whose pivot is not real positive.
-    pub(crate) fn factor(sym: Symbolic, lower: &SparseCsc<T>, tol: f64) -> Result<Self, usize> {
+    pub(crate) fn compute(sym: Symbolic, lower: &SparseCsc<T>, tol: f64) -> Result<Self, usize> {
         let ns = sym.nsuper();
         let mut values = vec![T::zero(); sym.val_ptr[ns]];
         let ctx = Ctx {
@@ -367,15 +386,16 @@ impl<T: SparseScalar> Factor<T> {
             parallel: sym.flops() >= f64::from_bits(PAR_MIN_FLOPS.load(Ordering::Relaxed))
                 && rayon::current_num_threads() > 1,
         };
-        let outs: Vec<Result<Vec<T>, usize>> = if ctx.parallel && sym.roots.len() > 1 {
-            sym.roots.par_iter().map(|&r| subtree(&ctx, r)).collect()
+        let small = |r: usize| sym.stack_need[r] <= PAR_MAX_STACK;
+        if ctx.parallel && sym.roots.len() > 1 && sym.roots.iter().all(|&r| small(r)) {
+            parallel_subtrees(&ctx, &sym.roots)?;
         } else {
-            sym.roots.iter().map(|&r| subtree(&ctx, r)).collect()
-        };
-        if let Some(col) = first_failure(&outs) {
-            return Err(col);
+            let outs: Vec<Result<Vec<T>, usize>> =
+                sym.roots.iter().map(|&r| subtree(&ctx, r)).collect();
+            if let Some(col) = first_failure(&outs) {
+                return Err(col);
+            }
         }
-        drop(outs);
         Ok(Factor { sym, values })
     }
 
@@ -416,10 +436,22 @@ impl<T: SparseScalar> Factor<T> {
     pub(crate) fn to_csc(&self) -> SparseCsc<T> {
         let sym = &self.sym;
         let n = *sym.sup_ptr.last().unwrap_or(&0);
+        // Count first: the panels are still held, so the CSC arrays must not
+        // grow by doubling.
+        let mut nnz = 0usize;
+        for s in 0..sym.nsuper() {
+            let (_, k) = sym.cols(s);
+            let mt = sym.rows(s).len();
+            let base = sym.val_ptr[s];
+            for jj in 0..k {
+                let col = &self.values[base + jj * mt + jj..base + (jj + 1) * mt];
+                nnz += 1 + col[1..].iter().filter(|v| v.abs() != 0.0).count();
+            }
+        }
         let mut col_ptr = Vec::with_capacity(n + 1);
         col_ptr.push(0);
-        let mut row_idx = Vec::new();
-        let mut values = Vec::new();
+        let mut row_idx = Vec::with_capacity(nnz);
+        let mut values = Vec::with_capacity(nnz);
         for s in 0..sym.nsuper() {
             let (_, k) = sym.cols(s);
             let rows = sym.rows(s);
@@ -466,22 +498,117 @@ fn first_failure<T>(outs: &[Result<Vec<T>, usize>]) -> Option<usize> {
 
 /// Factor the subtree rooted at `s`; returns `s`'s update matrix.
 fn subtree<T: SparseScalar>(ctx: &Ctx<'_, T>, s: usize) -> Result<Vec<T>, usize> {
-    let kids = ctx.sym.children(s);
-    if ctx.parallel && kids.len() > 1 && ctx.sym.subtree_flops[s] > PAR_SUBTREE_FLOPS {
-        let outs: Vec<Result<Vec<T>, usize>> = kids.par_iter().map(|&c| subtree(ctx, c)).collect();
+    let sym = ctx.sym;
+    let big = |v: usize| {
+        ctx.parallel
+            && sym.subtree_flops[v] > PAR_SUBTREE_FLOPS
+            && sym.stack_need[v] > PAR_MAX_STACK
+    };
+    if !big(s) {
+        return sequential_subtree(ctx, s);
+    }
+    // A chain of one-child supernodes is walked, not recursed.
+    let mut chain = vec![s];
+    let mut v = s;
+    while sym.children(v).len() == 1 && big(sym.children(v)[0]) {
+        v = sym.children(v)[0];
+        chain.push(v);
+    }
+    let kids = sym.children(v);
+    let mut u = if kids.len() > 1 && kids.iter().all(|&c| !big(c)) {
+        let (buf, lens) = parallel_subtrees(ctx, kids)?;
+        let mut updates: Vec<&[T]> = Vec::with_capacity(kids.len());
+        let mut off = 0;
+        for (&c, &len) in kids.iter().zip(&lens) {
+            updates.push(&buf[off..off + len]);
+            off += sym.stack_need[c];
+        }
+        let mut u = vec![T::zero(); ub_len(sym.below(v).len())];
+        front_into(ctx, v, &updates, &mut u)?;
+        u
+    } else {
+        let outs: Vec<Result<Vec<T>, usize>> = kids.iter().map(|&c| subtree(ctx, c)).collect();
         if let Some(col) = first_failure(&outs) {
             return Err(col);
         }
         let updates = outs.into_iter().map(|o| o.unwrap_or_default()).collect();
-        return front(ctx, s, updates);
+        front(ctx, v, updates)?
+    };
+    for &w in chain.iter().rev().skip(1) {
+        u = front(ctx, w, vec![u])?;
     }
-    sequential_subtree(ctx, s)
+    Ok(u)
 }
 
 /// The subtree at `s` without recursion (an elimination tree can be a long
 /// chain), in increasing supernode order, children before parents.
+///
+/// When that order is a postorder (always, unless the ordering is fixed),
+/// the pending update matrices form a stack: a node's children are the
+/// top entries. They then live in one buffer sized by a dry run, and a
+/// node's update is written above its children's and moved down over them
+/// (Liu's multifrontal stack). One allocation instead of one per front
+/// keeps freed update matrices from piling up in the allocator.
 fn sequential_subtree<T: SparseScalar>(ctx: &Ctx<'_, T>, s: usize) -> Result<Vec<T>, usize> {
+    let nodes = subtree_nodes(ctx.sym, s);
+    match stack_capacity(ctx.sym, &nodes) {
+        Some(cap) => {
+            let mut stack = vec![T::zero(); cap];
+            let len = stacked_subtree(ctx, &nodes, &mut stack)?;
+            stack.truncate(len);
+            Ok(stack)
+        }
+        None => unstacked_subtree(ctx, &nodes),
+    }
+}
+
+/// The subtrees at `roots` in parallel, each in its own slice (of
+/// `stack_need` entries, in order) of one buffer allocated here, so the
+/// worker threads allocate nothing large. Returns the buffer and the
+/// length of each root's update matrix, which starts its slice.
+fn parallel_subtrees<T: SparseScalar>(
+    ctx: &Ctx<'_, T>,
+    roots: &[usize],
+) -> Result<(Vec<T>, Vec<usize>), usize> {
     let sym = ctx.sym;
+    let total: usize = roots.iter().map(|&r| sym.stack_need[r]).sum();
+    let mut buf = vec![T::zero(); total];
+    let mut slices: Vec<(usize, &mut [T])> = Vec::with_capacity(roots.len());
+    let mut rest: &mut [T] = &mut buf;
+    for &r in roots {
+        let (mine, tail) = std::mem::take(&mut rest).split_at_mut(sym.stack_need[r]);
+        slices.push((r, mine));
+        rest = tail;
+    }
+    let outs: Vec<Result<usize, usize>> = slices
+        .into_par_iter()
+        .map(|(r, stack)| {
+            let nodes = subtree_nodes(sym, r);
+            if stack_capacity(sym, &nodes).is_some() {
+                stacked_subtree(ctx, &nodes, stack)
+            } else {
+                let u = unstacked_subtree(ctx, &nodes)?;
+                stack[..u.len()].copy_from_slice(&u);
+                Ok(u.len())
+            }
+        })
+        .collect();
+    let mut lens = Vec::with_capacity(outs.len());
+    let mut fail = NONE;
+    for o in outs {
+        match o {
+            Ok(len) => lens.push(len),
+            Err(col) => fail = fail.min(col),
+        }
+    }
+    if fail != NONE {
+        return Err(fail);
+    }
+    Ok((buf, lens))
+}
+
+/// Supernodes of the subtree at `s`, ascending.
+fn subtree_nodes(sym: &Symbolic, s: usize) -> Vec<usize> {
     let mut nodes = vec![s];
     let mut q = 0;
     while q < nodes.len() {
@@ -490,6 +617,82 @@ fn sequential_subtree<T: SparseScalar>(ctx: &Ctx<'_, T>, s: usize) -> Result<Vec
         q += 1;
     }
     nodes.sort_unstable();
+    nodes
+}
+
+/// Entries the update stack needs for `nodes` (ascending), or `None` when
+/// the order is not a postorder.
+fn stack_capacity(sym: &Symbolic, nodes: &[usize]) -> Option<usize> {
+    let mut ids: Vec<usize> = Vec::new();
+    let mut offs: Vec<usize> = Vec::new();
+    let (mut top, mut cap) = (0usize, 0usize);
+    for &v in nodes {
+        let kids = sym.children(v);
+        let nk = kids.len();
+        if ids.len() < nk || ids[ids.len() - nk..] != *kids {
+            return None;
+        }
+        let base = if nk > 0 { offs[offs.len() - nk] } else { top };
+        let len = ub_len(sym.below(v).len());
+        cap = cap.max(top + len);
+        ids.truncate(ids.len() - nk);
+        offs.truncate(offs.len() - nk);
+        ids.push(v);
+        offs.push(base);
+        top = base + len;
+    }
+    Some(cap)
+}
+
+/// Factor the postordered subtree `nodes` with its update stack in
+/// `stack` (at least `stack_need` entries); the root's update ends up at
+/// `stack[..len]` and `len` is returned.
+fn stacked_subtree<T: SparseScalar>(
+    ctx: &Ctx<'_, T>,
+    nodes: &[usize],
+    stack: &mut [T],
+) -> Result<usize, usize> {
+    let sym = ctx.sym;
+    // (offset, length, failed column) of each pending update.
+    let mut entries: Vec<(usize, usize, usize)> = Vec::new();
+    let mut top = 0usize;
+    for &v in nodes {
+        let nk = sym.children(v).len();
+        let kids = &entries[entries.len() - nk..];
+        let base = kids.first().map_or(top, |e| e.0);
+        let fail = kids.iter().map(|e| e.2).min().unwrap_or(NONE);
+        let len = ub_len(sym.below(v).len());
+        let mut failed = fail;
+        if fail == NONE {
+            let (below, above) = stack.split_at_mut(top);
+            let updates: Vec<&[T]> = kids.iter().map(|e| &below[e.0..e.0 + e.1]).collect();
+            let u = &mut above[..len];
+            u.fill(T::zero());
+            if let Err(col) = front_into(ctx, v, &updates, u) {
+                failed = col;
+            }
+        }
+        entries.truncate(entries.len() - nk);
+        if failed == NONE {
+            stack.copy_within(top..top + len, base);
+            entries.push((base, len, NONE));
+            top = base + len;
+        } else {
+            entries.push((base, 0, failed));
+            top = base;
+        }
+    }
+    let (off, len, failed) = entries.pop().expect("the root is the last node");
+    if failed != NONE {
+        return Err(failed);
+    }
+    debug_assert_eq!(off, 0);
+    Ok(len)
+}
+
+/// [`sequential_subtree`] with one allocation per update matrix.
+fn unstacked_subtree<T: SparseScalar>(ctx: &Ctx<'_, T>, nodes: &[usize]) -> Result<Vec<T>, usize> {
+    let sym = ctx.sym;
     // Pending update (or failed column) of each processed node, by
     // position in `nodes`.
     let mut pending: Vec<Option<Result<Vec<T>, usize>>> = (0..nodes.len()).map(|_| None).collect();
@@ -515,13 +718,27 @@ fn sequential_subtree<T: SparseScalar>(ctx: &Ctx<'_, T>, s: usize) -> Result<Vec
         .expect("the root is the largest node")
 }
 
-/// Assemble and factor the front of supernode `s` from its children's
-/// update matrices (in child order); store the panel, return the update.
+/// [`front_into`] with a newly allocated update matrix.
 fn front<T: SparseScalar>(
     ctx: &Ctx<'_, T>,
     s: usize,
     updates: Vec<Vec<T>>,
 ) -> Result<Vec<T>, usize> {
+    let mut u = vec![T::zero(); ub_len(ctx.sym.below(s).len())];
+    let views: Vec<&[T]> = updates.iter().map(Vec::as_slice).collect();
+    front_into(ctx, s, &views, &mut u)?;
+    Ok(u)
+}
+
+/// Assemble and factor the front of supernode `s` from its children's
+/// update matrices (in child order) into its panel, and write its own
+/// update matrix into `u` (zeroed, [`ub_len`] entries).
+fn front_into<T: SparseScalar>(
+    ctx: &Ctx<'_, T>,
+    s: usize,
+    updates: &[&[T]],
+    u: &mut [T],
+) -> Result<(), usize> {
     let sym = ctx.sym;
     let (f, k) = sym.cols(s);
     let rows = sym.rows(s);
@@ -531,7 +748,6 @@ fn front<T: SparseScalar>(
     // this front's alone.
     let p: &mut [T] =
         unsafe { std::slice::from_raw_parts_mut(ctx.out.0.add(sym.val_ptr[s]), mt * k) };
-    let mut u = vec![T::zero(); ub_len(m)];
     for jj in 0..k {
         let mut pos = jj;
         let col = &mut p[jj * mt..(jj + 1) * mt];
@@ -584,7 +800,7 @@ fn front<T: SparseScalar>(
             update_blocks(par, u.as_mut_ptr(), m, pp.add(k), mt, k);
         }
     }
-    Ok(u)
+    Ok(())
 }
 
 /// `rayon::join`, or the two calls in order when `par` is off.
