@@ -6,6 +6,16 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.91
+
+### Changed
+- **`parmap` tasks keep large element-wise work on their own thread.** Element-wise builtins and operators on large arrays (`gelu`, `tanh`, `exp`, `+`, `.*`, `sum`, copies, transposes) split into rayon chunks above 16,384 or 131,072 elements, inside `parmap` tasks too. Each task then waited on chunks other tasks' threads had taken. Now a task runs them on its own thread while the call has more than half as many unfinished tasks as pool threads, and splits again for the last tasks or when there are few (`parmap(f, 1:1)` still uses every thread). Outside `parmap` nothing changes. Results are identical bit for bit. `RUSTLAB_PARMAP_NESTED=1` restores the old split, for measuring.
+- **Large blocks are reused inside `parmap` tasks.** The `rustlab` and `rustlab-notebook` binaries install an allocator that, inside a `parmap` task, keeps freed blocks of 64 KiB or more on that thread (at most 32 blocks and 64 MiB per thread) and hands one back for the next uninitialised allocation of the same size (an element-wise result, a copy, a product). That needs no system call and no fresh pages. `zeros` still goes to the system allocator. `RUSTLAB_NO_WORKER_CACHE=1` turns the cache off, and `RUSTLAB_WORKER_CACHE_ZEROED=1` also serves `zeros` from it, both for measuring. A process that ran `parmap` keeps up to 64 MiB per pool thread for reuse.
+
+### Added
+- **Page faults in `--profile` for `parmap`**: under the table, `parmap page faults: N minor in T tasks (N/T per task), whole process.` (Linux and macOS). The count covers the whole process during the `parmap` calls, so it is the workers' total.
+- **`perf/bench_parmap.rlab`**: rustlab_llm's `prim.gelu_builtin_129x512`, `par.gelu_129x512_B8`, `prim.alloc_window`, and `par.alloc_window_B8`. It also checks that the `parmap` results equal the one-thread ones. `make perf` runs it.
+
 ## 0.3.90
 
 ### Added

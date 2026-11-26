@@ -200,6 +200,7 @@ Work through these tasks in order:
    - bench_filter_design total:  > 600 ms
    - bench_builtins total:       > 300 ms
    - bench_interpreter total:    > 2000 ms
+   - bench_parmap total:         > 1500 ms
    For each benchmark that exceeds its threshold, suggest a specific next
    profiling step (e.g. samply, flamegraph, criterion micro-benchmark).
 

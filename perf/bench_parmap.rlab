@@ -1,0 +1,69 @@
+# Benchmark: element-wise builtins and allocation inside parmap tasks.
+# The keys and workloads are rustlab_llm's perf/bench_suite.rlab (suite v4):
+# gelu on 129 x 512 and one window's zeros (20 arrays, about 18 MB), run
+# once on one thread and in 8 parmap tasks. Each line is
+# PERF <key> <median ms> <rate> <unit>.
+
+function perf_out(key, ts, work, unit)
+  t = median(ts);
+  r = 0;
+  if work > 0
+    r = work / t;
+  end
+  print(sprintf("PERF %s %.6f %.6g %s", key, 1000 * t, r, unit));
+end
+
+function s = alloc_window(k)
+  s = 0;
+  shapes = [516, 128; 516, 128; 516, 1; 516, 384; 2064, 129; 516, 128; 516, 128; ...
+            516, 128; 516, 1; 516, 512; 516, 512; 77, 128; 512, 384; 512, 128; ...
+            512, 512; 2048, 128; 129, 384; 129, 384; 129, 384; 129, 384];
+  for j = 1:size(shapes)(1)
+    Z = zeros(shapes(j, 1), shapes(j, 2));
+    Z(1, 1) = k;
+    s = s + Z(1, 1);
+  end
+end
+
+function s = gelu_work20(X)
+  s = 0;
+  for j = 1:20
+    Y = gelu(X);  s = s + Y(1, 1);
+  end
+end
+
+R = 7;
+seed(42);
+print(sprintf("threads: %d", nproc()));
+
+H = randn(129, 512);
+ts = zeros(1, R);
+for r = 1:R
+  tic; Y = gelu(H); ts(r) = toc;
+end
+perf_out("prim.gelu_builtin_129x512", ts, 129 * 512 / 1e6, "Melem/s");
+
+ts = zeros(1, R);
+for r = 1:R
+  tic; Sg = parmap(@(i) gelu_work20(H), 1:8); ts(r) = toc;
+end
+perf_out("par.gelu_129x512_B8", ts, 8 * 20 * 129 * 512 / 1e6, "Melem/s");
+
+ts = zeros(1, R);
+for r = 1:R
+  tic; s = alloc_window(1); ts(r) = toc;
+end
+perf_out("prim.alloc_window", ts, 0, "-");
+
+ts = zeros(1, R);
+for r = 1:R
+  tic; Sa = parmap(@(b) alloc_window(b), 1:8); ts(r) = toc;
+end
+perf_out("par.alloc_window_B8", ts, 0, "-");
+
+# Every task computes the same values as one thread does.
+ok = all(Sg == gelu_work20(H)) && all(Sa == 20 * (1:8));
+print(sprintf("parmap results match one thread: %d", ok));
+if !ok
+  error("parmap results differ from one thread");
+end

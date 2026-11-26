@@ -5000,6 +5000,8 @@ Parallel `arrayfun`. `f` is a lambda or a function handle; `xs` is a vector or a
 
 Workers do not inherit the caller's variables (a lambda still sees the names it captured). They do inherit the caller's path jail and plot context for the duration of the task. `save`, `load`, `run`, `whos`, `sparameters("file.s2p")`, `cache enable`, and `cache add file` succeed or fail inside `parmap` the same way they do outside it. Plotting, `fprintf`, `savefig`, `saveanim`, and `seed` / `rng` are rejected with `parmap: cannot … from a parallel lambda`.
 
+Inside a task, large element-wise builtins and operators (`gelu`, `tanh`, `+`, `.*`, `sum`, copies, transposes) run on that task's thread while the call still has more than half as many unfinished tasks as pool threads. Once fewer remain, they split onto the idle threads again, as they always do outside `parmap`. With `parmap(f, 1:8)` on 4 or 14 threads, each of the first tasks keeps its arrays on its own thread. With `parmap(f, 1:1)`, the one task still uses every thread. Results are the same bit for bit either way. Large blocks (64 KiB or more) freed inside a task stay on that thread, at most 32 blocks and 64 MiB per thread, and the next uninitialised allocation of the same size reuses one, with no system call and no fresh pages. `zeros` still asks the system allocator, whose fresh pages need no clearing. Three environment variables, read once, are for measuring: `RUSTLAB_PARMAP_NESTED=1` always splits, `RUSTLAB_NO_WORKER_CACHE=1` turns the block cache off, and `RUSTLAB_WORKER_CACHE_ZEROED=1` also serves `zeros` from it (clearing the block).
+
 ```
 seed(1);
 y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
@@ -5068,6 +5070,8 @@ Rows in brackets are not functions:
 - With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[.\]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
+
+On Linux and macOS a line under the table gives the minor page faults of the whole process while the `parmap` calls ran, and the count per task: `parmap page faults: 10720 minor in 8 tasks (1340 per task), whole process.` Only the workers run during the call, so this is their total. macOS has no per-thread count, so it is not split by worker. Many faults per task mean the tasks are getting fresh pages from the kernel.
 
 With a name list, only those rows are reported and there is no `[top-level]` row. Self times still exclude every call made from the function, listed or not.
 
