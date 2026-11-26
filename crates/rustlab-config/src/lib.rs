@@ -1690,4 +1690,3 @@ mod tests {
         assert!(err.contains("notebook.file_browser"), "{err}");
     }
 }
-
