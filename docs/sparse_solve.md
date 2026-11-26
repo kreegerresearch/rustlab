@@ -317,7 +317,7 @@ estimation, ordering selection, or pre-allocating downstream buffers
 when factoring repeatedly with the same sparsity pattern but
 different numeric values.
 
-### Supernodal multifrontal Cholesky (0.3.90)
+### Supernodal multifrontal Cholesky (0.3.104)
 
 `supernodal.rs`, Phase 5 of `dev/plans/sparse_spd_solve.md`.
 `SparseChol::factor` (and `factor_with(a, ord, CholKernel::Auto)`) picks
@@ -353,11 +353,18 @@ force a kernel (tests compare the two).
    diagonal block are scratch: 3.4 M of 20.1 M stored entries at 41³).
    An update matrix is kept as its lower triangle in 64-column blocks
    while it waits for the parent, so a full `m × m` square is never
-   allocated.
+   allocated. In a postordered subtree the pending updates form a stack
+   (a node's children are the top entries), held in one buffer sized by
+   the symbolic pass; a node's update is written above its children's
+   and moved down over them.
 5. **Threads.** At `10⁹` flops or more (and more than one rayon thread),
-   independent subtrees run on the rayon pool, as do large products
+   independent subtrees whose update stack needs at most 2²⁰ entries run
+   as rayon tasks, each on a slice of one buffer the calling thread
+   allocates; larger fronts stay on the calling thread. Large products
    (split in halves above `2²²` multiply-adds), triangular solves (split
-   by rows), and update blocks. Each front is computed from its children
+   by rows), and update blocks also run on the pool. Keeping large buffers
+   off the workers matters for peak memory: a buffer freed on a worker
+   stays in that thread's allocator arena. Each front is computed from its children
    in a fixed order and every split depends only on the block sizes, so
    the factor and the solution have the same bits for every thread count
    (`same_bits_for_every_thread_count`).
@@ -376,7 +383,7 @@ force a kernel (tests compare the two).
 Results agree with the up-looking kernel to about `1e-13` relative
 (`crates/rustlab-core/tests/sparse_supernodal.rs`). Measured on the
 4-core VM, `S \ b` with `S = -laplacian_3d(41, 41, 41)` went from 5.6 s
-to 0.6 s with peak RSS 303 → 281–291 MB; full tables in the plan.
+to 0.58 s with peak RSS 303 → 239 MB; full tables in the plan.
 
 ### `SparseLU::factor` — Gilbert-Peierls with partial pivoting
 
