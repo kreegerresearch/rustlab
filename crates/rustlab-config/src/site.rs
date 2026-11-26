@@ -46,27 +46,151 @@ impl SiteConfig {
 /// Href for a brand or nav link: `http(s)://host…`, a relative or
 /// root-relative path, `?query`, or `#fragment`.
 pub fn check_site_href(href: &str) -> Result<(), String> {
-    let _ = href;
-    Ok(())
+    check_url(href, true)
 }
 
 /// Stylesheet URL: `http(s)://host…` or a relative / root-relative path.
 pub fn check_stylesheet_url(url: &str) -> Result<(), String> {
-    let _ = url;
-    Ok(())
+    check_url(url, false)
 }
 
 /// `scheme://host[:port]` of an absolute stylesheet URL, lowercased, for a
-/// CSP `style-src` source. `None` for a relative URL (covered by `'self'`).
+/// CSP `style-src` source. `None` for a relative URL (covered by `'self'`)
+/// and for anything [`check_stylesheet_url`] refuses.
 pub fn stylesheet_origin(url: &str) -> Option<String> {
-    let _ = url;
-    None
+    check_stylesheet_url(url).ok()?;
+    let (scheme, rest) = split_scheme(url)?;
+    let authority = authority_of(rest)?;
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    ))
 }
 
-/// Visible text: a label or the footer.
+/// Visible text: a label or the footer. Escaped when rendered; control
+/// characters and bidirectional overrides are refused.
 pub fn check_site_text(text: &str, allow_empty: bool) -> Result<(), String> {
-    let _ = (text, allow_empty);
+    if text.len() > MAX_SITE_TEXT {
+        return Err(format!("is longer than {MAX_SITE_TEXT} bytes"));
+    }
+    if !allow_empty && text.trim().is_empty() {
+        return Err("is empty".into());
+    }
+    if let Some(c) = text.chars().find(|c| c.is_control() || is_format_char(*c)) {
+        return Err(format!("contains the control character U+{:04X}", c as u32));
+    }
     Ok(())
+}
+
+/// Zero-width and bidirectional formatting characters, which can make a
+/// label or URL read differently from what it is.
+fn is_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}')
+}
+
+/// `(scheme, rest after ':')` when `url` starts with a URL scheme, as a
+/// browser would read it: letters, digits, `+ - .` up to a `:` that comes
+/// before any `/ ? #`.
+fn split_scheme(url: &str) -> Option<(&str, &str)> {
+    let colon = url.find(':')?;
+    if url[..colon].contains(['/', '?', '#']) {
+        return None;
+    }
+    let scheme = &url[..colon];
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic()
+        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return None;
+    }
+    Some((scheme, &url[colon + 1..]))
+}
+
+/// `host[:port]` of `//host[:port]/…`, when it is a plain host name, IPv4,
+/// or bracketed IPv6 address with an optional numeric port.
+fn authority_of(rest: &str) -> Option<&str> {
+    let rest = rest.strip_prefix("//")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let close = v6.find(']')?;
+        let inner = &v6[..close];
+        if inner.is_empty()
+            || !inner
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+        {
+            return None;
+        }
+        (&authority[..close + 2], &v6[close + 1..])
+    } else {
+        match authority.rfind(':') {
+            Some(i) => (&authority[..i], &authority[i..]),
+            None => (authority, ""),
+        }
+    };
+    let host_ok = host.starts_with('[')
+        || (!host.is_empty()
+            && !host.starts_with(['.', '-'])
+            && host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')));
+    let port_ok = match port.strip_prefix(':') {
+        None => port.is_empty(),
+        Some(p) => !p.is_empty() && p.len() <= 5 && p.chars().all(|c| c.is_ascii_digit()),
+    };
+    (host_ok && port_ok).then_some(authority)
+}
+
+fn check_url(url: &str, allow_fragment: bool) -> Result<(), String> {
+    if url.trim().is_empty() {
+        return Err("is empty".into());
+    }
+    if url.len() > MAX_SITE_TEXT {
+        return Err(format!("is longer than {MAX_SITE_TEXT} bytes"));
+    }
+    if let Some(c) = url.chars().find(|c| {
+        c.is_control()
+            || c.is_whitespace()
+            || is_format_char(*c)
+            || matches!(c, '<' | '>' | '"' | '\'' | '`' | '\\')
+    }) {
+        return Err(format!(
+            "\"{}\" contains {}; use percent-encoding",
+            url.escape_debug(),
+            if c.is_whitespace() {
+                "whitespace".to_string()
+            } else {
+                format!("'{}'", c.escape_debug())
+            }
+        ));
+    }
+    if url.starts_with("//") {
+        return Err(format!(
+            "\"{url}\" is protocol-relative; write https://… or a path"
+        ));
+    }
+    if url.starts_with('#') && !allow_fragment {
+        return Err(format!("\"{url}\" is only a fragment"));
+    }
+    match split_scheme(url) {
+        None => Ok(()),
+        Some((scheme, rest)) => {
+            if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+                return Err(format!(
+                    "\"{url}\" uses the {scheme}: scheme; only http:, https:, relative paths{} are allowed",
+                    if allow_fragment { ", and #fragments" } else { "" }
+                ));
+            }
+            authority_of(rest).map(|_| ()).ok_or_else(|| {
+                format!("\"{url}\" needs a host: http(s)://host[:port]/path (no user@)")
+            })
+        }
+    }
 }
 
 pub(crate) fn parse_site_table(
@@ -74,8 +198,105 @@ pub(crate) fn parse_site_table(
     path: &Path,
     unknown: &mut Vec<String>,
 ) -> Result<SiteConfig, ConfigError> {
-    let _ = (val, path, unknown);
-    Ok(SiteConfig::default())
+    let mut out = SiteConfig::default();
+    for (k, v) in crate::expect_table(val, path, "site")? {
+        match k.as_str() {
+            "brand" => out.brand = Some(parse_link(v, path, "site.brand", unknown)?),
+            "nav" => {
+                let items = expect_array(v, path, "site.nav")?;
+                for (i, item) in items.iter().enumerate() {
+                    out.nav.push(parse_link(
+                        item,
+                        path,
+                        &format!("site.nav[{}]", i + 1),
+                        unknown,
+                    )?);
+                }
+            }
+            "footer" => {
+                let s = crate::expect_string(v, path, "site.footer")?;
+                check_site_text(s, true)
+                    .map_err(|m| ConfigError::invalid(path, "site.footer", m))?;
+                out.footer = Some(s.to_string());
+            }
+            "stylesheets" => {
+                let items = expect_array(v, path, "site.stylesheets")?;
+                for (i, item) in items.iter().enumerate() {
+                    let key = format!("site.stylesheets[{}]", i + 1);
+                    let s = crate::expect_string(item, path, &key)?;
+                    check_stylesheet_url(s).map_err(|m| ConfigError::invalid(path, &key, m))?;
+                    out.stylesheets.push(s.to_string());
+                }
+            }
+            other => unknown.push(format!("site.{other}")),
+        }
+    }
+    Ok(out)
+}
+
+fn expect_array<'a>(
+    val: &'a TomlValue,
+    path: &Path,
+    key: &str,
+) -> Result<&'a Vec<TomlValue>, ConfigError> {
+    match val {
+        TomlValue::Array(a) if a.len() <= MAX_SITE_ITEMS => Ok(a),
+        TomlValue::Array(a) => Err(ConfigError::invalid(
+            path,
+            key,
+            format!("has {} entries; at most {MAX_SITE_ITEMS}", a.len()),
+        )),
+        other => Err(ConfigError::invalid(
+            path,
+            key,
+            format!("expected an array, got {}", crate::type_name(other)),
+        )),
+    }
+}
+
+fn parse_link(
+    val: &TomlValue,
+    path: &Path,
+    key: &str,
+    unknown: &mut Vec<String>,
+) -> Result<SiteLink, ConfigError> {
+    let table = match val {
+        TomlValue::Table(t) => t,
+        other => {
+            return Err(ConfigError::invalid(
+                path,
+                key,
+                format!(
+                    "expected {{ label = \"…\", href = \"…\" }}, got {}",
+                    crate::type_name(other)
+                ),
+            ))
+        }
+    };
+    let mut label = None;
+    let mut href = None;
+    for (k, v) in table {
+        match k.as_str() {
+            "label" => {
+                let key = format!("{key}.label");
+                let s = crate::expect_string(v, path, &key)?;
+                check_site_text(s, false).map_err(|m| ConfigError::invalid(path, &key, m))?;
+                label = Some(s.to_string());
+            }
+            "href" => {
+                let key = format!("{key}.href");
+                let s = crate::expect_string(v, path, &key)?;
+                check_site_href(s).map_err(|m| ConfigError::invalid(path, &key, m))?;
+                href = Some(s.to_string());
+            }
+            other => unknown.push(format!("{key}.{other}")),
+        }
+    }
+    let label =
+        label.ok_or_else(|| ConfigError::invalid(path, &format!("{key}.label"), "is missing"))?;
+    let href =
+        href.ok_or_else(|| ConfigError::invalid(path, &format!("{key}.href"), "is missing"))?;
+    Ok(SiteLink { label, href })
 }
 
 #[cfg(test)]
