@@ -1,0 +1,36 @@
+# Script:  matmul_slots.rlab
+# System:  Matrix-multiply throughput inside parmap, the workload of
+#          rustlab_llm's par.matmul_129x128x512_B8 and its one-thread
+#          prim.matmul_129x128x512.
+# Concept: The SME slot cap (RUSTLAB_SME_SLOTS) decides how many products
+#          share the matrix units at once; the rest run on NEON with the
+#          same rounding. perf/matmul_slots.sh runs this once per cap.
+# Units:   ms per call (median of R); rates in GFLOP/s.
+
+function s = mm_work20(A, Bm)
+  s = 0;
+  for j = 1:20
+    C = A * Bm;  s = s + C(1, 1);
+  end
+end
+
+R = 7;
+seed(42);
+Am = randn(129, 128);  Bmm = randn(128, 512);
+flop = 2 * 129 * 128 * 512;
+
+ts = zeros(1, R);
+for r = 1:R
+  tic; C = Am * Bmm; ts(r) = toc;
+end
+t = median(ts);
+print(sprintf("PERF prim.matmul_129x128x512 %.6f %.6g GFLOP/s", 1000 * t, flop / 1e9 / t));
+
+for B = [1, 2, 4, 8, 14]
+  ts = zeros(1, R);
+  for r = 1:R
+    tic; Sm = parmap(@(i) mm_work20(Am, Bmm), 1:B); ts(r) = toc;
+  end
+  t = median(ts);
+  print(sprintf("PERF par.matmul_129x128x512_B%d %.6f %.6g GFLOP/s", B, 1000 * t, B * 20 * flop / 1e9 / t));
+end

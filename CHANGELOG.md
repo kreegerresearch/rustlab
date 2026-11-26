@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.91
+
+### Added
+- **Matrix products scale past the SME units inside `parmap`** (`rustlab_llm` perf request R1). On an Apple M4, each CPU cluster's cores share one matrix unit, so eight `parmap` workers multiplying at once queued on two units while the cores' NEON units sat idle. Now at most `RUSTLAB_SME_SLOTS` products use the matrix units at once (default: the number of performance clusters, 2 on an M4 Max; `0` = no cap, the 0.3.90 behavior). A product that finds every slot taken runs on a NEON kernel on its own core. Products larger than `RUSTLAB_SME_OVERFLOW_MACS` multiply-adds (default 2²⁴ ≈ 16.8 M; `0` = never overflow) always wait for the matrix unit, because on NEON they would set the wall time.
+- `perf/matmul_slots.sh` (runs `perf/matmul_slots.rlab` once per cap) and `cargo run --release -p rustlab-core --example bench_matmul_scaling` measure summed GFLOP/s per cap and worker count.
+
+### Not changed
+- Results. The NEON kernel rounds exactly like the matrix unit (one fused multiply-add per term, in k order, from zero), so a product gives the same bits whichever unit ran it and however busy the others were. One-thread products always get a slot and run as before. On x86, and on Arm without SME, nothing changes.
+
 ## 0.3.90
 
 ### Added

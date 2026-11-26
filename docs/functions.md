@@ -5005,6 +5005,8 @@ seed(1);
 y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
 ```
 
+Matrix products in workers: on a Mac with the SME matrix unit (Apple M4), one unit per CPU cluster is shared by its cores. At most `RUSTLAB_SME_SLOTS` real products run on the matrix units at once. The default is the number of performance clusters (2 on an M4 Max); `0` removes the cap. A product that finds every slot taken runs on the core's NEON unit instead. Products over `RUSTLAB_SME_OVERFLOW_MACS` multiply-adds (default 2²⁴, about 16.8 million; `0` = never) wait for the matrix unit. Both kernels round the same way, so the cap changes only speed, never a result bit. Elsewhere (x86, Linux on Arm) these variables do nothing. `perf/matmul_slots.sh` measures each cap.
+
 ### `nproc()`
 
 Number of logical CPUs, the same count the rayon pool and `parmap` use. On Linux this respects a cgroup CPU quota. On macOS it is the total core count.
