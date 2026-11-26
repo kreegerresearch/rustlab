@@ -212,8 +212,14 @@ A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages.
 | `squeeze(A)` | Drop singleton dims → Matrix / Vector / Scalar; non-Tensor3 inputs pass through |
 | `size(A)` / `size(A, 3)` | `[m, n, p]`; `size(A, 3)` is 1 for a 2-D value |
 | `ndims(A)` | `3` for Tensor3, `2` otherwise (Octave convention) |
-| `A(:, :, k)` | Page slice — drops trailing singleton, returns Matrix(m, n) |
-| `T > 0`, `T == U`, `!T`, `and(P, Q)` | Element-wise with a scalar or a same-size Tensor3; result is a 0/1 Tensor3 (no rank-3 logical, so mask with `.*` or `T(find(M))`) |
+| `A(:, :, k)` | Page slice → Matrix(m, n) |
+| `A(i, :, :)` / `A(:, j, :)` | First- / second-axis slice → Matrix(n, p) / Matrix(m, p). Every singleton is dropped; MATLAB returns `1×n×p` / `m×1×p` and needs `squeeze` (which passes a matrix through here) |
+| `A(i, j, :)` / `A(i, :, k)` / `A(:, j, k)` | 1-D row of p / 1-D row of n / `m×1` column |
+| `A(1:2, :, :)`, `A(:, :, 1:2)` | Ranges keep rank 3 when two or more axes select several elements; a one-element range drops like a scalar |
+| `A(:)` / `A(k)` / `A(idx)` / `A(mask)` | Linear, column-major (`i` fastest, then `j`, then `k`). `A(:)` is a column; `A(T > 0)` (same-size 0/1 Tensor3) is a column |
+| `A(i, j)` | Two subscripts fold the pages: `j` in `1:n*p` (MATLAB) |
+| `A(i, :, :) = M`, `A(:, :, k) = M`, `A(i, j, :) = v`, `A(idx) = v`, `A(mask) = 0` | Assignment takes the same subscripts; `M` has the slice's shape, `v` may be a row or a column, a scalar broadcasts. No growth past the end and no two-subscript write (MATLAB has both) |
+| `T > 0`, `T == U`, `!T`, `and(P, Q)` | Element-wise with a scalar or a same-size Tensor3; result is a 0/1 Tensor3 (no rank-3 logical); as an index it is a mask: `T(M)`, `T(M) = 0` |
 | `abs(T)`, `sqrt(T)`, `sign(T)`, `floor(T)`, `exp(T)`, `log(T)`, `real(T)`, `conj(T)`, … | Element-wise math keeps the `(m, n, p)` shape |
 | `min(T, s)`, `max(T, U)` | Two-argument element-wise min / max |
 | `find(T)` / `[r, c] = find(T)` / `[r, c, v] = find(T)` | Column-major linear indices (the `T(:)` order). As in MATLAB, `c` merges the trailing dims (`(k-1)*n + j`); use `ind2sub(size(T), find(T))` for `[i, j, k]` |
@@ -222,10 +228,11 @@ A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages.
 | `divergence3(Fx, Fy, Fz[, dx, dy, dz])` | 3-D divergence ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z |
 | `[Cx,Cy,Cz] = curl3(Fx, Fy, Fz[, dx, dy, dz])` | 3-D curl ∇×F (returns 3 Tensor3 components) |
 
-**Page slice + write:**
+**Slices + write:**
 ```r
 T = reshape(1:24, 2, 3, 4)
 page = T(:, :, 2)              # Matrix(2, 3)
+slab = T(2, :, :)              # Matrix(3, 4) — no double loop, no squeeze
 U = zeros3(2, 2, 3)
 U(:, :, 2) = [1, 2; 3, 4]      # page assignment
 ```

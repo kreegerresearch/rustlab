@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.93
+
+### Added
+- **Tensor3 slicing is documented with its exact shapes** (`docs/functions.md` § Indexing and assignment, `docs/quickref.md`). `T(i, :, :)` is an `n×p` matrix and `T(:, j, :)` an `m×p` matrix, so a first-axis slab needs no double loop. MATLAB returns `1×n×p` there and needs `squeeze`; `squeeze` exists and passes the matrix through, so `squeeze(T(i, :, :))` gives the same result. Other forms: `T(i, j, :)` / `T(i, :, k)` are 1-D rows, `T(:, j, k)` is an `m×1` column, and `T(:)` is a column-major column.
+- **`T(i, j)` on a Tensor3** folds the pages as in MATLAB: `j` runs over `1:n*p`, and `T(:, :)` is `m×(n·p)`. It used to crash the interpreter.
+- **Linear logical and list reads on a Tensor3**: `T(mask)` with a logical vector, `T([3; 4])` (a column), and `T(T > 0)` (a same-size 0/1 Tensor3; there is no rank-3 logical) select in column-major order. The mask form returns a column, as `M(M > 0)` does on a matrix. They used to be errors.
+- **`T(i, j, :) = v` and `T(:, j, k) = v`** accept a row or a column of the right length.
+
+### Breaking / behavior changes
+- **`T(k) = x`, `T(idx) = v`, `T(:) = v`, and `T(mask) = x` on a Tensor3** now write those column-major elements and keep the tensor. Before, `T(5) = 9` replaced the whole tensor with the vector `[0, 0, 0, 0, 9]`, and `T(:) = v`, `T(end) = x`, and mask writes errored. *Migration:* a script that relied on the replacement should assign a new vector instead (`T = zeros(1, 5); T(5) = 9`).
+- **`T(i, j) = x` on a Tensor3** is an error that asks for one or three subscripts, instead of `'T' is not a matrix`.
+
 ## 0.3.92
 
 ### Breaking / behavior changes

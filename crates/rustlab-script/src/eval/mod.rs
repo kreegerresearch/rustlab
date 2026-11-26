@@ -471,6 +471,11 @@ impl Evaluator {
         // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
         // bind `end` per axis. A single index binds `end` to the
         // element count. Anything else (no container yet) binds 0.
+        if indices.len() == 2 && matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_))) {
+            return Err(ScriptError::runtime(format!(
+                "index assignment: '{name}' is a tensor3; use one (linear) or three subscripts"
+            )));
+        }
         let idx_vals: Vec<Value> = if self.subscripts_are_plain(indices) {
             indices
                 .iter()
@@ -536,6 +541,7 @@ impl Evaluator {
                 Some(Value::Logical(a)) => a.len(),
                 Some(Value::SparseVector(sv)) => sv.len,
                 Some(Value::SparseMatrix(sm)) if indices.len() == 1 => sm.rows * sm.cols,
+                Some(Value::Tensor3(t)) if indices.len() == 1 => t.len(),
                 _ => 0,
             };
             self.env
@@ -563,6 +569,10 @@ impl Evaluator {
             && self.try_real_index_assign(name, &idx_vals, &val).is_some()
         {
             return Ok(());
+        }
+
+        if idx_vals.len() == 1 && matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_))) {
+            return self.assign_tensor3_linear(name, &idx_vals[0], &val, *suppress);
         }
 
         if idx_vals.len() == 1 {
@@ -1925,6 +1935,15 @@ impl Evaluator {
         let flat: Vec<Complex<f64>> = match val {
             Value::Scalar(s) => vec![Complex::new(*s, 0.0); total],
             Value::Complex(c) => vec![*c; total],
+            // One non-singleton index: a row or a column of the right
+            // length fills it either way (MATLAB).
+            Value::Matrix(rhs)
+                if [nr, nc, np].iter().filter(|&&x| x > 1).count() == 1
+                    && (rhs.nrows() == 1 || rhs.ncols() == 1)
+                    && rhs.len() == total =>
+            {
+                rhs.iter().copied().collect()
+            }
             Value::Matrix(rhs) => {
                 // Determine which dim the matrix maps to based on singleton pattern.
                 let singletons = [nr == 1, nc == 1, np == 1];
@@ -2839,6 +2858,97 @@ impl Evaluator {
             output::script_println(&format!(
                 "{}(...) = ({} element(s) updated)",
                 name, n_target
+            ));
+        }
+        Ok(())
+    }
+
+    /// `T(idx) = rhs` on a Tensor3: linear, column-major (the `T(:)` order),
+    /// with the matrix rules on the `m × (n·p)` view. A same-shape 0/1
+    /// tensor is a mask. The right-hand side is a scalar or any array with
+    /// one element per position. A position past the end is an error (the
+    /// growth direction is ambiguous, as in MATLAB).
+    fn assign_tensor3_linear(
+        &mut self,
+        name: &str,
+        idx: &Value,
+        val: &Value,
+        suppress: bool,
+    ) -> Result<(), ScriptError> {
+        let (m, n, p) = match self.env.get(name) {
+            Some(Value::Tensor3(t)) => {
+                let s = t.shape();
+                (s[0], s[1], s[2])
+            }
+            _ => unreachable!(),
+        };
+        let total = m * n * p;
+        let fold = |t: &ndarray::Array3<C64>| -> Value {
+            Value::Matrix(Array2::from_shape_fn((m, n * p), |(i, c)| t[[i, c % n, c / n]]).into())
+        };
+        let idx = match idx {
+            Value::Scalar(_) | Value::Complex(_) => Value::Vector(
+                Array1::from_vec(vec![Complex::new(
+                    idx.to_scalar().map_err(ScriptError::type_err)?,
+                    0.0,
+                )])
+                .into(),
+            ),
+            Value::Tensor3(it) if it.shape() == [m, n, p] => fold(it),
+            Value::Tensor3(it) => {
+                let mut flat = Vec::with_capacity(it.len());
+                let s = it.shape();
+                for k in 0..s[2] {
+                    for j in 0..s[1] {
+                        for i in 0..s[0] {
+                            flat.push(it[[i, j, k]]);
+                        }
+                    }
+                }
+                Value::Vector(Array1::from_vec(flat).into())
+            }
+            other => other.clone(),
+        };
+        let positions = matrix_linear_positions(&idx, m, n * p)?;
+        if let Some(&bad) = positions.iter().find(|&&q| q >= total) {
+            return Err(ScriptError::runtime(format!(
+                "index assignment: linear index {} out of bounds for {m}×{n}×{p} tensor3 ({total} elements)",
+                bad + 1
+            )));
+        }
+        let src = match val {
+            Value::Tensor3(rt) => {
+                let s = rt.shape();
+                let mut flat = Vec::with_capacity(rt.len());
+                for k in 0..s[2] {
+                    for j in 0..s[1] {
+                        for i in 0..s[0] {
+                            flat.push(rt[[i, j, k]]);
+                        }
+                    }
+                }
+                if flat.len() != positions.len() {
+                    return Err(ScriptError::runtime(format!(
+                        "index assignment: RHS length {} does not match target index count {}",
+                        flat.len(),
+                        positions.len()
+                    )));
+                }
+                flat
+            }
+            other => rhs_for_linear_assign(other, positions.len())?,
+        };
+        if let Some(Value::Tensor3(t)) = self.env.get_mut(name) {
+            let t = Shared::make_mut(t);
+            for (q, v) in positions.iter().zip(src) {
+                t[[q % m, (q / m) % n, q / (m * n)]] = v;
+            }
+        }
+        if !suppress && self.echo_enabled() {
+            output::script_println(&format!(
+                "{}(...) = ({} element(s) updated)",
+                name,
+                positions.len()
             ));
         }
         Ok(())
@@ -5543,6 +5653,11 @@ impl IndexShape {
             Value::SparseVector(sv) => Some((1, sv.len)),
             Value::IntArray { rows, cols, .. } => Some((*rows, *cols)),
             Value::Logical(a) => Some((a.rows(), a.cols())),
+            // Two subscripts fold the trailing dimensions (MATLAB).
+            Value::Tensor3(t) => {
+                let s = t.shape();
+                Some((s[0], s[1] * s[2]))
+            }
             _ => None,
         };
         let len = match v {
@@ -5567,7 +5682,7 @@ impl IndexShape {
             rows_cols,
             matrix_like: matches!(
                 v,
-                Value::SparseMatrix(_) | Value::Matrix(_) | Value::Logical(_)
+                Value::SparseMatrix(_) | Value::Matrix(_) | Value::Logical(_) | Value::Tensor3(_)
             ),
             len,
         }

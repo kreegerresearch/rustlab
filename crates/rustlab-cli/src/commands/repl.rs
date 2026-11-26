@@ -144,7 +144,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "cat(dim, A, B, ...)  — dim=1 (rows, like vertcat), dim=2 (cols, like horzcat),\n  dim=3 (pages, stacks matrices/tensor3s into a tensor3).\n  Example: cat(3, M1, M2)  → 2-page tensor3 from two equal-size matrices." },
     // Tensor3 (rank-3)
     HelpEntry { name: "zeros3",    brief: "Rank-3 zero tensor",
-        detail: "zeros3(m, n, p)     — m×n×p complex zero tensor\nzeros3([m, n, p])   — same (accepts size() output)\n  Use A(:, :, k) to extract the k-th page as a matrix." },
+        detail: "zeros3(m, n, p)     — m×n×p complex zero tensor\nzeros3([m, n, p])   — same (accepts size() output)\n  Slices drop singleton dims: A(:, :, k) is m×n, A(i, :, :) is n×p,\n  A(:, j, :) is m×p (MATLAB keeps 1×n×p; no squeeze needed here).\n  A(:) / A(k) / A(mask) are linear, column-major; A(i, j) folds pages." },
     HelpEntry { name: "ones3",     brief: "Rank-3 ones tensor",
         detail: "ones3(m, n, p)     — m×n×p complex ones tensor\nones3([m, n, p])   — same (accepts size() output)" },
     HelpEntry { name: "rand3",     brief: "Uniform random rank-3 tensor  [0, 1)",
@@ -154,7 +154,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "permute",   brief: "Reorder the axes of a tensor3",
         detail: "permute(A, [d1, d2, d3])  — reorders axes according to the permutation\n  permute(A, [2, 1, 3])  swaps rows and columns, leaves pages alone" },
     HelpEntry { name: "squeeze",   brief: "Drop singleton dimensions",
-        detail: "squeeze(A)  — removes any dimensions of length 1 from a tensor3.\n  (m, n, 1) → matrix(m, n);  (m, 1, p) → matrix(m, p)\n  (m, 1, 1) → vector(m);     (1, 1, 1) → scalar\n  Non-tensor3 inputs pass through unchanged." },
+        detail: "squeeze(A)  — removes any dimensions of length 1 from a tensor3.\n  (m, n, 1) → matrix(m, n);  (m, 1, p) → matrix(m, p)\n  (m, 1, 1) → vector(m);     (1, 1, 1) → scalar\n  Non-tensor3 inputs pass through unchanged, so squeeze(T(i, :, :)) is the\n  n×p matrix T(i, :, :) already is." },
     // Linear algebra
     HelpEntry { name: "dot",      brief: "Inner (dot) product of two vectors",
         detail: "dot(u, v)  — sum of element-wise products; conjugates u for complex vectors\n  Accepts dense, sparse, or mixed dense/sparse vector operands.\n  sparse·sparse uses O(nnz) merge; sparse·dense uses O(nnz) gather." },
