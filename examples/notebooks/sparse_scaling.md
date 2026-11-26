@@ -160,7 +160,10 @@ legend("natural", "auto (nested dissection)")
 
 This is the regime of `rustlab_em` Lesson 18's 41³ capacitor: 27.4 s
 with the natural-order LU used before 0.3.85, 1.3 s with the automatic
-path (see `dev/plans/sparse_spd_solve.md`).
+path. Since 0.3.104 a large factor runs on a supernodal kernel (dense
+blocks, several threads): `A \ b` on the 41³ Poisson matrix, 15.9 M
+factor entries, went from about 5.6 s to about 0.6 s (see
+`dev/plans/sparse_spd_solve.md`).
 
 ## Real vs complex
 
@@ -202,4 +205,4 @@ It lives at `crates/rustlab-core/examples/bench_sparse_solve.rs`;
 The headline: **sparse plus a good elimination order** is what makes
 grid problems tractable. Dense solves stop being practical at a few
 thousand unknowns; with nested dissection the sparse solver handles a
-200×200 grid in about a tenth of a second.
+200×200 grid in a few hundredths of a second.

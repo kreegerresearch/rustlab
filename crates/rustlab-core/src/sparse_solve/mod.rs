@@ -10,6 +10,8 @@
 //! - `elimination_tree.rs` — column elimination tree construction and
 //!   post-order traversal (shared by Cholesky and LU).
 //! - `cholesky.rs` — sparse Cholesky factorization for SPD matrices.
+//! - `supernodal.rs` — the supernodal multifrontal kernel behind it for
+//!   matrices with enough dense work (Phase 5 of `sparse_spd_solve.md`).
 //! - `lu.rs` — sparse LU with partial pivoting (Phase 3).
 //! - `singleton.rs` — row-singleton reduction (`pin_dirichlet` rows) and
 //!   Cholesky of the remaining free block (`dev/plans/sparse_spd_solve.md`).
@@ -34,9 +36,10 @@ pub mod lu;
 pub mod ordering;
 pub mod pcg;
 pub mod singleton;
+mod supernodal;
 pub mod triangular;
 
-pub use cholesky::{symbolic_col_counts, PartialChol, SparseChol};
+pub use cholesky::{symbolic_col_counts, CholKernel, PartialChol, SparseChol};
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use ichol::{ichol, IcholOptions, IcholType};
 pub use lu::SparseLU;
@@ -46,6 +49,8 @@ pub use ordering::{
 };
 pub use pcg::{pcg, MatrixPcg, PcgOperators, PcgOutcome};
 pub use singleton::{ReducedChol, RowSingletonSplit};
+#[doc(hidden)]
+pub use supernodal::set_parallel_min_flops;
 pub use triangular::TriangularSolve;
 
 #[cfg(test)]

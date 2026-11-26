@@ -14,7 +14,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.103"
+version = "0.3.104"
 edition = "2021"
 # rusqlite 0.41 (bundled SQLite) requires rustc 1.89.
 rust-version = "1.89"
@@ -43,6 +43,7 @@ overflow-checks  = true
 num-complex  = "0.4"
 ndarray      = "0.16"
 rayon        = "1.10"
+matrixmultiply = { version = "0.3.10", features = ["cgemm"] }
 proptest     = "1"
 rand         = "0.8"
 rand_distr   = "0.4"

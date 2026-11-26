@@ -259,7 +259,10 @@ as a baseline; not the default for any path in the script layer.
 
 ## Stage 4 — factorization
 
-Two algorithms, both in `crates/rustlab-core/src/sparse_solve/`.
+Two algorithms, both in `crates/rustlab-core/src/sparse_solve/`. The
+Cholesky factor has two numeric kernels behind one API: the up-looking
+(simplicial) one below, and, for large factors, the supernodal one in
+the next section.
 
 ### `SparseChol::factor` — up-looking Cholesky
 
@@ -313,6 +316,74 @@ column nnz without running the numeric pass — useful for fill
 estimation, ordering selection, or pre-allocating downstream buffers
 when factoring repeatedly with the same sparsity pattern but
 different numeric values.
+
+### Supernodal multifrontal Cholesky (0.3.104)
+
+`supernodal.rs`, Phase 5 of `dev/plans/sparse_spd_solve.md`.
+`SparseChol::factor` (and `factor_with(a, ord, CholKernel::Auto)`) picks
+it after the symbolic pass when the simplicial factor would cost at
+least `2 × 10⁶` flops (`Σ_j nnz(L(:, j))²`) and the supernodes average at
+least 4 columns; `CholKernel::Simplicial` / `CholKernel::Supernodal`
+force a kernel (tests compare the two).
+
+1. **Postorder.** The column elimination tree is relabelled in
+   postorder (same tree, same fill) so that each chain of columns is
+   contiguous. The relabelling is folded into the permutation `perm()`,
+   for both kernels. `IdentityOrdering` (the natural order of a
+   one-output `chol`) opts out through
+   `OrderingMethod::postorder_allowed`, so its factor stays unpermuted.
+2. **Supernodes.** Fundamental supernodes (a column whose only child is
+   the previous column, with `nnz` one less) are merged into their parent
+   with CHOLMOD's relaxed rules: always up to 4 columns, up to 16 while
+   explicit zeros stay under 80% of the stored entries, up to 48 under
+   10%, any size under 5%. The structure of each supernode is the union
+   of its columns of `A` and its children's rows below them.
+3. **Fronts.** Supernodes are factored children first (multifrontal,
+   Liu 1992). A front assembles its columns of `A` (read from the upper
+   triangle, conjugated, like the up-looking kernel) and its children's
+   update matrices (extend-add, children in index order) into its panel,
+   then runs a recursive blocked Cholesky on the `k × k` top, a
+   triangular solve on the `m × k` block below, and the update
+   `U −= L₂₁ L₂₁ᴴ`. Dense products go through `matrixmultiply`
+   (`SparseScalar::gemm_sub_nh`; plain loops below 4,096 multiply-adds,
+   and for complex values `Bᴴ` is written out first because
+   `matrixmultiply` has no conjugate option).
+4. **Storage.** Each panel is a column-major `mt × k` block in one buffer
+   for the whole factor, factored in place (the entries above each
+   diagonal block are scratch: 3.4 M of 20.1 M stored entries at 41³).
+   An update matrix is kept as its lower triangle in 64-column blocks
+   while it waits for the parent, so a full `m × m` square is never
+   allocated. In a postordered subtree the pending updates form a stack
+   (a node's children are the top entries), held in one buffer sized by
+   the symbolic pass; a node's update is written above its children's
+   and moved down over them.
+5. **Threads.** At `10⁹` flops or more (and more than one rayon thread),
+   independent subtrees whose update stack needs at most 2²⁰ entries run
+   as rayon tasks, each on a slice of one buffer the calling thread
+   allocates; larger fronts stay on the calling thread. Large products
+   (split in halves above `2²²` multiply-adds), triangular solves (split
+   by rows), and update blocks also run on the pool. Keeping large buffers
+   off the workers matters for peak memory: a buffer freed on a worker
+   stays in that thread's allocator arena. Each front is computed from its children
+   in a fixed order and every split depends only on the block sizes, so
+   the factor and the solution have the same bits for every thread count
+   (`same_bits_for_every_thread_count`).
+6. **Failure.** A pivot that is not real positive above the same
+   `eps · n · max|A|` floor stops that front; the error reports the
+   smallest failed column over all subtrees, which is the column the
+   up-looking kernel reports. `factor_flagged` redoes a failed
+   supernodal factor with the up-looking kernel, which continues past
+   the failed pivot for `[R, p] = chol(S)`.
+7. **Solve and export.** `solve` sweeps the panels forward and back
+   (`O(nnz)` per right-hand side, serial). `factor_csc()` converts to CSC
+   on demand and drops the exact zeros of merged supernodes (every
+   product that reaches such an entry has a zero factor), so the pattern
+   is the simplicial pattern.
+
+Results agree with the up-looking kernel to about `1e-13` relative
+(`crates/rustlab-core/tests/sparse_supernodal.rs`). Measured on the
+4-core VM, `S \ b` with `S = -laplacian_3d(41, 41, 41)` went from 5.6 s
+to 0.58 s with peak RSS 303 → 239 MB; full tables in the plan.
 
 ### `SparseLU::factor` — Gilbert-Peierls with partial pivoting
 
@@ -402,10 +473,10 @@ Phase 4 of `dev/plans/sparse_spd_solve.md` (0.3.88), decision 3: sparse
 chosen triangle is mirrored into a Hermitian `SparseCsc`
 (`hermitian_from_triangle`), so a non-symmetric input behaves as MATLAB's
 (only that triangle counts) even after a symmetric permutation. Then
-`SparseChol::factor_flagged` runs the same up-looking factorization as
-`SparseChol::factor` (shared `up_looking` numeric pass, bit-identical
-factor when nothing fails) with one difference: when pivot `q` is not
-positive it records `q` and keeps going, reducing every later row against
+`SparseChol::factor_flagged` runs the same factorization as
+`SparseChol::factor` (bit-identical factor when nothing fails; supernodal
+when the matrix is large enough) with one difference: when pivot `q` is
+not positive it records `q` and keeps going (on the up-looking kernel), reducing every later row against
 columns `0 .. q` only. The result (`PartialChol`) is the `n × q` block
 `L(:, 1:q)`, which is what MATLAB's sparse `[R, p] = chol(S)` returns as
 `R = L(:, 1:q)'` (`q × n`), with `R' * R` equal to `S` on the first `q`
@@ -683,10 +754,9 @@ factorizations directly via `rustlab_core::sparse_solve` from Rust.
 - **Iterative solves behind `\`.** `\` and `spsolve` stay direct.
   `pcg` / `ichol` are separate builtins (see below); GMRES and BiCGSTAB
   for non-symmetric systems are not implemented.
-- **Block factorization** (supernodal) and threads. The hand-rolled
-  algorithms here are scalar; a supernodal, parallel Cholesky is Phase 5
-  of `dev/plans/sparse_spd_solve.md` (deterministic for a fixed thread
-  count).
+- **Block or threaded LU.** Sparse LU, `ichol`, and the triangular
+  solves stay scalar and single-threaded; only Cholesky has the
+  supernodal kernel.
 - **Pre-factorization scaling** (row/column equilibration). The matrices
   the curriculum builds are well-scaled by construction.
 - **Mixed-precision iterative refinement**. Single-precision factor +

@@ -2618,7 +2618,7 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3; 1/3]  (2×1)
 ```
 
 **Implementation notes.**
-- Cholesky: Davis up-looking algorithm (Davis, *Direct Methods for Sparse Linear Systems*, ch. 4).
+- Cholesky: supernodal multifrontal factor (relaxed supernodes, dense blocked panels, independent subtrees and large blocks on the thread pool; the factor has the same bits for every thread count) when the factor has at least about $2 \times 10^6$ flops and supernodes average 4 or more columns; otherwise the Davis up-looking algorithm (Davis, *Direct Methods for Sparse Linear Systems*, ch. 4). `[R, p] = chol(S)` on a matrix that is not positive definite always uses the up-looking algorithm, which continues past the failed pivot.
 - LU: Davis Gilbert-Peierls algorithm with partial pivoting (ch. 6), default tolerance 0.1.
 - Orderings: `NestedDissectionOrdering` is level-set bisection from a pseudo-peripheral node (George & Liu, ch. 8); `SpdAutoOrdering` compares its symbolic fill with the natural order's. `AmdOrdering` is a basic minimum-degree heuristic on the symmetric pattern of $A + A^T$; Davis-style external-degree refinement (ch. 7) is deferred.
 - Row singletons: `RowSingletonSplit` / `ReducedChol` in `rustlab_core::sparse_solve::singleton`. Pinned unknowns are exactly `b(k) / A(k, k)`.

@@ -1,8 +1,9 @@
 # Sparse Solves — `\`, `spsolve`, and `pcg`
 
 `A \ b` with a sparse square `A`, and `spsolve(A, b)`, solve `A·x = b`
-with hand-rolled sparse direct methods: up-looking sparse Cholesky for
-Hermitian-positive-definite systems, and Gilbert-Peierls sparse LU with
+with hand-rolled sparse direct methods: sparse Cholesky (supernodal for
+large factors) for Hermitian-positive-definite systems, and
+Gilbert-Peierls sparse LU with
 partial pivoting for everything else. A fill-reducing ordering is
 chosen for each matrix (nested dissection or the natural order,
 whichever predicts the smaller factor). The automatic choice follows
@@ -290,7 +291,9 @@ rustlab are written in pure Rust without large library dependencies.
 The factorizations follow Davis, *Direct Methods for Sparse Linear
 Systems*, and George & Liu for the ordering:
 
-- Sparse Cholesky: up-looking algorithm (Davis, chapter 4).
+- Sparse Cholesky: supernodal multifrontal factor with dense blocked
+  panels, threaded over independent subtrees, for large factors; the
+  up-looking algorithm (Davis, chapter 4) for small ones.
 - Sparse LU: Gilbert-Peierls with threshold partial pivoting (chapter 6),
   tolerance 0.1.
 - Nested dissection: level-set bisection from a pseudo-peripheral node
@@ -303,8 +306,7 @@ Systems*, and George & Liu for the ordering:
   search makes it slow past about $10^4$ unknowns.
 
 See `docs/sparse_solve.md` for the design walkthrough and
-`dev/plans/sparse_spd_solve.md` for measurements and planned work
-(a faster, supernodal factor kernel).
+`dev/plans/sparse_spd_solve.md` for measurements.
 
 ## Cheat sheet
 

@@ -6,6 +6,23 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.104
+
+### Performance
+- **Sparse Cholesky has a supernodal kernel.** Sparse `A \ b` and `spsolve` on Hermitian positive definite matrices (including the `pin_dirichlet` free block), `decomposition(S)` / `decomposition(S, "chol")`, and `chol(S)` in every form use a supernodal multifrontal factor (dense blocked panels on pure-Rust `matrixmultiply`, independent subtrees and large blocks on the rayon thread pool) when the factor is large: at least about 2 × 10⁶ flops and supernodes averaging 4 or more columns. Smaller factors keep the up-looking kernel. Measured on a 4-core VM (`S = -laplacian_3d(n, n, n)` or `-laplacian_2d(n, n)`, best of 3, whole `rustlab run`):
+  - 41³ `S \ b`: 6.19 s → 0.58 s, peak memory 303 MB → 239 MB. 31³: 1.18 s → 0.18 s (106 → 88 MB). 21³: 0.11 s → 0.04 s.
+  - 2-D 500²: 1.36 s → 0.66 s (280 → 244 MB). 1000²: 8.9 s → 3.3 s (1103 → 982 MB).
+  - 41³ `decomposition(S, "chol")`: 5.7 s → 0.49 s (316 → 250 MB). `[R, p, P] = chol(S)`: 6.8 s → 0.9 s (801 → 787 MB). Natural-order `R = chol(S)` at 25³: 2.7 s → 0.5 s.
+  - The stored factor is smaller (dense panels without row indices): 41³ 161 MB against 255 MB for the old CSC factor, so a reused `decomposition` holds less memory.
+- Symmetric permutation of a sparse matrix (every sparse Cholesky and LU) no longer builds and sorts a triplet copy; the result is the same.
+- Two paths use slightly more peak memory than before: natural-order `R = chol(S)` (25³: 586 → 600 MB) and `[R, p] = chol(S)` on a matrix that is not positive definite (31³: 102 → 112 MB; the supernodal attempt stops at the failed pivot and the up-looking kernel redoes it, at the same speed as before).
+
+### Breaking / behavior changes
+- **Last digits of large sparse SPD solves change** (`\`, `spsolve`, `decomposition`, `chol`'s `R`): the supernodal kernel sums in a different order. Relative differences against earlier versions are around 1e-13 or smaller; residuals are unchanged or smaller. The factor has the same bits for any number of threads (`RAYON_NUM_THREADS`), and the triangular solves are serial. *Migration:* compare with a tolerance, not exact equality.
+- **`[R, p, P] = chol(S)` (and `"vector"`) can return a different `P`** for the automatic, `"nd"`, and `"amd"` orderings: the order is relabelled by a postorder of its elimination tree, which keeps the same fill and nonzero count but groups columns for the dense blocks. `R' * R = P' * S * P` holds as before. One- and two-output `chol(S)` and `"natural"` keep the natural order exactly. *Migration:* code that stored a `P` from an earlier version should recompute it.
+- `R' * R` with a large supernodal `R` keeps more entries at roundoff level (about 1e-15) that used to cancel to exactly zero (21³: 419,137 → 822,265 stored entries), so a check such as `R' * R - P' * S * P` needs more memory and time. `R` itself has the same pattern and size. *Migration:* compare `max(abs(nonzeros(K)))` with a tolerance instead of counting entries.
+- Large factors use several threads. Set `RAYON_NUM_THREADS=1` to keep a Cholesky factor on one thread; the result is the same.
+
 ## 0.3.103
 
 ### Added

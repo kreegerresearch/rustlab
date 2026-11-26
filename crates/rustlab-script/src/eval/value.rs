@@ -45,8 +45,8 @@ impl SparseFactor {
     /// Dimension `n` of the factored `n×n` matrix.
     pub fn dim(&self) -> usize {
         match self {
-            SparseFactor::CholReal(c) => c.factor_csc().nrows(),
-            SparseFactor::CholComplex(c) => c.factor_csc().nrows(),
+            SparseFactor::CholReal(c) => c.n(),
+            SparseFactor::CholComplex(c) => c.n(),
             SparseFactor::LuReal(lu) => lu.l_factor().nrows(),
             SparseFactor::LuComplex(lu) => lu.l_factor().nrows(),
         }

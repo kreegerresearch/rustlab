@@ -37,9 +37,9 @@ print(t_sp_small)            % sparse, seconds
 ```text
 [1×3]  225.000000  625.000000  1225.000000
 Matrix(1x3)
-  [0.002960, 0.074230, 0.673098]
+  [0.002934, 0.055555, 0.671731]
 Matrix(1x3)
-  [0.000300, 0.000830, 0.001901]
+  [0.000298, 0.000676, 0.001561]
 ```
 
 <!-- rustlab:output-end -->
@@ -93,13 +93,13 @@ print(t_amd)
 <!-- rustlab:output-start -->
 ```text
 Matrix(1x5)
-  [0.000756, 0.003549, 0.019281, 0.066237, 0.103749]
+  [0.000586, 0.003009, 0.013980, 0.029281, 0.058723]
 Matrix(1x5)
-  [0.000416, 0.003989, 0.048479, 0.231059, 0.643288]
+  [0.000339, 0.002657, 0.022015, 0.083499, 0.225815]
 Matrix(1x5)
-  [0.001244, 0.007444, 0.041978, 0.131245, 0.296798]
+  [0.001097, 0.006759, 0.039965, 0.109828, 0.265160]
 Matrix(1x3)
-  [0.001166, 0.014348, 0.235050]
+  [0.001067, 0.007547, 0.096362]
 ```
 
 <!-- rustlab:output-end -->
@@ -120,7 +120,7 @@ legend("dense", "Cholesky, natural", "Cholesky, minimum degree", "LU, auto order
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_scaling/plot-1-2ab4c248.svg)
+![plot 1](plots/sparse_scaling/plot-1-4aecbc1c.svg)
 
 <!-- rustlab:output-end -->
 
@@ -190,10 +190,10 @@ print(t3_nat(3) / t3_auto(3))   % speedup of auto over natural at 20³
 <!-- rustlab:output-start -->
 ```text
 Matrix(1x4)
-  [0.002637, 0.016741, 0.083204, 0.319434]
+  [0.001856, 0.008182, 0.026204, 0.069540]
 Matrix(1x3)
-  [0.004315, 0.057081, 0.412011]
-4.951838232254092
+  [0.001552, 0.015673, 0.077261]
+2.9484280039329716
 ```
 
 <!-- rustlab:output-end -->
@@ -211,13 +211,16 @@ legend("natural", "auto (nested dissection)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/sparse_scaling/plot-2-427563f4.svg)
+![plot 2](plots/sparse_scaling/plot-2-c5bb529f.svg)
 
 <!-- rustlab:output-end -->
 
 This is the regime of `rustlab_em` Lesson 18's 41³ capacitor: 27.4 s
 with the natural-order LU used before 0.3.85, 1.3 s with the automatic
-path (see `dev/plans/sparse_spd_solve.md`).
+path. Since 0.3.104 a large factor runs on a supernodal kernel (dense
+blocks, several threads): `A \ b` on the 41³ Poisson matrix, 15.9 M
+factor entries, went from about 5.6 s to about 0.6 s (see
+`dev/plans/sparse_spd_solve.md`).
 
 ## Real vs complex
 
@@ -237,7 +240,7 @@ print(t_cplx / t_real)                   % complex factor vs real factor
 
 <!-- rustlab:output-start -->
 ```text
-3.1508915599119947
+4.5168907376864995
 ```
 
 <!-- rustlab:output-end -->
@@ -266,4 +269,4 @@ It lives at `crates/rustlab-core/examples/bench_sparse_solve.rs`;
 The headline: **sparse plus a good elimination order** is what makes
 grid problems tractable. Dense solves stop being practical at a few
 thousand unknowns; with nested dissection the sparse solver handles a
-200×200 grid in about a tenth of a second.
+200×200 grid in a few hundredths of a second.

@@ -1,7 +1,7 @@
 # Development Plan: Fast sparse SPD solves (`\`, `spsolve`, `chol`, `pcg`, `ichol`)
 
-**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86, PR #167). Phase 3 complete (0.3.87, PR #169). Phase 4 complete (0.3.88). Phase 5 not started.
-**Current phase:** 5 — faster factor kernel; waiting for Michael's go-ahead.
+**Status:** Phase 1 complete (0.3.85, PR #166). Phase 2 complete (0.3.86, PR #167). Phase 3 complete (0.3.87, PR #169). Phase 4 complete (0.3.88, PR #170). Phase 5 complete (0.3.104, PR #180).
+**Current phase:** none — all five phases are done. Real Davis AMD (Phase 5's optional item) is left until a workload needs it.
 **Asked by:** Michael, 2026-11-23. Motivating workload: `kreegerresearch/rustlab_em` Lesson 18 (`make lesson-18`), `irregular_capacitor_3d.rlab`.
 
 Phases after Phase 1 need an explicit go-ahead. Pure Rust, in-repo (Workflow Rule 10); no new crate dependency in any phase.
@@ -225,9 +225,54 @@ Trade-offs (rule in §7), measured and kept on the fast path:
 
 Observable changes beyond `chol`: sparse × sparse returns a sparse matrix (MATLAB; it was dense), and sparse `\` on a diagonal or triangular matrix uses substitution (last digits change against the Cholesky / LU it used before; decision 4). `perf/bench_*.rlab` unchanged within noise; workspace tests pass.
 
-### Phase 5 — faster factor kernel
+### Phase 5 — faster factor kernel (0.3.104)
 
-Supernodal left-looking Cholesky (dense panel updates through the existing `matmul_real`), rayon over independent elimination subtrees (ND makes the tree balanced), bit-identical to one thread. Real Davis AMD for irregular graphs if a workload needs it. Target: 41³ sphere factor < 0.4 s.
+**Status:** complete
+
+Supernodal multifrontal Cholesky behind `SparseChol` (`rustlab-core/src/sparse_solve/supernodal.rs`), so sparse `\`, `spsolve`, `chol` (every form), and `decomposition` all use it. Dense blocks run on `matrixmultiply` (pure Rust, already in the tree through ndarray) and threads on `rayon` (already in the workspace); both are now direct dependencies of `rustlab-core`. No C, C++, or BLAS. Real Davis AMD was not needed by any workload measured here and is left out.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Failing tests first: core `tests/sparse_supernodal.rs` (13: same structure and values as the up-looking factor to 1e-12–1e-13 relative on 3-D ND, natural order, 2-D auto, random SPD, a fixed order that is not a postorder, complex Hermitian; same failed column; `[R, p]` partial factor bit-identical to the simplicial one; flagged success equals `factor`; same bits for 1–4 threads; `Auto` choice; empty / 1×1 / diagonal / missing diagonal; NaN), script `tests/sparse_chol_supernodal.rs` (10 at 16³ / 14³ / 120²: `\` with one and two right-hand sides, `pin_dirichlet` operator, complex Hermitian, natural `R`, `"lower"`, `[R, p, P]`, `"vector"`, the MATLAB idiom, fill reduction, `[R, p]` on an indefinite matrix with the q×n block, indefinite `\` falling back to LU, `decomposition` reuse and `"lower"`, 2-D) | done |
+| 2 | `CholKernel { Auto, Simplicial, Supernodal }`, `SparseChol::factor_with` / `factor_flagged_with`, `kernel()`, `n()`; `factor_csc()` returns a `Cow` (supernodal factors convert on demand) | done |
+| 3 | Shared preparation (`Prepared`): ordering, postorder relabelling unless `OrderingMethod::postorder_allowed()` is false (`IdentityOrdering`), elimination tree, column counts, pivot floor; both kernels use it, so `perm()` is the same for both | done |
+| 4 | Symbolic: fundamental supernodes, CHOLMOD relaxed amalgamation (4 / 16 / 48 columns at 80% / 10% / 5% zeros), row structures, subtree flops, update-stack needs | done |
+| 5 | Numeric: multifrontal fronts, recursive blocked potrf / trsm / rank-k update on `SparseScalar::gemm_sub_nh` (`dgemm`; `zgemm` with `Bᴴ` written out); panels factored in place in one buffer; updates in 64-column lower blocks; per-subtree update stacks (Liu); `Auto` from 2·10⁶ flops and 4+ columns per supernode | done |
+| 6 | Threads from 10⁹ flops: subtrees with an update stack up to 2²⁰ entries run as tasks on stacks the calling thread allocates; larger fronts stay on the calling thread with threaded dense kernels (splits by size only, so the bits do not depend on the thread count, decision 6) | done |
+| 7 | `[R, p]` failure: the supernodal factor stops; `factor_flagged` redoes it with the up-looking kernel, which keeps going | done |
+| 8 | `permute_symmetric` without the triplet copy and global sort (same output); it was the largest source of allocator garbage before the factor | done |
+| 9 | Docs (`docs/sparse_solve.md`, `docs/functions.md`), notebooks `sparse_solve` / `sparse_scaling` and their gallery pages, `AGENTS.md`, CHANGELOG, version 0.3.104 | done |
+| 10 | Measure (below) | done |
+
+#### Phase 5 results (release, same 4-core VM, base = `main` 0.3.89 binary, best of 3, whole `rustlab run`, peak RSS from `getrusage`)
+
+`S = -laplacian_3d(n, n, n)` or `-laplacian_2d(n, n)`, `b = ones`, script `x = S \ b` plus the residual:
+
+| Workload | 0.3.89 time | 0.3.104 time | 0.3.89 peak | 0.3.104 peak | Rel. residual 0.3.89 → 0.3.104 |
+|---|---|---|---|---|---|
+| 21³ `S \ b` (9,261) | 0.112 s | 0.039 s | 29 MB | 26 MB | 4.9e-14 → 3.1e-14 |
+| 31³ `S \ b` (29,791) | 1.18 s | 0.18 s | 106 MB | 88 MB | 1.2e-13 → 7.3e-14 |
+| 41³ `S \ b` (68,921, 15.9 M factor entries) | 6.19 s | 0.58 s | 303 MB | 239 MB | 2.6e-13 → 1.5e-13 |
+| 41³ `decomposition(S, "chol")` / `dS \ b` | 5.72 s / 0.051 s | 0.49 s / 0.036 s | 316 MB | 250 MB | 2.6e-13 → 1.5e-13 |
+| 41³ `[R, p, P] = chol(S)` alone | 6.75 s | 0.91 s | 801 MB | 787 MB | — |
+| 41³ `[R, p, P]` + `P * (R \ (R' \ (P' * b)))` | 6.89 + 0.34 s | 0.89 + 0.29 s | 1,044 MB | 1,030 MB | 2.4e-13 → 9.9e-14 |
+| 25³ `R = chol(S)` (natural, 9.4 M entries) + solve | 2.71 s | 0.51 s | 586 MB | 600 MB | 1.5e-13 → 6.3e-14 |
+| 31³ `[R, p] = chol(S − I)` (indefinite, p = 1995) | 0.73 s | 0.83 s | 102 MB | 112 MB | — |
+| 2-D 300² `S \ b` | 0.307 s | 0.175 s | 104 MB | 89 MB | 4.1e-12 → 3.0e-12 |
+| 2-D 500² `S \ b` | 1.36 s | 0.66 s | 280 MB | 244 MB | 1.2e-11 → 8.7e-12 |
+| 2-D 1000² `S \ b` | 8.89 s | 3.30 s | 1,103 MB | 982 MB | 5.1e-11 → 3.6e-11 |
+
+`perf/sparse_pcg_phase3.rlab`: sparse `\` 0.115 / 1.08 / 5.72 s → 0.045 / 0.18 / 0.59 s at 21³ / 31³ / 41³; whole script 8.3 s / 333 MB → 2.2 s / 267 MB (`pcg` and `ichol` rows unchanged). `perf/sparse_chol_phase4.rlab` at 41³: `S \ b` 5.57 → 0.60 s, `[R, p, P] = chol(S)` 6.82 → 0.99 s, `decomposition` 5.61 → 0.50 s, `dS \ b` 0.048 → 0.044 s, idiom solve 0.31 s both, natural 25³ `chol` 2.94 → 0.56 s; `nnz(R)` identical at every size. Whole script 56.7 s / 2,830 MB → 42.5 s / 3,624 MB: the peak is the check `K = R' * R - P' * S * P`, see trade-offs.
+
+The 41³ factor is 1.4·10¹⁰ flops in 10,350 supernodes (largest 1,883 columns). With one thread (`RAYON_NUM_THREADS=1`) `S \ b` takes 0.88 s and peaks at 229 MB. Before the stack and thread changes (subtree tasks allocating their own buffers): 0.54–0.57 s but 280–350 MB, depending on which thread freed what.
+
+Trade-offs (rule in §7), measured:
+- **Peak memory vs subtree threads.** A buffer freed on a rayon worker stays in that thread's allocator arena and is not reused by the large allocations that come after the factor. Letting every subtree run as a task and allocate its own update matrices gave 0.54–0.57 s at 41³ with 280–350 MB (above the 303 MB baseline), and `[R, p, P]` 838–872 MB. The shipped scheme (small subtrees on stacks allocated by the calling thread, large fronts on the calling thread with threaded dense kernels) is 0.58–0.61 s with 239 MB and 787 MB. Kept: about 5% of time for 40–80 MB.
+- **Panel layout.** Panels are full `mt × k` rectangles so the dense kernels work in place; the unused upper halves of diagonal blocks are 3.4 M of 20.1 M stored entries at 41³ (27 MB). Packed panels would need a temporary panel per front (that raised the peak) or kernels with a leading dimension per column block. The stored factor is still 161 MB against 255 MB for the old CSC factor.
+- **Natural-order `chol(S)` and the indefinite `[R, p]` path** are 10–14 MB (2% and 10%) above 0.3.89 at their peak. The first is allocator state after the factor (the `chol` call alone: 451 → 457 MB). The second is the failed supernodal attempt before the up-looking redo; a supernodal kernel that continues past a failed pivot would remove it, not done. Both run 5× faster or the same.
+- **Postordered `P`.** `[R, p, P] = chol(S)` (automatic, `"nd"`, `"amd"`) returns the ordering relabelled by an elimination-tree postorder: same fill and `nnz(R)`, a different `P` and `R` from 0.3.89, still not MATLAB's AMD `P` (as before). One- and two-output `chol(S)` and `"natural"` are unchanged.
+- **Roundoff in `R' * R`.** The product keeps entries where exact arithmetic cancels. With the supernodal factor (fused multiply-adds in the dense kernels) fewer of them cancel to exactly zero: 21³ `nnz(R' * R)` 419,137 → 822,265, so `perf/sparse_chol_phase4.rlab`'s check `K = R' * R - P' * S * P` holds more ~1e-15 entries (max `|K|` 7.5e-14 → 1.2e-14), takes 24 → 30 s at 41³, and sets the script's peak (2.83 → 3.62 GB). `R` itself is the same size. MATLAB stores such entries too; `R' * R` on a large factor is a check, not a solve path.
+- **Determinism.** The factor and solve have the same bits for any thread count (tested 1–4), not the same bits as the up-looking kernel (about 1e-13 relative apart); decision 6.
 
 ---
 

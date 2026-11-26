@@ -14,6 +14,8 @@ use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 /// downstream crates implement it).
 pub trait SparseScalar:
     Copy
+    + Send
+    + Sync
     + Default
     + Debug
     + Add<Output = Self>
@@ -55,6 +57,55 @@ pub trait SparseScalar:
 
     /// Every part finite.
     fn is_finite(&self) -> bool;
+
+    /// `C -= A * B^H` on column-major blocks: `A` is `m × k`, `B` is
+    /// `n × k`, `C` is `m × n`, each with its own leading dimension.
+    ///
+    /// # Safety
+    /// Every pointer must address its whole block, and `c` must not
+    /// overlap `a` or `b`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn gemm_sub_nh(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self,
+        lda: usize,
+        b: *const Self,
+        ldb: usize,
+        c: *mut Self,
+        ldc: usize,
+    );
+}
+
+/// Products at most this many multiply-adds use plain loops: below it,
+/// `matrixmultiply`'s packing costs more than the product.
+const SMALL_GEMM: usize = 4096;
+
+/// Plain-loop `C -= A * B^H`, same contract as
+/// [`SparseScalar::gemm_sub_nh`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn gemm_sub_nh_loops<T: SparseScalar>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T,
+    lda: usize,
+    b: *const T,
+    ldb: usize,
+    c: *mut T,
+    ldc: usize,
+) {
+    for j in 0..n {
+        let cj = c.add(j * ldc);
+        for p in 0..k {
+            let f = (*b.add(j + p * ldb)).conj();
+            let ap = a.add(p * lda);
+            for i in 0..m {
+                *cj.add(i) -= *ap.add(i) * f;
+            }
+        }
+    }
 }
 
 impl SparseScalar for f64 {
@@ -88,6 +139,41 @@ impl SparseScalar for f64 {
         } else {
             None
         }
+    }
+    unsafe fn gemm_sub_nh(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self,
+        lda: usize,
+        b: *const Self,
+        ldb: usize,
+        c: *mut Self,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 || k == 0 {
+            return;
+        }
+        if m * n * k <= SMALL_GEMM {
+            return gemm_sub_nh_loops(m, n, k, a, lda, b, ldb, c, ldc);
+        }
+        // B^H is k × n with element (p, q) = B(q, p): row stride ldb.
+        matrixmultiply::dgemm(
+            m,
+            k,
+            n,
+            -1.0,
+            a,
+            1,
+            lda as isize,
+            b,
+            ldb as isize,
+            1,
+            1.0,
+            c,
+            1,
+            ldc as isize,
+        );
     }
 }
 
@@ -123,6 +209,51 @@ impl SparseScalar for C64 {
         } else {
             None
         }
+    }
+    unsafe fn gemm_sub_nh(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self,
+        lda: usize,
+        b: *const Self,
+        ldb: usize,
+        c: *mut Self,
+        ldc: usize,
+    ) {
+        if m == 0 || n == 0 || k == 0 {
+            return;
+        }
+        if m * n * k <= SMALL_GEMM {
+            return gemm_sub_nh_loops(m, n, k, a, lda, b, ldb, c, ldc);
+        }
+        // matrixmultiply has no conjugate option: write B^H out (k × n,
+        // O(nk) against O(mnk) work).
+        let mut bh = Vec::with_capacity(k * n);
+        for q in 0..n {
+            for p in 0..k {
+                bh.push((*b.add(q + p * ldb)).conj());
+            }
+        }
+        // `Complex<f64>` is `repr(C)` `{ re, im }`, the layout of `[f64; 2]`.
+        matrixmultiply::zgemm(
+            matrixmultiply::CGemmOption::Standard,
+            matrixmultiply::CGemmOption::Standard,
+            m,
+            k,
+            n,
+            [-1.0, 0.0],
+            a as *const [f64; 2],
+            1,
+            lda as isize,
+            bh.as_ptr() as *const [f64; 2],
+            1,
+            k as isize,
+            [1.0, 0.0],
+            c as *mut [f64; 2],
+            1,
+            ldc as isize,
+        );
     }
 }
 

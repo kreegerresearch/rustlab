@@ -92,18 +92,33 @@ impl Permutation {
         );
         assert_eq!(a.nrows(), self.perm.len());
 
+        // New column j is old column perm[j] with its rows renamed, then
+        // sorted. No triplet copy: a global sort of one held several times
+        // the matrix in temporaries, which the allocator kept.
         let n = a.nrows();
-        let mut coo: Vec<(usize, usize, T)> = Vec::with_capacity(a.nnz());
-        for new_col in 0..n {
-            let old_col = self.perm[new_col];
-            for (old_row, v) in a.col_iter(old_col) {
-                let new_row = self.inv_perm[old_row];
-                coo.push((new_row, new_col, v));
+        let nnz = a.nnz();
+        let mut col_ptr = Vec::with_capacity(n + 1);
+        col_ptr.push(0);
+        let mut row_idx = Vec::with_capacity(nnz);
+        let mut values = Vec::with_capacity(nnz);
+        let mut col: Vec<(usize, T)> = Vec::new();
+        for &old_col in &self.perm {
+            col.clear();
+            col.extend(a.col_iter(old_col).map(|(r, v)| (self.inv_perm[r], v)));
+            col.sort_by_key(|e| e.0);
+            for &(r, v) in &col {
+                row_idx.push(r);
+                values.push(v);
             }
+            col_ptr.push(row_idx.len());
         }
-        // CSC builder needs row-major sort for its single-pass conversion.
-        coo.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(&y.1)));
-        SparseCsc::from_coo_sorted(n, n, &coo)
+        SparseCsc {
+            rows: n,
+            cols: n,
+            col_ptr,
+            row_idx,
+            values,
+        }
     }
 }
 
@@ -111,6 +126,12 @@ impl Permutation {
 /// Operates on the symbolic structure only — the values don't matter.
 pub trait OrderingMethod {
     fn order<T: SparseScalar>(&self, a: &SparseCsc<T>) -> Permutation;
+
+    /// Whether a factorization may relabel this order by an elimination-
+    /// tree postorder (same fill). `false` keeps the order exactly.
+    fn postorder_allowed(&self) -> bool {
+        true
+    }
 }
 
 /// No-op ordering. Useful for testing the factorization without
@@ -120,6 +141,10 @@ pub struct IdentityOrdering;
 impl OrderingMethod for IdentityOrdering {
     fn order<T: SparseScalar>(&self, a: &SparseCsc<T>) -> Permutation {
         Permutation::identity(a.ncols())
+    }
+
+    fn postorder_allowed(&self) -> bool {
+        false
     }
 }
 
