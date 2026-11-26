@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.96
+
+### Added
+- **`parsum(f, xs)` and `parmap(f, xs, "sum")`**: a parallel sum of `f(x)` over `xs`. Each result is added as its workers finish, so the `B` per-call results are never packed into a `B × n` matrix and no separate `sum` pass runs on the calling thread. Every call must return the same shape (scalar, complex, vector, matrix, or tensor3), and the result has that shape; a mismatch is an error that names both trials and both shapes.
+  - The addition order is a fixed binary tree over trial indices: `S(lo, hi) = S(lo, mid) + S(mid, hi)` with `mid = lo + ceil((hi - lo)/2)`, earlier trials on the left. For 8 trials: `((r1 + r2) + (r3 + r4)) + ((r5 + r6) + (r7 + r8))`. The result is bit-identical across runs, thread counts, and worker timing. It can differ from `sum(parmap(f, xs))` in the last digits, because that sum adds in another order; integer-valued results agree exactly.
+  - Seeds, the pure-lambda denylist, the path jail, and the plot context match `parmap(f, xs)`, so `seed(N)` gives the same per-trial draws. An empty `xs` returns 0.
+  - On rustlab_llm's 8-window gradient (`gpt_grad_flat`, 811,009 values per window; 4-core Xeon VM), `parsum` took 74.7–74.9 ms against 83.3–85.9 ms for `parmap` alone and 100.0–107.8 ms for `parmap` plus the row sum. The training step went from 117.5–119.5 ms to 98.1–99.8 ms.
+
+### Fixed
+- **`parmap` no longer changes the caller's random state when a task runs on the calling thread** (a nested `parmap`, or a script run inside a rayon pool). Each task now restores the thread's RNG and `seed(N)` master seed when it ends. Before, a later `rand` or `parmap` in the caller could continue from a task's seed. Results of a top-level `parmap` from the REPL, `rustlab run`, or a notebook are unchanged.
+
 ## 0.3.95
 
 ### Added
