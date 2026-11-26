@@ -232,7 +232,25 @@ pub(crate) fn builtin_vitdec(args: Vec<Value>) -> Result<Value, ScriptError> {
             args.len()
         )));
     }
-    let (code, rows, cols) = real_entries(NAME, "code", &args[0])?;
+    // A real-stored row or column is already in order; read it in place.
+    let borrowed: Option<(&[f64], usize, usize)> = match &args[0] {
+        Value::Vector(a) => Shared::real_slice(a).map(|d| (d, 1, d.len())),
+        Value::Matrix(m) => {
+            let sh = Shared::shape(m);
+            Shared::real_slice(m)
+                .filter(|_| sh[0] == 1 || sh[1] == 1)
+                .map(|d| (d, sh[0], sh[1]))
+        }
+        _ => None,
+    };
+    let owned;
+    let (code, rows, cols): (&[f64], usize, usize) = match borrowed {
+        Some(b) => b,
+        None => {
+            owned = real_entries(NAME, "code", &args[0])?;
+            (&owned.0, owned.1, owned.2)
+        }
+    };
     if rows != 1 && cols != 1 {
         return Err(ScriptError::runtime(format!(
             "{NAME}: code must be a vector, got {rows}×{cols}"
@@ -294,7 +312,7 @@ pub(crate) fn builtin_vitdec(args: Vec<Value>) -> Result<Value, ScriptError> {
             "{NAME}: nsdec is only used with \"soft\""
         )));
     }
-    let bits = viterbi::vitdec(&code, &t, tblen, mode, dec).map_err(|e| err(NAME, e))?;
+    let bits = viterbi::vitdec(code, &t, tblen, mode, dec).map_err(|e| err(NAME, e))?;
     let data: Vec<f64> = bits.into_iter().map(f64::from).collect();
     let n = data.len();
     Ok(if column {

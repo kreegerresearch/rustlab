@@ -387,44 +387,91 @@ pub fn vitdec(
     pm[0] = 0.0;
     let mut next = vec![0.0; s_count];
     let mut scores = vec![0.0; 1usize << n];
-    let mut syms = vec![0usize; steps];
+    let mut syms = vec![0u32; steps];
 
-    // Two-branch tables, flat for the inner loop.
-    let (p0, p1, o0, o1): (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) = if preds.two {
+    // Two-branch tables, flat for the inner loop: entry `2 s + d` is the
+    // predecessor (and its output symbol) that decision bit `d` picks.
+    let (pp, oo): (Vec<u32>, Vec<u32>) = if preds.two {
         (
-            (0..s_count).map(|s| preds.prev[preds.start[s]]).collect(),
-            (0..s_count)
-                .map(|s| preds.prev[preds.start[s] + 1])
-                .collect(),
-            (0..s_count).map(|s| preds.out[preds.start[s]]).collect(),
-            (0..s_count)
-                .map(|s| preds.out[preds.start[s] + 1])
-                .collect(),
+            preds.prev.iter().map(|&p| p as u32).collect(),
+            preds.out.iter().map(|&o| o as u32).collect(),
         )
     } else {
         Default::default()
     };
 
+    // Walk back from the state after step `from_step` through `hops` rows;
+    // write the symbols of steps at or above `write_from`. Returns the
+    // symbol of the last row visited.
     let trace = |dec_rows: &Decisions,
-                 from_row_step: usize,
+                 from_step: usize,
                  hops: usize,
                  mut s: usize,
-                 syms: &mut [usize],
+                 syms: &mut [u32],
                  write_from: usize| {
-        // Walk back from the state after step `from_row_step` through
-        // `hops` rows; write the symbols of steps at or above `write_from`.
-        // Returns the symbol of the last row visited.
+        let mut row = from_step % rows;
         let mut last = 0;
         for h in 0..hops {
-            let step = from_row_step - h;
-            let i = preds.start[s] + dec_rows.get(step % rows, s);
-            last = preds.sym[i];
-            if step >= write_from {
-                syms[step] = last;
+            let step = from_step - h;
+            let i = match dec_rows {
+                Decisions::Bits { words, data } => {
+                    2 * s + ((data[row * words + (s >> 6)] >> (s & 63)) & 1) as usize
+                }
+                Decisions::Bytes { .. } => preds.start[s] + dec_rows.get(row, s),
+            };
+            if step >= write_from || h + 1 == hops {
+                last = preds.sym[i];
+                if step >= write_from {
+                    syms[step] = last as u32;
+                }
             }
-            s = preds.prev[i];
+            s = if preds.two {
+                pp[i] as usize
+            } else {
+                preds.prev[i]
+            };
+            row = if row == 0 { rows - 1 } else { row - 1 };
         }
         last
+    };
+
+    // The branch a state took at a ring row: an index into `preds`.
+    let branch = |dec_rows: &Decisions, row: usize, s: usize| match dec_rows {
+        Decisions::Bits { words, data } => {
+            2 * s + ((data[row * words + (s >> 6)] >> (s & 63)) & 1) as usize
+        }
+        Decisions::Bytes { .. } => preds.start[s] + dec_rows.get(row, s),
+    };
+
+    // `path[τ % rows]` is the state after step τ on the last traceback,
+    // for every τ in its window of `tblen + 1` steps. A new traceback that
+    // reaches the same state at the same step follows the old path from
+    // there on (the predecessor of a state at a step is fixed), so it stops
+    // and reads the state after step `t - tblen` from `path`.
+    let mut path = vec![u32::MAX; rows];
+    let mut traced: Option<usize> = None;
+    let mut window_symbol = |dec_rows: &Decisions, path: &mut Vec<u32>, t: usize, mut s: usize| {
+        let low = t - tblen;
+        let mut tau = t;
+        let at_low = loop {
+            let slot = tau % rows;
+            if traced.is_some_and(|p| tau <= p) && path[slot] == s as u32 {
+                break path[low % rows] as usize;
+            }
+            path[slot] = s as u32;
+            if tau == low {
+                break s;
+            }
+            let i = branch(dec_rows, slot, s);
+            s = if preds.two {
+                pp[i] as usize
+            } else {
+                preds.prev[i]
+            };
+            tau -= 1;
+        };
+        traced = Some(t);
+        preds.sym[branch(dec_rows, low % rows, at_low)] as u32
     };
 
     let best_state = |pm: &[f64]| {
@@ -440,16 +487,42 @@ pub fn vitdec(
     for step in 0..steps {
         branch_scores(dec, &code[step * n..(step + 1) * n], n, &mut scores);
         let row = step % rows;
+        // Best state after this step: the first with the highest metric.
+        let (mut best_v, mut best_s) = (f64::NEG_INFINITY, 0usize);
         match &mut dec_rows {
             Decisions::Bits { words, data } => {
-                let base = row * *words;
-                data[base..base + *words].fill(0);
-                for s in 0..s_count {
-                    let a = pm[p0[s]] + scores[o0[s]];
-                    let b = pm[p1[s]] + scores[o1[s]];
-                    let take = b > a;
-                    data[base + s / 64] |= (take as u64) << (s % 64);
-                    next[s] = if take { b } else { a };
+                debug_assert!(pp.iter().all(|&p| (p as usize) < pm.len()));
+                debug_assert!(oo.iter().all(|&o| (o as usize) < scores.len()));
+                let dst = &mut data[row * *words..(row + 1) * *words];
+                for (w, word) in dst.iter_mut().enumerate() {
+                    let lo = w * 64;
+                    let mut bits = 0u64;
+                    for (j, nx) in next[lo..(lo + 64).min(s_count)].iter_mut().enumerate() {
+                        let s = lo + j;
+                        // SAFETY: `pp` and `oo` have 2 · s_count entries,
+                        // `s < s_count`, every `pp` entry is a state (below
+                        // `pm.len()`, from `Trellis::validate`), and every
+                        // `oo` entry an output symbol (below `scores.len()`).
+                        let (a, b) = unsafe {
+                            let pa = *pp.get_unchecked(2 * s) as usize;
+                            let pb = *pp.get_unchecked(2 * s + 1) as usize;
+                            let oa = *oo.get_unchecked(2 * s) as usize;
+                            let ob = *oo.get_unchecked(2 * s + 1) as usize;
+                            (
+                                *pm.get_unchecked(pa) + *scores.get_unchecked(oa),
+                                *pm.get_unchecked(pb) + *scores.get_unchecked(ob),
+                            )
+                        };
+                        let take = b > a;
+                        bits |= u64::from(take) << j;
+                        let v = if take { b } else { a };
+                        *nx = v;
+                        if v > best_v {
+                            best_v = v;
+                            best_s = s;
+                        }
+                    }
+                    *word = bits;
                 }
             }
             Decisions::Bytes { states, data } => {
@@ -467,20 +540,16 @@ pub fn vitdec(
                     }
                     data[base + s] = idx as u8;
                     next[s] = best;
+                    if best > best_v {
+                        best_v = best;
+                        best_s = s;
+                    }
                 }
             }
         }
         std::mem::swap(&mut pm, &mut next);
         if step >= tblen {
-            let sym = trace(
-                &dec_rows,
-                step,
-                tblen + 1,
-                best_state(&pm),
-                &mut [],
-                usize::MAX,
-            );
-            syms[step - tblen] = sym;
+            syms[step - tblen] = window_symbol(&dec_rows, &mut path, step, best_s);
         }
     }
 
@@ -491,7 +560,7 @@ pub fn vitdec(
         OpMode::Cont => {
             // Output t is the symbol of step t - tblen; the first tblen are 0.
             for (j, &sym) in syms[..emitted].iter().enumerate() {
-                write_symbol(&mut bits, j + tblen.min(steps), sym, k);
+                write_symbol(&mut bits, j + tblen.min(steps), sym as usize, k);
             }
         }
         OpMode::Trunc | OpMode::Term => {
@@ -505,7 +574,7 @@ pub fn vitdec(
                 trace(&dec_rows, steps - 1, hops, start, &mut syms, emitted);
             }
             for (j, &sym) in syms.iter().enumerate() {
-                write_symbol(&mut bits, j, sym, k);
+                write_symbol(&mut bits, j, sym as usize, k);
             }
         }
     }
@@ -612,6 +681,125 @@ mod tests {
         let slow = vitdec(&y, &t2, 25, OpMode::Trunc, DecType::Unquant).unwrap();
         let slow_first: Vec<u8> = slow.chunks(2).map(|p| p[0]).collect();
         assert_eq!(fast, slow_first);
+    }
+
+    /// The textbook decoder the module notes describe: every decision kept,
+    /// a full traceback for every output.
+    fn naive(code: &[f64], t: &Trellis, tblen: usize, mode: OpMode, dec: DecType) -> Vec<u8> {
+        let (n, k, ns) = (t.n, t.k, t.num_states);
+        let nsym = 1 << k;
+        let steps = code.len() / n;
+        let mut pm = vec![f64::NEG_INFINITY; ns];
+        pm[0] = 0.0;
+        // back[step][state] = (prev, sym)
+        let mut back = vec![vec![(0usize, 0usize); ns]; steps];
+        let mut scores = vec![0.0; 1 << n];
+        let mut best_at = Vec::new();
+        for step in 0..steps {
+            branch_scores(dec, &code[step * n..(step + 1) * n], n, &mut scores);
+            let mut next = vec![f64::NEG_INFINITY; ns];
+            let mut seen = vec![false; ns];
+            for s in 0..ns {
+                for x in 0..nsym {
+                    let d = t.next[s * nsym + x];
+                    let v = pm[s] + scores[t.out[s * nsym + x]];
+                    if !seen[d] || v > next[d] {
+                        seen[d] = true;
+                        next[d] = v;
+                        back[step][d] = (s, x);
+                    }
+                }
+            }
+            pm = next;
+            let mut b = 0;
+            for s in 1..ns {
+                if pm[s] > pm[b] {
+                    b = s;
+                }
+            }
+            best_at.push(b);
+        }
+        let walk = |from: usize, mut s: usize, to: usize| {
+            let mut sym = 0;
+            for step in (to..=from).rev() {
+                let (p, x) = back[step][s];
+                sym = x;
+                s = p;
+            }
+            sym
+        };
+        let mut syms = vec![0; steps];
+        for step in tblen..steps {
+            syms[step - tblen] = walk(step, best_at[step], step - tblen);
+        }
+        let emitted = steps.saturating_sub(tblen);
+        let mut out = vec![0u8; steps * k];
+        if mode == OpMode::Cont {
+            for j in 0..emitted {
+                write_symbol(&mut out, j + tblen.min(steps), syms[j], k);
+            }
+            return out;
+        }
+        let start = if mode == OpMode::Term {
+            0
+        } else {
+            best_at[steps - 1]
+        };
+        for step in emitted..steps {
+            syms[step] = walk(steps - 1, start, step);
+        }
+        for (j, &x) in syms.iter().enumerate() {
+            write_symbol(&mut out, j, x, k);
+        }
+        out
+    }
+
+    /// Noisy decodes equal the naive decoder bit for bit: every mode, window
+    /// lengths short and long, hard / soft / unquant, two-branch and
+    /// four-branch trellises.
+    #[test]
+    fn window_decoding_matches_the_naive_decoder() {
+        let codes = [
+            poly2trellis(&[7], &[vec![0o171, 0o133]], None).unwrap(),
+            poly2trellis(&[5], &[vec![0o37, 0o33]], Some(&[0o37])).unwrap(),
+            poly2trellis(&[3, 3], &[vec![0o7, 0o5, 0], vec![0, 0o7, 0o5]], None).unwrap(),
+        ];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut unif = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for t in &codes {
+            let u = bits(11, 600 * t.k);
+            let c = encode(t, &u);
+            let y: Vec<f64> = c
+                .iter()
+                .map(|&b| 1.0 - 2.0 * b + 1.6 * (unif() - 0.5) * 2.0)
+                .collect();
+            let h: Vec<f64> = y.iter().map(|&v| if v < 0.0 { 1.0 } else { 0.0 }).collect();
+            let q: Vec<f64> = y
+                .iter()
+                .map(|&v| ((1.0 - v) * 1.75).round().clamp(0.0, 7.0))
+                .collect();
+            for (input, dec) in [
+                (&y, DecType::Unquant),
+                (&h, DecType::Hard),
+                (&q, DecType::Soft { nsdec: 3 }),
+            ] {
+                for tb in [1, 2, 7, 35, 96, 5000] {
+                    for mode in [OpMode::Trunc, OpMode::Term, OpMode::Cont] {
+                        assert_eq!(
+                            vitdec(input, t, tb, mode, dec).unwrap(),
+                            naive(input, t, tb, mode, dec),
+                            "k {} {dec:?} tblen {tb} {mode:?}",
+                            t.k
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
