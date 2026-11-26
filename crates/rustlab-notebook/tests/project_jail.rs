@@ -185,6 +185,60 @@ fn cli_jail_root_may_widen_past_the_project() {
     assert!(html.unwrap().contains("4242"));
 }
 
+/// `outer/rustlab.toml` sits above a repository whose `.git` is
+/// `outer/repo`; the lesson lives at `outer/repo/lessons/x.md`.
+fn nested_repo(git_file: bool) -> (TempDir, TempDir) {
+    let home = TempDir::new().unwrap();
+    let outer = TempDir::new().unwrap();
+    let repo = outer.path().join("repo");
+    std::fs::create_dir_all(repo.join("lib")).unwrap();
+    std::fs::create_dir_all(repo.join("lessons")).unwrap();
+    std::fs::write(repo.join("lib/helper.rlab"), "shared_value = 4242;\n").unwrap();
+    std::fs::write(repo.join("lessons/x.md"), NOTEBOOK).unwrap();
+    if git_file {
+        std::fs::write(repo.join(".git"), "gitdir: /elsewhere/.git/worktrees/repo\n").unwrap();
+    } else {
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+    }
+    std::fs::write(
+        outer.path().join("rustlab.toml"),
+        "[notebook]\njail_root = \".\"\ntheme = \"no-such-theme\"\n",
+    )
+    .unwrap();
+    (home, outer)
+}
+
+fn render_in(home: &Path, dir: &Path) -> (Output, Option<String>) {
+    let out = dir.join("out.html");
+    let o = Command::new(BIN)
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("CI", "1")
+        .args(["render", "lessons/x.md", "-o", "out.html"])
+        .output()
+        .unwrap();
+    (o, std::fs::read_to_string(&out).ok())
+}
+
+#[test]
+fn a_rustlab_toml_above_the_git_root_is_ignored() {
+    for git_file in [false, true] {
+        let (home, outer) = nested_repo(git_file);
+        let repo = outer.path().join("repo");
+        // The outer file names a missing theme and a wide jail; neither applies.
+        let (o, html) = render_in(home.path(), &repo);
+        assert!(o.status.success(), "git_file={git_file}: {}", text(&o));
+        let html = html.expect("output written");
+        assert!(html.contains(ESCAPE), "outer jail_root must not apply");
+        // A rustlab.toml at the .git root is found.
+        std::fs::write(repo.join("rustlab.toml"), "[notebook]\njail_root = \".\"\n").unwrap();
+        let (o, html) = render_in(home.path(), &repo);
+        assert!(o.status.success(), "git_file={git_file}: {}", text(&o));
+        assert!(html.unwrap().contains("4242"));
+    }
+}
+
 fn http_get(port: u16, path: &str) -> Option<String> {
     let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(10))).ok()?;

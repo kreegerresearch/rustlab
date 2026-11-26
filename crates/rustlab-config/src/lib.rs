@@ -1541,6 +1541,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn project_config_walk_stops_at_the_git_root() {
+        let root = tempdir("git-stop");
+        let repo = root.join("repo");
+        let inner = repo.join("lessons/unit1");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(root.join(PROJECT_CONFIG), "").unwrap();
+        // No .git anywhere: the walk reaches the outer file as before.
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(root.join(PROJECT_CONFIG))
+        );
+        // A .git directory marks the repository root: nothing above it.
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        assert_eq!(find_project_config(&inner, None), None);
+        assert!(load_project(&inner, None).unwrap().is_none());
+        // The .git root itself is still checked.
+        std::fs::write(repo.join(PROJECT_CONFIG), "").unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(repo.join(PROJECT_CONFIG))
+        );
+        // Starting at the .git root finds its own file.
+        assert_eq!(
+            find_project_config(&repo, None),
+            Some(repo.join(PROJECT_CONFIG))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_config_walk_stops_at_a_git_file() {
+        // Worktrees and submodules have a `.git` file, not a directory.
+        let root = tempdir("git-file");
+        let sub = root.join("sub");
+        let inner = sub.join("notes");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(root.join(PROJECT_CONFIG), "").unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        assert_eq!(find_project_config(&inner, None), None);
+        std::fs::write(sub.join(PROJECT_CONFIG), "").unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(sub.join(PROJECT_CONFIG))
+        );
+        // A nearer .git wins over an outer one.
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        assert_eq!(
+            find_project_config(&inner, None),
+            Some(sub.join(PROJECT_CONFIG))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn jail_err(root: &Path, value: &str) -> String {
         parse_project_toml(
             &format!("[notebook]\njail_root = \"{value}\"\n"),
