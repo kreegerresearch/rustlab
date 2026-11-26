@@ -144,6 +144,31 @@ noiseless_errors = sum(viterbi(x, P0, P1, C0, C1) != u)
 
 With no noise the decoder returns the input exactly.
 
+## The same decoder as a builtin
+
+`poly2trellis` builds the trellis of any convolutional code from its
+constraint length and octal generators, in MATLAB's form, and `vitdec`
+decodes with it in compiled code. Its traceback depth `tblen` is how many
+steps back each decision is read. A traceback over the whole frame, from
+the zero state the tail bits force (`"term"`), is what the script above
+does, and `"unquant"` takes the same soft values (+1 for a 0 bit). The
+decoded bits agree exactly, noise or no noise:
+
+```rustlab
+trel = poly2trellis(7, [133 171]);
+seed(8);
+y = x + 0.9 * randn(size(x, 1), size(x, 2));
+L = size(y, 2);
+d = vitdec(reshape(y, 1, 2 * L), trel, L, "term", "unquant");
+s = viterbi(y, P0, P1, C0, C1);
+fprintf("%d bit errors; script and vitdec differ in %d of %d bits\n", sum(s != u), sum(d(1:L-6) != s), L - 6);
+```
+
+The rest of the notebook decodes with `vitdec`. A real-time receiver
+cannot wait for a whole frame, so it uses a fixed `tblen` of 5 to 7
+constraint lengths (35 to 49 steps here); `vitdec` keeps only that many
+steps of decisions.
+
 ## The channel
 
 BPSK sends each code bit as $\pm 1$, so every transmitted symbol has
@@ -197,43 +222,24 @@ function M = puncture_mask(P, L)
   M = M(:, 1:L);
 end
 
-# Everything a link needs: generators, puncturing pattern, trellis tables.
-function T = make_code(G, P)
-  [P0, P1, C0, C1] = trellis(G);
+# Everything a link needs: generator taps, octal generators, puncturing
+# pattern, trellis.
+function T = make_code(G, octal, P)
   T.G = G; T.P = P;
-  T.P0 = P0; T.P1 = P1; T.C0 = C0; T.C1 = C1;
+  T.trellis = poly2trellis(7, octal);
   T.rate = size(P, 2) / sum(sum(P));
 end
 
-# The same decoder for F frames side by side in Y (n x (L*F)). The path
-# metrics are a 64 x F matrix, one column per frame, so each trellis step is
-# one set of array operations for every frame. U: F x (L-6) decoded bits.
-function U = viterbi_frames(Y, F, P0, P1, C0, C1)
-  if F == 1
-    U = viterbi(Y, P0, P1, C0, C1);
-    return;
-  end
+# F frames side by side in Y (n x (L*F)), each decoded on its own with a
+# traceback over the whole frame. U: F x (L-6) decoded bits.
+function U = decode_frames(Y, F, trel)
+  n = size(Y, 1);
   L = size(Y, 2) / F;
-  cols = L * (0:F-1);              # column of step 0 in each frame
-  pm = -1e9 * ones(64, F);
-  pm(1, :) = 0;
-  D = false(L, 64 * F);            # one row per step; frame f is columns 64*(f-1)+1 : 64*f
-  for t = 1:L
-    Yt = Y(:, cols + t);           # step t of every frame, n x F
-    a = pm(P0, :) + C0 * Yt;
-    b = pm(P1, :) + C1 * Yt;
-    d = b > a;
-    D(t, :) = d(:);
-    pm = max(a, b);
+  U = zeros(F, L - 6);
+  for f = 1:F
+    d = vitdec(reshape(Y(:, (f - 1) * L + (1:L)), 1, n * L), trel, L, "term", "unquant");
+    U(f, :) = d(1:L-6);
   end
-  s = zeros(1, F);
-  base = 64 * (0:F-1);
-  U = zeros(L, F);
-  for t = L:-1:1
-    U(t, :) = floor(s / 32);
-    s = mod(s, 32) * 2 + D(t, base + s + 1);
-  end
-  U = U(1:L-6, :)';
 end
 
 # F frames of N bits through the channel at one Eb/N0, decoded together.
@@ -252,7 +258,7 @@ function e = frame_errors(N, F, ebn0_db, T, hard)
   if hard
     Y = sign(Y);
   end
-  e = sum(sum(viterbi_frames(Y, F, T.P0, T.P1, T.C0, T.C1) != u));
+  e = sum(sum(decode_frames(Y, F, T.trellis) != u));
 end
 
 # Uncoded BPSK: one symbol per bit, decided by sign.
@@ -262,10 +268,10 @@ function e = uncoded_errors(N, ebn0_db)
   e = sum((y < 0) != u);
 end
 
-codes.r13 = make_code(G3, [1; 1; 1]);
-codes.r12 = make_code(G2, [1; 1]);
-codes.r23 = make_code(G2, [1 1; 1 0]);
-codes.r34 = make_code(G2, [1 1 0; 1 0 1]);
+codes.r13 = make_code(G3, [133 171 165], [1; 1; 1]);
+codes.r12 = make_code(G2, [133 171], [1; 1]);
+codes.r23 = make_code(G2, [133 171], [1 1; 1 0]);
+codes.r34 = make_code(G2, [133 171], [1 1 0; 1 0 1]);
 rate_34 = codes.r34.rate
 ```
 
@@ -276,11 +282,9 @@ says, under 0.03 dB.
 
 ## Bit error rate vs. $E_b/N_0$
 
-Each point decodes frames of 1,000 bits with `viterbi_frames`, the
-decoder above run on a $64 \times F$ matrix of path metrics, one column per
-frame. Each trellis step is then one set of array operations for all $F$
-frames instead of $F$ sets of 64-element ones, so many short frames side by
-side cost far fewer steps than a few long ones.
+Each point decodes frames of 1,000 bits, each with its own `vitdec` call
+over the whole frame (`decode_frames`), so every frame gets the same
+decisions the script decoder would make.
 
 A point needs enough errors, not a fixed number of bits. Each point first
 decodes `n_first` = 40 frames (40,000 bits). If that already produced
@@ -525,7 +529,9 @@ u = randi([0, 1], 1, Nb);
 x = 1 - 2 * conv_encode(u, G2);
 sigma = sqrt(1 / (2 * 0.5 * 10^(2 / 10)));
 Y = x + sigma * randn(size(x, 1), size(x, 2));
-err = viterbi(Y, P0, P1, C0, C1) != u;
+L = size(Y, 2);
+d = vitdec(reshape(Y, 1, 2 * L), trel, L, "term", "unquant");
+err = d(1:L-6) != u;
 pos = find(err);
 
 clf

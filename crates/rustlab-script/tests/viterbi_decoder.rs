@@ -59,11 +59,12 @@ fn run(ev: &mut Evaluator, src: &str) {
         .unwrap_or_else(|e| panic!("{e}\n--- source ---\n{src}"));
 }
 
-/// An evaluator holding the notebook's encoder, trellis, and both decoders.
+/// An evaluator holding the notebook's encoder, trellis tables, script
+/// decoder, and the `vitdec` frame decoder.
 fn decoder() -> Evaluator {
     let cells = notebook_cells();
     let mut ev = Evaluator::new();
-    for name in ["conv_encode", "trellis", "viterbi", "viterbi_frames"] {
+    for name in ["conv_encode", "trellis", "viterbi", "decode_frames"] {
         run(&mut ev, &defining_cell(&cells, name));
     }
     ev
@@ -186,10 +187,12 @@ fn viterbi_hard_decisions_are_unchanged() {
     });
 }
 
-/// `viterbi_frames` with punctured (rate 3/4) soft frames side by side:
-/// every frame decodes as the reference does on its own columns.
+/// The notebook's `decode_frames` (one whole-frame `vitdec` per frame) with
+/// punctured (rate 3/4) soft frames side by side: every frame decodes as the
+/// reference does on its own columns. Before 0.3.99 the notebook decoded
+/// these frames with the script `viterbi_frames`; the checksum is that one.
 #[test]
-fn viterbi_frames_punctured_is_unchanged() {
+fn notebook_frame_decoder_punctured_is_unchanged() {
     with_both_storages(|| {
         let mut ev = decoder();
         run(
@@ -207,7 +210,7 @@ fn viterbi_frames_punctured_is_unchanged() {
              Y = (X + 0.8 * randn(size(X, 1), size(X, 2))) .* M;
              B0 = C0 * Y;
              B1 = C1 * Y;
-             U = viterbi_frames(Y, F, P0, P1, C0, C1);
+             U = decode_frames(Y, F, poly2trellis(7, [171 133]));
              errors = sum(sum(U != u));
              chk = mod(sum(sum(U .* mod(reshape(1:(F * N), F, N) * 7919, 1000003))), 1000003);",
         );
