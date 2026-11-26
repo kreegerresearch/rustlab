@@ -53,7 +53,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
 | `format default` | Restore normal numeric display |
-| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` (a builtin or a theme-file name) / `code`, `[repl] history_limit` / `history` (bool; `false` or `RUSTLAB_NO_HISTORY=1` skips the history file), `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. `rustlab-notebook` also reads a project `rustlab.toml` (`[notebook] theme` / `theme_dir`). |
+| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` (a builtin or a theme-file name) / `code`, `[repl] history_limit` / `history` (bool; `false` or `RUSTLAB_NO_HISTORY=1` skips the history file), `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. `rustlab-notebook` also reads a project `rustlab.toml` (`[notebook] theme` / `theme_dir`, and `[site]` brand / nav / footer / stylesheets for HTML pages). |
 | REPL `while` / `if` / `for` / `switch` | At `>> `, an unclosed block continues at `.. ` until `end`. `...` continues a line. Ctrl-C or Ctrl-D on a continuation abandons the buffer and stays in the REPL |
 | `;` | Suppress output on a statement |
 | `#` / `%` | Comment |

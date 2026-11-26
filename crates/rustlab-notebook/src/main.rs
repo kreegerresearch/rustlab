@@ -227,6 +227,21 @@ enum Command {
         /// drawer; prev/next links stay.
         #[arg(long, conflicts_with = "file_browser")]
         no_file_browser: bool,
+        /// Trusted HTML fragment inserted right after `<body>` of every
+        /// HTML page, as written (not escaped or sanitised). For sites
+        /// whose owner controls both the fragment and the build. Read at
+        /// startup; must be inside the path jail (--jail-root).
+        #[arg(long, value_name = "FILE")]
+        header_html: Option<PathBuf>,
+        /// Trusted HTML fragment inserted right before `</main>`, after
+        /// the footer. Same trust and jail rules as --header-html.
+        #[arg(long, value_name = "FILE")]
+        footer_html: Option<PathBuf>,
+        /// Stylesheet `<link>` placed after the built-in `<style>`
+        /// (repeatable). An http(s) URL or a relative path. Replaces
+        /// rustlab.toml `[site] stylesheets`.
+        #[arg(long = "stylesheet", value_name = "URL", action = clap::ArgAction::Append)]
+        stylesheets: Vec<String>,
         /// Let `cache enable` open or create the SQLite function cache.
         /// Overrides `[cache] enabled = false`.
         #[arg(long, conflicts_with = "no_cache")]
@@ -457,6 +472,21 @@ enum Command {
         /// `[notebook] file_browser`. HTML only. Prev/next links stay.
         #[arg(long, conflicts_with = "file_browser")]
         no_file_browser: bool,
+        /// Trusted HTML fragment inserted right after `<body>` of every
+        /// HTML page, as written (not escaped or sanitised). For sites
+        /// whose owner controls both the fragment and the build. Read at
+        /// startup; must be inside the path jail (--jail-root).
+        #[arg(long, value_name = "FILE")]
+        header_html: Option<PathBuf>,
+        /// Trusted HTML fragment inserted right before `</main>`, after
+        /// the footer. Same trust and jail rules as --header-html.
+        #[arg(long, value_name = "FILE")]
+        footer_html: Option<PathBuf>,
+        /// Stylesheet `<link>` placed after the built-in `<style>`
+        /// (repeatable). An http(s) URL or a relative path. Replaces
+        /// rustlab.toml `[site] stylesheets`.
+        #[arg(long = "stylesheet", value_name = "URL", action = clap::ArgAction::Append)]
+        stylesheets: Vec<String>,
         /// Let `cache enable` open or create the SQLite function cache.
         /// Overrides `[cache] enabled = false`.
         #[arg(long, conflicts_with = "no_cache")]
@@ -714,6 +744,9 @@ fn main() {
             no_toc,
             file_browser,
             no_file_browser,
+            header_html,
+            footer_html,
+            stylesheets,
             cache,
             no_cache,
         } => {
@@ -736,14 +769,20 @@ fn main() {
                 );
                 std::process::exit(2);
             }
+            let project = project_or_exit(&input);
             let (colors, project_file_browser) = resolve_theme_or_exit(
-                &input,
+                project.as_ref(),
                 theme,
                 theme_file,
                 &settings,
                 rc_path.as_deref(),
                 ContrastMode::Warn,
             );
+            let site_cli = rustlab_notebook::site::SiteCliOpts {
+                header_html,
+                footer_html,
+                stylesheets,
+            };
             // --jail-root, else rustlab.toml: install on this thread for the
             // re-render loop; the interactive server threads it through
             // ServerOpts.
@@ -780,6 +819,19 @@ fn main() {
                         "warning: --attachments-dir / --no-iframe only apply with --obsidian; ignored"
                     );
                 }
+                let fragment_root = match (&jail_root, set.collection_root()) {
+                    (Some(j), _) => j.clone(),
+                    (None, Some(root)) => root.to_path_buf(),
+                    (None, None) => parent_dir(&input),
+                };
+                install_site_or_exit(project.as_ref(), &site_cli, &fragment_root);
+                for url in &rustlab_notebook::site::current().stylesheets {
+                    if rustlab_config::stylesheet_origin(url).is_none() {
+                        eprintln!(
+                            "warning: stylesheet {url} is relative; watch does not serve it, so the preview loads it from the watch server and gets a 404 (use an http(s) URL to preview it)"
+                        );
+                    }
+                }
                 let comments_on =
                     resolve_comments(comments.as_deref(), no_comments, &settings).unwrap_or(true);
                 let git_on = git_diff || settings.notebook_git_diff();
@@ -807,6 +859,11 @@ fn main() {
                 return;
             }
 
+            if site_cli.is_active() {
+                eprintln!(
+                    "warning: --header-html / --footer-html / --stylesheet apply to HTML pages; the re-render-on-save watcher writes Markdown, so they are ignored"
+                );
+            }
             if port.is_some()
                 || no_browser
                 || editable
@@ -867,6 +924,9 @@ fn main() {
             no_file_browser,
             strict,
             theme_contrast,
+            header_html,
+            footer_html,
+            stylesheets,
             cache,
             no_cache,
         } => {
@@ -877,8 +937,9 @@ fn main() {
                 (None, true) => PathBuf::from("."),
                 (None, false) => input.clone(),
             };
+            let project = project_or_exit(&project_from);
             let (colors, project_file_browser) = resolve_theme_or_exit(
-                &project_from,
+                project.as_ref(),
                 theme,
                 theme_file,
                 &settings,
@@ -915,6 +976,17 @@ fn main() {
                 ),
                 no_toc,
             };
+            let site_cli = rustlab_notebook::site::SiteCliOpts {
+                header_html,
+                footer_html,
+                stylesheets,
+            };
+            if site_cli.is_active() && format != CliFormat::Html {
+                eprintln!(
+                    "error: --header-html, --footer-html, and --stylesheet apply only to HTML"
+                );
+                std::process::exit(2);
+            }
             let comments_on = resolve_comments(comments.as_deref(), no_comments, &settings);
             rustlab_notebook::set_comment_display(comments_on);
             if let Err(e) = resolve_comments_style(
@@ -931,6 +1003,14 @@ fn main() {
             // inside cmd_render_dir.
             let jail = resolve_jail(jail_root, std::slice::from_ref(&project_from));
             let _jail = cli_jail_guard(jail.dir(), std::slice::from_ref(&input));
+            if format == CliFormat::Html {
+                let fragment_root = match jail.dir() {
+                    Some(j) => j.to_path_buf(),
+                    None if input.is_dir() => input.clone(),
+                    None => parent_dir(&input),
+                };
+                install_site_or_exit(project.as_ref(), &site_cli, &fragment_root);
+            }
 
             // JSON has stdout-only IO semantics (no output path, optional)
             // stdin) so it diverges from the file-based render pipeline
@@ -1407,14 +1487,14 @@ fn resolve_comments_style(
 /// mocha. Installs the policy renders use for frontmatter, and the plot
 /// default for un-themed `savefig` (the theme's builtin ancestor).
 fn resolve_theme_or_exit(
-    input: &std::path::Path,
+    project: Option<&rustlab_config::ProjectConfig>,
     cli_theme: Option<String>,
     cli_file: Option<PathBuf>,
     settings: &UserSettings,
     rc_path: Option<&std::path::Path>,
     contrast: ContrastMode,
 ) -> (&'static ThemeColors, Option<bool>) {
-    match resolve_theme(input, cli_theme, cli_file, settings, rc_path, contrast) {
+    match resolve_theme(project, cli_theme, cli_file, settings, rc_path, contrast) {
         Ok(c) => c,
         Err((code, e)) => {
             eprintln!("error: {e}");
@@ -1424,23 +1504,20 @@ fn resolve_theme_or_exit(
 }
 
 fn resolve_theme(
-    input: &std::path::Path,
+    project: Option<&rustlab_config::ProjectConfig>,
     cli_theme: Option<String>,
     cli_file: Option<PathBuf>,
     settings: &UserSettings,
     rc_path: Option<&std::path::Path>,
     contrast: ContrastMode,
 ) -> Result<(&'static ThemeColors, Option<bool>), (i32, String)> {
-    let project = load_project_config(&theme_select::project_start(input)).map_err(|e| (2, e))?;
-    let file_browser = project.as_ref().and_then(|p| p.file_browser);
-    let search = theme_select::search_for(project.as_ref());
+    let file_browser = project.and_then(|p| p.file_browser);
+    let search = theme_select::search_for(project);
     let rc_set = settings.notebook.theme.is_some() || settings.plot.theme.is_some();
     let req = ThemeRequest {
         cli_theme,
         cli_file,
-        project_theme: project
-            .as_ref()
-            .and_then(|p| p.notebook_theme.clone().map(|t| (t, p.path.clone()))),
+        project_theme: project.and_then(|p| p.notebook_theme.clone().map(|t| (t, p.path.clone()))),
         rc_theme: rc_set.then(|| (settings.notebook_theme(), rc_path.map(PathBuf::from))),
     };
     let loaded = theme_select::select_default(&req, &search).map_err(|e| (2, e))?;
@@ -1455,6 +1532,43 @@ fn resolve_theme(
         contrast,
     });
     Ok((colors, file_browser))
+}
+
+/// `rustlab.toml` for `input` (walking up from its directory), or exit 2
+/// with the parse error.
+fn project_or_exit(input: &std::path::Path) -> Option<rustlab_config::ProjectConfig> {
+    match load_project_config(&theme_select::project_start(input)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Directory holding `path` (`.` for a bare file name).
+fn parent_dir(path: &std::path::Path) -> PathBuf {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// `[site]` plus `--header-html` / `--footer-html` / `--stylesheet`, for
+/// every HTML page this process renders. Fragments must resolve inside
+/// `jail_root`.
+fn install_site_or_exit(
+    project: Option<&rustlab_config::ProjectConfig>,
+    cli: &rustlab_notebook::site::SiteCliOpts,
+    jail_root: &std::path::Path,
+) {
+    match rustlab_notebook::site::resolve(project.map(|p| &p.site), cli, jail_root) {
+        Ok(chrome) => rustlab_notebook::site::install(chrome),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    }
 }
 
 fn load_project_config(

@@ -32,8 +32,10 @@
 # Project config: rustlab-notebook also reads rustlab.toml from the
 # nearest ancestor of the notebook. The walk stops at the first directory
 # holding a .git entry (dir or file) and at $HOME; that directory is
-# checked, nothing above it. It accepts
-# only [notebook] theme, theme_dir, and jail_root, and beats this file.
+# checked, nothing above it. It accepts [notebook] theme, theme_dir,
+# jail_root, file_browser, and [site] (brand, nav, footer, stylesheets
+# for HTML pages; see docs/notebooks.md "Site chrome"), and beats this
+# file. [site] is not read from this file.
 # Notebook theme precedence, high → low:
 #   --theme / --theme-file  >  frontmatter `theme:`  >  rustlab.toml
 #   >  this file ([notebook] theme, then [plot] theme)  >  mocha

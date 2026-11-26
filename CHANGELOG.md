@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.102
+
+### Added
+- **Site chrome for HTML notebook pages.** A plain-HTML site no longer has to rewrite each rendered page to add its own brand, nav, and footer. Applies to single-file and directory `render` (notebook pages and `index.html`) and to the `notebook watch` page; Markdown, LaTeX, PDF, and JSON ignore it.
+  - `rustlab.toml` `[site]`: `brand = { label, href }`, `nav = [{ label, href }, …]` (at most 32), `footer = "text"` (`""` removes the footer), `stylesheets = [URL, …]`. The brand and nav sit at the left of the existing top bar, with the breadcrumb and Previous / Next kept beside them; at 768px and narrower the nav folds into a **Menu** disclosure (native `<details>`, no script). The brand uses the theme's `accent-primary`, the nav `accent-secondary`.
+  - Plain text and URLs only: labels and the footer are escaped; an href must be `http(s)://host…`, a relative or root-relative path, `?query`, or `#fragment`. `javascript:`, `data:`, other schemes, `//host`, and URLs with whitespace, quotes, `<`, `>`, or a backslash are refused with the key (`site.nav[2].href`, exit 2) before anything is written. Relative hrefs are relative to the output root and are rebased for nested directory pages.
+  - `--header-html FILE` / `--footer-html FILE` on `render` and `watch`: trusted HTML inserted right after `<body>` (in a fixed `<div class="rl-site-header">`, `--rl-site-header-h` tall, default `3rem`) and right before `</main>`. Read at startup, at most 256 KiB, inside the path jail (`--jail-root` widens it; `rustlab.toml` `[notebook] jail_root` applies the same way).
+  - `--stylesheet URL` (repeatable, replaces `[site] stylesheets`): a `<link rel="stylesheet">` after the built-in `<style>`.
+  - The `notebook watch` page CSP adds each absolute stylesheet's `scheme://host[:port]` to `style-src` and changes nothing else: `style-src 'self' 'unsafe-inline' https://kreegerlabs.com`. Fonts and images from that origin stay blocked in watch. See `docs/security.md` H8.
+  - Notebook `<body>` remains a flex row (0.3.101); the site header is fixed full-width and the site footer fragment lives inside `<main>`, so chrome stacks above and below the notebook layout.
+  - Without `[site]` or the flags, pages are byte-identical to 0.3.101.
+
 ## 0.3.101
 
 ### Added

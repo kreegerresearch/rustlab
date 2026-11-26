@@ -156,6 +156,8 @@ dropped when that cap trips.
   (`'self'`, `ws://127.0.0.1:*`, `ws://localhost:*`). A `ws://[::1]:*`
   source is not valid CSP and is omitted; the listener binds
   `127.0.0.1`. The full header is built by `server/auth.rs::csp_header`.
+  `[site] stylesheets` / `--stylesheet` add their origins to `style-src`
+  only (see H8).
 - **`worker-src` and `'unsafe-eval'` are for vendored Plotly 2.35.0.**
   Static `render` HTML has no CSP, so the same figure works there. A
   `scattergl` trace (a series longer than 10,000 points) on a watch
@@ -412,6 +414,53 @@ refused when it leaves the project root) and then
 outside its directory (a symlink out) is refused. Builtin names win and a
 file cannot take one. Only `--theme-file` reads a path, and that path
 comes from the person running the command.
+
+## H8 — Site chrome (`[site]`, `--header-html`, `--stylesheet`)
+
+`rustlab.toml` `[site]` puts a brand, nav links, and footer text on every
+HTML page. These are text and URLs, never HTML:
+
+- Labels and the footer are HTML-escaped. Control characters and
+  zero-width / bidirectional formatting characters are refused.
+- An href must be `http:` or `https:` with a plain host
+  (`http(s)://host[:port]/…`, no `user@`), a relative or root-relative
+  path, `?query`, or `#fragment` (`rustlab_config::check_site_href`).
+  Any other scheme (`javascript:`, `data:`, `vbscript:`, `blob:`,
+  `file:`, `mailto:`), a protocol-relative `//host`, and any whitespace,
+  backslash, quote, `<`, `>`, or backtick are refused with the key that
+  set it (`site.nav[2].href`), and nothing is written. The renderer runs
+  the same check again, so a hand-built `SiteChrome` cannot emit one
+  either. Stylesheet URLs use the same grammar without `#fragment`.
+
+`--header-html FILE` and `--footer-html FILE` are different: the file is
+inserted as written, right after `<body>` (inside a positioning
+`<div class="rl-site-header">`) and right before `</main>`. They are
+**trusted input** for someone who controls both the site and the build,
+the same trust as editing the generated HTML. They are read once at
+startup, at most 256 KiB, and must resolve inside the path jail (H4): the
+input directory, the notebook's directory for one file, or `--jail-root`.
+Notebook source cannot set them. In `notebook watch` the page CSP still
+applies to them: a `<script>` in a fragment has no nonce and does not run.
+The fragment should not contain `<main>` or `<header class="topbar">`,
+which the watch page uses to find its own regions.
+
+Stylesheets (`[site] stylesheets`, `--stylesheet URL`, repeatable; the
+flag replaces the toml list) are `<link rel="stylesheet">` lines after the
+built-in `<style>`. Static HTML has no CSP; the host's policy governs.
+The watch page CSP gains exactly the `scheme://host[:port]` origin of each
+absolute stylesheet, in `style-src` only:
+
+```text
+style-src 'self' 'unsafe-inline' https://kreegerlabs.com;
+```
+
+Every other directive is unchanged. `server/auth.rs::csp_header_with_styles`
+re-derives each origin and drops anything that is not a plain origin
+(a path, `*`, `https:`, a quoted keyword, a `;`), so a value cannot widen
+the policy or add a directive. Fonts and images that the stylesheet loads
+from its own origin stay blocked by `font-src 'self'` and `img-src 'self'
+data: blob:`. A relative stylesheet is already `'self'`; watch does not
+serve it, so the preview gets a 404 and warns at startup.
 
 ## Reporting
 

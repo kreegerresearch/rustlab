@@ -346,6 +346,8 @@ rustlab-notebook theme check course             # validate a theme file; exit 1 
 
 Themes: `-t NAME` takes a builtin (`mocha` default, `macchiato`, `frappe`, `latte`) or a theme file `NAME.toml` from `<project>/themes/` (next to `rustlab.toml`) or `~/.config/rustlab/themes/`. Precedence: `--theme` / `--theme-file` > frontmatter `theme:` (a name, never a path) > `rustlab.toml` `[notebook] theme` > `~/.rustlabrc` > `mocha`. `render --strict` is about cell errors only; contrast uses `--theme-contrast=error`. LaTeX and PDF always print Latte.
 
+Site chrome (HTML only): `rustlab.toml` `[site]` sets `brand = { label, href }`, `nav = [{ label, href }]`, `footer = "text"` (`""` removes it), and `stylesheets = [URL]`; text is escaped and hrefs must be `http(s)`, relative, `?`, or `#` (`javascript:` is refused, exit 2). `render` / `watch` also take `--header-html FILE` and `--footer-html FILE` (trusted HTML, path-jailed) and `--stylesheet URL` (repeatable, replaces the toml list). See `docs/notebooks.md` § Site chrome.
+
 Authoring features an agent should use (full reference: [`docs/notebooks.md`](notebooks.md)):
 
 - **Template interpolation in prose:** `${expr}` evaluates against the notebook environment; `${expr:%.3f}` formats; `\${...}` escapes.

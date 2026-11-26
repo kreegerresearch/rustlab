@@ -679,7 +679,8 @@ pub(super) async fn serve_notebook_path(
 }
 
 fn html_response(state: &ServerState, html: String) -> Response {
-    let csp = auth::csp_header(&state.csp_nonce);
+    let csp =
+        auth::csp_header_with_styles(&state.csp_nonce, &crate::site::current().style_origins());
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
