@@ -182,6 +182,7 @@ pub fn render_latex(
                     &mut body,
                     source,
                     plot_dir,
+                    theme,
                     &href_prefix,
                     plot_idx,
                     caption.as_deref(),
@@ -1279,13 +1280,14 @@ fn emit_mermaid_latex(
     body: &mut String,
     source: &str,
     #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] plot_dir: &Path,
+    #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] theme: &ThemeColors,
     #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] href_prefix: &str,
     #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] diagram_idx: usize,
     #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] caption: Option<&str>,
 ) {
     #[cfg(feature = "mermaid")]
     {
-        match crate::mermaid::render_to_svg_file(source, plot_dir, diagram_idx) {
+        match crate::mermaid::render_to_svg_file(source, plot_dir, diagram_idx, theme) {
             Ok(_) => {
                 // `[H]` (float package) keeps the figure with its heading.
                 // `[htbp]` floated the diagram above the section that
@@ -2617,6 +2619,38 @@ mod tests {
         assert!(!tex.contains("\\includesvg"));
         assert!(tex.contains("\\end{figure}"));
         assert!(dir.join("diagram-1.svg").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn mermaid_prints_light_whatever_the_screen_theme() {
+        let dir = mermaid_plot_dir("print-light");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A[text] --> B[tokens]\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let mocha = Theme::Mocha.colors();
+        render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            mocha,
+            &crate::render::LinkMode::single_file(),
+        );
+        let svg = std::fs::read_to_string(dir.join("diagram-1.svg")).unwrap();
+        let latte = Theme::Latte.colors();
+        assert!(
+            svg.contains(&format!("fill=\"{}\"", latte.bg_secondary)),
+            "{svg}"
+        );
+        assert!(
+            !svg.contains(&format!("fill=\"{}\"", mocha.bg_secondary)),
+            "{svg}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

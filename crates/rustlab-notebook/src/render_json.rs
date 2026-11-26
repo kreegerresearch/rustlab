@@ -153,7 +153,7 @@ pub fn render_json(title: &str, blocks: &[Rendered], theme: &ThemeColors) -> Doc
                 if *hidden {
                     continue;
                 }
-                let svg = render_mermaid_svg(source, idx, &mut diagnostics);
+                let svg = render_mermaid_svg(source, idx, theme, &mut diagnostics);
                 json_blocks.push(JsonBlock::Mermaid {
                     source: source.clone(),
                     svg,
@@ -241,6 +241,7 @@ fn figure_to_svg_string(
 fn render_mermaid_svg(
     source: &str,
     block_index: usize,
+    theme: &ThemeColors,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     // Mermaid renderer wants a plot_dir to stash its hash-keyed cache.
@@ -248,7 +249,7 @@ fn render_mermaid_svg(
     // renders share the cache (mermaid render is slow — ~hundreds of ms).
     let dir = std::env::temp_dir().join("rustlab-json-mermaid");
     let _ = std::fs::create_dir_all(&dir);
-    match crate::mermaid::render_to_svg_string(source, &dir) {
+    match crate::mermaid::render_to_svg_string(source, &dir, theme) {
         Ok(svg) => Some(svg),
         Err(e) => {
             diagnostics.push(Diagnostic {
@@ -265,6 +266,7 @@ fn render_mermaid_svg(
 fn render_mermaid_svg(
     _source: &str,
     block_index: usize,
+    _theme: &ThemeColors,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<String> {
     diagnostics.push(Diagnostic {
@@ -561,6 +563,10 @@ mod tests {
         assert_eq!(v["blocks"][0]["caption"], "a flow");
         let svg = v["blocks"][0]["svg"].as_str().unwrap();
         assert!(svg.contains("<svg"), "got: {}", &svg[..120.min(svg.len())]);
+        assert!(
+            svg.contains(&format!("fill=\"{}\"", theme().bg_secondary)),
+            "JSON diagram ignores the render theme"
+        );
     }
 
     #[cfg(not(feature = "mermaid"))]

@@ -59,3 +59,8 @@ jobs:
       # storage-mode tests alone took over 12 minutes. Doctests run too.
       - name: Run workspace tests
         run: cargo test --workspace --profile ci
+
+      # `mermaid` is off by default (it would bloat the main `rustlab`
+      # binary), so the workspace run skips every Mermaid renderer test.
+      - name: Run rustlab-notebook tests with Mermaid
+        run: cargo test -p rustlab-notebook --features mermaid --profile ci --lib

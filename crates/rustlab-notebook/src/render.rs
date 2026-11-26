@@ -849,7 +849,7 @@ pub fn render_html_nonced(
                     body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
                 }
                 body.push_str("<figure class=\"mermaid\">\n");
-                emit_mermaid_html(&mut body, source, plot_dir);
+                emit_mermaid_html(&mut body, source, plot_dir, theme);
                 if let Some(cap) = caption {
                     body.push_str(&format!("<figcaption>{}</figcaption>\n", escape_html(cap)));
                 }
@@ -2346,10 +2346,15 @@ pub(crate) fn is_dangerous_url(url: &str) -> bool {
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
 /// verbatim source in a `<pre>` on failure or when the `mermaid` feature
 /// is disabled at build time.
-fn emit_mermaid_html(body: &mut String, source: &str, _plot_dir: &std::path::Path) {
+fn emit_mermaid_html(
+    body: &mut String,
+    source: &str,
+    _plot_dir: &std::path::Path,
+    _theme: &ThemeColors,
+) {
     #[cfg(feature = "mermaid")]
     {
-        match crate::mermaid::render_to_svg_string(source, _plot_dir) {
+        match crate::mermaid::render_to_svg_string(source, _plot_dir, _theme) {
             Ok(svg) => {
                 body.push_str(&strip_xml_decl(&svg));
                 body.push('\n');
@@ -7629,6 +7634,34 @@ w = 4
         assert!(html.contains("<figure class=\"mermaid\">"));
         assert!(html.contains("<svg"), "expected inline <svg> tag");
         assert!(!html.contains("<?xml"), "XML decl should be stripped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn render_html_mermaid_follows_a_dark_theme() {
+        let dir = mermaid_plot_dir("mocha");
+        let mocha = rustlab_plot::theme::Theme::Mocha.colors();
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A[text] --> B[tokens] --> C[ids]\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            mocha,
+            None,
+            &LinkMode::single_file(),
+        );
+        let start = html.find("<figure class=\"mermaid\">").unwrap();
+        let end = start + html[start..].find("</figure>").unwrap();
+        let fig = html[start..end].to_ascii_lowercase();
+        assert!(!fig.contains("#ffffff"), "white left in the mocha diagram");
+        assert!(fig.contains(&format!("fill=\"{}\"", mocha.bg_secondary)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
