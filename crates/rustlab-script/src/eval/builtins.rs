@@ -115,6 +115,9 @@ impl BuiltinRegistry {
         // Parks-McClellan optimal FIR
         r.register("firpm", builtin_firpm);
         r.register("firpmq", builtin_firpmq);
+        r.register("poly2trellis", super::fec::builtin_poly2trellis);
+        r.register("istrellis", super::fec::builtin_istrellis);
+        r.register("vitdec", super::fec::builtin_vitdec);
         // Fixed-point quantization
         r.register("qfmt", builtin_qfmt);
         // Integer types (dev/plans/integer_types.md)

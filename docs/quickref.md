@@ -364,6 +364,14 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `upfirdn(x, h, p, q)` | Upsample·filter·downsample via polyphase decomposition |
 | `window(name, n)` | Window vector; names: `"hann"` `"hamming"` `"blackman"` `"rectangular"` `"kaiser"` |
 
+## DSP — Channel Coding
+
+| Function | Description |
+|---|---|
+| `poly2trellis(K, codegen [, feedback])` | Trellis struct of a convolutional code (MATLAB fields; octal generators; several inputs and recursive codes) |
+| `istrellis(t)` | Whether `t` is a valid trellis struct |
+| `vitdec(code, trellis, tblen, opmode, dectype [, nsdec])` | Viterbi decoder. `opmode` `"trunc"` / `"term"` / `"cont"`, `dectype` `"hard"` / `"soft"` (+ `nsdec`) / `"unquant"` |
+
 ---
 
 ## Control Systems

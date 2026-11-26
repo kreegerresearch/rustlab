@@ -4,6 +4,7 @@ pub mod decomposition;
 pub(crate) mod elementwise;
 pub mod fast_hash;
 pub(crate) mod fdtd;
+mod fec;
 pub(crate) mod interp1;
 pub(crate) mod iterative;
 pub mod line_io;

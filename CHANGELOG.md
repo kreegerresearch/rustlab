@@ -6,6 +6,16 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.103
+
+### Added
+- **`poly2trellis`, `istrellis`, and `vitdec`** (MATLAB's convolutional-code pair), with the decoder in compiled Rust (`rustlab_dsp::viterbi`).
+  - `poly2trellis(K, codegen [, feedback])` returns MATLAB's trellis struct (`numInputSymbols`, `numOutputSymbols`, `numStates`, `nextStates`, `outputs` in octal) for one or several inputs and for recursive codes. The tables match GNU Octave's entry for entry (eight codes in `crates/rustlab-script/tests/fixtures/poly2trellis_octave.txt`).
+  - `vitdec(code, trellis, tblen, opmode, dectype [, nsdec])`: `opmode` `"trunc"`, `"term"`, or `"cont"` (output delayed by `tblen` steps, leading zeros); `dectype` `"hard"` (0/1), `"soft"` with `nsdec` bits (0 = most confident 0), or `"unquant"` (+1 for a 0 bit, 0 for an erasure). Ties keep the lower-numbered predecessor state; the traceback starts at the lowest-numbered best state. Puncturing and erasure-pattern arguments are not supported (use zeros with `"unquant"`).
+  - A `"term"` decode with `tblen` at least the block length gives exactly the bits of the script decoder in `comm/viterbi_fec` (soft and hard, rates 1/2 and 1/3, punctured 3/4; `crates/rustlab-script/tests/vitdec.rs`).
+  - Rate 1/2, K = 7 (171, 133), release build, 4 cores, 1,000,000 bits: 0.10–0.12 s for a whole-frame traceback and 0.10–0.14 s for `tblen` 35 or 96, against 4.6–4.7 s for the script decoder (0.3.91). The decoder's own buffers are about 21 MB for a whole-frame traceback; peak RSS of the whole benchmark is 107–112 MB against 1.55 GB. `perf/vitdec_perf.sh`, `perf/bench_vitdec.rlab`.
+- **`comm/viterbi_fec`** decodes with `vitdec` after the script decoder is explained, and shows the two agree bit for bit. Every table, figure, and number is unchanged (the four plot SVGs are byte-identical); the render takes 1.2 s instead of 2.7 s.
+
 ## 0.3.102
 
 ### Added

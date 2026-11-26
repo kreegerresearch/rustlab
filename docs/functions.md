@@ -1669,6 +1669,83 @@ Butterworth IIR highpass. Same one-output / two-output split.
 One output is still just the numerator, which is not a usable IIR by itself.
 `filter` and `filtfilt` need both `b` and `a`.
 
+---
+
+## DSP — Channel Coding (convolutional codes)
+
+MATLAB's `poly2trellis` / `vitdec` pair. The decoder is compiled Rust: a
+rate-1/2, K = 7 code decodes 1,000,000 bits in about 0.1 s.
+
+### `t = poly2trellis(K, codegen [, feedback])`
+Trellis of a convolutional encoder, as a struct with MATLAB's fields:
+`numInputSymbols` (2^k), `numOutputSymbols` (2^n), `numStates`,
+`nextStates` and `outputs` (`numStates × numInputSymbols`; row = current
+state, column = input symbol; `outputs` is written in octal, as in MATLAB).
+
+- `K` — constraint length, or one per input (`1×k`).
+- `codegen` — octal generators: a vector for one input, else `k×n` (row
+  `i` = input `i`). The leftmost bit of each generator taps the current
+  input; a generator must fit in `K(i)` bits.
+- `feedback` — optional octal feedback polynomial per input (recursive,
+  e.g. systematic codes): the bit shifted into the register is
+  `u ⊕ parity(feedback & register)`, and the generators see it in place of `u`.
+
+The state is the register contents with the newest bit most significant.
+With several inputs, input 1 is the most significant bit of the input
+symbol and the last input's register holds the high bits of the state. The
+tables match GNU Octave's `poly2trellis` entry for entry.
+```
+t = poly2trellis(7, [171 133]);            % 64 states, rate 1/2
+t.nextStates(1, :)                          % [0 32]
+r = poly2trellis(5, [37 33], 37);          % recursive systematic
+w = poly2trellis([5 4], [23 35 0; 0 5 13]);% rate 2/3, 128 states
+```
+
+### `istrellis(t)`
+`true` when `t` is a valid trellis struct (sizes, powers of two, states
+and output symbols in range).
+
+### `vitdec(code, trellis, tblen, opmode, dectype [, nsdec])`
+Viterbi decoding. `code` is a row or column vector with `n` values per
+trellis step (output 1 first); the result has `k` bits per step (input 1
+first), the same length in steps, and the orientation of `code`.
+
+- `dectype`:
+  - `"hard"` — `code` is 0/1 bits; Hamming distance.
+  - `"soft"` — integers `0 … 2^nsdec − 1`, 0 the most confident 0 and
+    `2^nsdec − 1` the most confident 1 (`nsdec` from 1 to 16 is required).
+    Level `v` costs `v` against a 0 and `2^nsdec − 1 − v` against a 1.
+  - `"unquant"` — real values, `+1` for a 0 bit and `−1` for a 1 bit;
+    0 adds nothing (an erasure, e.g. a punctured symbol). The metric is
+    the correlation `Σ c·y`, which ranks paths as Euclidean distance does.
+- `tblen` — traceback depth in steps. The symbol of step `t − tblen` is
+  read by tracing back from the best state after step `t`. 5 to 7
+  constraint lengths is the usual choice. A `tblen` of at least the number
+  of steps makes one traceback over the whole block.
+- `opmode`:
+  - `"trunc"` — the encoder starts in state 0; the last `tblen` steps are
+    traced back from the best state.
+  - `"term"` — the encoder starts and ends in state 0 (tail bits); the last
+    `tblen` steps are traced back from state 0.
+  - `"cont"` — continuous: the output is delayed by `tblen` steps, starting
+    with `tblen·k` zeros; the last `tblen` steps are not emitted.
+
+Ties keep the lower-numbered predecessor state, and the best state is the
+lowest-numbered one with the highest metric. Decisions are kept for `tblen`
+steps only (bit-packed for one-input codes). Puncturing and erasure-pattern
+arguments are not supported; put 0 at punctured positions with `"unquant"`.
+```
+t = poly2trellis(7, [171 133]);
+msg = [randi([0, 1], 1, 1000), zeros(1, 6)];       % 6 tail bits
+% code = 2006 code bits from an encoder; y = 1 - 2*code + noise
+u = vitdec(y, t, 35, "term", "unquant");            % 1006 bits
+u = vitdec(y < 0, t, 35, "term", "hard");
+q = round(3.5 * (1 - y)); q = min(max(q, 0), 7);    % 3-bit levels
+u = vitdec(q, t, 35, "term", "soft", 3);
+d = vitdec(y, t, 35, "cont", "unquant");            % d(36:end) = msg(1:end-35)
+```
+See `examples/notebooks/comm/viterbi_fec.md` for a full link.
+
 ### `filter(b, a, x)`
 Causal direct-form II transposed filter. `b` and `a` are real; `a` is
 normalised so `a(1) = 1` (`a(1) = 0` is an error). `x` may be complex.
